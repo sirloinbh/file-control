@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside } = require('../src/target');
+const { resolveTarget, isInside, resolveInside, walk } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -71,4 +71,83 @@ test('resolveInside는 안쪽 경로를 절대경로로 돌려주고 밖이면 �
   assert.strictEqual(resolveInside(target, 'sub/a.txt'), path.join(target, 'sub', 'a.txt'));
   assert.throws(() => resolveInside(target, '../a.txt'), FcError);
   assert.throws(() => resolveInside(target, path.resolve('/etc/passwd')), FcError);
+});
+
+// Windows에서는 디렉토리 심볼릭 링크에 관리자 권한이 필요해서 정션을 쓴다.
+function linkDir(from, to) {
+  fs.symlinkSync(from, to, isWindows ? 'junction' : 'dir');
+}
+
+function listing(dir) {
+  return walk(dir).map((e) => [e.relative.split(path.sep).join('/'), e.type]);
+}
+
+test('walk는 하위 폴더까지 재귀로 읽고, 폴더가 그 안의 항목보다 먼저 오게 정렬한다', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'empty'));
+  fs.writeFileSync(path.join(dir, 'a', 'b', 'deep.txt'), '');
+  fs.writeFileSync(path.join(dir, 'a', 'x.txt'), '');
+  fs.writeFileSync(path.join(dir, 'a.txt'), '');
+  fs.writeFileSync(path.join(dir, 'a b.txt'), '');
+  assert.deepStrictEqual(listing(dir), [
+    ['a', 'dir'],
+    ['a/b', 'dir'],
+    ['a/b/deep.txt', 'file'],
+    ['a/x.txt', 'file'],
+    ['a b.txt', 'file'],
+    ['a.txt', 'file'],
+    ['empty', 'dir'],
+  ]);
+});
+
+test('walk의 path는 타겟 기준 절대경로이고, 상대경로·..가 섞인 타겟도 받는다', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'sub'));
+  fs.writeFileSync(path.join(dir, 'sub', 'f.txt'), '');
+  const [sub, file] = walk(path.join(dir, 'sub', '..'));
+  assert.strictEqual(sub.path, path.join(dir, 'sub'));
+  assert.strictEqual(file.path, path.join(dir, 'sub', 'f.txt'));
+});
+
+test('walk는 링크·정션을 link로만 표시하고 따라 들어가지 않는다', () => {
+  const root = tempDir();
+  const outside = path.join(root, 'outside');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(outside);
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), '');
+  linkDir(outside, path.join(target, 'escape'));
+  linkDir(target, path.join(target, 'loop'));
+  assert.deepStrictEqual(listing(target), [
+    ['escape', 'link'],
+    ['loop', 'link'],
+  ]);
+});
+
+test('walk는 빈 폴더면 빈 목록을, 없는 경로나 파일이면 오류를 낸다', () => {
+  const dir = tempDir();
+  assert.deepStrictEqual(walk(dir), []);
+  fs.writeFileSync(path.join(dir, 'f.txt'), '');
+  assert.throws(() => walk(path.join(dir, 'nope')), FcError);
+  assert.throws(() => walk(path.join(dir, 'f.txt')), FcError);
+});
+
+test('walk는 대소문자를 무시하고 정렬하며, 대소문자만 다르면 순서를 고정한다', () => {
+  const dir = tempDir();
+  for (const name of ['b.txt', 'B2.txt', 'a.txt', 'Z.txt']) fs.writeFileSync(path.join(dir, name), '');
+  assert.deepStrictEqual(listing(dir).map(([name]) => name), ['a.txt', 'b.txt', 'B2.txt', 'Z.txt']);
+});
+
+test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 오류를 낸다', (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'ok'));
+  fs.mkdirSync(path.join(dir, 'locked'));
+  fs.writeFileSync(path.join(dir, 'ok', 'f.txt'), '');
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, opts) => {
+    if (path.basename(p) === 'locked') throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return readdir(p, opts);
+  });
+  assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
 });
