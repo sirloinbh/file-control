@@ -31,4 +31,39 @@ function resolveInside(target, p) {
   return abs;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside };
+// 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
+// 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
+// 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
+function walk(dir) {
+  const target = resolveTarget(dir);
+  const entries = [];
+  const pending = [''];
+  while (pending.length > 0) {
+    const relDir = pending.pop();
+    let dirents;
+    try {
+      dirents = fs.readdirSync(path.join(target, relDir), { withFileTypes: true });
+    } catch (err) {
+      throw new FcError(`폴더를 읽을 수 없습니다: ${path.join(target, relDir)} (${err.code})`);
+    }
+    for (const dirent of dirents) {
+      const relative = path.join(relDir, dirent.name);
+      const type = dirent.isSymbolicLink() ? 'link' : dirent.isDirectory() ? 'dir' : 'file';
+      entries.push({ path: path.join(target, relative), relative, type });
+      if (type === 'dir') pending.push(relative);
+    }
+  }
+  return entries.sort((a, b) => compareRelative(a.relative, b.relative));
+}
+
+// 경로 조각 단위로 비교해서 'a/b'가 'a b'나 'a.txt'보다 'a' 바로 뒤에 오게 한다.
+function compareRelative(a, b) {
+  const pa = a.split(path.sep);
+  const pb = b.split(path.sep);
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  }
+  return pa.length - pb.length;
+}
+
+module.exports = { resolveTarget, isInside, resolveInside, walk };
