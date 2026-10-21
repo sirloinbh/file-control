@@ -34,6 +34,7 @@ function resolveInside(target, p) {
 // 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
 // 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
+// 하위 폴더 하나라도 읽지 못하면 전체를 실패시킨다. 일부만 읽은 목록으로 이동·삭제하지 않게 하려는 것이다.
 function walk(dir) {
   const target = resolveTarget(dir);
   const entries = [];
@@ -57,13 +58,19 @@ function walk(dir) {
 }
 
 // 경로 조각 단위로 비교해서 'a/b'가 'a b'나 'a.txt'보다 'a' 바로 뒤에 오게 한다.
+// Windows 탐색기처럼 대소문자를 무시하고, 대소문자만 다르면 원래 문자열로 순서를 고정한다.
 function compareRelative(a, b) {
   const pa = a.split(path.sep);
   const pb = b.split(path.sep);
   for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
-    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+    const order = compareName(pa[i].toLowerCase(), pb[i].toLowerCase()) || compareName(pa[i], pb[i]);
+    if (order !== 0) return order;
   }
   return pa.length - pb.length;
+}
+
+function compareName(a, b) {
+  return a === b ? 0 : a < b ? -1 : 1;
 }
 
 module.exports = { resolveTarget, isInside, resolveInside, walk };

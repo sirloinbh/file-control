@@ -132,3 +132,22 @@ test('walk는 빈 폴더면 빈 목록을, 없는 경로나 파일이면 오류�
   assert.throws(() => walk(path.join(dir, 'nope')), FcError);
   assert.throws(() => walk(path.join(dir, 'f.txt')), FcError);
 });
+
+test('walk는 대소문자를 무시하고 정렬하며, 대소문자만 다르면 순서를 고정한다', () => {
+  const dir = tempDir();
+  for (const name of ['b.txt', 'B2.txt', 'a.txt', 'Z.txt']) fs.writeFileSync(path.join(dir, name), '');
+  assert.deepStrictEqual(listing(dir).map(([name]) => name), ['a.txt', 'b.txt', 'B2.txt', 'Z.txt']);
+});
+
+test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 오류를 낸다', (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'ok'));
+  fs.mkdirSync(path.join(dir, 'locked'));
+  fs.writeFileSync(path.join(dir, 'ok', 'f.txt'), '');
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, opts) => {
+    if (path.basename(p) === 'locked') throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return readdir(p, opts);
+  });
+  assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
+});
