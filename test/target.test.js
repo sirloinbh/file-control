@@ -210,7 +210,10 @@ test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고,
 test('readRange는 손상된 헤더처럼 큰 length를 받아도 파일에 있는 만큼만 읽는다', () => {
   const target = resolveTarget(tempDir());
   fs.writeFileSync(path.join(target, 'tiny.mp4'), 'abcde');
-  assert.strictEqual(readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 }).toString(), 'bcde');
+  const result = readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 });
+  assert.strictEqual(result.toString(), 'bcde');
+  // subarray는 원래 할당한 메모리를 공유하므로, 할당 자체가 작았는지 확인한다.
+  assert.ok(result.buffer.byteLength <= 5, `할당 크기: ${result.buffer.byteLength}`);
 });
 
 test('readInside는 한 번에 읽을 수 없는 큰 파일을 FcError로 거부한다', (t) => {
