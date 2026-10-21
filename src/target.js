@@ -1,18 +1,86 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('./commands');
 
 // 타겟 디렉토리를 실제 절대경로로 정규화한다. 없거나 폴더가 아니면 오류를 낸다.
+// 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
 function resolveTarget(dir) {
   if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('타겟 폴더를 지정하세요.');
   const abs = path.resolve(dir);
+  rejectNetworkPath(abs);
   const stat = fs.statSync(abs, { throwIfNoEntry: false });
   if (!stat) throw new FcError(`타겟 폴더가 없습니다: ${abs}`);
   if (!stat.isDirectory()) throw new FcError(`타겟이 폴더가 아닙니다: ${abs}`);
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
-  return fs.realpathSync.native(abs);
+  const target = fs.realpathSync.native(abs);
+  rejectNetworkPath(target);
+  const reason = protectedReason(target);
+  if (reason) throw new FcError(`보호된 경로라 타겟으로 쓸 수 없습니다: ${target} (${reason})`);
+  return target;
+}
+
+// UNC·네트워크 경로(\\server\share, \\localhost\C$ 등)는 보호 경로를 우회할 수 있어 타겟으로 받지 않는다.
+// \\?\C:\처럼 로컬 드라이브를 가리키는 긴 경로 접두어만 허용한다.
+function rejectNetworkPath(p) {
+  if (process.platform !== 'win32') return;
+  if (p.startsWith('\\\\') && !/^\\\\\?\\[A-Za-z]:/.test(p)) {
+    throw new FcError(`네트워크 경로는 타겟으로 쓸 수 없습니다: ${p}`);
+  }
+}
+
+// 보호 기준 경로를 타겟과 같은 방식(실제 경로)으로 맞춘다. 없는 경로면 그대로 쓴다.
+function realOrResolved(p) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+// Windows 시스템 폴더. 환경 변수가 없거나 절대경로가 아니면 기본 위치를 쓴다.
+function systemRoots() {
+  if (process.platform !== 'win32') return [];
+  const env = process.env;
+  const pick = (value, fallback) => (value && path.isAbsolute(value) ? value : fallback);
+  return [
+    pick(env.SystemRoot, 'C:\\Windows'),
+    pick(env.ProgramFiles, 'C:\\Program Files'),
+    pick(env['ProgramFiles(x86)'], 'C:\\Program Files (x86)'),
+  ].map(realOrResolved);
+}
+
+function homeDir() {
+  let home;
+  try {
+    home = os.homedir();
+  } catch {
+    home = '';
+  }
+  if (!home || !path.isAbsolute(home)) throw new FcError('사용자 폴더를 알 수 없어 보호 경로를 확인할 수 없습니다.');
+  return realOrResolved(home);
+}
+
+// 사용자 폴더 바로 아래의 숨김 설정 폴더(.ssh, .config 등 점으로 시작하는 폴더와 AppData)인지 본다.
+function isHiddenSettings(name) {
+  return name.startsWith('.') || name.toLowerCase() === 'appdata';
+}
+
+// 타겟이 보호 경로와 겹치면 이유를, 아니면 null을 돌려준다.
+function protectedReason(target) {
+  for (const root of systemRoots()) {
+    if (isInside(root, target)) return `시스템 폴더 ${root}`;
+    if (isInside(target, root)) return `시스템 폴더 ${root}를 포함`;
+  }
+  const home = homeDir();
+  if (isInside(target, home)) return `사용자 폴더 ${home}를 포함`;
+  if (isInside(home, target)) {
+    const [first] = path.relative(home, target).split(path.sep);
+    if (isHiddenSettings(first)) return `사용자 설정 폴더 ${path.join(home, first)}`;
+  }
+  return null;
 }
 
 // p(타겟 기준 상대경로 또는 절대경로)가 타겟 자신이거나 그 안이면 true.
