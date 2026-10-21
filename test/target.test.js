@@ -10,6 +10,11 @@ const { resolveTarget, isInside, resolveInside, readInside, readRange, walk } = 
 
 const isWindows = process.platform === 'win32';
 
+// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로,
+// 이 파일에서는 사용자 폴더를 임시 폴더 밖의 가짜 경로로 바꿔 둔다. 보호 테스트는 home을 직접 정한다.
+let home = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
+test.mock.method(os, 'homedir', () => home);
+
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-target-'));
   test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -226,4 +231,51 @@ test('readInside는 한 번에 읽을 수 없는 큰 파일을 FcError로 거부
     return stat;
   });
   assert.throws(() => readInside(target, 'huge.mkv'), (err) => err instanceof FcError && err.message.includes('readRange'));
+});
+
+test('resolveTarget은 사용자 폴더 바로 아래 숨김 설정 폴더와 그 안을 거부한다', () => {
+  home = path.join(tempDir(), 'kim');
+  for (const dir of ['.ssh', '.config/gh', 'AppData/Local/Temp', 'Downloads/.hidden', 'Downloads']) {
+    fs.mkdirSync(path.join(home, dir), { recursive: true });
+  }
+  assert.throws(() => resolveTarget(path.join(home, '.ssh')), /보호된 경로/);
+  assert.throws(() => resolveTarget(path.join(home, '.config', 'gh')), /보호된 경로/);
+  assert.throws(() => resolveTarget(path.join(home, 'AppData', 'Local', 'Temp')), /보호된 경로/);
+  assert.strictEqual(resolveTarget(path.join(home, 'Downloads')), path.join(home, 'Downloads'));
+  assert.strictEqual(resolveTarget(path.join(home, 'Downloads', '.hidden')), path.join(home, 'Downloads', '.hidden'));
+});
+
+test('resolveTarget은 Windows에서 대소문자가 다른 AppData도 거부한다', { skip: !isWindows }, () => {
+  home = path.join(tempDir(), 'kim');
+  fs.mkdirSync(path.join(home, 'AppData'), { recursive: true });
+  assert.throws(() => resolveTarget(path.join(home, 'APPDATA')), /보호된 경로/);
+});
+
+test('resolveTarget은 사용자 폴더 자신과 그것을 품은 상위 폴더를 거부한다', () => {
+  const root = tempDir();
+  home = path.join(root, 'users', 'kim');
+  fs.mkdirSync(home, { recursive: true });
+  assert.throws(() => resolveTarget(home), /사용자 폴더/);
+  assert.throws(() => resolveTarget(path.join(root, 'users')), /사용자 폴더/);
+  assert.throws(() => resolveTarget(root), /사용자 폴더/);
+  fs.mkdirSync(path.join(root, 'users', 'kim2'));
+  assert.strictEqual(resolveTarget(path.join(root, 'users', 'kim2')), path.join(root, 'users', 'kim2'));
+});
+
+test('resolveTarget은 정션을 거쳐 보호 폴더를 가리켜도 거부한다', () => {
+  const root = tempDir();
+  home = path.join(root, 'kim');
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  linkDir(path.join(home, '.ssh'), path.join(root, 'keys'));
+  assert.throws(() => resolveTarget(path.join(root, 'keys')), /보호된 경로/);
+});
+
+test('resolveTarget은 Windows 시스템 폴더와 그 안, 그것을 품은 드라이브 루트를 거부한다', { skip: !isWindows }, () => {
+  const windows = process.env.SystemRoot;
+  const programFiles = process.env.ProgramFiles;
+  for (const dir of [windows, windows.toLowerCase(), path.join(windows, 'System32'), programFiles, path.parse(windows).root]) {
+    assert.throws(() => resolveTarget(dir), /보호된 경로/, dir);
+  }
+  const x86 = process.env['ProgramFiles(x86)'];
+  if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /보호된 경로/);
 });

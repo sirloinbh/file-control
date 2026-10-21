@@ -1,10 +1,12 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('./commands');
 
 // 타겟 디렉토리를 실제 절대경로로 정규화한다. 없거나 폴더가 아니면 오류를 낸다.
+// 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
 function resolveTarget(dir) {
   if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('타겟 폴더를 지정하세요.');
   const abs = path.resolve(dir);
@@ -12,7 +14,41 @@ function resolveTarget(dir) {
   if (!stat) throw new FcError(`타겟 폴더가 없습니다: ${abs}`);
   if (!stat.isDirectory()) throw new FcError(`타겟이 폴더가 아닙니다: ${abs}`);
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
-  return fs.realpathSync.native(abs);
+  const target = fs.realpathSync.native(abs);
+  const reason = protectedReason(target);
+  if (reason) throw new FcError(`보호된 경로라 타겟으로 쓸 수 없습니다: ${target} (${reason})`);
+  return target;
+}
+
+// Windows 시스템 폴더. 환경 변수가 없으면 기본 위치를 쓴다.
+function systemRoots() {
+  if (process.platform !== 'win32') return [];
+  const env = process.env;
+  return [
+    env.SystemRoot || 'C:\\Windows',
+    env.ProgramFiles || 'C:\\Program Files',
+    env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+  ].map((p) => path.resolve(p));
+}
+
+// 사용자 폴더 바로 아래의 숨김 설정 폴더(.ssh, .config 등 점으로 시작하는 폴더와 AppData)인지 본다.
+function isHiddenSettings(name) {
+  return name.startsWith('.') || name.toLowerCase() === 'appdata';
+}
+
+// 타겟이 보호 경로와 겹치면 이유를, 아니면 null을 돌려준다.
+function protectedReason(target) {
+  for (const root of systemRoots()) {
+    if (isInside(root, target)) return `시스템 폴더 ${root}`;
+    if (isInside(target, root)) return `시스템 폴더 ${root}를 포함`;
+  }
+  const home = path.resolve(os.homedir());
+  if (isInside(target, home)) return `사용자 폴더 ${home}를 포함`;
+  if (isInside(home, target)) {
+    const [first] = path.relative(home, target).split(path.sep);
+    if (isHiddenSettings(first)) return `사용자 설정 폴더 ${path.join(home, first)}`;
+  }
+  return null;
 }
 
 // p(타겟 기준 상대경로 또는 절대경로)가 타겟 자신이거나 그 안이면 true.
