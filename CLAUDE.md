@@ -23,12 +23,18 @@
 
 ## PR 머지
 
-- 사용자가 PR 머지를 시키면 `gh pr merge`로 머지한다. 머지 전에 `npm test`가 통과하는지 확인한다.
+- GitHub 작업은 개인 계정 `sirloinbh`로 한다. 기본 `gh` 설정(회사 계정) 대신 `GH_CONFIG_DIR="$USERPROFILE/.config/gh-personal" gh ...`를 쓰고, 원격 변경 전에 `gh api user --jq .login`이 `sirloinbh`인지 확인한다.
+- PR의 필수 CI 검사가 모두 통과하면 에이전트(주 에이전트와 로컬 워커)가 사용자에게 묻지 않고 머지한다. 머지 전에 `npm test`가 통과하는지 확인한다.
+  - 머지는 merge commit으로 한다: `gh pr merge <url> --merge --match-head-commit <확인한 head SHA>`.
+  - 머지 후 연결된 이슈(`Closes #N`)가 닫혔는지 확인한다.
+  - 검사가 실패했거나 아직 실행 중이면 머지하지 않는다. CI 검사가 하나도 없는 PR은 자동 머지하지 않고 그 사실을 사용자에게 알린다 (현재 이 저장소에는 CI가 없다).
+  - `--admin` 등 브랜치 보호 우회, 리뷰 대신 자기 PR 승인, `main`에 직접 커밋·push, force push는 하지 않는다.
+  - 이 저장소는 `main` 머지가 배포로 이어지지 않는다(로컬 도구). 배포가 생기면 머지 후 배포 결과를 확인하도록 이 항목을 고친다.
 - 연속된 PR(앞 PR의 브랜치를 base로 쌓은 PR)은 아래쪽부터 차례로 머지한다.
   1. 앞 PR을 머지한 뒤 다음 PR의 base를 `main`으로 바꾼다 (`gh pr edit <번호> --base main`).
-  2. 다음 PR 브랜치에 최신 `main`을 merge해서 충돌을 해결한다. force push가 필요한 rebase는 쓰지 않는다.
-  3. 충돌 해결 후 `npm test`를 통과시키고 push한 다음 머지한다.
+  2. 다음 PR 브랜치에 최신 `origin/main`을 merge해서 충돌을 해결한다. force push가 필요한 rebase는 쓰지 않는다.
+  3. 충돌 해결 후 `npm test`를 통과시키고 일반 push한 다음, CI가 통과하면 머지한다. 스택 끝까지 반복한다.
   4. 변경 내용이 이미 `main`에 모두 들어가 남은 차이가 없는 PR은 머지 대신 사유를 댓글로 남기고 닫는다.
-- 머지한 PR의 브랜치는 삭제하고, 연결된 이슈가 닫혔는지 확인한다.
+- 머지한 PR의 브랜치는 삭제한다.
 - 충돌 해결이 코드 의도를 판단해야 하는 경우(양쪽 변경이 서로 다른 동작을 만드는 경우)에는 해결안을 보여주고 확인을 받는다.
-- 끝나면 머지한 PR, 닫은 PR, 해결한 충돌 파일을 짧게 보고한다.
+- 끝나면 머지한 PR(머지 SHA), 닫은 PR, 해결한 충돌 파일을 짧게 보고한다.
