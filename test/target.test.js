@@ -173,15 +173,15 @@ test('readRange는 offset부터 length바이트를 읽고, 파일 끝을 넘으�
 test('readRange는 잘못된 offset·length를 거부한다', () => {
   const target = resolveTarget(tempDir());
   fs.writeFileSync(path.join(target, 'f.txt'), 'x');
-  for (const bad of [{ length: -1 }, { length: 1.5 }, {}, { offset: -1, length: 1 }, { offset: '1', length: 1 }]) {
+  for (const bad of [{ length: -1 }, { length: 1.5 }, {}, undefined, { offset: -1, length: 1 }, { offset: '1', length: 1 }, { length: 2 ** 31 }]) {
     assert.throws(() => readRange(target, 'f.txt', bad), FcError, JSON.stringify(bad));
   }
 });
 
 test('readInside·readRange는 타겟 밖, 없는 파일, 폴더를 거부한다', () => {
   const root = tempDir();
-  const target = path.join(root, 'target');
-  fs.mkdirSync(path.join(target, 'dir'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'target', 'dir'), { recursive: true });
+  const target = resolveTarget(path.join(root, 'target'));
   fs.writeFileSync(path.join(root, 'secret.txt'), 'secret');
   for (const read of [(p) => readInside(target, p), (p) => readRange(target, p, { length: 1 })]) {
     assert.throws(() => read('../secret.txt'), FcError);
@@ -195,9 +195,9 @@ test('readInside·readRange는 타겟 밖, 없는 파일, 폴더를 거부한다
 test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고, 안쪽을 가리키는 링크는 읽는다', () => {
   const root = tempDir();
   const outside = path.join(root, 'outside');
-  const target = path.join(root, 'target');
   fs.mkdirSync(outside);
-  fs.mkdirSync(path.join(target, 'real'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'target', 'real'), { recursive: true });
+  const target = resolveTarget(path.join(root, 'target'));
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
   fs.writeFileSync(path.join(target, 'real', 'ok.txt'), 'ok');
   linkDir(outside, path.join(target, 'escape'));
@@ -205,4 +205,22 @@ test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고,
   assert.throws(() => readInside(target, 'escape/secret.txt'), /링크를 거쳐/);
   assert.throws(() => readRange(target, 'escape/secret.txt', { length: 1 }), /링크를 거쳐/);
   assert.strictEqual(readInside(target, 'alias/ok.txt').toString(), 'ok');
+});
+
+test('readRange는 손상된 헤더처럼 큰 length를 받아도 파일에 있는 만큼만 읽는다', () => {
+  const target = resolveTarget(tempDir());
+  fs.writeFileSync(path.join(target, 'tiny.mp4'), 'abcde');
+  assert.strictEqual(readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 }).toString(), 'bcde');
+});
+
+test('readInside는 한 번에 읽을 수 없는 큰 파일을 FcError로 거부한다', (t) => {
+  const target = resolveTarget(tempDir());
+  fs.writeFileSync(path.join(target, 'huge.mkv'), '');
+  const statSync = fs.statSync;
+  t.mock.method(fs, 'statSync', (p, opts) => {
+    const stat = statSync(p, opts);
+    if (stat && path.basename(p) === 'huge.mkv') stat.size = 2 ** 31;
+    return stat;
+  });
+  assert.throws(() => readInside(target, 'huge.mkv'), (err) => err instanceof FcError && err.message.includes('readRange'));
 });

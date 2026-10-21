@@ -47,18 +47,28 @@ function resolveFileInside(target, p) {
   return real;
 }
 
-// 타겟 안 파일의 내용 전체를 Buffer로 읽는다.
+// 한 번에 Buffer로 읽을 수 있는 최대 바이트 수 (Node 파일 읽기 한도)
+const MAX_READ = 2 ** 31 - 1;
+
+// 타겟 안 파일의 내용 전체를 Buffer로 읽는다. MAX_READ보다 큰 파일은 readRange로 나눠 읽는다.
 function readInside(target, p) {
-  return fs.readFileSync(resolveFileInside(target, p));
+  const real = resolveFileInside(target, p);
+  const { size } = fs.statSync(real);
+  if (size > MAX_READ) throw new FcError(`파일이 너무 커서 한 번에 읽을 수 없습니다: ${real} (${size}바이트, readRange로 나눠 읽으세요)`);
+  return fs.readFileSync(real);
 }
 
 // 타겟 안 파일의 offset부터 length바이트를 읽는다. 파일 끝을 넘으면 있는 만큼만 돌려준다.
 // 헤더(매직 넘버)는 offset 0으로, 컨테이너 박스처럼 중간에 있는 구조는 그 위치로 읽는다.
-function readRange(target, p, { offset = 0, length }) {
+// 손상된 헤더의 큰 length를 그대로 받아도 실제 파일에 있는 만큼만 메모리를 잡는다.
+function readRange(target, p, { offset = 0, length } = {}) {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`offset이 올바르지 않습니다: ${offset}`);
   if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`length가 올바르지 않습니다: ${length}`);
+  if (length > MAX_READ) throw new FcError(`한 번에 읽을 수 있는 길이(${MAX_READ}바이트)를 넘습니다: ${length}`);
   const fd = fs.openSync(resolveFileInside(target, p), 'r');
   try {
+    const available = Math.max(0, fs.fstatSync(fd).size - offset);
+    length = Math.min(length, available);
     const buffer = Buffer.alloc(length);
     let read = 0;
     while (read < length) {
