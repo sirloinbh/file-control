@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside, walk } = require('../src/target');
+const { resolveTarget, isInside, resolveInside, readInside, readRange, walk } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -150,4 +150,59 @@ test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 �
     return readdir(p, opts);
   });
   assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
+});
+
+test('readInside는 타겟 안 파일의 내용 전체를 Buffer로 읽는다', () => {
+  const target = resolveTarget(tempDir());
+  fs.mkdirSync(path.join(target, 'sub'));
+  fs.writeFileSync(path.join(target, 'sub', 'a.bin'), Buffer.from([0, 1, 2, 255]));
+  assert.deepStrictEqual(readInside(target, 'sub/a.bin'), Buffer.from([0, 1, 2, 255]));
+  assert.deepStrictEqual(readInside(target, path.join(target, 'sub', 'a.bin')), Buffer.from([0, 1, 2, 255]));
+});
+
+test('readRange는 offset부터 length바이트를 읽고, 파일 끝을 넘으면 있는 만큼만 돌려준다', () => {
+  const target = resolveTarget(tempDir());
+  fs.writeFileSync(path.join(target, 'v.mp4'), Buffer.from('0123456789'));
+  assert.strictEqual(readRange(target, 'v.mp4', { length: 4 }).toString(), '0123');
+  assert.strictEqual(readRange(target, 'v.mp4', { offset: 6, length: 3 }).toString(), '678');
+  assert.strictEqual(readRange(target, 'v.mp4', { offset: 8, length: 10 }).toString(), '89');
+  assert.strictEqual(readRange(target, 'v.mp4', { offset: 20, length: 4 }).length, 0);
+  assert.strictEqual(readRange(target, 'v.mp4', { length: 0 }).length, 0);
+});
+
+test('readRange는 잘못된 offset·length를 거부한다', () => {
+  const target = resolveTarget(tempDir());
+  fs.writeFileSync(path.join(target, 'f.txt'), 'x');
+  for (const bad of [{ length: -1 }, { length: 1.5 }, {}, { offset: -1, length: 1 }, { offset: '1', length: 1 }]) {
+    assert.throws(() => readRange(target, 'f.txt', bad), FcError, JSON.stringify(bad));
+  }
+});
+
+test('readInside·readRange는 타겟 밖, 없는 파일, 폴더를 거부한다', () => {
+  const root = tempDir();
+  const target = path.join(root, 'target');
+  fs.mkdirSync(path.join(target, 'dir'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'secret.txt'), 'secret');
+  for (const read of [(p) => readInside(target, p), (p) => readRange(target, p, { length: 1 })]) {
+    assert.throws(() => read('../secret.txt'), FcError);
+    assert.throws(() => read(path.join(root, 'secret.txt')), FcError);
+    assert.throws(() => read('nope.txt'), FcError);
+    assert.throws(() => read('dir'), FcError);
+    assert.throws(() => read('.'), FcError);
+  }
+});
+
+test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고, 안쪽을 가리키는 링크는 읽는다', () => {
+  const root = tempDir();
+  const outside = path.join(root, 'outside');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(outside);
+  fs.mkdirSync(path.join(target, 'real'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+  fs.writeFileSync(path.join(target, 'real', 'ok.txt'), 'ok');
+  linkDir(outside, path.join(target, 'escape'));
+  linkDir(path.join(target, 'real'), path.join(target, 'alias'));
+  assert.throws(() => readInside(target, 'escape/secret.txt'), /링크를 거쳐/);
+  assert.throws(() => readRange(target, 'escape/secret.txt', { length: 1 }), /링크를 거쳐/);
+  assert.strictEqual(readInside(target, 'alias/ok.txt').toString(), 'ok');
 });
