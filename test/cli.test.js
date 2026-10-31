@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const fc = require('../src/commands');
 const { run } = require('../bin/fctl');
 
@@ -71,14 +72,21 @@ test('--dry-run은 여러 항목을 각각 한 줄씩 보여 준다', () => {
   assert.ok(lines.every((line) => line.startsWith('[미리보기] 휴지통으로 이동')));
 });
 
-test('--dry-run은 실제 실행이 실패할 경우에도 오류를 내고 아무것도 바꾸지 않는다', () => {
+// 미리보기와 실제 실행이 모두 실패해야 하는 명령들. 실제 실행이 휴지통에 닿지 않게 rm은 --permanent로 쓴다.
+function failureFixture() {
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
   fs.mkdirSync(p('other'));
   fs.writeFileSync(p('other', 'b.txt'), 'other');
+  fs.mkdirSync(p('tree'));
+  fs.writeFileSync(p('tree', 'f.txt'), 'f');
   fc.zip(p('bundle.zip'), [p('a.txt')]);
   fs.writeFileSync(p('broken.zip'), 'not a zip');
-  const failures = [
+  return { dir, p };
+}
+
+function failureCases(p) {
+  return [
     ['mv', p('nope'), p('dest')],
     ['mv', p('a.txt'), p('dest')],
     ['mv', p('a.txt'), p('missing', 'x.txt')],
@@ -87,8 +95,18 @@ test('--dry-run은 실제 실행이 실패할 경우에도 오류를 내고 아�
     ['mv', p('b.txt'), p('b.txt'), p('dest')],
     ['cp', p('b.txt'), p('other', 'b.txt'), p('dest')],
     ['cp', p('a.txt'), p('dest')],
-    ['rm', p('nope')],
-    ['rm', p('a.txt'), p('a.txt')],
+    ['rm', p('nope'), '--permanent'],
+    ['rm', p('a.txt'), p('a.txt'), '--permanent'],
+    ['rm', p('tree'), p('tree', 'f.txt'), '--permanent'],
+    ['mv', p('tree'), p('tree', 'f.txt'), p('dest')],
+    ['mv', p('tree'), p('tree', 'new')],
+    ['cp', p('tree'), p('tree', 'new')],
+    ['cp', p('a.txt'), p('a.txt'), '--force'],
+    ['cp', p('a.txt'), dirOf(p), '--force'],
+    ['cp', p('a.txt'), p('b.txt', 'x.txt')],
+    ['cp', p('tree'), p('a.txt'), '--force'],
+    ['rename', p('a.txt'), 'tree', '--force'],
+    ['zip', p('tree'), p('a.txt'), '--force'],
     ['rename', p('a.txt'), 'b.txt'],
     ['rename', p('a.txt'), 'sub/x.txt'],
     ['write', p('a.txt'), 'x'],
@@ -103,11 +121,62 @@ test('--dry-run은 실제 실행이 실패할 경우에도 오류를 내고 아�
     ['zip', p('new.zip'), p('nope')],
     ['zip', p('missing', 'new.zip'), p('a.txt')],
   ];
+}
+
+function dirOf(p) {
+  return path.dirname(p('a.txt'));
+}
+
+test('--dry-run은 실제 실행이 실패할 경우에도 오류를 내고 아무것도 바꾸지 않는다', () => {
+  const { dir, p } = failureFixture();
   const before = snapshot(dir);
-  for (const argv of failures) {
+  for (const argv of failureCases(p)) {
     assert.throws(() => run([...argv, '--dry-run']), argv.join(' '));
     assert.deepStrictEqual(snapshot(dir), before, argv.join(' '));
   }
+});
+
+test('미리보기가 실패로 알린 명령은 실제 실행에서도 실패한다', () => {
+  const count = failureCases(failureFixture().p).length;
+  for (let i = 0; i < count; i++) {
+    const { p } = failureFixture();
+    const argv = failureCases(p)[i];
+    assert.throws(() => run(argv), argv.join(' '));
+  }
+});
+
+test('--dry-run은 현재 폴더와 그 상위를 지우는 것을 거부한다', () => {
+  const dir = fixture();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    assert.throws(() => run(['rm', '.', '--dry-run']), /현재 폴더/);
+    assert.throws(() => run(['rm', dir, '--permanent', '--dry-run']), /현재 폴더/);
+    assert.throws(() => run(['rm', path.dirname(dir), '--dry-run']), /현재 폴더/);
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('--dry-run --force는 같은 대상으로 모이는 항목의 덮어쓰기를 알려 준다', () => {
+  const dir = fixture();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.mkdirSync(p('empty'));
+  for (const command of ['mv', 'cp']) {
+    const lines = preview(dir, [command, p('a.txt'), p('dest', 'a.txt'), p('empty'), '--force']).split('\n');
+    assert.doesNotMatch(lines[0], /덮어씀/);
+    assert.match(lines[1], /\(덮어씀: 앞 항목\)$/);
+  }
+});
+
+test('--dry-run은 mv의 폴더 교체와 cp의 폴더 병합을 구분해 알려 준다', () => {
+  const dir = fixture();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.mkdirSync(p('tree'));
+  fs.writeFileSync(p('tree', 'f.txt'), 'f');
+  fs.mkdirSync(p('dest', 'tree'));
+  assert.match(preview(dir, ['mv', p('tree'), p('dest'), '--force']), /\(기존 폴더 전체를 교체함\)$/);
+  assert.match(preview(dir, ['cp', p('tree'), p('dest'), '--force']), /\(폴더에 합침, 같은 이름 파일은 덮어씀\)$/);
 });
 
 test('--dry-run은 대소문자만 달라도 같은 경로로 본다', { skip: process.platform !== 'win32' }, () => {
@@ -175,6 +244,71 @@ test('모르는 옵션은 아무것도 실행하지 않고 거부한다', () => 
     assert.throws(() => run(['mv', a, path.join(dir, 'x.txt'), typo]), /알 수 없는 옵션/, typo);
   }
   assert.deepStrictEqual(snapshot(dir), before);
+});
+
+test('긴 대시로 시작하는 오타와 write·append 경로 자리의 대시도 거부한다', () => {
+  const dir = fixture();
+  const a = path.join(dir, 'a.txt');
+  const before = snapshot(dir);
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    for (const argv of [['rm', a, '—dry-run', '--permanent'], ['mkdir', '–dry-run'], ['write', '-n', a], ['append', '-dry-run', a]]) {
+      assert.throws(() => run(argv), /알 수 없는 옵션/, argv.join(' '));
+    }
+  } finally {
+    process.chdir(cwd);
+  }
+  assert.deepStrictEqual(snapshot(dir), before);
+});
+
+test('-- 뒤의 인자는 옵션이 아닌 이름·내용으로 본다', () => {
+  const dir = fixture();
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    assert.match(run(['rename', 'a.txt', '--', '-z.txt']), /이름 변경/);
+    assert.ok(fs.existsSync('-z.txt'));
+    assert.strictEqual(run(['cat', '--', '-z.txt']), 'A');
+    assert.strictEqual(run(['cat', './-z.txt']), 'A');
+    assert.match(run(['mv', '--', '-z.txt', './y.txt']), /이동/);
+    run(['write', 'c.txt', '--', '--- 제목']);
+    assert.strictEqual(fs.readFileSync('c.txt', 'utf8'), '--- 제목');
+    // -- 뒤의 --permanent는 옵션이 아니라 이름이므로 없는 경로 오류가 나고, -- 앞의 --dry-run은 그대로 옵션이다.
+    assert.throws(() => run(['rm', '--dry-run', '--', 'y.txt', '--permanent']), /경로가 없습니다/);
+    assert.ok(fs.existsSync('y.txt'));
+    assert.match(run(['rm', '--dry-run', '--', 'y.txt']), /^\[미리보기\]/);
+    assert.match(run(['--', 'cat', 'y.txt']), /A/);
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('zip은 -나 @로 시작하는 이름을 미리보기와 실제 모두 거부하고 기존 압축 파일을 지우지 않는다', () => {
+  const dir = fixture();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.zip(p('bundle.zip'), [p('a.txt')]);
+  const size = fs.statSync(p('bundle.zip')).size;
+  for (const name of ['-dash.txt', '@evil.tar']) {
+    fs.writeFileSync(p(name), 'x');
+    for (const flags of [['--force'], ['--force', '--dry-run']]) {
+      assert.throws(() => run(['zip', p('bundle.zip'), p(name), ...flags]), /아직 압축할 수 없습니다/, name);
+    }
+  }
+  assert.strictEqual(fs.statSync(p('bundle.zip')).size, size);
+});
+
+test('fctl을 프로세스로 실행하면 미리보기는 종료 코드 0, 오류는 1이다', () => {
+  const dir = fixture();
+  const bin = path.join(__dirname, '..', 'bin', 'fctl.js');
+  const a = path.join(dir, 'a.txt');
+  const ok = spawnSync(process.execPath, [bin, 'rm', a, '--dry-run'], { encoding: 'utf8' });
+  assert.strictEqual(ok.status, 0);
+  assert.match(ok.stdout, /^\[미리보기\] 휴지통으로 이동/);
+  const typo = spawnSync(process.execPath, [bin, 'rm', a, '--dryrun'], { encoding: 'utf8' });
+  assert.strictEqual(typo.status, 1);
+  assert.match(typo.stderr, /알 수 없는 옵션/);
+  assert.ok(fs.existsSync(a));
 });
 
 test('write·append의 내용은 대시로 시작해도 되지만 긴 옵션 오타는 거부한다', () => {

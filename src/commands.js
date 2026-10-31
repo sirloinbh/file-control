@@ -33,12 +33,40 @@ function overwriteNote(p, dryRun) {
   return dryRun && exists(p) ? ' (덮어씀)' : '';
 }
 
-// 실제 실행이라면 앞 항목을 처리한 뒤에 실패할 경우를 미리보기에서도 찾기 위해, 이미 다룬 경로를 기억한다.
-function claim(planned, p, message) {
+function pathKey(p) {
   const full = path.resolve(p);
-  const key = isWindows ? full.toLowerCase() : full;
-  if (planned.has(key)) throw new FcError(message);
+  return isWindows ? full.toLowerCase() : full;
+}
+
+function isSameOrUnder(parentKey, key) {
+  return key === parentKey || key.startsWith(parentKey.endsWith(path.sep) ? parentKey : parentKey + path.sep);
+}
+
+// 실제 실행이라면 앞 항목을 처리한 뒤에 실패할 경우를 미리보기에서도 찾기 위해, 이미 다룬 경로를 기억한다.
+// 앞 항목이 폴더면 그 안의 경로도 함께 처리되어 사라지므로 겹친 것으로 본다.
+function claim(planned, p) {
+  const key = pathKey(p);
+  for (const earlier of planned) {
+    if (isSameOrUnder(earlier, key)) throw new FcError(`앞 항목과 겹칩니다: ${p} (실제로 실행하면 앞 항목을 처리한 뒤 실패합니다)`);
+  }
   planned.add(key);
+}
+
+// 미리보기용: 같은 대상으로 모이는 항목과 이미 있는 대상을 찾아 표시할 문구를 돌려준다.
+function targetNote(planned, target, force, dirNote) {
+  const key = pathKey(target);
+  if (planned.has(key)) {
+    if (!force) throw new FcError(`이미 있습니다: ${target} (앞 항목이 같은 이름으로 처리됨)`);
+    return ' (덮어씀: 앞 항목)';
+  }
+  planned.add(key);
+  if (!exists(target)) return '';
+  return fs.statSync(target).isDirectory() ? dirNote : ' (덮어씀)';
+}
+
+// 미리보기용: 폴더를 자기 안으로, 파일을 자기 자신으로 옮기거나 복사하면 실제 실행에서 실패한다.
+function ensureNotIntoSelf(src, target) {
+  if (isSameOrUnder(pathKey(src), pathKey(target))) throw new FcError(`자기 자신이나 그 안으로는 옮기거나 복사할 수 없습니다: ${src} -> ${target}`);
 }
 
 // 미리보기용 검사: 만들려는 폴더 경로 위에 파일이 있으면 실제 실행에서 실패한다.
@@ -118,6 +146,7 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   }
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
+  if (dryRun && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${dest}`);
   return perform(`이름 변경: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
@@ -147,12 +176,14 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
+    let note = '';
     if (dryRun) {
       ensureParentDir(target);
-      claim(plannedSources, src, `같은 원본을 두 번 옮길 수 없습니다: ${src}`);
-      if (!force) claim(plannedTargets, target, `이미 있습니다: ${target} (앞 항목이 같은 이름으로 옮겨짐)`);
+      ensureNotIntoSelf(src, target);
+      claim(plannedSources, src);
+      note = targetNote(plannedTargets, target, force, ' (기존 폴더 전체를 교체함)');
     }
-    return perform(`이동: ${src} -> ${target}${overwriteNote(target, dryRun)}`, dryRun, () => {
+    return perform(`이동: ${src} -> ${target}${note}`, dryRun, () => {
       if (force && exists(target)) fs.rmSync(target, { recursive: true, force: true });
       moveOne(src, target);
     });
@@ -168,8 +199,16 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
-    if (dryRun && !force) claim(planned, target, `이미 있습니다: ${target} (앞 항목이 같은 이름으로 복사됨)`);
-    return perform(`복사: ${src} -> ${target}${overwriteNote(target, dryRun)}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
+    let note = '';
+    if (dryRun) {
+      ensureCanMakeDir(path.dirname(target));
+      ensureNotIntoSelf(src, target);
+      if (exists(target) && fs.statSync(src).isDirectory() !== fs.statSync(target).isDirectory()) {
+        throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
+      }
+      note = targetNote(planned, target, force, ' (폴더에 합침, 같은 이름 파일은 덮어씀)');
+    }
+    return perform(`복사: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
   });
 }
 
@@ -192,7 +231,10 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   const planned = new Set();
   return targets.map((target) => {
     ensureExists(target);
-    if (dryRun) claim(planned, target, `같은 경로를 두 번 지울 수 없습니다: ${target}`);
+    if (dryRun) {
+      if (isSameOrUnder(pathKey(target), pathKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+      claim(planned, target);
+    }
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));
   });
@@ -207,20 +249,27 @@ function countEntries(archive) {
 function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
+  let note = '';
   if (dryRun) {
     ensureCanMakeDir(dest);
-    const note = exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : '';
-    return perform(`압축 해제: ${archive} -> ${dest} (항목 ${countEntries(archive)}개${note})`, true);
+    note = ` (항목 ${countEntries(archive)}개${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
   }
-  fs.mkdirSync(dest, { recursive: true });
-  execFileSync(TAR, ['-xf', path.resolve(archive), '-C', path.resolve(dest)], { stdio: ['ignore', 'ignore', 'pipe'] });
-  return `압축 해제: ${archive} -> ${dest}`;
+  return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
+    fs.mkdirSync(dest, { recursive: true });
+    execFileSync(TAR, ['-xf', path.resolve(archive), '-C', path.resolve(dest)], { stdio: ['ignore', 'ignore', 'pipe'] });
+  });
 }
 
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   sources.forEach(ensureExists);
-  if (dryRun) ensureParentDir(archive);
+  // tar가 이 이름을 옵션으로 해석해, 기존 압축 파일을 지운 뒤에 실패하거나 다른 내용을 묶는다. (#52)
+  const dashed = sources.find((src) => /^[-@]/.test(path.basename(path.resolve(src))));
+  if (dashed !== undefined) throw new FcError(`-나 @로 시작하는 이름은 아직 압축할 수 없습니다: ${dashed}`);
+  if (dryRun) {
+    ensureParentDir(archive);
+    if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
+  }
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => {
     if (exists(archive)) fs.rmSync(archive);
     // -a: 확장자(.zip 등)에 맞는 형식으로 묶는다. 각 항목은 자기 부모 폴더 기준으로 넣는다.

@@ -23,6 +23,7 @@ const HELP = `fctl - 파일 컨트롤
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
+  --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
 
 const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help']);
@@ -30,22 +31,28 @@ const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help']);
 function parse(argv) {
   const flags = new Set();
   const args = [];
-  for (const arg of argv) {
+  const end = argv.indexOf('--');
+  const options = end === -1 ? argv : argv.slice(0, end);
+  for (const arg of options) {
     if (arg === '-h' || arg === '--help') flags.add('help');
     else if (arg.startsWith('--')) flags.add(arg.slice(2));
     else args.push(arg);
   }
-  return { command: args.shift(), args, flags };
+  // 오타 검사는 -- 앞의 인자만 본다. 명령 이름은 빼고 넘긴다.
+  const unchecked = args.slice(1);
+  if (end !== -1) args.push(...argv.slice(end + 1));
+  return { command: args.shift(), args, flags, unchecked };
 }
 
 // --dry-run을 잘못 치면 무시되어 실제로 실행되므로, 모르는 옵션은 아무것도 하기 전에 거부한다.
-// write·append의 내용은 '- 항목'처럼 -로 시작할 수 있으니 한 글자 대시는 그 밖의 명령에서만 본다.
+// write·append의 내용은 '- 항목'처럼 -로 시작할 수 있으니 파일 경로만 본다.
 function rejectUnknownOptions(command, args, flags) {
   const unknownFlag = [...flags].find((flag) => !KNOWN_FLAGS.has(flag));
   if (unknownFlag !== undefined) throw new fc.FcError(`알 수 없는 옵션: --${unknownFlag}`);
-  if (command === 'write' || command === 'append') return;
-  const dashed = args.find((arg) => arg.startsWith('-'));
-  if (dashed !== undefined) throw new fc.FcError(`알 수 없는 옵션: ${dashed} (-로 시작하는 파일은 .\\${dashed}처럼 쓰세요)`);
+  const names = command === 'write' || command === 'append' ? args.slice(0, 1) : args;
+  // –(en 대시)와 —(em 대시)는 --가 자동 변환된 오타일 때가 많아 함께 거부한다.
+  const dashed = names.find((arg) => /^[-–—]/.test(arg));
+  if (dashed !== undefined) throw new fc.FcError(`알 수 없는 옵션: ${dashed} (-로 시작하는 이름은 ./${dashed}처럼 쓰거나 -- 뒤에 쓰세요)`);
 }
 
 function need(args, count, usage) {
@@ -57,11 +64,11 @@ function readStdin() {
 }
 
 function run(argv) {
-  const { command, args, flags } = parse(argv);
+  const { command, args, flags, unchecked } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
 
-  rejectUnknownOptions(command, args, flags);
+  rejectUnknownOptions(command, unchecked, flags);
   if (!command || flags.has('help')) return HELP;
 
   switch (command) {
