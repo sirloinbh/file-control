@@ -399,14 +399,15 @@ function unsupportedChars(text) {
 }
 
 // tar.exe는 이름 끝의 점과 공백을 지우지만 Node는 글자 그대로 다루므로, a.txt.를 넘기면 a.txt를 묶게 된다.
-function hasTrailingDotOrSpace(p) {
-  return p.slice(path.parse(p).root.length).split(path.sep).some((part) => /[. ]$/.test(part));
+function trailingDotOrSpaceName(p) {
+  return p.slice(path.parse(p).root.length).split(path.sep).find((part) => /[. ]$/.test(part));
 }
 
 function ensureTarCanUse(paths) {
   if (!isWindows) return;
-  const trailing = paths.find(hasTrailingDotOrSpace);
-  if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${trailing}`);
+  const trailing = paths.find(trailingDotOrSpaceName);
+  // 끝 공백이 눈에 보이도록 이름을 따옴표로 감싼다.
+  if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
   const bad = unsupportedChars(paths.join(''));
   if (bad.length === 0) return;
   // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
@@ -500,6 +501,9 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
+  // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
+  const root = sources.find((src) => path.basename(path.resolve(src)) === '');
+  if (root !== undefined) throw new FcError(`드라이브 루트는 묶을 수 없습니다: ${root}`);
   // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
   if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);

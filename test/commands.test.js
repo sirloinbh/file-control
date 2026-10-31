@@ -702,11 +702,29 @@ test('zip --force는 기존 압축 파일을 지우지 못하면 위치를 알�
   assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
 });
 
-test('zip·unzip은 코드페이지에 있는 비ASCII 이름은 그대로 처리한다', { skip: !isWindows }, () => {
+test('zip은 드라이브 루트를 훑기 전에 거부한다', (t) => {
+  const dir = tempDir();
+  t.mock.method(fs, 'readdirSync', () => {
+    throw new Error('드라이브를 훑음');
+  });
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(path.join(dir, 'o.zip'), [path.parse(dir).root], { dryRun }), /드라이브 루트/);
+  }
+});
+
+test('끝 공백 거부 메시지는 이름을 따옴표로 보여 준다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  fc.writeFile(path.join(dir, 'a.txt'), 'A');
+  assert.throws(() => fc.zip(path.join(dir, 'n3.zip '), [path.join(dir, 'a.txt')]), /"n3\.zip "/);
+});
+
+test('zip·unzip은 코드페이지에 있는 비ASCII 이름은 그대로 처리한다', { skip: !isWindows }, (t) => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
-  // 코드페이지에 있는 문자를 골라 시험한다. 한국어 Windows면 한글, 그 밖이면 라틴 문자가 된다.
-  const name = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim() === '949' ? '가' : 'é';
+  // 코드페이지에 있는 문자를 골라 시험한다. 그 밖의 코드페이지에서는 고를 문자를 알 수 없어 건너뛴다.
+  const codePage = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
+  const name = { 949: '가', 1252: 'é' }[codePage];
+  if (name === undefined) return t.skip(`코드페이지 ${codePage}에서는 시험할 문자를 정하지 않았다`);
   fc.writeFile(p(`${name}.txt`), 'N');
   fc.zip(p(`${name}.zip`), [p(`${name}.txt`)]);
   fc.unzip(p(`${name}.zip`), p('out'));
