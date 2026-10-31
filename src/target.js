@@ -9,6 +9,7 @@ const { FcError } = require('./commands');
 // 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
 function resolveTarget(dir) {
   if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('타겟 폴더를 지정하세요.');
+  if (dir.includes('\0')) throw new FcError('타겟 경로에 NUL 문자가 있습니다.');
   const abs = path.resolve(dir);
   rejectNetworkPath(abs);
   const stat = fs.statSync(abs, { throwIfNoEntry: false });
@@ -17,6 +18,7 @@ function resolveTarget(dir) {
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
   const target = fs.realpathSync.native(abs);
   rejectNetworkPath(target);
+  rejectTrailingDotOrSpace(target);
   const reason = protectedReason(target);
   if (reason) throw new FcError(`보호된 경로라 타겟으로 쓸 수 없습니다: ${target} (${reason})`);
   return target;
@@ -29,6 +31,16 @@ function rejectNetworkPath(p) {
   if (p.startsWith('\\\\') && !/^\\\\\?\\[A-Za-z]:/.test(p)) {
     throw new FcError(`네트워크 경로는 타겟으로 쓸 수 없습니다: ${p}`);
   }
+}
+
+// Node는 끝의 점·공백을 글자 그대로 보지만 PowerShell·tar.exe·.NET은 지운다.
+// AppData. 같은 폴더를 타겟으로 받으면 그 도구들에서는 AppData가 되어 보호 경로를 우회한다.
+const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
+
+function rejectTrailingDotOrSpace(target) {
+  if (process.platform !== 'win32') return;
+  const name = target.slice(path.parse(target).root.length).split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part));
+  if (name !== undefined) throw new FcError(`끝이 점이나 공백인 폴더는 타겟으로 쓸 수 없습니다: ${target}`);
 }
 
 // 보호 기준 경로를 타겟과 같은 방식(실제 경로)으로 맞춘다. 없는 경로면 그대로 쓴다.
@@ -99,20 +111,130 @@ function resolveInside(target, p) {
   return abs;
 }
 
-// 타겟 안의 파일을 찾아 실제 경로를 돌려준다. target은 resolveTarget이 돌려준 경로여야 한다.
-// 경로 문자열뿐 아니라 링크·정션을 풀어낸 실제 경로도 타겟 안이어야 한다.
-function resolveFileInside(target, p) {
-  const abs = resolveInside(target, p);
+// 있는 경로의 링크·정션을 풀어낸 실제 경로를 돌려준다. 실제 경로가 타겟 밖이면 오류를 낸다.
+function realInside(target, abs) {
   let real;
   try {
     real = fs.realpathSync.native(abs);
   } catch (err) {
-    if (err.code === 'ENOENT') throw new FcError(`파일이 없습니다: ${abs}`);
+    if (err.code === 'ENOENT') throw new FcError(`경로가 없거나 끊어진 링크입니다: ${abs}`);
     throw err;
   }
-  if (!isInside(target, real)) throw new FcError(`링크를 거쳐 타겟 폴더 밖을 가리킵니다: ${abs} -> ${real}`);
+  // 둘 다 실제 경로이므로 글자 그대로 비교한다. isInside의 대소문자 무시는 NTFS보다 넓어서(K와 U+212A) 형제 폴더를 안으로 본다.
+  const prefix = target.endsWith(path.sep) ? target : target + path.sep;
+  if (real !== target && !real.startsWith(prefix)) throw new FcError(`링크를 거쳐 타겟 폴더 밖을 가리킵니다: ${abs} -> ${real}`);
+  return real;
+}
+
+// 타겟 안의 파일을 찾아 실제 경로를 돌려준다. target은 resolveTarget이 돌려준 경로여야 한다.
+// 경로 문자열뿐 아니라 링크·정션을 풀어낸 실제 경로도 타겟 안이어야 한다.
+function resolveFileInside(target, p) {
+  const abs = resolveInside(target, p);
+  const real = realInside(target, abs);
   if (!fs.statSync(real).isFile()) throw new FcError(`파일이 아닙니다: ${abs}`);
   return real;
+}
+
+// Node는 이름을 글자 그대로 쓰지만 PowerShell·tar.exe·.NET은 끝의 점과 공백을 지우고 스트림(:)과 장치 이름을 따로 해석한다.
+// 검사한 경로와 실제 작업 경로가 달라지지 않게 이런 이름과 Windows에서 쓸 수 없는 문자가 든 이름은 거부한다.
+const WINDOWS_BAD_CHARS = /[:<>"|?*\x00-\x1f]/;
+const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[\d¹²³]|lpt[\d¹²³]|conin\$|conout\$) *(\.|$)/i;
+
+function rejectAmbiguousNames(rel, p) {
+  if (process.platform !== 'win32') return;
+  const name = rel.split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part) || WINDOWS_BAD_CHARS.test(part) || WINDOWS_DEVICE_NAME.test(part));
+  if (name !== undefined) throw new FcError(`Windows에서 다르게 해석될 수 있는 이름입니다: ${JSON.stringify(name)} (${p})`);
+}
+
+// 타겟 기준으로 정리한 절대경로를 돌려준다. 타겟 밖이거나 Windows에서 해석이 갈리는 이름이면 오류를 낸다.
+function resolveAccessPath(target, p) {
+  const abs = resolveInside(target, p);
+  // path.relative는 K와 U+212A를 같게 보므로, 그런 형제 폴더의 경로가 타겟 안 다른 파일로 바뀌지 않게 한다.
+  if (abs.slice(0, target.length).toUpperCase() !== target.toUpperCase()) throw new FcError(`타겟 폴더 밖의 경로입니다: ${abs} (타겟: ${target})`);
+  const rel = path.relative(target, abs);
+  rejectAmbiguousNames(rel, p);
+  return path.join(target, rel);
+}
+
+// 링크를 풀어낸 실제 경로에도 같은 이름 검사를 한다. 입력은 평범해도 정션을 거쳐 그런 이름이 나올 수 있다.
+function realForAccess(target, abs) {
+  const real = realInside(target, abs);
+  rejectAmbiguousNames(path.relative(target, real), real);
+  return real;
+}
+
+// tar·cpSync·압축 해제는 폴더 안의 정션을 따라가므로, 링크가 든 폴더는 어떤 작업에도 내주지 않는다.
+function rejectLinksInside(real, abs) {
+  if (!fs.statSync(real).isDirectory()) return;
+  const link = listEntries(real).find((entry) => entry.type === 'link');
+  if (link) throw new FcError(`링크가 든 폴더는 다룰 수 없습니다: ${abs} (링크: ${link.path})`);
+}
+
+function checkRead(target, p) {
+  const abs = resolveAccessPath(target, p);
+  const real = realForAccess(target, abs);
+  rejectLinksInside(real, abs);
+  return real;
+}
+
+// 아직 없는 경로도 쓸 수 있으므로, 가장 가까운 있는 경로까지 올라가 그 실제 경로를 확인한다.
+// 끊어진 링크는 있는 경로로 잡혀 거부된다. 그대로 쓰면 링크가 가리키는 타겟 밖에 파일이 생기기 때문이다.
+function checkWrite(target, p) {
+  const abs = resolveAccessPath(target, p);
+  let existing = abs;
+  while (existing !== target && !fs.lstatSync(existing, { throwIfNoEntry: false })) existing = path.dirname(existing);
+  const real = realForAccess(target, existing);
+  if (existing === abs) {
+    if (real === target) throw new FcError(`타겟 폴더 자체에는 쓸 수 없습니다: ${abs}`);
+    rejectLinksInside(real, abs);
+    return real;
+  }
+  if (!fs.statSync(real).isDirectory()) throw new FcError(`파일 아래에는 쓸 수 없습니다: ${abs} (${real})`);
+  return path.join(real, path.relative(existing, abs));
+}
+
+// 링크 자체는 지우지 않는다. 휴지통 등 삭제 방식에 따라 링크를 따라갈 위험을 피한다.
+function checkDelete(target, p) {
+  const abs = resolveAccessPath(target, p);
+  const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
+  if (stat && stat.isSymbolicLink()) throw new FcError(`링크는 삭제할 수 없습니다: ${abs}`);
+  const real = realForAccess(target, abs);
+  if (real === target) throw new FcError(`타겟 폴더 자체는 삭제할 수 없습니다: ${abs}`);
+  rejectLinksInside(real, abs);
+  return real;
+}
+
+const ACCESS = {
+  read: { name: '읽기', check: checkRead },
+  write: { name: '쓰기', check: checkWrite },
+  delete: { name: '삭제', check: checkDelete },
+};
+
+// 타겟 하나에 작업 종류('read', 'write', 'delete')별 권한을 부여한다. 보호 경로는 resolveTarget이 거부하고,
+// 타겟 안의 실제 경로는 보호 경로와 겹칠 수 없으므로 각 검사는 타겟 안인지만 본다.
+// access.read(p)·write(p)·delete(p)는 경로를 검사해 실제 작업에 쓸 경로를 돌려주고, 아무것도 바꾸지 않는다.
+// 검사와 작업 사이에 폴더가 바뀔 수 있으니 작업 직전에 호출하고, 돌려받은 경로를 그대로 쓴다.
+function grant(dir, kinds) {
+  if (!Array.isArray(kinds) || kinds.length === 0) throw new FcError('부여할 권한을 지정하세요. (read, write, delete)');
+  if (kinds.findIndex((kind) => typeof kind !== 'string' || !Object.hasOwn(ACCESS, kind)) !== -1) {
+    throw new FcError('알 수 없는 권한이 있습니다. (read, write, delete만 됩니다)');
+  }
+  const granted = new Set(kinds);
+  const target = resolveTarget(dir);
+  const access = { target };
+  for (const [kind, { name, check }] of Object.entries(ACCESS)) {
+    access[kind] = (p) => {
+      if (typeof p !== 'string') throw new FcError('경로는 문자열이어야 합니다.');
+      if (!granted.has(kind)) throw new FcError(`${name} 권한이 없습니다: ${p} (타겟: ${target})`);
+      try {
+        return check(target, p);
+      } catch (err) {
+        if (err instanceof FcError) throw err;
+        throw new FcError(`경로를 확인할 수 없습니다: ${p} (${err.code})`);
+      }
+    };
+  }
+  return Object.freeze(access);
 }
 
 // 한 번에 Buffer로 읽을 수 있는 최대 바이트 수 (Node 파일 읽기 한도)
@@ -155,25 +277,28 @@ function readRange(target, p, { offset = 0, length } = {}) {
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
 // 하위 폴더 하나라도 읽지 못하면 전체를 실패시킨다. 일부만 읽은 목록으로 이동·삭제하지 않게 하려는 것이다.
 function walk(dir) {
-  const target = resolveTarget(dir);
+  return listEntries(resolveTarget(dir)).sort((a, b) => compareRelative(a.relative, b.relative));
+}
+
+function listEntries(root) {
   const entries = [];
   const pending = [''];
   while (pending.length > 0) {
     const relDir = pending.pop();
     let dirents;
     try {
-      dirents = fs.readdirSync(path.join(target, relDir), { withFileTypes: true });
+      dirents = fs.readdirSync(path.join(root, relDir), { withFileTypes: true });
     } catch (err) {
-      throw new FcError(`폴더를 읽을 수 없습니다: ${path.join(target, relDir)} (${err.code})`);
+      throw new FcError(`폴더를 읽을 수 없습니다: ${path.join(root, relDir)} (${err.code})`);
     }
     for (const dirent of dirents) {
       const relative = path.join(relDir, dirent.name);
       const type = dirent.isSymbolicLink() ? 'link' : dirent.isDirectory() ? 'dir' : 'file';
-      entries.push({ path: path.join(target, relative), relative, type });
+      entries.push({ path: path.join(root, relative), relative, type });
       if (type === 'dir') pending.push(relative);
     }
   }
-  return entries.sort((a, b) => compareRelative(a.relative, b.relative));
+  return entries;
 }
 
 // 경로 조각 단위로 비교해서 'a/b'가 'a b'나 'a.txt'보다 'a' 바로 뒤에 오게 한다.
@@ -192,4 +317,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, walk };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, walk, grant };
