@@ -218,14 +218,35 @@ test('도움말 옵션은 -- 앞에서만 동작한다', () => {
   assert.throws(() => run(['cat', '--', '-h']), /경로가 없습니다/);
 });
 
-test('--dry-run --force는 같은 대상으로 모이는 항목의 덮어쓰기를 알려 준다', () => {
+test('--dry-run --force는 cp의 같은 대상 덮어쓰기를 알려 주고, mv는 거부한다', () => {
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
   fs.mkdirSync(p('empty'));
-  for (const command of ['mv', 'cp']) {
-    const lines = preview(dir, [command, p('a.txt'), p('dest', 'a.txt'), p('empty'), '--force']).split('\n');
-    assert.doesNotMatch(lines[0], /덮어씀/);
-    assert.match(lines[1], /\(덮어씀: 앞 항목\)$/);
+  const lines = preview(dir, ['cp', p('a.txt'), p('dest', 'a.txt'), p('empty'), '--force']).split('\n');
+  assert.doesNotMatch(lines[0], /덮어씀/);
+  assert.match(lines[1], /\(덮어씀: 앞 항목\)$/);
+  assert.throws(() => preview(dir, ['mv', p('a.txt'), p('dest', 'a.txt'), p('empty'), '--force']), /같은 대상으로 모입니다/);
+});
+
+test('mv는 현재 폴더 기준 경로로도 현재 폴더와 그 상위를 옮기지 않고 대상도 지우지 않는다', () => {
+  const dir = fixture();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.mkdirSync(p('q', 'r'), { recursive: true });
+  fs.writeFileSync(p('q', 'sib.txt'), 'sib');
+  fs.mkdirSync(p('o', 'd'), { recursive: true });
+  fs.mkdirSync(p('x', 'd'), { recursive: true });
+  const before = snapshot(dir);
+  const cwd = process.cwd();
+  process.chdir(p('o', 'd'));
+  try {
+    for (const argv of [['mv', '.', '../../q/r'], ['mv', './', '../../q'], ['mv', '..', '../../q/r'], ['mv', '../d', '../../q'], ['mv', '../../x/d', '..']]) {
+      assert.throws(() => run([...argv, '--force']), fc.FcError, argv.join(' '));
+      assert.deepStrictEqual(snapshot(dir), before, argv.join(' '));
+    }
+    // 현재 폴더 안으로 옮기는 것은 막지 않는다.
+    assert.match(run(['mv', '../../a.txt', '.']), /이동/);
+  } finally {
+    process.chdir(cwd);
   }
 });
 
