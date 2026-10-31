@@ -22,7 +22,10 @@ const HELP = `fctl - 파일 컨트롤
 옵션:
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
+  --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   -h, --help    도움말`;
+
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help']);
 
 function parse(argv) {
   const flags = new Set();
@@ -33,6 +36,16 @@ function parse(argv) {
     else args.push(arg);
   }
   return { command: args.shift(), args, flags };
+}
+
+// --dry-run을 잘못 치면 무시되어 실제로 실행되므로, 모르는 옵션은 아무것도 하기 전에 거부한다.
+// write·append의 내용은 '- 항목'처럼 -로 시작할 수 있으니 한 글자 대시는 그 밖의 명령에서만 본다.
+function rejectUnknownOptions(command, args, flags) {
+  const unknownFlag = [...flags].find((flag) => !KNOWN_FLAGS.has(flag));
+  if (unknownFlag !== undefined) throw new fc.FcError(`알 수 없는 옵션: --${unknownFlag}`);
+  if (command === 'write' || command === 'append') return;
+  const dashed = args.find((arg) => arg.startsWith('-'));
+  if (dashed !== undefined) throw new fc.FcError(`알 수 없는 옵션: ${dashed} (-로 시작하는 파일은 .\\${dashed}처럼 쓰세요)`);
 }
 
 function need(args, count, usage) {
@@ -46,7 +59,9 @@ function readStdin() {
 function run(argv) {
   const { command, args, flags } = parse(argv);
   const force = flags.has('force');
+  const dryRun = flags.has('dry-run');
 
+  rejectUnknownOptions(command, args, flags);
   if (!command || flags.has('help')) return HELP;
 
   switch (command) {
@@ -57,35 +72,37 @@ function run(argv) {
         .join('\n');
     case 'mkdir':
       need(args, 1, 'mkdir <폴더>');
-      return fc.makeDir(args[0]);
+      return fc.makeDir(args[0], { dryRun });
     case 'write':
     case 'append':
       need(args, 1, `${command} <파일> [내용]`);
-      return fc.writeFile(args[0], args.length > 1 ? args.slice(1).join(' ') : readStdin(), {
+      // 미리보기는 내용을 쓰지 않으므로 표준 입력을 기다리지 않는다.
+      return fc.writeFile(args[0], args.length > 1 ? args.slice(1).join(' ') : dryRun ? '' : readStdin(), {
         append: command === 'append',
         force,
+        dryRun,
       });
     case 'cat':
       need(args, 1, 'cat <파일>');
       return fc.readFile(args[0]);
     case 'rename':
       need(args, 2, 'rename <경로> <새이름>');
-      return fc.rename(args[0], args[1], { force });
+      return fc.rename(args[0], args[1], { force, dryRun });
     case 'mv':
       need(args, 2, 'mv <원본...> <대상>');
-      return fc.move(args.slice(0, -1), args[args.length - 1], { force }).join('\n');
+      return fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun }).join('\n');
     case 'cp':
       need(args, 2, 'cp <원본...> <대상>');
-      return fc.copy(args.slice(0, -1), args[args.length - 1], { force }).join('\n');
+      return fc.copy(args.slice(0, -1), args[args.length - 1], { force, dryRun }).join('\n');
     case 'rm':
       need(args, 1, 'rm <경로...>');
-      return fc.remove(args, { permanent: flags.has('permanent') }).join('\n');
+      return fc.remove(args, { permanent: flags.has('permanent'), dryRun }).join('\n');
     case 'unzip':
       need(args, 1, 'unzip <압축파일> [폴더]');
-      return fc.unzip(args[0], args[1]);
+      return fc.unzip(args[0], args[1], { dryRun });
     case 'zip':
       need(args, 2, 'zip <압축파일> <원본...>');
-      return fc.zip(args[0], args.slice(1), { force });
+      return fc.zip(args[0], args.slice(1), { force, dryRun });
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);
   }
