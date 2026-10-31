@@ -5,7 +5,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFileSync } = childProcess;
 const fc = require('../src/commands');
 
 const isWindows = process.platform === 'win32';
@@ -455,14 +456,161 @@ test('zip --force는 압축 파일 자신을 묶으려 하면 내용을 지우�
   assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
 });
 
-test('zip은 압축 파일이 원본 폴더 안에 있어도 원본 내용을 묶는다', () => {
+test('zip은 압축 파일이 원본 폴더 안에 있어도 원본 내용만 묶고 임시 파일과 기존 압축 파일은 넣지 않는다', () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.writeFile(p('d', 'sub', 'out.zip'), 'keep');
   fc.zip(p('d', 'out.zip'), [p('d')]);
   fc.zip(p('d', 'out.zip'), [p('d')], { force: true });
+  assert.deepStrictEqual(fs.readdirSync(p('d')).sort(), ['f.txt', 'out.zip', 'sub']);
   fc.unzip(p('d', 'out.zip'), p('out'));
   assert.strictEqual(fc.readFile(p('out', 'd', 'f.txt')), 'f');
+  assert.strictEqual(fc.readFile(p('out', 'd', 'sub', 'out.zip')), 'keep');
+  // 기존 out.zip은 빠지지만, 같은 이름의 다른 파일은 빠지지 않아야 한다. out.zip 자신은 새로 만든 뒤에 생긴다.
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'd')).sort(), ['f.txt', 'sub']);
+});
+
+// tar 실행을 가짜로 바꾼 commands.js를 새로 불러온다.
+function loadWithTar(t, fake) {
+  t.mock.method(childProcess, 'execFileSync', fake);
+  const id = require.resolve('../src/commands');
+  const saved = require.cache[id];
+  delete require.cache[id];
+  const fresh = require('../src/commands');
+  delete require.cache[id];
+  require.cache[id] = saved;
+  return fresh;
+}
+
+const isTarCreate = (args) => args[0] === '-a' && args[1] === '-cf';
+
+test('zip --force는 tar가 실패하면 기존 압축 파일을 되돌리고 임시 파일을 남기지 않는다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('b.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('b.zip'));
+  const mocked = loadWithTar(t, (file, args) => {
+    assert.ok(isTarCreate(args));
+    fs.writeFileSync(args[2], 'partial');
+    throw Object.assign(new Error('tar failed'), { status: 1 });
+  });
+  assert.throws(() => mocked.zip(p('b.zip'), [p('a.txt')], { force: true }), /tar failed/);
+  assert.deepStrictEqual(fs.readFileSync(p('b.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'b.zip']);
+});
+
+test('zip은 새 압축 파일을 만들다 tar가 실패해도 빈 압축 파일을 남기지 않는다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const mocked = loadWithTar(t, (file, args) => {
+    fs.writeFileSync(args[2], '');
+    throw Object.assign(new Error('tar failed'), { status: 1 });
+  });
+  assert.throws(() => mocked.zip(p('new.zip'), [p('a.txt')]), /tar failed/);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
+});
+
+test('zip은 tar가 비정상 종료하면 FcError로 알린다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const mocked = loadWithTar(t, () => {
+    throw Object.assign(new Error('crash'), { status: 0xc0000005 });
+  });
+  assert.throws(() => mocked.zip(p('new.zip'), [p('a.txt')]), (err) => err instanceof mocked.FcError && err.message.includes('비정상 종료'));
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
+});
+
+test('zip --force는 임시 파일을 제자리로 옮기지 못하면 기존 압축 파일을 되돌린다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('b.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('b.zip'));
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(from).startsWith('.fctl-new')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => fc.zip(p('b.zip'), [p('a.txt')], { force: true }), /locked/);
+  assert.deepStrictEqual(fs.readFileSync(p('b.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'b.zip']);
+});
+
+test('zip --force는 되돌리기도 실패하면 기존 압축 파일의 위치를 알려 준다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('b.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('b.zip'));
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === p('b.zip')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => fc.zip(p('b.zip'), [p('a.txt')], { force: true }), /기존 압축 파일은 .*\.fctl-old-/);
+  t.mock.restoreAll();
+  const aside = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-old-'));
+  assert.deepStrictEqual(fs.readFileSync(p(aside)), before);
+});
+
+test('zip --force는 성공하면 새 내용으로 바꾸고 임시 파일을 남기지 않는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p('b.txt'), 'B');
+  fc.zip(p('c.zip'), [p('a.txt')]);
+  fc.zip(p('c.zip'), [p('b.txt')], { force: true });
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'b.txt', 'c.zip']);
+  fc.unzip(p('c.zip'), p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
+});
+
+test('zip은 임시 파일을 거쳐도 확장자에 맞는 형식으로 묶는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('x.zip'), [p('a.txt')]);
+  fc.zip(p('y.tar.gz'), [p('a.txt')]);
+  assert.strictEqual(fs.readFileSync(p('x.zip')).subarray(0, 2).toString(), 'PK');
+  assert.deepStrictEqual([...fs.readFileSync(p('y.tar.gz')).subarray(0, 2)], [0x1f, 0x8b]);
+  fc.unzip(p('y.tar.gz'), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
+});
+
+test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전에 거부하고 기존 파일을 건드리지 않는다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  const emoji = '😀';
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p(`${emoji}.txt`), 'E');
+  fc.writeFile(p('tree', 'deep', `${emoji}.txt`), 'E');
+  fc.zip(p('b.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('b.zip'));
+  const entries = fs.readdirSync(dir).sort();
+  for (const dryRun of [true, false]) {
+    const options = { force: true, dryRun };
+    assert.throws(() => fc.zip(p('b.zip'), [p(`${emoji}.txt`)], options), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('b.zip'), [p('tree')], options), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p(`${emoji}.zip`), [p('a.txt')], options), /처리할 수 없는 문자/);
+    assert.throws(() => fc.unzip(p('b.zip'), p(`${emoji}-out`), { dryRun }), /처리할 수 없는 문자/);
+  }
+  assert.deepStrictEqual(fs.readFileSync(p('b.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), entries);
+});
+
+test('zip·unzip은 코드페이지에 있는 비ASCII 이름은 그대로 처리한다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  // 코드페이지에 있는 문자를 골라 시험한다. 한국어 Windows면 한글, 그 밖이면 라틴 문자가 된다.
+  const name = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim() === '949' ? '가' : 'é';
+  fc.writeFile(p(`${name}.txt`), 'N');
+  fc.zip(p(`${name}.zip`), [p(`${name}.txt`)]);
+  fc.unzip(p(`${name}.zip`), p('out'));
+  assert.strictEqual(fs.readdirSync(p('out')).length, 1);
 });
 
 test('cp는 폴더를 통째로 복사하고 원본을 남긴다', () => {
