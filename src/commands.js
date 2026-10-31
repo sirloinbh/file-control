@@ -157,9 +157,134 @@ function moveOne(src, dest) {
   } catch (err) {
     // 다른 드라이브로 옮길 때는 rename이 안 되므로 복사 후 원본을 지운다.
     if (err.code !== 'EXDEV') throw err;
-    fs.cpSync(src, dest, { recursive: true });
+    try {
+      fs.cpSync(src, dest, { recursive: true });
+    } catch (copyErr) {
+      fs.rmSync(dest, { recursive: true, force: true });
+      throw copyErr;
+    }
     fs.rmSync(src, { recursive: true, force: true });
   }
+}
+
+// 이름 길이 한도에 걸리지 않게 대상 이름을 쓰지 않고, 이미 있는 항목을 덮어쓰지 않게 비어 있는 이름을 고른다.
+function asidePath(target) {
+  const dir = path.dirname(path.resolve(target));
+  let serial = 0;
+  let aside;
+  do {
+    aside = path.join(dir, `.fctl-old-${process.pid}-${Date.now()}-${serial++}`);
+  } while (fs.lstatSync(aside, { throwIfNoEntry: false }));
+  return aside;
+}
+
+// 대상을 먼저 지우면 이동이 실패할 때(파일 잠금 등) 대상을 잃으므로, 치워 두었다가 이동이 끝난 뒤에 지운다.
+function moveReplacing(src, target) {
+  if (!exists(target)) return moveOne(src, target);
+  const aside = asidePath(target);
+  fs.renameSync(target, aside);
+  try {
+    moveOne(src, target);
+  } catch (err) {
+    // 복사가 끝나 대상이 생겼다면 원본 정리만 실패한 것이므로 되돌리지 않는다.
+    if (exists(target)) throw new FcError(`옮겼지만 원본을 다 지우지 못했습니다: ${src} (${err.code}). 이전 대상은 ${aside}에 있습니다.`);
+    try {
+      fs.renameSync(aside, target);
+    } catch (restoreErr) {
+      throw new FcError(`옮기지 못했고 이전 대상도 되돌리지 못했습니다: ${src} (${err.code}, ${restoreErr.code}). 이전 대상은 ${aside}에 있습니다.`);
+    }
+    throw err;
+  }
+  try {
+    fs.rmSync(aside, { recursive: true, force: true });
+  } catch (err) {
+    throw new FcError(`옮겼지만 이전 대상을 지우지 못했습니다: ${aside} (${err.code})`);
+  }
+}
+
+// 없는 경로는 있는 부모까지 올라가 실제 경로를 구한다. 그 밖의 오류는 겹침을 판단할 수 없으니 거부한다.
+function realKey(p) {
+  const full = path.resolve(p);
+  try {
+    return pathKey(fs.realpathSync.native(full));
+  } catch (err) {
+    if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw new FcError(`실제 경로를 확인할 수 없습니다: ${full} (${err.code})`);
+    const parent = path.dirname(full);
+    return parent === full ? pathKey(full) : pathKey(path.join(realKey(parent), path.basename(full)));
+  }
+}
+
+// 지우거나 옮기는 항목 자체를 가리키는 키. 링크는 가리키는 곳이 아니라 링크 자체로 본다.
+function entryKey(p) {
+  const full = path.resolve(p);
+  const stat = fs.lstatSync(full, { throwIfNoEntry: false });
+  if (!stat || stat.isSymbolicLink()) return pathKey(path.join(realKey(path.dirname(full)), path.basename(full)));
+  return realKey(full);
+}
+
+// \\localhost\C$처럼 실제 경로로는 다르게 보이는 별칭도 잡도록 볼륨과 파일 번호로 비교한다.
+function isSameFile(a, b) {
+  const statA = fs.statSync(a, { bigint: true, throwIfNoEntry: false });
+  const statB = fs.statSync(b, { bigint: true, throwIfNoEntry: false });
+  return Boolean(statA && statB) && statA.ino !== 0n && statA.dev === statB.dev && statA.ino === statB.ino;
+}
+
+// p의 상위 폴더 중에 dir과 같은 폴더가 있는지 파일 번호로 본다.
+function hasAncestorSameAs(dir, p) {
+  let current = path.resolve(p);
+  for (let parent = path.dirname(current); parent !== current; parent = path.dirname(current)) {
+    current = parent;
+    if (isSameFile(dir, current)) return true;
+  }
+  return false;
+}
+
+// UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
+// 링크는 링크 자체만 옮기거나 복사하므로 가리키는 곳으로 따지지 않는다.
+function rejectCopyIntoSelf(src, target) {
+  if (!fs.lstatSync(src).isSymbolicLink() && hasAncestorSameAs(src, target)) throw new FcError(`자기 안으로 옮기거나 복사할 수 없습니다: ${src} -> ${target}`);
+}
+
+// Windows의 대체 데이터 스트림(a.txt:st)은 파일 안의 일부라, 대상 파일을 치우면 원본도 함께 움직인다.
+function rejectStreamPath(p) {
+  if (!isWindows) return;
+  const full = path.resolve(p);
+  if (full.slice(path.parse(full).root.length).includes(':')) throw new FcError(`대체 데이터 스트림은 다룰 수 없습니다: ${p}`);
+}
+
+// 현재 폴더나 그 상위는 옮기거나 치울 수 없어 실패하거나 일부만 처리된다.
+function rejectCurrentDir(p) {
+  if (isSameOrUnder(realKey(p), realKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 옮길 수 없습니다: ${p}`);
+}
+
+// 대상과 원본이 겹치면 대상을 치우면서 원본도 함께 움직이거나, 원본을 옮겨 대상을 망가뜨린다.
+// 8.3 이름, 대소문자, 정션을 거쳐도 같은 항목이면 잡히도록 실제 경로로 비교한다.
+function rejectMoveOverlap(src, target) {
+  const srcKey = entryKey(src);
+  const targetKey = entryKey(target);
+  const stat = fs.statSync(src, { bigint: true, throwIfNoEntry: false });
+  // 하드링크끼리는 같은 파일 번호여도 서로 다른 항목이라 이동해도 내용을 잃지 않는다.
+  if (srcKey === targetKey || (exists(target) && isSameFile(src, target) && stat.nlink === 1n)) throw new FcError(`원본과 대상이 같습니다: ${src} -> ${target}`);
+  if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`자기 안으로 옮길 수 없습니다: ${src} -> ${target}`);
+  rejectCopyIntoSelf(src, target);
+  const targetIsLink = exists(target) && fs.lstatSync(target).isSymbolicLink();
+  if (isSameOrUnder(targetKey, srcKey) || (exists(target) && !targetIsLink && hasAncestorSameAs(target, src))) throw new FcError(`대상이 원본을 품고 있어 옮길 수 없습니다: ${src} -> ${target}`);
+  // 링크를 자기가 가리키는 곳 위로 옮기면, 대상을 지우는 순간 링크가 가리키던 내용이 사라진다.
+  if (fs.lstatSync(src).isSymbolicLink() && isSameOrUnder(targetKey, realKey(src))) throw new FcError(`링크가 가리키는 곳을 덮어쓸 수 없습니다: ${src} -> ${target}`);
+}
+
+// 앞 항목을 처리한 뒤 뒤 항목이 망가지는 조합을 아무것도 옮기기 전에 찾는다.
+function rejectBatchOverlap(items) {
+  const keys = items.map(({ src, target }) => ({ src: entryKey(src), target: entryKey(target) }));
+  keys.forEach((a, i) => {
+    keys.forEach((b, j) => {
+      if (i === j) return;
+      const pair = `${items[i].src}, ${items[j].src}`;
+      if (a.target === b.target) throw new FcError(`여러 원본이 같은 대상으로 모입니다: ${items[i].target} (${pair})`);
+      if (isSameOrUnder(a.target, b.src)) throw new FcError(`한 항목의 대상이 다른 항목의 원본과 겹칩니다: ${pair}`);
+      if (i < j && (isSameOrUnder(a.src, b.src) || isSameOrUnder(a.src, b.target))) throw new FcError(`앞 항목을 옮기면 뒤 항목이 사라집니다: ${pair}`);
+    });
+  });
 }
 
 // dest가 이미 있는 폴더면 그 안으로, 아니면 dest라는 이름으로 옮긴다.
@@ -171,24 +296,34 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`여러 개를 옮기려면 대상이 있는 폴더여야 합니다: ${dest}`);
   }
-  const plannedSources = new Set();
-  const plannedTargets = new Set();
-  return sources.map((src) => {
+  // 전체를 검사한 뒤에 실행해서, 실패하면 아무것도 옮겨지지 않게 한다.
+  const items = sources.map((src) => {
     ensureExists(src);
-    const target = resolveDest(src, dest);
+    rejectStreamPath(src);
+    rejectCurrentDir(src);
+    // d/.처럼 끝나는 원본도 d와 같은 대상을 쓰도록 이름을 풀어서 구한다.
+    const target = resolveDest(path.resolve(src), dest);
+    rejectStreamPath(target);
+    rejectCurrentDir(target);
     ensureFree(target, force);
-    let note = '';
-    if (dryRun) {
-      ensureParentDir(target);
-      ensureNotIntoSelf(src, target);
-      claim(plannedSources, src);
-      note = targetNote(plannedTargets, target, force, ' (기존 폴더 전체를 교체함)');
-    }
-    return perform(`이동: ${src} -> ${target}${note}`, dryRun, () => {
-      if (force && exists(target)) fs.rmSync(target, { recursive: true, force: true });
-      moveOne(src, target);
-    });
+    ensureParentDir(target);
+    rejectMoveOverlap(src, target);
+    return { src, target };
   });
+  rejectBatchOverlap(items);
+  const planned = new Set();
+  const done = [];
+  for (const { src, target } of items) {
+    const note = dryRun ? targetNote(planned, target, force, ' (기존 폴더 전체를 교체함)') : '';
+    try {
+      done.push(perform(`이동: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
+    } catch (err) {
+      // 앞 항목은 이미 옮겨졌으니, 오류만 내면 무엇이 옮겨졌는지 알 수 없다.
+      if (done.length === 0) throw err;
+      throw new FcError(`${err.message}\n이미 처리한 항목:\n${done.join('\n')}`);
+    }
+  }
+  return done;
 }
 
 function copy(sources, dest, { force = false, dryRun = false } = {}) {
@@ -200,6 +335,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
+    rejectCopyIntoSelf(src, target);
     let note = '';
     if (dryRun) {
       ensureCanMakeDir(path.dirname(target));
@@ -263,9 +399,13 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   sources.forEach(ensureExists);
+  [archive, ...sources].forEach(rejectStreamPath);
   // tar가 이 이름을 옵션으로 해석해, 기존 압축 파일을 지운 뒤에 실패하거나 다른 내용을 묶는다. (#52)
   const dashed = sources.find((src) => /^[-@]/.test(path.basename(path.resolve(src))));
   if (dashed !== undefined) throw new FcError(`-나 @로 시작하는 이름은 아직 압축할 수 없습니다: ${dashed}`);
+  // 기존 압축 파일을 지운 뒤 묶으므로, 압축 파일 자신을 묶으면 원래 내용을 잃는다.
+  const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
+  if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
   if (dryRun) {
     ensureParentDir(archive);
     if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
