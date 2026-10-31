@@ -92,6 +92,9 @@ function detailedName(fileName, folders) {
   return best + ext;
 }
 
+// mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
+const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+/;
+
 // 파일이 그 폴더(하위 포함)의 유일한 항목일 때만 폴더 이름을 쓸 수 있다. 여럿이면 ep1, ep2 같은 구분을 잃는다.
 function soleFolders(entry, fileCounts) {
   const parts = entry.relative.split(path.sep).slice(0, -1);
@@ -118,7 +121,7 @@ function countFiles(entries) {
 }
 
 // 타겟 아래 모든 파일을 타겟 바로 아래로 옮기는 계획을 만든다. 파일은 건드리지 않는다.
-// - moves: 옮길 파일 ({ from, to, name, fromFolder, numbered }). 폴더명이 더 자세하면 fromFolder가 true다.
+// - moves: 옮길 파일 ({ from, to, name, desired, fromFolder, numbered }). desired는 번호를 붙이기 전의 이름이다. 폴더명이 더 자세하면 fromFolder가 true다.
 //   이름이 겹치면 번호를 붙이고 numbered가 true다. 이미 있는 이름은 폴더라도 피한다.
 // - stay: 이미 타겟 바로 아래에 있어 그대로 두는 항목의 경로
 // - skipped: 옮기지 않는 항목 ({ path, reason }). 링크와 grant가 거부하는 이름은 조용히 빠지지 않게 사유를 남긴다.
@@ -136,6 +139,10 @@ function planFlatten(dir) {
       continue;
     }
     if (entry.type === 'dir') continue;
+    if (entry.relative.split(path.sep).some((part) => LEFTOVER.test(part))) {
+      plan.skipped.push({ path: entry.path, reason: '이전 작업의 잔여물이라 옮기지 않습니다.' });
+      continue;
+    }
     if (entry.type === 'link') {
       plan.skipped.push({ path: entry.path, reason: '링크는 옮기지 않습니다.' });
       continue;
@@ -152,7 +159,7 @@ function planFlatten(dir) {
         name = freeName(desired, access.target, taken, nextNumber);
       }
       if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
-      plan.moves.push({ from, to: access.write(name), name, fromFolder: desired !== original, numbered: name !== desired });
+      plan.moves.push({ from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired });
       taken.add(nameKey(name));
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
@@ -162,4 +169,80 @@ function planFlatten(dir) {
   return plan;
 }
 
-module.exports = { planFlatten, detailedName };
+// 빈 파일로 자리를 먼저 확보한 뒤 그 위로 옮긴다. 이미 있으면(8.3 짧은 이름, 대소문자 포함) 아무것도 바꾸지 않고 false를 돌려준다.
+// renameSync는 대상을 덮어쓰고, linkSync 뒤 unlinkSync는 원본이 잠겨 있으면 두 이름으로 남는다.
+function moveWithoutOverwrite(from, to) {
+  try {
+    fs.closeSync(fs.openSync(to, 'wx'));
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  }
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    try {
+      fs.rmSync(to, { force: true });
+    } catch (cleanupErr) {
+      throw new FcError(`옮기지 못했고 빈 자리표시 파일도 지우지 못했습니다: ${to} (${err.code}, ${cleanupErr.code})`);
+    }
+    throw err;
+  }
+  return true;
+}
+
+// 번호를 다시 고르는 횟수 한도. 다른 프로그램이 계속 같은 이름을 만들 때 끝나지 않는 일을 막는다.
+const MAX_ATTEMPTS = 100;
+
+// 계획한 이름이 그사이 찼으면 번호를 다시 고른다. a/longfilename.txt를 옮기면 LONGFI~1.TXT가 새로 차는 것처럼 계획 단계에서 알 수 없다.
+function applyMove(move, access, taken, nextNumber) {
+  // 계획과 실행 사이에 원본이 링크로 바뀌었거나 타겟 밖을 가리키면 여기서 거부된다.
+  const from = access.delete(move.from);
+  let name = move.name;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
+    const to = path.join(access.target, name);
+    if (!fs.lstatSync(to, { throwIfNoEntry: false })) access.write(name);
+    if (moveWithoutOverwrite(from, to)) return { ...move, from, to, name, numbered: name !== move.desired };
+    name = freeName(move.desired, access.target, taken, nextNumber);
+    taken.add(nameKey(name));
+  }
+  throw new FcError(`비어 있는 이름을 찾지 못했습니다: ${move.desired}`);
+}
+
+// 타겟 아래 파일을 타겟 바로 아래로 옮긴다. 덮어쓰지 않고, 한 파일이 실패해도 나머지는 계속 옮긴다.
+// 돌려주는 값: { target, dryRun, moved, stay, skipped, failed }. failed는 { from, reason } 목록이다.
+function flatten(dir, { dryRun = false } = {}) {
+  const plan = planFlatten(dir);
+  const result = { target: plan.target, dryRun, moved: [], stay: plan.stay, skipped: plan.skipped, failed: [] };
+  if (dryRun) return { ...result, moved: plan.moves };
+  const access = grant(plan.target, ['write', 'delete']);
+  // 앞으로 옮길 파일의 이름을 뺏지 않도록 계획한 이름을 모두 차지한 것으로 본다.
+  const taken = new Set(plan.moves.map((move) => nameKey(move.name)));
+  const nextNumber = new Map();
+  for (const move of plan.moves) {
+    try {
+      result.moved.push(applyMove(move, access, taken, nextNumber));
+    } catch (err) {
+      result.failed.push({ from: move.from, reason: err.message });
+    }
+  }
+  return result;
+}
+
+// 결과를 사람이 읽을 수 있게 줄로 만든다. 자세한 보고 형식은 #19에서 다듬는다.
+function formatFlatten(result) {
+  const relative = (p) => path.relative(result.target, p);
+  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const lines = [];
+  for (const move of result.moved) {
+    const notes = [move.fromFolder && '폴더명 사용', move.numbered && '번호 붙임'].filter(Boolean);
+    lines.push(`${prefix}이동: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`);
+  }
+  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
+  lines.push(`${prefix}이동 ${result.moved.length}개, 그대로 ${result.stay.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
+  return lines.join('\n');
+}
+
+module.exports = { planFlatten, detailedName, flatten, formatFlatten };
