@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant, walk } = require('./target');
@@ -7,17 +8,30 @@ const { grant, walk } = require('./target');
 // NTFS 파일 이름 한도 (UTF-16 글자 수)
 const MAX_NAME = 255;
 
+// toLowerCase는 문맥을 봐서 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만드므로 대문자로 맞춘다.
 function nameKey(name) {
-  return process.platform === 'win32' ? name.toLowerCase() : name;
+  return process.platform === 'win32' ? name.toUpperCase() : name;
+}
+
+// 이름이 비어 있는지 본다. 계획한 이름뿐 아니라 실제 항목도 확인해야 8.3 짧은 이름(LONGFI~1.TXT)과의 겹침이 잡힌다.
+// 한도를 넘는 이름은 파일 시스템에 물어볼 수 없으니 그대로 돌려보내 호출한 쪽에서 건너뛰게 한다.
+function isTaken(name, target, taken) {
+  if (taken.has(nameKey(name))) return true;
+  return name.length <= MAX_NAME && Boolean(fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }));
 }
 
 // a.mkv가 겹치면 a (2).mkv, a (3).mkv 순으로 비어 있는 이름을 찾는다.
-function freeName(name, taken) {
-  if (!taken.has(nameKey(name))) return name;
+// 같은 이름이 많을 때 매번 2부터 다시 찾지 않도록 이름별 다음 번호를 기억한다.
+function freeName(name, target, taken, nextNumber) {
+  if (!isTaken(name, target, taken)) return name;
   const { name: base, ext } = path.parse(name);
-  for (let n = 2; ; n++) {
+  const key = nameKey(name);
+  for (let n = nextNumber.get(key) ?? 2; ; n++) {
     const candidate = `${base} (${n})${ext}`;
-    if (!taken.has(nameKey(candidate))) return candidate;
+    if (!isTaken(candidate, target, taken)) {
+      nextNumber.set(key, n + 1);
+      return candidate;
+    }
   }
 }
 
@@ -30,6 +44,7 @@ function planFlatten(dir) {
   const entries = walk(access.target);
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
+  const nextNumber = new Map();
   const plan = { target: access.target, moves: [], stay: [], skipped: [] };
   for (const entry of entries) {
     if (isTop(entry)) {
@@ -44,7 +59,7 @@ function planFlatten(dir) {
     const original = path.basename(entry.path);
     try {
       const from = access.read(entry.path);
-      const name = freeName(original, taken);
+      const name = freeName(original, access.target, taken, nextNumber);
       if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
       plan.moves.push({ from, to: access.write(name), name, numbered: name !== original });
       taken.add(nameKey(name));
