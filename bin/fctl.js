@@ -114,7 +114,9 @@ function run(argv) {
       return fc.zip(args[0], args.slice(1), { force, dryRun });
     case 'flatten': {
       need(args, 1, 'flatten <타겟>');
-      if (force) throw new fc.FcError('flatten은 덮어쓰지 않으므로 --force를 쓸 수 없습니다.');
+      // 되돌릴 수 없는 명령이다. 따옴표 없는 공백 경로의 앞부분만 받아 더 넓은 폴더를 평탄화하지 않게 남는 인자를 거부한다.
+      if (args.length > 1) throw new fc.FcError(`타겟은 하나만 받습니다. 공백이 든 경로는 따옴표로 감싸세요: ${args.join(' ')}`);
+      if (force || flags.has('permanent')) throw new fc.FcError('flatten은 덮어쓰거나 지우지 않으므로 --force, --permanent를 쓸 수 없습니다.');
       const result = flatten(args[0], { dryRun });
       const report = formatFlatten(result);
       // 일부가 실패하면 옮긴 내용까지 보여 주고 실패로 끝낸다.

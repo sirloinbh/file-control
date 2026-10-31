@@ -93,7 +93,10 @@ function detailedName(fileName, folders) {
 }
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
-const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+/;
+const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+-\d+(?:\.|$)/;
+
+// Windows가 관리하는 폴더. 안쪽 파일을 꺼내면 복원 정보와 함께 망가진다.
+const SYSTEM_FOLDER = /^(?:\$RECYCLE\.BIN|System Volume Information)$/i;
 
 // 파일이 그 폴더(하위 포함)의 유일한 항목일 때만 폴더 이름을 쓸 수 있다. 여럿이면 ep1, ep2 같은 구분을 잃는다.
 function soleFolders(entry, fileCounts) {
@@ -128,6 +131,9 @@ function countFiles(entries) {
 function planFlatten(dir) {
   const access = grant(dir, ['read', 'write']);
   const entries = walk(access.target);
+  // 저장소는 폴더 구조 자체가 내용이라, .git 안쪽만 건너뛰어도 작업 파일이 흩어져 복구할 수 없다. 일부만 옮기지 않고 거부한다.
+  const repository = entries.find((entry) => entry.relative.split(path.sep).some((part) => part.toLowerCase() === '.git'));
+  if (repository) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${repository.path}`);
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
@@ -139,8 +145,13 @@ function planFlatten(dir) {
       continue;
     }
     if (entry.type === 'dir') continue;
-    if (entry.relative.split(path.sep).some((part) => LEFTOVER.test(part))) {
+    const parts = entry.relative.split(path.sep);
+    if (parts.some((part) => LEFTOVER.test(part))) {
       plan.skipped.push({ path: entry.path, reason: '이전 작업의 잔여물이라 옮기지 않습니다.' });
+      continue;
+    }
+    if (parts.some((part) => SYSTEM_FOLDER.test(part))) {
+      plan.skipped.push({ path: entry.path, reason: 'Windows 시스템 폴더 안의 파일이라 옮기지 않습니다.' });
       continue;
     }
     if (entry.type === 'link') {
@@ -181,14 +192,22 @@ function moveWithoutOverwrite(from, to) {
   try {
     fs.renameSync(from, to);
   } catch (err) {
-    try {
-      fs.rmSync(to, { force: true });
-    } catch (cleanupErr) {
-      throw new FcError(`옮기지 못했고 빈 자리표시 파일도 지우지 못했습니다: ${to} (${err.code}, ${cleanupErr.code})`);
-    }
+    removePlaceholder(to, err);
     throw err;
   }
   return true;
+}
+
+// 그사이 다른 프로그램이 내용을 썼다면 내 자리표시가 아니므로 지우지 않는다.
+function removePlaceholder(to, cause) {
+  const stat = fs.lstatSync(to, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (!stat.isFile() || stat.size !== 0) throw new FcError(`옮기지 못했고 자리표시 파일에 다른 내용이 생겨 지우지 않았습니다: ${to} (${cause.code})`);
+  try {
+    fs.rmSync(to, { force: true, maxRetries: 3 });
+  } catch (err) {
+    throw new FcError(`옮기지 못했고 빈 자리표시 파일도 지우지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+  }
 }
 
 // 번호를 다시 고르는 횟수 한도. 다른 프로그램이 계속 같은 이름을 만들 때 끝나지 않는 일을 막는다.
@@ -198,12 +217,18 @@ const MAX_ATTEMPTS = 100;
 function applyMove(move, access, taken, nextNumber) {
   // 계획과 실행 사이에 원본이 링크로 바뀌었거나 타겟 밖을 가리키면 여기서 거부된다.
   const from = access.delete(move.from);
+  // 부모가 안쪽을 가리키는 정션으로 바뀌었거나 파일이 폴더로 바뀌면 계획과 다른 항목을 옮기게 된다.
+  if (from !== move.from) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${move.from} -> ${from}`);
+  if (!fs.lstatSync(from).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${from}`);
   let name = move.name;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
     const to = path.join(access.target, name);
-    if (!fs.lstatSync(to, { throwIfNoEntry: false })) access.write(name);
-    if (moveWithoutOverwrite(from, to)) return { ...move, from, to, name, numbered: name !== move.desired };
+    // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
+    if (!fs.lstatSync(to, { throwIfNoEntry: false })) {
+      access.write(name);
+      if (moveWithoutOverwrite(from, to)) return { ...move, from, to, name, numbered: name !== move.desired };
+    }
     name = freeName(move.desired, access.target, taken, nextNumber);
     taken.add(nameKey(name));
   }
