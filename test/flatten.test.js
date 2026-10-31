@@ -333,6 +333,12 @@ test('detailedName은 일반 이름을 제품번호로 보지 않고 파일명�
     ['movie.part1.rar', 'ABC-123'],
     ['ABC123.mp4', 'XYZ-999'],
     ['2.mp4', 'ABC-123'],
+    ['계약서.pdf', 'BACKUP-2024'],
+    ['보고서.pdf', 'FY-2023'],
+    ['최종결산보고서.pdf', 'COVID-19'],
+    ['beach.jpg', 'DCIM-01'],
+    ['setup.exe', 'NVIDIA-55'],
+    ['ko.srt', 'ABC-123'],
   ]) {
     assert.strictEqual(detailedName(file, [folder]), file, `${file} + ${folder}`);
   }
@@ -347,6 +353,12 @@ test('detailedName은 확장자 없는 파일, 점 파일, tar 겹 확장자에 
     ['README', 'ABC-123.exe'],
     ['.env', 'my .env 모음'],
     ['.DS_Store', 'ABC-123'],
+    ['.env.local', 'ABC-123'],
+    ['.gitignore.bak', 'ABC-123 제목'],
+    ['.eslintrc.json', 'eslintrc 설정'],
+    ['Dr. Strange', 'ABC-123'],
+    ['Dr. Strange', 'Dr 모음'],
+    ['Chapter.1', 'ABC-123 제목'],
     ['x.tar.gz', 'ABC-123 제목'],
     ['a.tar.gz', 'a.tar 설명'],
   ]) {
@@ -358,8 +370,23 @@ test('detailedName은 폴더명이 다른 확장자로 끝나면 이중 확장�
   assert.strictEqual(detailedName('x.mp4', ['ABC-123.mkv']), 'x.mp4');
   assert.strictEqual(detailedName('report.pdf', ['report.zip']), 'report.pdf');
   assert.strictEqual(detailedName('ABC-123.mp4', ['ABC-123 제목.zip']), 'ABC-123.mp4');
+  assert.strictEqual(detailedName('x.mp4', ['ABC-123.torrent']), 'x.mp4');
+  assert.strictEqual(detailedName('x.txt', ['ABC-123.backup']), 'x.txt');
+  assert.strictEqual(detailedName('x.mp4', ['ABC-123.7z']), 'x.mp4');
   // 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
   assert.strictEqual(detailedName('Movie.mp4', ['Movie.2021.1080p']), 'Movie.2021.1080p.mp4');
+});
+
+test('detailedName은 정보가 없는 파일명만 제품번호 폴더 이름으로 바꾼다', () => {
+  for (const name of ['video', 'Movie', 'x', '영상', '파일', 'untitled']) {
+    assert.strictEqual(detailedName(`${name}.mp4`, ['ABC-123 제목']), 'ABC-123 제목.mp4', name);
+  }
+});
+
+test('detailedName은 점으로 시작하는 폴더 이름을 쓰지 않는다', () => {
+  assert.strictEqual(detailedName('x.mp4', ['.ABC-123']), 'x.mp4');
+  assert.strictEqual(detailedName('trash.mp4', ['.trash-1000']), 'trash.mp4');
+  assert.strictEqual(detailedName('x.mp4', ['ABC-123 제목', '.ABC-999']), 'ABC-123 제목.mp4');
 });
 
 test('detailedName은 위 폴더로 올라가며 가장 자세한 이름을 고른다', () => {

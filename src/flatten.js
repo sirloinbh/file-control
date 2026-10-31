@@ -44,7 +44,10 @@ function freeName(name, target, taken, nextNumber) {
 const PRODUCT_NUMBER = /(?<![A-Za-z0-9])[A-Z]{2,}-\d{2,}(?![A-Za-z0-9])/;
 
 // 폴더 이름의 끝이 확장자처럼 보이는지 본다. Movie.2021.1080p처럼 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
-const EXTENSION_LIKE = /\.[A-Za-z][A-Za-z0-9]{0,4}$/;
+const EXTENSION_LIKE = /\.(?:[A-Za-z][A-Za-z0-9]{0,9}|7z)$/;
+
+// 이름에 정보가 없는 파일명. 이런 파일만 제품번호 폴더 이름으로 바꾼다. 계약서, ko 같은 이름은 지우면 정보를 잃는다.
+const GENERIC_NAME = /^(?:[A-Z]|VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
 
 // 공백·기호·대소문자 차이를 빼고 단어로 나눈다.
 function words(name) {
@@ -70,21 +73,21 @@ function isMoreDetailed(folder, base) {
   if (f === '' || b === '') return false;
   if (f.length > b.length && containsWords(folderWords, b)) return true;
   if (b.includes(f)) return false;
-  // 제품번호 폴더는 파일 이름에 잃을 정보가 없을 때(숫자 없는 한 단어: video, x)만 쓴다.
-  return PRODUCT_NUMBER.test(folder) && baseWords.length === 1 && !/\d/.test(b);
+  return PRODUCT_NUMBER.test(folder) && GENERIC_NAME.test(b);
 }
 
 // 파일 이름과 폴더 이름(가까운 폴더부터) 중 가장 자세한 이름을 확장자를 유지해 돌려준다.
 function detailedName(fileName, folders) {
   const { name: base, ext } = path.parse(fileName);
-  // 확장자가 없으면 폴더 이름의 끝이 확장자가 될 수 있고(data + data.zip/), .env 같은 점 파일은 이름이 곧 정체다.
-  // .tar.gz는 폴더 이름을 붙이면 .gz만 남아 형식을 잃는다.
-  if (ext === '' || /\.tar$/i.test(base)) return fileName;
+  // 확장자가 없으면 폴더 이름의 끝이 확장자가 될 수 있고(data + data.zip/), .env.local 같은 점 파일은 이름이 곧 정체다.
+  // .tar.gz는 폴더 이름을 붙이면 .gz만 남아 형식을 잃는다. Dr. Strange의 ". Strange"는 확장자가 아니다.
+  if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
   let best = base;
   for (const folder of folders) {
     // 폴더 이름에 같은 확장자가 들어 있으면(ABC-123.mp4/) 겹치지 않게 빼고, 다른 확장자면 이중 확장자가 되므로 쓰지 않는다.
     const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-    if (!EXTENSION_LIKE.test(stem) && isMoreDetailed(stem, best)) best = stem.normalize('NFC');
+    // .trash-1000 같은 점 폴더 이름을 쓰면 숨김 파일이 된다.
+    if (!stem.startsWith('.') && !EXTENSION_LIKE.test(stem) && isMoreDetailed(stem, best)) best = stem.normalize('NFC');
   }
   return best + ext;
 }
