@@ -473,7 +473,8 @@ test('zip은 압축 파일이 원본 폴더 안에 있어도 원본 내용만 �
 
 // tar 실행을 가짜로 바꾼 commands.js를 새로 불러온다.
 function loadWithTar(t, fake) {
-  t.mock.method(childProcess, 'execFileSync', fake);
+  // 임시 폴더 경로에 비ASCII 문자가 있으면 코드페이지 확인이 먼저 불린다.
+  t.mock.method(childProcess, 'execFileSync', (file, args, options) => (path.basename(file) === 'powershell.exe' ? '' : fake(file, args, options)));
   const id = require.resolve('../src/commands');
   const saved = require.cache[id];
   delete require.cache[id];
@@ -600,6 +601,105 @@ test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전
   }
   assert.deepStrictEqual(fs.readFileSync(p('b.zip')), before);
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), entries);
+});
+
+test('zip은 원본이 정션이어도 그 안의 이름을 코드페이지로 확인한다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('real', '😀.txt'), 'E');
+  fc.writeFile(p('holder', 'keep.txt'), 'k');
+  linkDir(p('real'), p('srcj'));
+  linkDir(p('real'), p('holder', 'inner'));
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p('a.zip'), [p('srcj')], { dryRun }), /U\+1F600\(😀\)/);
+    assert.throws(() => fc.zip(p('a.zip'), [`${p('srcj')}${path.sep}`], { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('a.zip'), [p('holder')], { dryRun }), /처리할 수 없는 문자/);
+  }
+  assert.ok(!fs.existsSync(p('a.zip')));
+});
+
+test('zip은 비슷한 글자로 바뀌는 이름 때문에 다른 파일을 묶지 않는다', { skip: !isWindows }, (t) => {
+  const cp = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
+  if (cp !== '949') return t.skip('é가 코드페이지에 없는 환경에서만 재현된다');
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('é.txt'), 'ACCENT');
+  fc.writeFile(p('e.txt'), 'PLAIN');
+  fc.writeFile(p('tree', 'é.txt'), 'ACCENT');
+  fc.writeFile(p('tree', 'e.txt'), 'PLAIN');
+  fc.writeFile(p('é.zip'), 'old');
+  fc.writeFile(p('e.zip'), 'keep');
+  assert.throws(() => fc.zip(p('out.zip'), [p('é.txt')]), /U\+00E9/);
+  assert.throws(() => fc.zip(p('out.zip'), [p('tree')]), /U\+00E9/);
+  assert.throws(() => fc.zip(p('é.zip'), [p('e.txt')], { force: true }), /U\+00E9/);
+  assert.strictEqual(fc.readFile(p('e.zip')), 'keep');
+});
+
+test('zip·unzip은 끝이 점이나 공백인 이름을 실행 전에 거부하고 비슷한 이름의 파일을 건드리지 않는다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p('a.txt.'), 'dot');
+  fc.writeFile(p('tree', 'n.'), 'dot');
+  fc.zip(p('x.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('x.zip'));
+  const entries = fs.readdirSync(dir).sort();
+  for (const dryRun of [true, false]) {
+    for (const name of ['x.zip.', 'x.zip ', 'n3.zip ', 'n2.zip.']) {
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /끝이 점이나 공백/, name);
+    }
+    assert.throws(() => fc.zip(p('new.zip'), [p('a.txt.')], { dryRun }), /끝이 점이나 공백/);
+    assert.throws(() => fc.zip(p('new.zip'), [p('tree')], { dryRun }), /끝이 점이나 공백/);
+    assert.throws(() => fc.unzip(p('x.zip'), p('out '), { dryRun }), /끝이 점이나 공백/);
+  }
+  assert.deepStrictEqual(fs.readFileSync(p('x.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), entries);
+});
+
+test('zip은 확장자에 패턴 문자가 있어도 임시 파일을 묶지 않는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  for (const name of ['o.[1]', 'o.z[i]p', 'o.a$']) {
+    const root = p(`r-${name.length}-${name.charCodeAt(2)}`);
+    fc.writeFile(path.join(root, 'f.txt'), 'f');
+    fc.zip(path.join(root, name), [root]);
+    fc.zip(path.join(root, name), [root], { force: true });
+    fc.unzip(path.join(root, name), `${root}-out`);
+    assert.deepStrictEqual(fs.readdirSync(path.join(`${root}-out`, path.basename(root))), ['f.txt'], name);
+    assert.deepStrictEqual(fs.readdirSync(root).sort(), ['f.txt', name].sort(), name);
+  }
+});
+
+test('zip은 다른 부모 폴더의 대시 이름과 대시 폴더, 일반 이름을 섞어 묶는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('plain.txt'), 'plain');
+  fc.writeFile(p('par', '-a.txt'), 'dash');
+  fc.writeFile(p('-par', '@b.txt'), 'at');
+  fc.writeFile(p('-dir', 'in.txt'), 'in');
+  fc.zip(p('m.zip'), [p('plain.txt'), p('par', '-a.txt'), p('-par', '@b.txt'), p('-dir')]);
+  fc.unzip(p('m.zip'), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'plain.txt')), 'plain');
+  assert.strictEqual(fc.readFile(p('out', '-a.txt')), 'dash');
+  assert.strictEqual(fc.readFile(p('out', '@b.txt')), 'at');
+  assert.strictEqual(fc.readFile(p('out', '-dir', 'in.txt')), 'in');
+});
+
+test('zip --force는 기존 압축 파일을 지우지 못하면 위치를 알려 주고 새 압축 파일은 남긴다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p('b.txt'), 'B');
+  fc.zip(p('c.zip'), [p('a.txt')]);
+  const rm = fs.rmSync;
+  t.mock.method(fs, 'rmSync', (target, options) => {
+    if (path.basename(target).startsWith('.fctl-old')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rm(target, options);
+  });
+  assert.throws(() => fc.zip(p('c.zip'), [p('b.txt')], { force: true }), /압축했지만 기존 압축 파일을 지우지 못했습니다: .*\.fctl-old-/);
+  t.mock.restoreAll();
+  fc.unzip(p('c.zip'), p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
 });
 
 test('zip·unzip은 코드페이지에 있는 비ASCII 이름은 그대로 처리한다', { skip: !isWindows }, () => {

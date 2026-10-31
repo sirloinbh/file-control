@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const isWindows = process.platform === 'win32';
 // Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
 const TAR = isWindows ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 class FcError extends Error {}
 
@@ -359,7 +360,7 @@ function moveToRecycleBin(target) {
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
     "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
     env: { ...process.env, FC_TARGET: path.resolve(target) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -389,7 +390,7 @@ function unsupportedChars(text) {
   const script =
     '$e = [Text.Encoding]::Default; foreach ($c in ($env:FC_CHARS -split "`n")) ' +
     '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0) } }';
-  const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
     env: { ...process.env, FC_CHARS: chars.join('\n') },
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
@@ -397,14 +398,26 @@ function unsupportedChars(text) {
   return output.split(/\s+/).filter(Boolean).map((code) => String.fromCodePoint(Number(code)));
 }
 
-function ensureTarCanUse(paths) {
-  const bad = unsupportedChars(paths.join(''));
-  if (bad.length > 0) throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${bad.join(' ')}`);
+// tar.exe는 이름 끝의 점과 공백을 지우지만 Node는 글자 그대로 다루므로, a.txt.를 넘기면 a.txt를 묶게 된다.
+function hasTrailingDotOrSpace(p) {
+  return p.slice(path.parse(p).root.length).split(path.sep).some((part) => /[. ]$/.test(part));
 }
 
-// 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. 링크 안쪽은 따라가지 않는다.
+function ensureTarCanUse(paths) {
+  if (!isWindows) return;
+  const trailing = paths.find(hasTrailingDotOrSpace);
+  if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${trailing}`);
+  const bad = unsupportedChars(paths.join(''));
+  if (bad.length === 0) return;
+  // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
+  const codes = bad.map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}(${char})`);
+  const where = paths.find((p) => bad.some((char) => p.includes(char)));
+  throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${codes.join(' ')} (${where})`);
+}
+
+// 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. tar처럼 원본과 그 안의 정션을 따라간다.
 function namesInside(src) {
-  if (!fs.lstatSync(src).isDirectory()) return [];
+  if (!fs.statSync(src).isDirectory()) return [];
   return fs.readdirSync(src, { recursive: true });
 }
 
@@ -440,8 +453,9 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
 }
 
 // -a는 확장자로 형식을 정하므로 임시 파일에도 같은 확장자를 붙인다. (.tar.gz 같은 겹 확장자 포함)
+// 임시 이름은 --exclude의 패턴으로도 쓰이므로, 패턴 문자가 없는 영숫자 확장자만 받는다.
 function archiveExt(archive) {
-  const match = /\.tar\.[^.]+$|\.[^.]+$/i.exec(path.basename(path.resolve(archive)));
+  const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
   return match ? match[0] : '';
 }
 
