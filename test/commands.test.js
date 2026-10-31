@@ -329,6 +329,106 @@ test('mv·zip은 UNC 별칭으로 같은 항목을 가리켜도 내용을 잃지
   assert.strictEqual(fs.statSync(p('b.zip')).size, size);
 });
 
+test('mv·cp는 UNC 별칭으로 폴더를 자기 안으로 옮기거나 복사하지 않는다', { skip: !isWindows }, (t) => {
+  const dir = fs.realpathSync.native(tempDir());
+  const unc = (p) => `\\\\localhost\\${p[0]}$${p.slice(2)}`;
+  if (!fs.existsSync(unc(dir))) return t.skip('이 환경에는 관리 공유가 없다');
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.writeFile(p('d', 'sub', 'g.txt'), 'g');
+  // 검사가 뚫리면 복사가 끝나지 않으므로, 테스트가 멈추지 않게 복사를 막아 둔다.
+  t.mock.method(fs, 'cpSync', () => {
+    throw new Error('복사가 시작됨');
+  });
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub')), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.move([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.move([p('d', 'sub')], unc(p('d')), { force: true, dryRun }), fc.FcError);
+    assert.throws(() => fc.copy([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.copy([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /자기 안으로/);
+  }
+  assert.strictEqual(fc.readFile(p('d', 'f.txt')), 'f');
+  assert.strictEqual(fc.readFile(p('d', 'sub', 'g.txt')), 'g');
+  assert.deepStrictEqual(fs.readdirSync(p('d', 'sub')), ['g.txt']);
+});
+
+test('mv·cp는 링크 자체를 그것이 가리키는 폴더 안으로 옮기거나 복사하는 것은 막지 않는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('real', 'x.txt'), 'x');
+  linkDir(p('real'), p('alias'));
+  assert.match(fc.move([p('alias')], p('real', 'k'), { dryRun: true })[0], /미리보기/);
+  assert.match(fc.copy([p('alias')], p('real', 'k'), { dryRun: true })[0], /미리보기/);
+});
+
+test('mv --force는 대상 이름이 길어도 치워 두었다가 덮어쓴다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  const long = 'L'.repeat(240);
+  fc.writeFile(p('a'), 'new');
+  fc.writeFile(p(long), 'old');
+  fc.move([p('a')], p(long), { force: true });
+  assert.strictEqual(fc.readFile(p(long)), 'new');
+  assert.deepStrictEqual(fs.readdirSync(dir), [long]);
+});
+
+test('mv --force는 끝 구분자가 붙은 파일 대상도 덮어쓴다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'new');
+  fc.writeFile(p('b'), 'old');
+  fc.move([p('a')], `${p('b')}${path.sep}`, { force: true });
+  assert.strictEqual(fc.readFile(p('b')), 'new');
+  assert.deepStrictEqual(fs.readdirSync(dir), ['b']);
+});
+
+test('mv --force는 치워 둘 이름이 이미 있으면 덮어쓰지 않고 다른 이름을 쓴다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'new');
+  fc.writeFile(p('b'), 'old');
+  t.mock.method(Date, 'now', () => 12345);
+  const taken = `.fctl-old-${process.pid}-12345-0`;
+  fc.writeFile(p(taken), 'precious');
+  fc.move([p('a')], p('b'), { force: true });
+  assert.strictEqual(fc.readFile(p('b')), 'new');
+  assert.strictEqual(fc.readFile(p(taken)), 'precious');
+});
+
+test('mv --force는 되돌리기도 실패하면 치워 둔 위치를 알려 준다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'new');
+  fc.writeFile(p('b'), 'old');
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from === p('a') || to === p('b')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => fc.move([p('a')], p('b'), { force: true }), /이전 대상은 .*\.fctl-old-/);
+  t.mock.restoreAll();
+  assert.strictEqual(fc.readFile(p('a')), 'new');
+  const aside = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-old-'));
+  assert.strictEqual(fc.readFile(p(aside)), 'old');
+});
+
+test('mv는 여러 항목 중간에 실패하면 이미 처리한 항목을 오류에 알려 준다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'A');
+  fc.writeFile(p('b'), 'B');
+  fc.makeDir(p('dest'));
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from === p('b')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => fc.move([p('a'), p('b')], p('dest')), (err) => err instanceof fc.FcError && err.message.includes('locked') && err.message.includes('이미 처리한 항목') && err.message.includes(p('a')));
+  assert.strictEqual(fc.readFile(p('dest', 'a')), 'A');
+  assert.strictEqual(fc.readFile(p('b')), 'B');
+});
+
 test('mv는 하드링크끼리의 이동을 막지 않는다', () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);

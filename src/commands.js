@@ -167,17 +167,32 @@ function moveOne(src, dest) {
   }
 }
 
+// 이름 길이 한도에 걸리지 않게 대상 이름을 쓰지 않고, 이미 있는 항목을 덮어쓰지 않게 비어 있는 이름을 고른다.
+function asidePath(target) {
+  const dir = path.dirname(path.resolve(target));
+  let serial = 0;
+  let aside;
+  do {
+    aside = path.join(dir, `.fctl-old-${process.pid}-${Date.now()}-${serial++}`);
+  } while (fs.lstatSync(aside, { throwIfNoEntry: false }));
+  return aside;
+}
+
 // 대상을 먼저 지우면 이동이 실패할 때(파일 잠금 등) 대상을 잃으므로, 치워 두었다가 이동이 끝난 뒤에 지운다.
 function moveReplacing(src, target) {
   if (!exists(target)) return moveOne(src, target);
-  const aside = `${target}.fctl-old-${process.pid}-${Date.now()}`;
+  const aside = asidePath(target);
   fs.renameSync(target, aside);
   try {
     moveOne(src, target);
   } catch (err) {
     // 복사가 끝나 대상이 생겼다면 원본 정리만 실패한 것이므로 되돌리지 않는다.
     if (exists(target)) throw new FcError(`옮겼지만 원본을 다 지우지 못했습니다: ${src} (${err.code}). 이전 대상은 ${aside}에 있습니다.`);
-    fs.renameSync(aside, target);
+    try {
+      fs.renameSync(aside, target);
+    } catch (restoreErr) {
+      throw new FcError(`옮기지 못했고 이전 대상도 되돌리지 못했습니다: ${src} (${err.code}, ${restoreErr.code}). 이전 대상은 ${aside}에 있습니다.`);
+    }
     throw err;
   }
   try {
@@ -214,6 +229,22 @@ function isSameFile(a, b) {
   return Boolean(statA && statB) && statA.ino !== 0n && statA.dev === statB.dev && statA.ino === statB.ino;
 }
 
+// p의 상위 폴더 중에 dir과 같은 폴더가 있는지 파일 번호로 본다.
+function hasAncestorSameAs(dir, p) {
+  let current = path.resolve(p);
+  for (let parent = path.dirname(current); parent !== current; parent = path.dirname(current)) {
+    current = parent;
+    if (isSameFile(dir, current)) return true;
+  }
+  return false;
+}
+
+// UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
+// 링크는 링크 자체만 옮기거나 복사하므로 가리키는 곳으로 따지지 않는다.
+function rejectCopyIntoSelf(src, target) {
+  if (!fs.lstatSync(src).isSymbolicLink() && hasAncestorSameAs(src, target)) throw new FcError(`자기 안으로 옮기거나 복사할 수 없습니다: ${src} -> ${target}`);
+}
+
 // Windows의 대체 데이터 스트림(a.txt:st)은 파일 안의 일부라, 대상 파일을 치우면 원본도 함께 움직인다.
 function rejectStreamPath(p) {
   if (!isWindows) return;
@@ -235,7 +266,9 @@ function rejectMoveOverlap(src, target) {
   // 하드링크끼리는 같은 파일 번호여도 서로 다른 항목이라 이동해도 내용을 잃지 않는다.
   if (srcKey === targetKey || (exists(target) && isSameFile(src, target) && stat.nlink === 1n)) throw new FcError(`원본과 대상이 같습니다: ${src} -> ${target}`);
   if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`자기 안으로 옮길 수 없습니다: ${src} -> ${target}`);
-  if (isSameOrUnder(targetKey, srcKey)) throw new FcError(`대상이 원본을 품고 있어 옮길 수 없습니다: ${src} -> ${target}`);
+  rejectCopyIntoSelf(src, target);
+  const targetIsLink = exists(target) && fs.lstatSync(target).isSymbolicLink();
+  if (isSameOrUnder(targetKey, srcKey) || (exists(target) && !targetIsLink && hasAncestorSameAs(target, src))) throw new FcError(`대상이 원본을 품고 있어 옮길 수 없습니다: ${src} -> ${target}`);
   // 링크를 자기가 가리키는 곳 위로 옮기면, 대상을 지우는 순간 링크가 가리키던 내용이 사라진다.
   if (fs.lstatSync(src).isSymbolicLink() && isSameOrUnder(targetKey, realKey(src))) throw new FcError(`링크가 가리키는 곳을 덮어쓸 수 없습니다: ${src} -> ${target}`);
 }
@@ -279,10 +312,18 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   });
   rejectBatchOverlap(items);
   const planned = new Set();
-  return items.map(({ src, target }) => {
+  const done = [];
+  for (const { src, target } of items) {
     const note = dryRun ? targetNote(planned, target, force, ' (기존 폴더 전체를 교체함)') : '';
-    return perform(`이동: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target));
-  });
+    try {
+      done.push(perform(`이동: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
+    } catch (err) {
+      // 앞 항목은 이미 옮겨졌으니, 오류만 내면 무엇이 옮겨졌는지 알 수 없다.
+      if (done.length === 0) throw err;
+      throw new FcError(`${err.message}\n이미 처리한 항목:\n${done.join('\n')}`);
+    }
+  }
+  return done;
 }
 
 function copy(sources, dest, { force = false, dryRun = false } = {}) {
@@ -294,6 +335,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
+    rejectCopyIntoSelf(src, target);
     let note = '';
     if (dryRun) {
       ensureCanMakeDir(path.dirname(target));
