@@ -145,17 +145,77 @@ test('미리보기가 실패로 알린 명령은 실제 실행에서도 실패�
   }
 });
 
-test('--dry-run은 현재 폴더와 그 상위를 지우는 것을 거부한다', () => {
+test('rm은 미리보기와 실제 모두 현재 폴더와 그 상위를 지우지 않는다', () => {
   const dir = fixture();
+  const sub = path.join(dir, 'dest');
+  const before = snapshot(dir);
   const cwd = process.cwd();
-  process.chdir(dir);
+  process.chdir(sub);
   try {
-    assert.throws(() => run(['rm', '.', '--dry-run']), /현재 폴더/);
-    assert.throws(() => run(['rm', dir, '--permanent', '--dry-run']), /현재 폴더/);
-    assert.throws(() => run(['rm', path.dirname(dir), '--dry-run']), /현재 폴더/);
+    for (const flags of [['--dry-run'], ['--permanent']]) {
+      assert.throws(() => run(['rm', '.', ...flags]), /현재 폴더/);
+      assert.throws(() => run(['rm', '..', ...flags]), /현재 폴더/);
+      assert.throws(() => run(['rm', sub, ...flags]), /현재 폴더/);
+      assert.throws(() => run(['rm', dir, ...flags]), /현재 폴더/);
+    }
+    assert.deepStrictEqual(snapshot(dir), before);
+    assert.match(run(['rm', 'a.txt', '--dry-run']), /^\[미리보기\]/);
+    assert.match(run(['rm', '../b.txt', '--dry-run']), /^\[미리보기\]/);
   } finally {
     process.chdir(cwd);
   }
+});
+
+test('미리보기가 통과시킨 명령은 실제 실행에서도 성공하고 같은 일을 말한다', () => {
+  const cases = [
+    ['mv', 'a.txt', 'dest/new.txt'],
+    ['mv', 'b.txt', 'dest'],
+    ['mv', 'tree', 'dest'],
+    ['mv', 'tree', 'tree-2'],
+    ['mv', 'a.txt', 'dest', '--force'],
+    ['mv', './a.txt', 'dest/../new.txt'],
+    ['cp', 'tree', 'new/deep/copy'],
+    ['cp', 'tree', 'dest'],
+    ['cp', 'a.txt', 'dest', '--force'],
+    ['cp', 'b.txt', 'new/deep/x.txt'],
+    ['rename', 'a.txt', 'c.txt'],
+    ['rename', 'tree', 'TREE', '--force'],
+    ['rename', 'tree', 'tree', '--force'],
+    ['rm', 'a.txt', '--permanent'],
+    ['rm', 'tree/f.txt', 'tree', '--permanent'],
+    ['mkdir', 'dest'],
+    ['mkdir', 'new/deep'],
+    ['write', 'new/n.txt', '내용'],
+    ['append', 'a.txt', '내용'],
+    ['unzip', 'bundle.zip'],
+    ['unzip', 'bundle.zip', 'dest'],
+    ['zip', 'new.zip', 'a.txt', 'tree'],
+    ['zip', 'bundle.zip', 'b.txt', '--force'],
+  ];
+  const cwd = process.cwd();
+  for (const argv of cases) {
+    process.chdir(failureFixture().dir);
+    try {
+      const planned = run([...argv, '--dry-run']);
+      assert.strictEqual(planned.replace(/^\[미리보기\] /gm, '').replace(/ \([^)]*\)$/gm, ''), run(argv), argv.join(' '));
+    } finally {
+      process.chdir(cwd);
+    }
+  }
+});
+
+test('rename 미리보기는 자기 자신의 폴더를 덮어쓰기로 보지 않지만 다른 폴더는 거부한다', () => {
+  const dir = fixture();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.mkdirSync(p('empty'));
+  assert.match(preview(dir, ['rename', p('dest'), 'dest', '--force']), /^\[미리보기\] 이름 변경/);
+  assert.throws(() => run(['rename', p('dest'), 'empty', '--force', '--dry-run']), /폴더는 덮어쓸 수 없습니다/);
+});
+
+test('도움말 옵션은 -- 앞에서만 동작한다', () => {
+  assert.match(run(['--help', '--', 'rm', 'x']), /--dry-run/);
+  assert.throws(() => run(['cat', '--', '--help']), /경로가 없습니다/);
+  assert.throws(() => run(['cat', '--', '-h']), /경로가 없습니다/);
 });
 
 test('--dry-run --force는 같은 대상으로 모이는 항목의 덮어쓰기를 알려 준다', () => {
@@ -305,7 +365,7 @@ test('fctl을 프로세스로 실행하면 미리보기는 종료 코드 0, 오�
   const ok = spawnSync(process.execPath, [bin, 'rm', a, '--dry-run'], { encoding: 'utf8' });
   assert.strictEqual(ok.status, 0);
   assert.match(ok.stdout, /^\[미리보기\] 휴지통으로 이동/);
-  const typo = spawnSync(process.execPath, [bin, 'rm', a, '--dryrun'], { encoding: 'utf8' });
+  const typo = spawnSync(process.execPath, [bin, 'rm', a, '--dryrun', '--permanent'], { encoding: 'utf8' });
   assert.strictEqual(typo.status, 1);
   assert.match(typo.stderr, /알 수 없는 옵션/);
   assert.ok(fs.existsSync(a));

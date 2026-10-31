@@ -146,7 +146,8 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   }
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
-  if (dryRun && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${dest}`);
+  // 자기 자신의 대소문자만 바꾸는 경우는 덮어쓰기가 아니다.
+  if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${dest}`);
   return perform(`이름 변경: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
@@ -231,10 +232,9 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   const planned = new Set();
   return targets.map((target) => {
     ensureExists(target);
-    if (dryRun) {
-      if (isSameOrUnder(pathKey(target), pathKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
-      claim(planned, target);
-    }
+    // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
+    if (isSameOrUnder(pathKey(target), pathKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+    if (dryRun) claim(planned, target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));
   });
