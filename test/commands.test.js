@@ -5,7 +5,10 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const fc = require('../src/commands');
+
+const isWindows = process.platform === 'win32';
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-test-'));
@@ -58,6 +61,100 @@ test('mv는 대상이 폴더면 그 안으로 옮기고, 충돌하면 멈춘다'
   assert.throws(() => fc.move([path.join(dir, '1.txt')], dest), fc.FcError);
   fc.move([path.join(dir, '1.txt')], dest, { force: true });
   assert.strictEqual(fc.readFile(path.join(dest, '1.txt')), 'new');
+});
+
+test('mv --force는 원본과 대상이 겹치면 미리보기와 실제 모두 거부하고 아무것도 지우지 않는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.writeFile(p('d', 'd', 'inner.txt'), 'inner');
+  fc.writeFile(p('d', 'sub', 'g.txt'), 'g');
+  const cases = [
+    [p('a.txt'), p('a.txt')],
+    [p('a.txt'), dir],
+    [p('d'), dir],
+    [p('d'), p('d', 'sub')],
+    [p('d', 'sub'), p('d', 'sub', 'x')],
+    [p('d', 'd'), dir + path.sep + 'd' + path.sep + '..'],
+    [p('d', 'd'), p('d')],
+  ];
+  for (const [src, dest] of cases) {
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fc.move([src], dest, { force: true, dryRun }), fc.FcError, `${src} -> ${dest}`);
+    }
+    assert.strictEqual(fc.readFile(p('a.txt')), 'A');
+    assert.strictEqual(fc.readFile(p('d', 'f.txt')), 'f');
+    assert.strictEqual(fc.readFile(p('d', 'd', 'inner.txt')), 'inner');
+    assert.strictEqual(fc.readFile(p('d', 'sub', 'g.txt')), 'g');
+  }
+});
+
+test('mv --force는 Windows에서 대소문자나 8.3 이름만 다른 같은 파일도 거부한다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const file = path.join(dir, 'long-file-name.txt');
+  fc.writeFile(file, 'keep');
+  assert.throws(() => fc.move([file], path.join(dir, 'LONG-FILE-NAME.TXT'), { force: true }), /원본과 대상이 같습니다/);
+  const short = execFileSync('cmd.exe', ['/d', '/c', 'for %I in (long-file-name.txt) do @echo %~sI'], { cwd: dir, encoding: 'utf8' }).trim();
+  // 8.3 이름이 꺼진 드라이브에서는 긴 이름이 그대로 나오는데, 그래도 같은 파일이므로 거부되어야 한다.
+  assert.throws(() => fc.move([file], short, { force: true }), /원본과 대상이 같습니다/);
+  assert.strictEqual(fc.readFile(file), 'keep');
+});
+
+test('mv --force는 정션을 거쳐 같은 항목을 가리켜도 거부하고, 링크 자체를 옮기는 것은 허용한다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('real', 'x.txt'), 'x');
+  fc.writeFile(p('real', 'y', 'z.txt'), 'z');
+  fs.symlinkSync(p('real'), p('alias'), isWindows ? 'junction' : 'dir');
+  assert.throws(() => fc.move([p('real', 'x.txt')], p('alias', 'x.txt'), { force: true }), /원본과 대상이 같습니다/);
+  assert.throws(() => fc.move([p('real')], p('alias', 'y'), { force: true }), /자기 안으로/);
+  assert.throws(() => fc.move([p('real', 'y')], p('alias'), { force: true }), fc.FcError);
+  assert.strictEqual(fc.readFile(p('real', 'x.txt')), 'x');
+  assert.strictEqual(fc.readFile(p('real', 'y', 'z.txt')), 'z');
+  fc.move([p('alias')], p('real', 'moved-link'), { force: true });
+  assert.ok(!fs.existsSync(p('alias')));
+  assert.strictEqual(fc.readFile(p('real', 'moved-link', 'x.txt')), 'x');
+});
+
+test('mv --force는 겹치지 않는 대상은 전처럼 덮어쓴다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'new');
+  fc.writeFile(p('a-b.txt'), 'old');
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.writeFile(p('d-2', 'old.txt'), 'old');
+  fc.move([p('a.txt')], p('a-b.txt'), { force: true });
+  assert.strictEqual(fc.readFile(p('a-b.txt')), 'new');
+  fc.move([p('d')], p('d-2'), { force: true });
+  assert.strictEqual(fc.readFile(p('d-2', 'd', 'f.txt')), 'f');
+  assert.strictEqual(fc.readFile(p('d-2', 'old.txt')), 'old');
+});
+
+test('zip --force는 압축 파일 자신을 묶으려 하면 내용을 지우지 않고 거부한다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const archive = p('bundle.zip');
+  fc.zip(archive, [p('a.txt')]);
+  const size = fs.statSync(archive).size;
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(archive, [archive], { force: true, dryRun }), /압축 파일 자신/);
+    assert.throws(() => fc.zip(archive, [p('a.txt'), archive], { force: true, dryRun }), /압축 파일 자신/);
+  }
+  assert.strictEqual(fs.statSync(archive).size, size);
+  fc.unzip(archive, p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
+});
+
+test('zip은 압축 파일이 원본 폴더 안에 있어도 원본 내용을 묶는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.zip(p('d', 'out.zip'), [p('d')]);
+  fc.zip(p('d', 'out.zip'), [p('d')], { force: true });
+  fc.unzip(p('d', 'out.zip'), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'd', 'f.txt')), 'f');
 });
 
 test('cp는 폴더를 통째로 복사하고 원본을 남긴다', () => {

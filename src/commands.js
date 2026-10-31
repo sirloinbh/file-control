@@ -163,6 +163,34 @@ function moveOne(src, dest) {
 }
 
 // dest가 이미 있는 폴더면 그 안으로, 아니면 dest라는 이름으로 옮긴다.
+function realKey(p) {
+  const full = path.resolve(p);
+  try {
+    return pathKey(fs.realpathSync.native(full));
+  } catch {
+    const parent = path.dirname(full);
+    return parent === full ? pathKey(full) : pathKey(path.join(realKey(parent), path.basename(full)));
+  }
+}
+
+// 지우거나 옮기는 항목 자체를 가리키는 키. 링크는 가리키는 곳이 아니라 링크 자체로 본다.
+function entryKey(p) {
+  const full = path.resolve(p);
+  const stat = fs.lstatSync(full, { throwIfNoEntry: false });
+  if (!stat || stat.isSymbolicLink()) return pathKey(path.join(realKey(path.dirname(full)), path.basename(full)));
+  return realKey(full);
+}
+
+// --force는 대상을 먼저 지우므로, 대상과 원본이 겹치면 원본까지 사라진다. 지우기 전에 거부한다.
+// 8.3 이름, 대소문자, 정션을 거쳐도 같은 항목이면 잡히도록 실제 경로로 비교한다.
+function rejectMoveOverlap(src, target) {
+  const srcKey = entryKey(src);
+  const targetKey = entryKey(target);
+  if (srcKey === targetKey) throw new FcError(`원본과 대상이 같습니다: ${src} -> ${target}`);
+  if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`폴더를 자기 안으로 옮길 수 없습니다: ${src} -> ${target}`);
+  if (isSameOrUnder(targetKey, srcKey)) throw new FcError(`대상이 원본을 품고 있어 옮길 수 없습니다: ${src} -> ${target}`);
+}
+
 function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
@@ -177,10 +205,10 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
+    rejectMoveOverlap(src, target);
     let note = '';
     if (dryRun) {
       ensureParentDir(target);
-      ensureNotIntoSelf(src, target);
       claim(plannedSources, src);
       note = targetNote(plannedTargets, target, force, ' (기존 폴더 전체를 교체함)');
     }
@@ -266,6 +294,9 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   // tar가 이 이름을 옵션으로 해석해, 기존 압축 파일을 지운 뒤에 실패하거나 다른 내용을 묶는다. (#52)
   const dashed = sources.find((src) => /^[-@]/.test(path.basename(path.resolve(src))));
   if (dashed !== undefined) throw new FcError(`-나 @로 시작하는 이름은 아직 압축할 수 없습니다: ${dashed}`);
+  // 기존 압축 파일을 지운 뒤 묶으므로, 압축 파일 자신을 묶으면 원래 내용을 잃는다.
+  const self = sources.find((src) => realKey(src) === realKey(archive));
+  if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
   if (dryRun) {
     ensureParentDir(archive);
     if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
