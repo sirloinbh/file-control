@@ -254,6 +254,20 @@ test('planFlatten은 하위 폴더를 읽지 못하면 일부 계획 대신 오�
   assert.throws(() => planFlatten(dir), (err) => err instanceof FcError && err.message.includes('EPERM'));
 });
 
+test('planFlatten은 대상 이름을 확인하지 못한 파일만 건너뛰고 계획을 이어 간다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/bad.txt', 'b/ok.txt']);
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    if (p === path.join(dir, 'bad.txt')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return lstat(p, options);
+  });
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['b/ok.txt', 'ok.txt']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => item.path), [path.join(dir, 'a', 'bad.txt')]);
+  assert.match(plan.skipped[0].reason, /EPERM/);
+});
+
 test('planFlatten은 파일이 없는 타겟에서 빈 계획을 돌려준다', () => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });

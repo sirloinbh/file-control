@@ -17,7 +17,12 @@ function nameKey(name) {
 // 한도를 넘는 이름은 파일 시스템에 물어볼 수 없으니 그대로 돌려보내 호출한 쪽에서 건너뛰게 한다.
 function isTaken(name, target, taken) {
   if (taken.has(nameKey(name))) return true;
-  return name.length <= MAX_NAME && Boolean(fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }));
+  if (name.length > MAX_NAME) return false;
+  try {
+    return Boolean(fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }));
+  } catch (err) {
+    throw new FcError(`경로를 확인할 수 없습니다: ${name} (${err.code})`);
+  }
 }
 
 // a.mkv가 겹치면 a (2).mkv, a (3).mkv 순으로 비어 있는 이름을 찾는다.
