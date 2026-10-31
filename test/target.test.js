@@ -566,6 +566,44 @@ test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 �
   assert.throws(() => readRange(target, 'esc/secret.txt', { length: 1 }), /링크를 거쳐/);
 });
 
+test('grant는 대소문자 무시로만 같아 보이는 형제 폴더의 절대경로를 타겟 안 파일로 바꾸지 않는다', () => {
+  const root = tempDir();
+  const target = path.join(root, 'work');
+  const sibling = path.join(root, 'worK');
+  fs.mkdirSync(target);
+  fs.mkdirSync(sibling);
+  fs.writeFileSync(path.join(target, 'a.txt'), 'target');
+  fs.writeFileSync(path.join(sibling, 'a.txt'), 'sibling');
+  const access = grant(target, ALL_ACCESS);
+  for (const kind of ALL_ACCESS) {
+    assert.throws(() => access[kind](path.join(sibling, 'a.txt')), /타겟 폴더 밖/, kind);
+    assert.throws(() => access[kind](sibling), /타겟 폴더 밖/, kind);
+  }
+});
+
+test('resolveTarget·grant·walk는 타겟 경로의 NUL 문자를 FcError로 거부한다', () => {
+  for (const check of [resolveTarget, walk, (dir) => grant(dir, ['read'])]) {
+    assert.throws(() => check('a\0b'), FcError);
+  }
+});
+
+test('resolveTarget은 Windows에서 끝이 U+00A0·U+0085인 폴더도 거부한다', { skip: !isWindows }, (t) => {
+  useHome(t, path.join(tempDir(), 'kim'));
+  for (const end of [' ', '\u0085']) {
+    fs.mkdirSync(path.join(home, `AppData${end}`), { recursive: true });
+    assert.throws(() => resolveTarget(path.join(home, `AppData${end}`)), /끝이 점이나 공백/);
+  }
+});
+
+test('grant.read·write는 두 단계 아래에 링크가 든 폴더도 거부한다', () => {
+  const { outside, target } = accessFixture();
+  fs.mkdirSync(path.join(target, 'deep', 'er'), { recursive: true });
+  linkDir(outside, path.join(target, 'deep', 'er', 'escape'));
+  const access = grant(target, ALL_ACCESS);
+  assert.throws(() => access.read('deep'), /링크가 든 폴더/);
+  assert.throws(() => access.write('deep'), /링크가 든 폴더/);
+});
+
 test('grant는 Windows에서 드라이브 문자 표기가 달라도 타겟 안을 밖으로 잘못 보지 않는다', { skip: !isWindows }, () => {
   const { target } = accessFixture();
   const lower = target[0].toLowerCase() + target.slice(1);

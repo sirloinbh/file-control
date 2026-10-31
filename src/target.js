@@ -9,6 +9,7 @@ const { FcError } = require('./commands');
 // 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
 function resolveTarget(dir) {
   if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('타겟 폴더를 지정하세요.');
+  if (dir.includes('\0')) throw new FcError('타겟 경로에 NUL 문자가 있습니다.');
   const abs = path.resolve(dir);
   rejectNetworkPath(abs);
   const stat = fs.statSync(abs, { throwIfNoEntry: false });
@@ -147,7 +148,10 @@ function rejectAmbiguousNames(rel, p) {
 
 // 타겟 기준으로 정리한 절대경로를 돌려준다. 타겟 밖이거나 Windows에서 해석이 갈리는 이름이면 오류를 낸다.
 function resolveAccessPath(target, p) {
-  const rel = path.relative(target, resolveInside(target, p));
+  const abs = resolveInside(target, p);
+  // path.relative는 K와 U+212A를 같게 보므로, 그런 형제 폴더의 경로가 타겟 안 다른 파일로 바뀌지 않게 한다.
+  if (abs.slice(0, target.length).toUpperCase() !== target.toUpperCase()) throw new FcError(`타겟 폴더 밖의 경로입니다: ${abs} (타겟: ${target})`);
+  const rel = path.relative(target, abs);
   rejectAmbiguousNames(rel, p);
   return path.join(target, rel);
 }
