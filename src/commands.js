@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const isWindows = process.platform === 'win32';
 // Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
 const TAR = isWindows ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 class FcError extends Error {}
 
@@ -168,14 +169,18 @@ function moveOne(src, dest) {
 }
 
 // 이름 길이 한도에 걸리지 않게 대상 이름을 쓰지 않고, 이미 있는 항목을 덮어쓰지 않게 비어 있는 이름을 고른다.
-function asidePath(target) {
+function freshPath(target, prefix, ext = '') {
   const dir = path.dirname(path.resolve(target));
   let serial = 0;
-  let aside;
+  let fresh;
   do {
-    aside = path.join(dir, `.fctl-old-${process.pid}-${Date.now()}-${serial++}`);
-  } while (fs.lstatSync(aside, { throwIfNoEntry: false }));
-  return aside;
+    fresh = path.join(dir, `${prefix}-${process.pid}-${Date.now()}-${serial++}${ext}`);
+  } while (fs.lstatSync(fresh, { throwIfNoEntry: false }));
+  return fresh;
+}
+
+function asidePath(target) {
+  return freshPath(target, '.fctl-old');
 }
 
 // 대상을 먼저 지우면 이동이 실패할 때(파일 잠금 등) 대상을 잃으므로, 치워 두었다가 이동이 끝난 뒤에 지운다.
@@ -355,7 +360,7 @@ function moveToRecycleBin(target) {
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
     "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+  execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
     env: { ...process.env, FC_TARGET: path.resolve(target) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -376,15 +381,67 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   });
 }
 
+// tar.exe는 인자를 시스템 코드페이지로 받아서, 그 코드페이지에 없는 문자를 비슷한 글자로 바꾸거나(é -> e) 비정상 종료한다.
+// 그대로 넘기면 다른 파일을 묶거나 다른 폴더에 쓸 수 있으므로, 바뀌는 문자가 있으면 실행하기 전에 거부한다.
+function unsupportedChars(text) {
+  if (!isWindows) return [];
+  const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
+  if (chars.length === 0) return [];
+  const script =
+    '$e = [Text.Encoding]::Default; foreach ($c in ($env:FC_CHARS -split "`n")) ' +
+    '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0) } }';
+  const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    env: { ...process.env, FC_CHARS: chars.join('\n') },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  });
+  return output.split(/\s+/).filter(Boolean).map((code) => String.fromCodePoint(Number(code)));
+}
+
+// tar.exe는 이름 끝의 점과 공백을 지우지만 Node는 글자 그대로 다루므로, a.txt.를 넘기면 a.txt를 묶게 된다.
+function trailingDotOrSpaceName(p) {
+  return p.slice(path.parse(p).root.length).split(path.sep).find((part) => /[. ]$/.test(part));
+}
+
+function ensureTarCanUse(paths) {
+  if (!isWindows) return;
+  const trailing = paths.find(trailingDotOrSpaceName);
+  // 끝 공백이 눈에 보이도록 이름을 따옴표로 감싼다.
+  if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
+  const bad = unsupportedChars(paths.join(''));
+  if (bad.length === 0) return;
+  // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
+  const codes = bad.map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}(${char})`);
+  const where = paths.find((p) => bad.some((char) => p.includes(char)));
+  throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${codes.join(' ')} (${where})`);
+}
+
+// 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. tar처럼 원본과 그 안의 정션을 따라간다.
+function namesInside(src) {
+  if (!fs.statSync(src).isDirectory()) return [];
+  return fs.readdirSync(src, { recursive: true });
+}
+
+// 0xC0000005: tar.exe가 처리하지 못하는 이름을 만나면 오류 내용 없이 이렇게 끝난다.
+function runTar(args, options) {
+  try {
+    return execFileSync(TAR, args, options);
+  } catch (err) {
+    if (err.status === 0xc0000005) throw new FcError(`tar.exe가 비정상 종료했습니다. 처리할 수 없는 이름이 있을 수 있습니다. (${err.status})`);
+    throw err;
+  }
+}
+
 // 압축 파일 안의 항목 수를 센다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
 function countEntries(archive) {
-  const listing = execFileSync(TAR, ['-tf', path.resolve(archive)], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  const listing = runTar(['-tf', path.resolve(archive)], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split('\n').filter((line) => line.trim() !== '').length;
 }
 
 function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
+  ensureTarCanUse([path.resolve(archive), path.resolve(dest)]);
   let note = '';
   if (dryRun) {
     ensureCanMakeDir(dest);
@@ -392,34 +449,68 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
   }
   return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
-    execFileSync(TAR, ['-xf', path.resolve(archive), '-C', path.resolve(dest)], { stdio: ['ignore', 'ignore', 'pipe'] });
+    runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest)], { stdio: ['ignore', 'ignore', 'pipe'] });
   });
+}
+
+// -a는 확장자로 형식을 정하므로 임시 파일에도 같은 확장자를 붙인다. (.tar.gz 같은 겹 확장자 포함)
+// 임시 이름은 --exclude의 패턴으로도 쓰이므로, 패턴 문자가 없는 영숫자 확장자만 받는다.
+function archiveExt(archive) {
+  const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
+  return match ? match[0] : '';
+}
+
+// 먼저 임시 이름으로 묶고, 성공한 뒤에 기존 압축 파일과 바꾼다. 실패하면 기존 압축 파일을 되돌린다.
+// 압축 파일이 원본 폴더 안에 있어도 임시 파일과 기존 압축 파일이 함께 묶이지 않게 이름으로 뺀다.
+function writeArchive(archive, sources) {
+  const fresh = freshPath(archive, '.fctl-new', archiveExt(archive));
+  const aside = exists(archive) ? asidePath(archive) : null;
+  const args = ['-a', '-cf', fresh, '--exclude', path.basename(fresh)];
+  if (aside) args.push('--exclude', path.basename(aside));
+  for (const src of sources) {
+    const full = path.resolve(src);
+    const name = path.basename(full);
+    // ./를 붙이지 않으면 tar가 -나 @로 시작하는 이름을 옵션이나 지시로 해석한다.
+    args.push('-C', path.dirname(full), /^[-@]/.test(name) ? `./${name}` : name);
+  }
+  if (aside) fs.renameSync(archive, aside);
+  try {
+    runTar(args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    fs.renameSync(fresh, archive);
+  } catch (err) {
+    fs.rmSync(fresh, { force: true });
+    if (aside) {
+      try {
+        fs.renameSync(aside, archive);
+      } catch (restoreErr) {
+        throw new FcError(`압축하지 못했고 기존 압축 파일도 되돌리지 못했습니다: ${archive} (${restoreErr.code}). 기존 압축 파일은 ${aside}에 있습니다.`);
+      }
+    }
+    throw err;
+  }
+  if (aside) {
+    try {
+      fs.rmSync(aside, { force: true });
+    } catch (err) {
+      throw new FcError(`압축했지만 기존 압축 파일을 지우지 못했습니다: ${aside} (${err.code})`);
+    }
+  }
 }
 
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
-  // tar가 이 이름을 옵션으로 해석해, 기존 압축 파일을 지운 뒤에 실패하거나 다른 내용을 묶는다. (#52)
-  const dashed = sources.find((src) => /^[-@]/.test(path.basename(path.resolve(src))));
-  if (dashed !== undefined) throw new FcError(`-나 @로 시작하는 이름은 아직 압축할 수 없습니다: ${dashed}`);
-  // 기존 압축 파일을 지운 뒤 묶으므로, 압축 파일 자신을 묶으면 원래 내용을 잃는다.
+  // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
+  const root = sources.find((src) => path.basename(path.resolve(src)) === '');
+  if (root !== undefined) throw new FcError(`드라이브 루트는 묶을 수 없습니다: ${root}`);
+  // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
   if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
-  if (dryRun) {
-    ensureParentDir(archive);
-    if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
-  }
-  return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => {
-    if (exists(archive)) fs.rmSync(archive);
-    // -a: 확장자(.zip 등)에 맞는 형식으로 묶는다. 각 항목은 자기 부모 폴더 기준으로 넣는다.
-    const args = ['-a', '-cf', path.resolve(archive)];
-    for (const src of sources) {
-      const full = path.resolve(src);
-      args.push('-C', path.dirname(full), path.basename(full));
-    }
-    execFileSync(TAR, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-  });
+  ensureParentDir(archive);
+  if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
+  ensureTarCanUse([path.resolve(archive), ...sources.map((src) => path.resolve(src)), ...sources.flatMap(namesInside)]);
+  return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
 module.exports = {

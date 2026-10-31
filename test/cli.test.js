@@ -365,18 +365,20 @@ test('-- 뒤의 인자는 옵션이 아닌 이름·내용으로 본다', () => {
   }
 });
 
-test('zip은 -나 @로 시작하는 이름을 미리보기와 실제 모두 거부하고 기존 압축 파일을 지우지 않는다', () => {
+test('zip은 -나 @로 시작하는 이름을 옵션이 아닌 파일로 묶는다', () => {
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
-  fc.zip(p('bundle.zip'), [p('a.txt')]);
-  const size = fs.statSync(p('bundle.zip')).size;
-  for (const name of ['-dash.txt', '@evil.tar']) {
-    fs.writeFileSync(p(name), 'x');
-    for (const flags of [['--force'], ['--force', '--dry-run']]) {
-      assert.throws(() => run(['zip', p('bundle.zip'), p(name), ...flags]), /아직 압축할 수 없습니다/, name);
-    }
-  }
-  assert.strictEqual(fs.statSync(p('bundle.zip')).size, size);
+  // 옵션으로 해석되면 @evil.tar의 내용이나 list.txt에 적힌 파일이 대신 묶인다.
+  fs.writeFileSync(p('list.txt'), p('a.txt'));
+  fs.writeFileSync(p('-Tlist.txt'), 'dash');
+  fs.writeFileSync(p('-x'), 'x');
+  fc.zip(p('evil.zip'), [p('b.txt')]);
+  fs.copyFileSync(p('evil.zip'), p('@evil.zip'));
+  run(['zip', p('out.zip'), p('-Tlist.txt'), p('-x'), p('@evil.zip')]);
+  run(['unzip', p('out.zip'), p('out')]);
+  assert.deepStrictEqual(fs.readdirSync(p('out')).sort(), ['-Tlist.txt', '-x', '@evil.zip']);
+  assert.strictEqual(fs.readFileSync(p('out', '-Tlist.txt'), 'utf8'), 'dash');
+  assert.deepStrictEqual(fs.readFileSync(p('out', '@evil.zip')), fs.readFileSync(p('evil.zip')));
 });
 
 test('fctl을 프로세스로 실행하면 미리보기는 종료 코드 0, 오류는 1이다', () => {
