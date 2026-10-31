@@ -283,7 +283,6 @@ test('detailedName은 파일명이 폴더명을 포함하거나 내용이 같으
 
 test('detailedName은 포함 관계가 없으면 폴더명에만 제품번호가 있을 때 폴더명을 쓴다', () => {
   assert.strictEqual(detailedName('video.mp4', ['ABC-123 제목']), 'ABC-123 제목.mp4');
-  assert.strictEqual(detailedName('video_final_encoded_1080p.mp4', ['ABC-123']), 'ABC-123.mp4');
   assert.strictEqual(detailedName('ABC-123.mp4', ['여름 휴가 영상']), 'ABC-123.mp4');
   assert.strictEqual(detailedName('XYZ-999.mp4', ['ABC-123']), 'XYZ-999.mp4');
   // 영숫자가 이어지면 제품번호로 보지 않는다.
@@ -302,7 +301,65 @@ test('detailedName은 내용이 없는 이름을 비교하지 않고 폴더 이�
   assert.strictEqual(detailedName('ABC-123.mp4', ['---']), 'ABC-123.mp4');
   assert.strictEqual(detailedName('..foo', ['abc']), '..foo');
   assert.strictEqual(detailedName('ABC-123.mp4', ['ABC-123 제목.MP4']), 'ABC-123 제목.mp4');
-  assert.strictEqual(detailedName('noext', ['noext 제목']), 'noext 제목');
+});
+
+test('detailedName은 짧은 파일명이 폴더명에 글자로만 겹칠 때 폴더명을 쓰지 않는다', () => {
+  for (const [file, folder] of [
+    ['v.mp4', 'movie'],
+    ['o.txt', 'out'],
+    ['a.jpg', 'Downloads'],
+    ['2.mp4', '2021 사진 1'],
+    ['1.mp4', '2021'],
+    ['01.mp4', '2001 Space'],
+    ['ko.srt', 'Kokoro'],
+    ['en.srt', 'Frozen'],
+    ['영상.mp4', '여름영상모음'],
+  ]) {
+    assert.strictEqual(detailedName(file, [folder]), file, `${file} + ${folder}`);
+  }
+});
+
+test('detailedName은 일반 이름을 제품번호로 보지 않고 파일명의 정보를 지우지 않는다', () => {
+  for (const [file, folder] of [
+    ['2023년 결산 보고서.pdf', 'Report_2023'],
+    ['2024-05-01 회의.mp4', 'Vlog-2024'],
+    ['Episode 5.mkv', 'Season_01'],
+    ['beach.jpg', 'Photos_2021'],
+    ['setup.exe', 'Windows_10'],
+    ['Movie.2021.1080p.KOR.mkv', 'New_Folder_01'],
+    ['Movie.2021.1080p.KOR.mkv', 'ABC-123'],
+    ['video_final_encoded_1080p.mp4', 'ABC-123'],
+    ['movie.en.srt', 'ABC-123'],
+    ['movie.part1.rar', 'ABC-123'],
+    ['ABC123.mp4', 'XYZ-999'],
+    ['2.mp4', 'ABC-123'],
+  ]) {
+    assert.strictEqual(detailedName(file, [folder]), file, `${file} + ${folder}`);
+  }
+});
+
+test('detailedName은 확장자 없는 파일, 점 파일, tar 겹 확장자에 폴더명을 쓰지 않는다', () => {
+  for (const [file, folder] of [
+    ['noext', 'noext 제목'],
+    ['README', 'ABC-123'],
+    ['data', 'data.zip'],
+    ['payload', 'payload.exe'],
+    ['README', 'ABC-123.exe'],
+    ['.env', 'my .env 모음'],
+    ['.DS_Store', 'ABC-123'],
+    ['x.tar.gz', 'ABC-123 제목'],
+    ['a.tar.gz', 'a.tar 설명'],
+  ]) {
+    assert.strictEqual(detailedName(file, [folder]), file, `${file} + ${folder}`);
+  }
+});
+
+test('detailedName은 폴더명이 다른 확장자로 끝나면 이중 확장자를 만들지 않는다', () => {
+  assert.strictEqual(detailedName('x.mp4', ['ABC-123.mkv']), 'x.mp4');
+  assert.strictEqual(detailedName('report.pdf', ['report.zip']), 'report.pdf');
+  assert.strictEqual(detailedName('ABC-123.mp4', ['ABC-123 제목.zip']), 'ABC-123.mp4');
+  // 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
+  assert.strictEqual(detailedName('Movie.mp4', ['Movie.2021.1080p']), 'Movie.2021.1080p.mp4');
 });
 
 test('detailedName은 위 폴더로 올라가며 가장 자세한 이름을 고른다', () => {
@@ -312,7 +369,8 @@ test('detailedName은 위 폴더로 올라가며 가장 자세한 이름을 고�
 });
 
 test('detailedName은 NFC와 NFD 한글을 같은 내용으로 본다', () => {
-  assert.strictEqual(detailedName('한글.mp4', ['한글 제목'.normalize('NFD')]), `${'한글 제목'.normalize('NFD')}.mp4`);
+  // 탐색기에서 똑같아 보이는 이름이 생기지 않도록 폴더 이름은 NFC로 맞춘다.
+  assert.strictEqual(detailedName('한글.mp4', ['한글 제목'.normalize('NFD')]), '한글 제목.mp4');
 });
 
 test('planFlatten은 유일한 파일에만 폴더명을 쓰고 표시를 남긴다', () => {
@@ -368,6 +426,52 @@ test('planFlatten은 Windows에서 해석이 갈리는 폴더 안의 파일을 �
   assert.deepStrictEqual(plan.moves, []);
   assert.strictEqual(plan.skipped.length, 2);
   for (const item of plan.skipped) assert.match(item.reason, /다르게 해석될 수 있는 이름/);
+});
+
+test('planFlatten은 폴더명으로 고른 이름에 번호를 붙여 한도를 넘으면 원래 이름으로 돌아간다', () => {
+  const dir = tempDir();
+  // 폴더 이름에서 .mp4를 뺀 이름에 다시 .mp4를 붙이면 자기 부모 폴더와 겹쳐 번호가 필요하다.
+  const folder = `ABC-123 ${'가'.repeat(243)}.mp4`;
+  make(dir, [`${folder}/x.mp4`]);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map(({ name, fromFolder, numbered }) => [name, fromFolder, numbered]), [['x.mp4', false, false]]);
+  assert.deepStrictEqual(plan.skipped, []);
+});
+
+test('planFlatten은 비워질 자기 부모 폴더와 같은 이름도 피해 번호를 붙인다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목.mp4/x.mp4']);
+  const [move] = planFlatten(dir).moves;
+  assert.deepStrictEqual([move.name, move.fromFolder, move.numbered], ['ABC-123 제목 (2).mp4', true, true]);
+});
+
+test('planFlatten은 두 폴더가 같은 이름으로 모이면 번호로 구분한다', () => {
+  const dir = tempDir();
+  make(dir, ['a/ABC-123 제목/x.mp4', 'b/ABC-123 제목/y.mp4']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name), ['ABC-123 제목.mp4', 'ABC-123 제목 (2).mp4']);
+  assertSafeMoves(plan);
+});
+
+test('planFlatten은 NFC 파일이 있으면 NFD 폴더명에서 만든 이름에도 번호를 붙인다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목.mp4', `${'ABC-123 제목'.normalize('NFD')}/x.mp4`]);
+  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name), ['ABC-123 제목 (2).mp4']);
+});
+
+test('planFlatten은 건너뛰는 파일이 같이 있으면 유일한 파일로 보지 않는다', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/CON.mp4', 'ABC-123 제목/x.mp4']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name), ['x.mp4']);
+  assert.strictEqual(plan.skipped.length, 1);
+});
+
+test('planFlatten은 빈 형제 폴더를 세지 않고 깊은 경로까지 올라간다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/a/b/c/d/x.mp4']);
+  fs.mkdirSync(path.join(dir, 'ABC-123 제목', 'a', 'empty'));
+  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name), ['ABC-123 제목.mp4']);
 });
 
 test('planFlatten은 타겟 바로 아래의 파일 이름을 바꾸지 않는다', () => {

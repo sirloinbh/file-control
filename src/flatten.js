@@ -40,34 +40,51 @@ function freeName(name, target, taken, nextNumber) {
   }
 }
 
-// 제품번호 형식(ABC-123, abc_123). 정식 규칙은 #22에서 정한다. 잘못 고르지 않도록 구분자가 있는 형식만 보고,
-// encoded_1080p처럼 앞뒤에 영숫자가 이어지는 것은 제외한다.
-const PRODUCT_NUMBER = /(?<![A-Za-z0-9])[A-Za-z]{2,}[-_]\d{2,}(?![A-Za-z0-9])/;
+// 제품번호 형식(ABC-123). 정식 규칙은 #22에서 정한다. Report_2023 같은 일반 이름을 잡지 않도록 대문자와 -만 본다.
+const PRODUCT_NUMBER = /(?<![A-Za-z0-9])[A-Z]{2,}-\d{2,}(?![A-Za-z0-9])/;
 
-// 공백·기호·대소문자 차이를 빼고 내용만 비교한다.
-function compact(name) {
-  return name.normalize('NFC').replace(/[\s\-_.()[\]]/g, '').toUpperCase();
+// 폴더 이름의 끝이 확장자처럼 보이는지 본다. Movie.2021.1080p처럼 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
+const EXTENSION_LIKE = /\.[A-Za-z][A-Za-z0-9]{0,4}$/;
+
+// 공백·기호·대소문자 차이를 빼고 단어로 나눈다.
+function words(name) {
+  return name.normalize('NFC').toUpperCase().split(/[\s\-_.()[\]]+/).filter(Boolean);
+}
+
+// 폴더의 이어진 단어들을 붙인 것이 파일 이름과 같으면 true. 글자 단위로 찾으면 v와 movie, 2와 2021처럼 우연히 겹친다.
+function containsWords(folderWords, fileText) {
+  return folderWords.some((_, start) => {
+    let joined = '';
+    for (let i = start; i < folderWords.length && joined.length < fileText.length; i++) joined += folderWords[i];
+    return joined === fileText;
+  });
 }
 
 // 폴더명이 파일명보다 자세하면 true. 판단이 서지 않으면 파일 이름을 지키도록 false를 돌려준다.
-// 길이만으로는 고르지 않는다. video_final_encoded가 ABC-123보다 자세한 이름은 아니기 때문이다.
+// 길이만으로는 고르지 않는다. 파일 이름의 정보(날짜, 화질, 언어, 번호)는 지우면 되돌릴 수 없다.
 function isMoreDetailed(folder, base) {
-  const f = compact(folder);
-  const b = compact(base);
+  const folderWords = words(folder);
+  const baseWords = words(base);
+  const f = folderWords.join('');
+  const b = baseWords.join('');
   if (f === '' || b === '') return false;
-  if (f.length > b.length && f.includes(b)) return true;
+  if (f.length > b.length && containsWords(folderWords, b)) return true;
   if (b.includes(f)) return false;
-  return PRODUCT_NUMBER.test(folder) && !PRODUCT_NUMBER.test(base);
+  // 제품번호 폴더는 파일 이름에 잃을 정보가 없을 때(숫자 없는 한 단어: video, x)만 쓴다.
+  return PRODUCT_NUMBER.test(folder) && baseWords.length === 1 && !/\d/.test(b);
 }
 
 // 파일 이름과 폴더 이름(가까운 폴더부터) 중 가장 자세한 이름을 확장자를 유지해 돌려준다.
 function detailedName(fileName, folders) {
   const { name: base, ext } = path.parse(fileName);
+  // 확장자가 없으면 폴더 이름의 끝이 확장자가 될 수 있고(data + data.zip/), .env 같은 점 파일은 이름이 곧 정체다.
+  // .tar.gz는 폴더 이름을 붙이면 .gz만 남아 형식을 잃는다.
+  if (ext === '' || /\.tar$/i.test(base)) return fileName;
   let best = base;
   for (const folder of folders) {
-    // 폴더 이름에 확장자까지 들어 있으면(ABC-123.mp4/) 확장자가 겹치지 않게 뺀다.
-    const stem = ext && folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-    if (isMoreDetailed(stem, best)) best = stem;
+    // 폴더 이름에 같은 확장자가 들어 있으면(ABC-123.mp4/) 겹치지 않게 빼고, 다른 확장자면 이중 확장자가 되므로 쓰지 않는다.
+    const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
+    if (!EXTENSION_LIKE.test(stem) && isMoreDetailed(stem, best)) best = stem.normalize('NFC');
   }
   return best + ext;
 }
@@ -125,8 +142,12 @@ function planFlatten(dir) {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
       const detailed = detailedName(original, soleFolders(entry, fileCounts));
-      const desired = detailed.length > MAX_NAME ? original : detailed;
-      const name = freeName(desired, access.target, taken, nextNumber);
+      let desired = detailed.length > MAX_NAME ? original : detailed;
+      let name = freeName(desired, access.target, taken, nextNumber);
+      if (name.length > MAX_NAME && desired !== original) {
+        desired = original;
+        name = freeName(desired, access.target, taken, nextNumber);
+      }
       if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
       plan.moves.push({ from, to: access.write(name), name, fromFolder: desired !== original, numbered: name !== desired });
       taken.add(nameKey(name));
