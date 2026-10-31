@@ -350,8 +350,8 @@ test('grant는 부여한 작업만 허용한다', () => {
 
 test('grant는 잘못된 권한 목록을 거부한다', () => {
   const { target } = accessFixture();
-  for (const bad of [undefined, 'read', [], ['execute'], ['constructor'], ['read', 'nope']]) {
-    assert.throws(() => grant(target, bad), FcError, JSON.stringify(bad));
+  for (const bad of [undefined, 'read', [], ['execute'], ['constructor'], ['read', 'nope'], [undefined], [,], new Array(2), [['read']], [Symbol('read')]]) {
+    assert.throws(() => grant(target, bad), FcError);
   }
 });
 
@@ -540,10 +540,116 @@ test('grant는 예상 못 한 파일 시스템 오류와 잘못된 경로 값도
   const access = grant(target, ALL_ACCESS);
   for (const kind of ALL_ACCESS) {
     assert.throws(() => access[kind](undefined), FcError, `${kind} undefined`);
+    assert.throws(() => access[kind](Symbol('x')), FcError, `${kind} Symbol`);
     assert.throws(() => access[kind]('bad\0name'), FcError, `${kind} NUL`);
   }
   t.mock.method(fs.realpathSync, 'native', () => {
     throw Object.assign(new Error('denied'), { code: 'EACCES' });
   });
   assert.throws(() => access.read('sub/a.txt'), (err) => err instanceof FcError && err.message.includes('EACCES'));
+});
+
+test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 밖 형제 폴더를 정션으로 읽지 못하게 한다', () => {
+  const root = tempDir();
+  const target = path.join(root, 'work');
+  // U+212A(켈빈 기호)는 toLowerCase하면 k지만 NTFS에서는 다른 이름이다.
+  const sibling = path.join(root, 'wor\u212A');
+  fs.mkdirSync(target);
+  fs.mkdirSync(sibling);
+  fs.writeFileSync(path.join(sibling, 'secret.txt'), 'SECRET');
+  linkDir(sibling, path.join(target, 'esc'));
+  const access = grant(target, ALL_ACCESS);
+  assert.throws(() => access.read('esc/secret.txt'), /링크를 거쳐/);
+  assert.throws(() => access.write('esc/new.txt'), /링크를 거쳐/);
+  assert.throws(() => access.delete('esc/secret.txt'), /링크를 거쳐/);
+  assert.throws(() => readInside(target, 'esc/secret.txt'), /링크를 거쳐/);
+  assert.throws(() => readRange(target, 'esc/secret.txt', { length: 1 }), /링크를 거쳐/);
+});
+
+test('grant는 Windows에서 드라이브 문자 표기가 달라도 타겟 안을 밖으로 잘못 보지 않는다', { skip: !isWindows }, () => {
+  const { target } = accessFixture();
+  const lower = target[0].toLowerCase() + target.slice(1);
+  const upper = target[0].toUpperCase() + target.slice(1);
+  for (const dir of [lower, upper]) {
+    const access = grant(dir, ALL_ACCESS);
+    assert.strictEqual(access.read('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
+    assert.strictEqual(access.read(path.join(lower, 'sub', 'a.txt')), path.join(target, 'sub', 'a.txt'));
+    assert.strictEqual(access.write(path.join(upper, 'new.txt')), path.join(target, 'new.txt'));
+  }
+});
+
+test('grant.read·write는 링크가 든 폴더를 거부하고, 링크 옆의 파일과 새 경로는 허용한다', () => {
+  const { outside, target } = accessFixture();
+  linkDir(outside, path.join(target, 'sub', 'escape'));
+  const access = grant(target, ALL_ACCESS);
+  assert.throws(() => access.read('sub'), /링크가 든 폴더/);
+  assert.throws(() => access.read('.'), /링크가 든 폴더/);
+  assert.throws(() => access.write('sub'), /링크가 든 폴더/);
+  assert.strictEqual(access.read('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
+  assert.strictEqual(access.write('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
+  assert.strictEqual(access.write('sub/new.txt'), path.join(target, 'sub', 'new.txt'));
+});
+
+test('grant는 정션을 풀어낸 실제 경로에 해석이 갈리는 이름이 있으면 거부한다', { skip: !isWindows }, () => {
+  const { outside, target } = accessFixture();
+  // Node는 끝의 점을 그대로 만들지만, 돌려준 경로를 PowerShell·tar.exe에 넘기면 타겟 밖 정션 weird로 풀린다.
+  fs.mkdirSync(path.join(target, 'weird.'));
+  fs.writeFileSync(path.join(target, 'weird.', 'decoy.txt'), 'decoy');
+  linkDir(outside, path.join(target, 'weird'));
+  linkDir(path.join(target, 'weird.'), path.join(target, 'alias'));
+  const access = grant(target, ALL_ACCESS);
+  for (const kind of ALL_ACCESS) {
+    assert.throws(() => access[kind]('alias/decoy.txt'), /다르게 해석될 수 있는 이름/, kind);
+  }
+  assert.throws(() => access.write('alias/new.txt'), /다르게 해석될 수 있는 이름/);
+});
+
+test('resolveTarget은 Windows에서 끝이 점·공백인 폴더를 타겟으로 받지 않아 보호 경로 우회를 막는다', { skip: !isWindows }, (t) => {
+  const root = tempDir();
+  useHome(t, path.join(root, 'kim'));
+  for (const dir of ['AppData', 'AppData.', 'Downloads/proj./inner', 'plain']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+  assert.throws(() => grant(path.join(home, 'AppData.'), ALL_ACCESS), /끝이 점이나 공백/);
+  assert.throws(() => resolveTarget(path.join(home, 'AppData.')), /끝이 점이나 공백/);
+  assert.throws(() => walk(path.join(home, 'Downloads', 'proj.')), /끝이 점이나 공백/);
+  assert.throws(() => resolveTarget(path.join(home, 'Downloads', 'proj.', 'inner')), /끝이 점이나 공백/);
+  // 정션으로 감싸도 실제 경로 기준으로 거부한다.
+  linkDir(path.join(home, 'AppData.'), path.join(home, 'plain', 'wrapped'));
+  assert.throws(() => resolveTarget(path.join(home, 'plain', 'wrapped')), /끝이 점이나 공백/);
+  fs.mkdirSync(path.join(home, 'clean'));
+  assert.strictEqual(resolveTarget(path.join(home, 'clean')), path.join(home, 'clean'));
+});
+
+test('grant는 Windows 도구가 지우는 다른 공백 문자로 끝나는 이름도 거부한다', { skip: !isWindows }, () => {
+  const { target } = accessFixture();
+  fs.writeFileSync(path.join(target, 'keep.txt'), 'KEEP');
+  for (const end of ['\u00a0', '\u0085']) {
+    fs.writeFileSync(path.join(target, `keep.txt${end}`), 'other');
+  }
+  const access = grant(target, ALL_ACCESS);
+  for (const kind of ALL_ACCESS) {
+    assert.throws(() => access[kind]('keep.txt\u00a0'), /다르게 해석될 수 있는 이름/, kind);
+    assert.throws(() => access[kind]('keep.txt\u0085'), /다르게 해석될 수 있는 이름/, kind);
+  }
+});
+
+test('grant는 Windows에서 쓸 수 없는 문자와 변형 장치 이름을 거부한다', { skip: !isWindows }, () => {
+  const { target } = accessFixture();
+  const access = grant(target, ['write']);
+  for (const p of ['es*/new.txt', 'es?ape/new.txt', 'a*.zip', 'a|b', 'a<b', 'a>b', 'a"b', 'a\x01b', 'NUL .txt', 'CON .log', 'COM¹', 'LPT³', 'com¹.txt', 'aux .x']) {
+    assert.throws(() => access.write(p), /다르게 해석될 수 있는 이름/, p);
+  }
+});
+
+test('grant는 파일 심볼릭 링크도 타겟 밖이면 거부하고 링크 자체는 지우지 않는다', (t) => {
+  const { outside, target } = accessFixture();
+  try {
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(target, 'file-link'), 'file');
+  } catch (err) {
+    if (err.code === 'EPERM') return t.skip('심볼릭 링크를 만들 권한이 없다');
+    throw err;
+  }
+  const access = grant(target, ALL_ACCESS);
+  assert.throws(() => access.read('file-link'), /링크를 거쳐/);
+  assert.throws(() => access.write('file-link'), /링크를 거쳐/);
+  assert.throws(() => access.delete('file-link'), /링크는 삭제할 수 없습니다/);
 });
