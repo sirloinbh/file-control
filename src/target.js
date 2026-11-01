@@ -322,4 +322,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, rejectAmbiguousNames };

@@ -443,10 +443,15 @@ function runTar(args, options) {
   }
 }
 
-// 압축 파일 안의 항목 수를 센다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
-function countEntries(archive) {
-  const listing = runTar(['-tf', path.resolve(archive)], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
-  return listing.toString().split('\n').filter((line) => line.trim() !== '').length;
+// 암호가 걸린 압축 파일에서 tar.exe가 콘솔에 암호를 물어 멈추지 않도록 아무 값이나 미리 준다. 틀린 암호로 실패한다.
+const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
+
+// 압축 파일 안의 항목 이름 목록. 폴더는 /로 끝난다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
+// 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 끝 글자만 믿는다.
+function archiveEntries(archive) {
+  ensureTarCanUse([path.resolve(archive)]);
+  const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
 function unzip(archive, destDir, { dryRun = false } = {}) {
@@ -456,11 +461,11 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
   let note = '';
   if (dryRun) {
     ensureCanMakeDir(dest);
-    note = ` (항목 ${countEntries(archive)}개${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
+    note = ` (항목 ${archiveEntries(archive).length}개${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
   }
   return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
-    runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest)], { stdio: ['ignore', 'ignore', 'pipe'] });
+    runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });
   });
 }
 
@@ -537,5 +542,7 @@ module.exports = {
   copy,
   remove,
   unzip,
+  archiveEntries,
+  freshPath,
   zip,
 };
