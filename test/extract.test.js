@@ -61,6 +61,29 @@ function zipBuffer(entries) {
   return Buffer.concat([...locals, directory, end]);
 }
 
+// 항목 종류를 마음대로 넣을 수 있는 tar. { name, data, type, link } 목록을 받는다.
+function tarBuffer(entries) {
+  const blocks = [];
+  for (const { name, data = '', type = '0', link = '' } of entries) {
+    const header = Buffer.alloc(512);
+    const body = Buffer.from(data);
+    const octal = (value, width) => value.toString(8).padStart(width - 1, '0');
+    header.write(name, 0);
+    header.write(octal(0o644, 8), 100);
+    header.write(octal(0, 8), 108);
+    header.write(octal(0, 8), 116);
+    header.write(octal(body.length, 12), 124);
+    header.write(octal(0, 12), 136);
+    header.fill(' ', 148, 156);
+    header.write(type, 156);
+    header.write(link, 157);
+    header.write('ustar\0' + '00', 257, 'latin1');
+    header.write(octal(header.reduce((sum, byte) => sum + byte, 0), 7), 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return Buffer.concat([...blocks, Buffer.alloc(1024)]);
+}
+
 function makeZip(dir, name, entries) {
   const full = path.join(dir, name);
   fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -99,6 +122,100 @@ test('tar 계열도 풀고 겹 확장자를 폴더 이름에 남기지 않는다
   const result = extractArchives(dir);
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(tree(dir), ['b.tar.gz', 'b/x.txt', 'c.tar', 'c/x.txt']);
+});
+
+test('.7z도 실제로 만들어 풀 수 있다', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.mkdirSync(path.join(source, 'sub'));
+  fs.writeFileSync(path.join(source, 'sub', 'x.txt'), 'x');
+  run(['zip', path.join(dir, 'a.7z'), path.join(source, 'sub')]);
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(dir), ['a.7z', 'a/sub/x.txt']);
+});
+
+test('이름에 /가 없는 폴더 항목을 파일로 세지 않고, 안쪽 하드링크는 파일로 센다', () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.tar'), tarBuffer([
+    { name: 'sub', type: '5' },
+    { name: 'sub/x.txt', data: 'x' },
+    { name: 'copy.txt', type: '1', link: 'sub/x.txt' },
+  ]));
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(dir), ['a.tar', 'a/copy.txt', 'a/sub/x.txt']);
+});
+
+test('링크와 장치 항목은 풀기 전에 거부하고, 타겟 밖을 가리키는 하드링크는 실패한다', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  fs.writeFileSync(path.join(outside, 'o.txt'), '원본');
+  fs.writeFileSync(path.join(dir, 'sym.tar'), tarBuffer([{ name: 'ln', type: '2', link: outside }, { name: 'ln/evil.txt', data: 'x' }]));
+  fs.writeFileSync(path.join(dir, 'dev.tar'), tarBuffer([{ name: 'dev', type: '3' }]));
+  fs.writeFileSync(path.join(dir, 'hard.tar'), tarBuffer([{ name: 'h.txt', type: '1', link: path.join(outside, 'o.txt') }]));
+  for (const dryRun of [true, false]) {
+    const result = extractArchives(dir, { dryRun });
+    const reason = (name) => result.failed.find((item) => path.basename(item.archive) === name)?.reason;
+    assert.match(reason('sym.tar'), /링크나 장치/);
+    assert.match(reason('dev.tar'), /링크나 장치/);
+    if (!dryRun) assert.match(reason('hard.tar'), /압축을 풀지 못했습니다/);
+  }
+  assert.deepStrictEqual(tree(outside), ['o.txt']);
+  assert.strictEqual(fs.readFileSync(path.join(outside, 'o.txt'), 'utf8'), '원본');
+  assert.deepStrictEqual(tree(dir), ['dev.tar', 'hard.tar', 'sym.tar']);
+});
+
+test('절대경로 항목은 새 폴더 안에 풀린다', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  const evil = path.join(outside, 'evil.txt');
+  makeZip(dir, 'abs.zip', { [evil.replaceAll(path.sep, '/')]: 'x' });
+  makeZip(dir, 'unc.zip', { [`//localhost/${evil.replace(':', '$').replaceAll(path.sep, '/')}`]: 'x' });
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(outside), []);
+  assert.strictEqual(result.extracted.length, 2);
+});
+
+test('항목이 없는 파일은 실패로 보고하고 폴더를 만들지 않는다', () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'zero.zip'), '');
+  fs.writeFileSync(path.join(dir, 'blank.tar'), Buffer.alloc(1024));
+  fs.writeFileSync(path.join(dir, 'zeros.zip'), Buffer.alloc(4096));
+  fs.writeFileSync(path.join(dir, 'empty.zip'), zipBuffer([]));
+  const result = extractArchives(dir);
+  assert.strictEqual(result.extracted.length, 0);
+  assert.strictEqual(result.failed.length, 4);
+  for (const failure of result.failed) assert.match(failure.reason, /항목이 없습니다/);
+  assert.deepStrictEqual(tree(dir), ['blank.tar', 'empty.zip', 'zero.zip', 'zeros.zip']);
+  assert.deepStrictEqual(fs.readdirSync(dir).length, 4);
+});
+
+test('푸는 동안 같은 이름의 파일이 생기면 덮어쓰지 않고 실패한다', (t) => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (String(p).includes('.fctl-new') && options?.recursive) fs.writeFileSync(path.join(dir, 'a'), '사용자 파일');
+    return readdirSync(p, options);
+  });
+  const result = extractArchives(dir);
+  t.mock.restoreAll();
+  assert.match(result.failed[0].reason, /같은 이름이 이미 있어/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a'), 'utf8'), '사용자 파일');
+  assert.deepStrictEqual(tree(dir), ['a', 'a.zip']);
+  noTemp(dir);
+});
+
+test('풀면 특별한 폴더 이름이 되는 압축 파일은 건너뛴다', () => {
+  const dir = tempDir();
+  for (const name of ['.git.zip', '$RECYCLE.BIN.zip', 'System Volume Information.zip']) makeZip(dir, name, { 'x.txt': 'x' });
+  const result = extractArchives(dir);
+  assert.strictEqual(result.extracted.length, 0);
+  assert.strictEqual(result.skipped.length, 3);
+  for (const item of result.skipped) assert.match(item.reason, /특별한 폴더 이름/);
+  assert.strictEqual(fs.readdirSync(dir).length, 3);
 });
 
 test('압축 파일이 아니면 보고하지 않고, 확장자뿐인 이름은 압축 파일로 보지 않는다', () => {

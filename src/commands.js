@@ -446,11 +446,12 @@ function runTar(args, options) {
 // 암호가 걸린 압축 파일에서 tar.exe가 콘솔에 암호를 물어 멈추지 않도록 아무 값이나 미리 준다. 틀린 암호로 실패한다.
 const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
 
-// 압축 파일 안의 항목 이름 목록. 폴더는 /로 끝난다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
-// 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 끝 글자만 믿는다.
+// 압축 파일 안의 항목을 tar -tv 형식의 줄로 돌려준다. 첫 글자가 종류다(d 폴더, - 파일, h 하드링크, l 링크 등).
+// RAR는 폴더 이름에 /가 붙지 않으므로 이름으로 종류를 가리지 않는다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
+// 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 첫 글자만 믿는다.
 function archiveEntries(archive) {
   ensureTarCanUse([path.resolve(archive)]);
-  const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  const listing = runTar(['-tvf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
