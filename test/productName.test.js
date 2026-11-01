@@ -259,9 +259,9 @@ test('두 번 실행해도 번호를 또 넣지 않는다', () => {
 
 test('못 찾은 파일을 목록으로 보고하고 건드리지 않는다', () => {
   const dir = tempDir();
-  make(dir, ['video.mkv', '새 폴더/x.avi', 'summer-2023/y.webm']);
+  make(dir, ['video.flv', '새 폴더/x.avi', 'summer-2023/y.wmv']);
   const result = addProductNumbers(dir);
-  assert.deepStrictEqual(tree(dir), ['summer-2023/y.webm', 'video.mkv', '새 폴더/x.avi']);
+  assert.deepStrictEqual(tree(dir), ['summer-2023/y.wmv', 'video.flv', '새 폴더/x.avi']);
   assert.strictEqual(result.notFound.length, 3);
   assert.strictEqual(result.notFound[0].note, null);
 });
@@ -274,9 +274,9 @@ test('깨진 MP4는 사유와 함께 못 찾음으로 보고하고, 폴더명에
   assert.match(result.notFound[0].note, /MP4\/MOV 형식이 아닙니다/);
 });
 
-test('MP4 계열이 아니면 메타데이터를 읽지 않는다', (t) => {
+test('메타데이터를 읽지 않는 형식은 내용을 보지 않는다', (t) => {
   const dir = tempDir();
-  fs.writeFileSync(path.join(dir, 'a.mkv'), mp4({ title: 'ABC-123' }));
+  fs.writeFileSync(path.join(dir, 'a.avi'), mp4({ title: 'ABC-123' }));
   const readSync = t.mock.method(fs, 'readSync');
   const result = addProductNumbers(dir);
   assert.strictEqual(readSync.mock.callCount(), 0);
@@ -431,16 +431,16 @@ test('보호 경로는 거부한다', () => {
 
 test('product-number 명령은 결과를 보여 주고 실패가 있으면 오류로 끝낸다', (t) => {
   const dir = tempDir();
-  make(dir, ['ABC-123/a.mp4', 'b.mkv']);
+  make(dir, ['ABC-123/a.mp4', 'b.avi']);
   assert.match(run(['product-number', dir, '--dry-run']), /\[미리보기\] 이름 변경 1개, 이미 있음 0개, 못 찾음 1개/);
-  assert.deepStrictEqual(tree(dir), ['ABC-123/a.mp4', 'b.mkv']);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/a.mp4', 'b.avi']);
   const renameSync = t.mock.method(fs, 'renameSync', () => {
     throw Object.assign(new Error('busy'), { code: 'EBUSY' });
   });
   assert.throws(() => run(['product-number', dir]), (err) => err instanceof FcError && /실패: .*EBUSY/.test(err.message));
   renameSync.mock.restore();
-  assert.match(run(['product-number', dir]), /못 찾음: b\.mkv\n이름 변경 1개/);
-  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b.mkv']);
+  assert.match(run(['product-number', dir]), /못 찾음: b\.avi\n이름 변경 1개/);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b.avi']);
 });
 
 test('product-number 명령은 잘못된 인자를 거부한다', () => {

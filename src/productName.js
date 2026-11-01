@@ -5,6 +5,7 @@ const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant, walk, readRange } = require('./target');
 const { readMp4Metadata } = require('./mp4');
+const { readMkvMetadata } = require('./mkv');
 const { extractProductNumbers, findProductNumber, halfWidth } = require('./product');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
@@ -25,12 +26,14 @@ function isTransportStream(target, relative) {
 }
 // 메타데이터를 읽을 수 있는 형식. 나머지는 파일명과 폴더명에서만 찾는다.
 const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
+const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
 
 // 메타데이터를 읽지 못해도 파일명과 폴더명으로 계속 찾는다. 사유는 찾지 못했을 때 함께 보고한다.
 function readTags(target, entry, ext) {
-  if (!MP4_EXTENSIONS.has(ext)) return {};
+  const reader = MP4_EXTENSIONS.has(ext) ? readMp4Metadata : MKV_EXTENSIONS.has(ext) ? readMkvMetadata : null;
+  if (!reader) return {};
   try {
-    return readMp4Metadata(target, entry.relative);
+    return reader(target, entry.relative);
   } catch (err) {
     if (!(err instanceof FcError)) throw err;
     return { metadataError: err.message };
