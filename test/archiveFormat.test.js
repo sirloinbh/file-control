@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { spawnSync } = require('node:child_process');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
@@ -28,10 +29,19 @@ function mtree(secret, { signature = true } = {}) {
   return Buffer.from(signature ? `#mtree\n${line}` : line);
 }
 
-function assertNotCopied(dir) {
-  for (const entry of fs.readdirSync(dir, { recursive: true, withFileTypes: true })) {
-    if (entry.isFile() && entry.name === 'leak.txt') assert.ok(!fs.readFileSync(path.join(entry.parentPath, entry.name), 'utf8').includes(SECRET));
-  }
+const TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+
+// 이 tar.exe가 글을 mtree로 읽고 checkfs를 켜면 정말 복사하는지 본다. 그렇지 않으면 아래 시험은 아무것도 증명하지 못한다.
+function fixtureCopiesWithCheckfs(archive) {
+  const out = tempDir();
+  spawnSync(TAR, ['-xf', archive, '-C', out, '--options', 'mtree:checkfs'], { stdio: 'ignore' });
+  const leak = path.join(out, 'leak.txt');
+  return fs.existsSync(leak) && fs.readFileSync(leak, 'utf8') === SECRET;
+}
+
+function assertLeakHasNoSecret(file) {
+  assert.ok(fs.existsSync(file), `풀리지 않았습니다: ${file}`);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes(SECRET), file);
 }
 
 for (const [label, make] of [
@@ -39,7 +49,7 @@ for (const [label, make] of [
   ['서명이 없는 mtree', (secret) => mtree(secret, { signature: false })],
   ['gzip으로 감싼 mtree', (secret) => zlib.gzipSync(mtree(secret))],
 ]) {
-  test(`${label}를 풀어도 contents= 파일의 내용이 복사되지 않는다`, () => {
+  test(`${label}를 풀어도 contents= 파일의 내용이 복사되지 않는다`, (t) => {
     const outside = tempDir();
     const secret = path.join(outside, 'secret.txt');
     fs.writeFileSync(secret, SECRET);
@@ -47,13 +57,13 @@ for (const [label, make] of [
       const dir = tempDir();
       const archive = path.join(dir, name);
       fs.writeFileSync(archive, make(secret));
-      try {
-        fc.unzip(archive, path.join(dir, 'out'));
-      } catch {
-        // tar.exe 버전에 따라 거부할 수 있다. 내용이 복사되지 않으면 된다.
-      }
-      extractArchives(dir);
-      assertNotCopied(dir);
+      if (!fixtureCopiesWithCheckfs(archive)) return t.skip(`이 tar.exe는 ${name}을 mtree로 읽어 복사하지 않아 시험할 수 없다`);
+      fc.unzip(archive, path.join(dir, 'out'));
+      assertLeakHasNoSecret(path.join(dir, 'out', 'leak.txt'));
+      fs.rmSync(path.join(dir, 'out'), { recursive: true });
+      const result = extractArchives(dir);
+      assert.deepStrictEqual(result.failed, []);
+      assertLeakHasNoSecret(path.join(result.extracted[0].dest, 'leak.txt'));
       assert.strictEqual(fs.readFileSync(secret, 'utf8'), SECRET);
     }
   });
