@@ -7,6 +7,8 @@ const { grant } = require('./target');
 
 // 같은 초에 여러 번 실행해도 기존 기록을 덮어쓰지 않도록 이름 뒤에 번호를 붙여 찾는 횟수
 const MAX_NAME_ATTEMPTS = 1000;
+// 기록 파일 이름. 깨진 파일·중복 판별에서 기록 파일을 빼는 데도 쓴다.
+const REMOVAL_LOG = /^fctl-removed-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.json$/i;
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');
 
@@ -28,7 +30,7 @@ function localTime(now) {
 function describeItem(access, item) {
   const label = typeof item?.path === 'string' ? item.path : JSON.stringify(item?.path);
   if (typeof item?.path !== 'string') throw new FcError(`기록할 경로가 올바르지 않습니다: ${label}`);
-  if (typeof item.reason !== 'string' || item.reason === '') throw new FcError(`제거 사유가 없습니다: ${label}`);
+  if (typeof item.reason !== 'string' || item.reason.trim() === '') throw new FcError(`제거 사유가 없습니다: ${label}`);
   const real = access.delete(item.path);
   let stat;
   try {
@@ -37,15 +39,19 @@ function describeItem(access, item) {
     throw new FcError(`파일을 확인할 수 없습니다: ${label} (${err.code})`);
   }
   if (!stat.isFile()) throw new FcError(`파일이 아니라 기록할 수 없습니다: ${label}`);
+  if (REMOVAL_LOG.test(path.basename(real))) throw new FcError(`제거 기록은 제거 대상이 될 수 없습니다: ${label}`);
   return { path: real, size: stat.size, reason: item.reason, ...(item.details === undefined ? {} : { details: item.details }) };
 }
 
 function describeItems(access, items) {
-  const described = items.map((item) => describeItem(access, item));
+  const described = [];
   const seen = new Set();
-  for (const { path: real } of described) {
-    if (seen.has(real)) throw new FcError(`같은 파일이 두 번 있습니다: ${real}`);
-    seen.add(real);
+  // map과 달리 for...of는 배열의 빈 칸도 들러 검사한다.
+  for (const item of items) {
+    const entry = describeItem(access, item);
+    if (seen.has(entry.path)) throw new FcError(`같은 파일이 두 번 있습니다: ${entry.path}`);
+    seen.add(entry.path);
+    described.push(entry);
   }
   return described;
 }
@@ -69,6 +75,15 @@ function claimName(access, stamp, dryRun) {
   throw new FcError(`기록 파일 이름을 정하지 못했습니다: fctl-removed-${stamp}`);
 }
 
+// 파일을 건드리기 전에 직렬화해 입력 오류를 디스크 오류와 구분하고, 미리보기에서도 잡는다.
+function serialize(log) {
+  try {
+    return `${JSON.stringify(log, null, 2)}\n`;
+  } catch (err) {
+    throw new FcError(`details를 기록할 수 없습니다: ${err.message}`);
+  }
+}
+
 function removePartial(file, cause) {
   try {
     fs.rmSync(file);
@@ -83,20 +98,25 @@ function removePartial(file, cause) {
 //
 // kind: 제거 종류 (예: '깨진 파일'). items: { path, reason, details? } 목록.
 // details는 해상도·비트레이트·남긴 파일처럼 종류마다 다른 값이다. path는 타겟 기준 상대경로 또는 절대경로다.
-// 돌려주는 값: { path, count, dryRun }. 대상이 없으면 파일을 만들지 않고 null을 돌려준다.
+// 돌려주는 값: { path, count, items, dryRun }. items는 기록에 적은 항목이고 그 path가 실제 경로다.
+// 제거할 때는 입력 경로 대신 이 경로를 쓰고, 그사이 폴더가 바뀔 수 있으니 제거 직전에 access.delete로 다시 검사한다.
+// 미리보기의 path는 예상 이름이다. 시각이 달라지면 실제 이름도 달라지므로 보고에는 실제 실행의 path를 쓴다.
+// 대상이 없으면 파일을 만들지 않고 null을 돌려준다.
 // 대상 하나라도 지울 수 없는 항목이면 FcError를 내고 아무것도 남기지 않는다. 오류 없이 돌아온 뒤에 제거한다.
 function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } = {}) {
   if (typeof kind !== 'string' || kind === '') throw new FcError('제거 종류를 지정하세요.');
   if (!Array.isArray(items)) throw new FcError('제거 대상은 목록이어야 합니다.');
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new FcError('기록 시각이 올바르지 않습니다.');
   const access = grant(dir, ['write', 'delete']);
   if (items.length === 0) return null;
   const described = describeItems(access, items);
+  const text = serialize({ kind, createdAt: localTime(now), target: access.target, count: described.length, items: described });
   const { file, fd } = claimName(access, nameStamp(now), dryRun);
-  if (dryRun) return { path: file, count: described.length, dryRun };
-  const log = { kind, createdAt: localTime(now), target: access.target, count: described.length, items: described };
+  const result = { path: file, count: described.length, items: described, dryRun };
+  if (dryRun) return result;
   let failure;
   try {
-    fs.writeFileSync(fd, `${JSON.stringify(log, null, 2)}\n`);
+    fs.writeFileSync(fd, text);
     // 기록이 디스크에 닿기 전에 제거하지 않도록 돌아오기 전에 내보낸다.
     fs.fsyncSync(fd);
   } catch (err) {
@@ -108,7 +128,7 @@ function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } 
     failure ??= err;
   }
   if (failure) removePartial(file, failure);
-  return { path: file, count: described.length, dryRun };
+  return result;
 }
 
-module.exports = { writeRemovalLog };
+module.exports = { writeRemovalLog, REMOVAL_LOG };
