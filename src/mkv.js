@@ -24,6 +24,7 @@ const ID = {
   TAGS: 0x1254c367,
   TAG: 0x7373,
   TARGETS: 0x63c0,
+  TARGET_TYPE_VALUE: 0x68ca,
   TAG_TRACK_UID: 0x63c5,
   TAG_EDITION_UID: 0x63c9,
   TAG_CHAPTER_UID: 0x63c4,
@@ -39,10 +40,16 @@ const WANTED = new Set([ID.SEEK_HEAD, ID.INFO, ID.TRACKS, ID.TAGS]);
 const MAX_READS = 20000;
 // 한 요소를 메모리에 올리는 한도. 더 크면 없는 것으로 본다. 정상 파일의 Info, Tracks, Tags는 이보다 훨씬 작다.
 const MAX_ELEMENT = 16 * 1024 * 1024;
+// 파일 하나에서 읽는 총량 한도. 겹치게 만든 SeekHead가 같은 내용을 되풀이해 읽게 해도 메모리가 고갈되지 않는다.
+const MAX_TOTAL = 64 * 1024 * 1024;
+// SeekHead에서 받는 항목 수 한도. 정상 파일은 열 개 안팎이다.
+const MAX_SEEK = 1024;
 const MAX_TEXT = 64 * 1024;
 const MAX_HEADER = 12;
 const DEFAULT_SCALE = 1000000;
 const VIDEO_TRACK = 1;
+// 영화나 에피소드 수준. 값이 없으면 이 수준이다. 70은 묶음, 30은 곡이나 챕터라 파일의 제목이 아니다.
+const MOVIE_LEVEL = 50;
 
 // 앞 바이트의 첫 1 비트 위치가 길이를 정한다. 틀리면 null이다.
 function vintLength(first, max) {
@@ -107,11 +114,13 @@ function parseInfo(body, found) {
   let scale = DEFAULT_SCALE;
   let ticks = null;
   for (const child of children(body)) {
-    if (child.id === ID.TIMECODE_SCALE) scale = readUint(child.body) || null;
+    // 빈 요소는 기본값으로 읽는다. 0은 규격 위반이라 없는 값으로 본다.
+    if (child.id === ID.TIMECODE_SCALE) scale = child.body.length === 0 ? DEFAULT_SCALE : readUint(child.body) || null;
     if (child.id === ID.DURATION) ticks = readFloat(child.body);
     if (child.id === ID.TITLE) found.title ??= readText(child.body);
   }
-  if (ticks !== null && scale !== null) found.duration ??= (ticks * scale) / 1e9;
+  const seconds = ticks !== null && scale !== null ? (ticks * scale) / 1e9 : null;
+  if (Number.isFinite(seconds) && seconds > 0) found.duration ??= seconds;
 }
 
 function parseTracks(body, found) {
@@ -138,11 +147,13 @@ function parseTracks(body, found) {
   }
 }
 
-// 특정 트랙이나 챕터에 붙은 태그는 파일 전체의 제목이 아니다.
-function isGlobalTag(targets) {
+// 특정 트랙이나 챕터에 붙은 태그, 영화 수준이 아닌 태그는 파일의 제목이 아니다.
+// UID는 64비트 난수일 수 있어 숫자로 바꾸지 않고 0이 아닌 바이트가 있는지 본다.
+function isFileTag(targets) {
   if (!targets) return true;
   for (const child of children(targets)) {
-    if ([ID.TAG_TRACK_UID, ID.TAG_EDITION_UID, ID.TAG_CHAPTER_UID, ID.TAG_ATTACHMENT_UID].includes(child.id) && readUint(child.body)) return false;
+    if ([ID.TAG_TRACK_UID, ID.TAG_EDITION_UID, ID.TAG_CHAPTER_UID, ID.TAG_ATTACHMENT_UID].includes(child.id) && child.body.some((byte) => byte !== 0)) return false;
+    if (child.id === ID.TARGET_TYPE_VALUE && child.body.length > 0 && readUint(child.body) !== MOVIE_LEVEL) return false;
   }
   return true;
 }
@@ -151,7 +162,7 @@ function parseTags(body, tags) {
   for (const tag of children(body)) {
     if (tag.id !== ID.TAG) continue;
     const parts = [...children(tag.body)];
-    if (!isGlobalTag(parts.find((part) => part.id === ID.TARGETS)?.body)) continue;
+    if (!isFileTag(parts.find((part) => part.id === ID.TARGETS)?.body)) continue;
     for (const simple of parts) {
       if (simple.id !== ID.SIMPLE_TAG) continue;
       let name = null;
@@ -174,16 +185,20 @@ function parseSeekHead(body, positions) {
       if (child.id === ID.SEEK_ID) id = readUint(child.body);
       if (child.id === ID.SEEK_POSITION) position = readUint(child.body);
     }
-    if (WANTED.has(id) && position !== null) positions.push({ id, position });
+    if (!WANTED.has(id) || position === null || positions.length >= MAX_SEEK) continue;
+    if (!positions.some((item) => item.id === id && item.position === position)) positions.push({ id, position });
   }
 }
 
 function makeReader(target, real, p, size) {
   let reads = 0;
+  let total = 0;
   return (offset, length) => {
     reads += 1;
-    if (reads > MAX_READS) throw new FcError(`MKV 요소가 너무 많아 읽기를 멈췄습니다: ${p}`);
-    return readRange(target, real, { offset, length: Math.min(length, Math.max(0, size - offset)) });
+    const wanted = Math.min(length, Math.max(0, size - offset));
+    total += wanted;
+    if (reads > MAX_READS || total > MAX_TOTAL) throw new FcError(`MKV 요소가 너무 많아 읽기를 멈췄습니다: ${p}`);
+    return readRange(target, real, { offset, length: wanted });
   };
 }
 
@@ -260,13 +275,14 @@ function parseMkv(target, real, p) {
   }
 
   const duration = found.duration;
+  const bitrate = duration ? Math.round((size * 8) / duration) : null;
   return {
     title: found.title ?? tags.get('TITLE') ?? null,
     comment: tags.get('COMMENT') ?? tags.get('DESCRIPTION') ?? null,
     duration,
     width: found.width,
     height: found.height,
-    bitrate: duration ? Math.round((size * 8) / duration) : null,
+    bitrate: Number.isFinite(bitrate) && bitrate > 0 ? bitrate : null,
   };
 }
 

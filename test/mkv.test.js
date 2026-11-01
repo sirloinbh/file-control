@@ -127,6 +127,60 @@ test('트랙에 붙은 태그는 파일 전체의 값으로 쓰지 않는다', (
   assert.strictEqual(result.comment, '전체');
 });
 
+test('64비트 UID가 붙은 태그도 파일 전체의 값으로 쓰지 않는다', () => {
+  const dir = tempDir();
+  for (const id of [0x63c5, 0x63c9, 0x63c4, 0x63c6]) {
+    const tag = el(0x7373, el(0x63c0, el(id, Buffer.from('DEADBEEFCAFEBABE', 'hex'))), simple('TITLE', 'ABC-999'), simple('COMMENT', 'XYZ-111'));
+    const file = write(dir, 'a.mkv', header(), segment(tags(tag)));
+    const result = readMkvMetadata(dir, file);
+    assert.strictEqual(result.title, null);
+    assert.strictEqual(result.comment, null);
+  }
+});
+
+test('영화 수준의 태그만 파일의 제목으로 쓴다', () => {
+  const dir = tempDir();
+  const level = (value, title) => el(0x7373, el(0x63c0, el(0x68ca, Buffer.from([value]))), simple('TITLE', title));
+  const file = write(dir, 'a.mkv', header(), segment(tags(level(70, 'SER-100'), level(30, 'SNG-300'), level(50, 'EPI-200'))));
+  assert.strictEqual(readMkvMetadata(dir, file).title, 'EPI-200');
+  const series = write(dir, 'b.mkv', header(), segment(tags(level(70, 'SER-100'))));
+  assert.strictEqual(readMkvMetadata(dir, series).title, null);
+  const empty = write(dir, 'c.mkv', header(), segment(tags(el(0x7373, el(0x63c0, el(0x68ca)), simple('TITLE', 'DEF-111')))));
+  assert.strictEqual(readMkvMetadata(dir, empty).title, 'DEF-111');
+});
+
+test('겹치게 만든 SeekHead로 메모리를 고갈시키지 못한다', () => {
+  const dir = tempDir();
+  const seekEntry = (position) => el(0x4dbb, el(0x53ab, Buffer.from('114D9B74', 'hex')), el(0x53ac, uint(position)));
+  const step = 4 + 8 + seekEntry(0).length;
+  let inner = el(0xec, Buffer.alloc(1024 * 1024));
+  for (let index = 100; index >= 0; index -= 1) inner = el(0x114d9b74, seekEntry((index + 1) * step), inner);
+  const file = write(dir, 'a.mkv', header(), segment(inner));
+  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /너무 많아/.test(err.message));
+});
+
+test('SeekHead의 같은 항목은 한 번만 보고 순환해도 끝난다', () => {
+  const dir = tempDir();
+  const entry = el(0x4dbb, el(0x53ab, Buffer.from('114D9B74', 'hex')), el(0x53ac, uint(0)));
+  const file = write(dir, 'a.mkv', header(), segment(el(0x114d9b74, ...Array(5000).fill(entry)), info({ title: 'T' })));
+  assert.strictEqual(readMkvMetadata(dir, file).title, 'T');
+});
+
+test('Void와 CRC-32 요소를 건너뛴다', () => {
+  const dir = tempDir();
+  const file = write(dir, 'a.mkv', header(), segment(el(0xec, Buffer.alloc(10)), el(0xbf, uint(1)), el(0x1549a966, el(0xbf, uint(1)), el(0x7ba9, 'T'))));
+  assert.strictEqual(readMkvMetadata(dir, file).title, 'T');
+});
+
+test('크기를 모르는 표기를 1~8바이트 모두 알아본다', () => {
+  const dir = tempDir();
+  const forms = ['FF', '7FFF', '3FFFFF', '1FFFFFFF', '0FFFFFFFFF', '07FFFFFFFFFF', '03FFFFFFFFFFFF', '01FFFFFFFFFFFFFF'];
+  for (const form of forms) {
+    const file = write(dir, 'a.mkv', header(), Buffer.from(`18538067${form}`, 'hex'), info({ title: form }));
+    assert.strictEqual(readMkvMetadata(dir, file).title, form);
+  }
+});
+
 test('영상 트랙이 여럿이면 가장 큰 것을 쓴다', () => {
   const dir = tempDir();
   const file = write(dir, 'a.mkv', header(), segment(tracks(videoTrack(160, 90), videoTrack(1280, 720), videoTrack(320, 180))));
@@ -148,6 +202,26 @@ test('길이가 0이거나 숫자가 아니면 null이고 나누기 오류가 �
     assert.strictEqual(result.duration, null);
     assert.strictEqual(result.bitrate, null);
   }
+});
+
+test('계산한 길이가 비정상이면 null이다', () => {
+  const dir = tempDir();
+  for (const [ticks, scale] of [[1e308, 1000000], [5e-324, 1], [1e-300, 1]]) {
+    const file = write(dir, 'a.mkv', header(), segment(info({ ticks, scale })));
+    const result = readMkvMetadata(dir, file);
+    if (result.duration !== null) assert.ok(Number.isFinite(result.duration) && result.duration > 0);
+    assert.ok(result.bitrate === null || (Number.isFinite(result.bitrate) && result.bitrate > 0));
+  }
+  const huge = write(dir, 'b.mkv', header(), segment(info({ ticks: 1e308 })));
+  assert.strictEqual(readMkvMetadata(dir, huge).duration, null);
+});
+
+test('빈 TimecodeScale은 기본값으로, 0은 없는 값으로 읽는다', () => {
+  const dir = tempDir();
+  const empty = write(dir, 'a.mkv', header(), segment(el(0x1549a966, el(0x2ad7b1), el(0x4489, double(5000)))));
+  assert.strictEqual(readMkvMetadata(dir, empty).duration, 5);
+  const zero = write(dir, 'b.mkv', header(), segment(el(0x1549a966, el(0x2ad7b1, uint(0)), el(0x4489, double(5000)))));
+  assert.strictEqual(readMkvMetadata(dir, zero).duration, null);
 });
 
 test('MKV/WebM이 아니면 FcError를 낸다', () => {
