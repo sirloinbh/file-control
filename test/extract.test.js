@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const childProcess = require('node:child_process');
 const { FcError } = require('../src/commands');
 const { planExtractions, applyExtractions, extractArchives, formatExtractions } = require('../src/extract');
 const { run } = require('../bin/fctl');
@@ -103,14 +104,25 @@ const noTemp = (dir) => assert.deepStrictEqual(tree(dir).concat(fs.readdirSync(d
 
 test('압축 파일마다 이름이 같은 새 폴더에 풀고 압축 파일은 남긴다', () => {
   const dir = tempDir();
-  makeZip(dir, 'a.zip', { '영상.mp4': 'A', 'sub/b.txt': 'B' });
-  makeZip(dir, '하위/c.ZIP', { 'c.txt': 'C' });
+  makeZip(dir, 'a.zip', { 'video.mp4': 'A', 'sub/b.txt': 'B' });
+  makeZip(dir, 'sub/c.ZIP', { 'c.txt': 'C' });
   const result = extractArchives(dir);
-  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/sub/b.txt', 'a/영상.mp4', '하위/c.ZIP', '하위/c/c.txt'].sort());
-  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', '영상.mp4'), 'utf8'), 'A');
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/sub/b.txt', 'a/video.mp4', 'sub/c.ZIP', 'sub/c/c.txt'].sort());
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'video.mp4'), 'utf8'), 'A');
   assert.deepStrictEqual(result.extracted.map((item) => [item.name, item.entries]), [['a', 2], ['c', 1]]);
   assert.strictEqual(result.failed.length, 0);
   noTemp(dir);
+});
+
+test('코드페이지에 있는 한글 이름의 압축 파일과 항목을 푼다', (t) => {
+  // tar.exe는 코드페이지에 없는 문자를 처리하지 못해 영문 Windows에서는 시험할 수 없다.
+  const codePage = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
+  if (codePage !== '949') return t.skip(`코드페이지 ${codePage}에서는 한글을 처리하지 못한다`);
+  const dir = tempDir();
+  makeZip(dir, '하위/압축.zip', { '영상.mp4': 'A' });
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(dir), ['하위/압축.zip', '하위/압축/영상.mp4']);
 });
 
 test('tar 계열도 풀고 겹 확장자를 폴더 이름에 남기지 않는다', () => {
@@ -145,6 +157,14 @@ test('이름에 /가 없는 폴더 항목을 파일로 세지 않고, 안쪽 하
   const result = extractArchives(dir);
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(tree(dir), ['a.tar', 'a/copy.txt', 'a/sub/x.txt']);
+});
+
+test('백슬래시로 쓴 폴더 항목도 파일로 세지 않는다', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', [{ name: 'sub\\' }, { name: 'sub\\x.txt', data: 'x' }]);
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/sub/x.txt']);
 });
 
 test('링크와 장치 항목은 풀기 전에 거부하고, 타겟 밖을 가리키는 하드링크는 실패한다', () => {
