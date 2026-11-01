@@ -1,7 +1,7 @@
 'use strict';
 
 const { FcError } = require('./commands');
-const { resolveTarget, readRange, fileSizeInside } = require('./target');
+const { grant, readRange, fileSizeInside } = require('./target');
 
 // 파일 맨 앞에 올 수 있는 박스. ftyp이 없는 옛 QuickTime 파일도 받으려고 여러 개를 둔다.
 const FIRST_BOXES = new Set(['ftyp', 'styp', 'moov', 'mdat', 'free', 'skip', 'wide', 'pnot']);
@@ -26,12 +26,12 @@ const COMMENT_SOURCES = [
 const fourcc = (buffer, offset = 0) => buffer.toString('latin1', offset, offset + 4);
 
 // offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다.
-function makeReader(target, p) {
+function makeReader(target, real, p) {
   let reads = 0;
   return (offset, length) => {
     reads += 1;
     if (reads > MAX_READS) throw new FcError(`MP4 박스가 너무 많아 읽기를 멈췄습니다: ${p}`);
-    const buffer = readRange(target, p, { offset, length });
+    const buffer = readRange(target, real, { offset, length });
     if (buffer.length < length) throw new FcError(`MP4 파일을 끝까지 읽지 못했습니다: ${p}`);
     return buffer;
   };
@@ -82,14 +82,14 @@ function findMoov(read, p, size) {
   let first = true;
   while (size - offset >= 8) {
     const box = readBoxHeader(read, offset, size, true);
-    const type = fourcc(read(offset, 8), 4);
+    const type = box ? box.type : fourcc(read(offset, 8), 4);
     if (first && !FIRST_BOXES.has(type)) break;
     first = false;
     if (!box) {
       if (type === 'moov') throw new FcError(`MP4 파일의 moov 박스가 잘렸습니다: ${p}`);
       throw new FcError(`MP4 파일에 moov 박스가 없습니다. 파일이 잘렸을 수 있습니다: ${p}`);
     }
-    if (box.type === 'moov') return box;
+    if (type === 'moov') return box;
     offset = box.end;
   }
   if (first) throw new FcError(`MP4/MOV 형식이 아닙니다: ${p}`);
@@ -103,6 +103,12 @@ function readPayload(read, box, length) {
   return read(box.start, length);
 }
 
+// 버전·플래그의 첫 바이트를 돌려준다. 0, 1이 아닌 버전은 구조를 알 수 없으므로 null이다.
+function readVersion(read, box) {
+  const head = readPayload(read, box, 1);
+  return head && head[0] <= 1 ? head[0] : null;
+}
+
 // 재생 시간이 정해지지 않았으면 값이 전부 1로 채워져 있으므로 null로 본다.
 function durationValue(buffer, offset, version) {
   if (version === 1) {
@@ -114,9 +120,8 @@ function durationValue(buffer, offset, version) {
 }
 
 function readMvhd(read, box) {
-  const head = readPayload(read, box, 1);
-  if (!head) return null;
-  const version = head[0];
+  const version = readVersion(read, box);
+  if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 32 : 20);
   if (!body) return null;
   return version === 1
@@ -125,18 +130,16 @@ function readMvhd(read, box) {
 }
 
 function readMehd(read, box) {
-  const head = readPayload(read, box, 1);
-  if (!head) return null;
-  const version = head[0];
+  const version = readVersion(read, box);
+  if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 12 : 8);
   return body ? durationValue(body, 4, version) : null;
 }
 
 // 16.16 고정소수점의 정수 부분이 화면에 보이는 크기다.
 function readTkhd(read, box) {
-  const head = readPayload(read, box, 1);
-  if (!head) return null;
-  const version = head[0];
+  const version = readVersion(read, box);
+  if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 96 : 84);
   if (!body) return null;
   const at = version === 1 ? 88 : 76;
@@ -237,11 +240,11 @@ function readKeys(read, box) {
   return names;
 }
 
-// meta는 ISO 형식이면 앞에 4바이트(버전·플래그)가 있고 QuickTime 형식이면 없다. 첫 자식의 이름 위치로 가른다.
+// meta는 ISO 형식이면 앞에 0으로 찬 4바이트(버전·플래그)가 있고, QuickTime 형식이면 그 자리가 첫 자식의 크기라 0이 아니다.
 function readMeta(read, p, meta, tags) {
-  const head = meta.end - meta.start >= 8 ? read(meta.start, 8) : null;
+  const head = readPayload(read, meta, 4);
   if (!head) return;
-  const start = fourcc(head, 4) === 'hdlr' ? meta.start : meta.start + 4;
+  const start = head.readUInt32BE(0) === 0 ? meta.start + 4 : meta.start;
   let names = null;
   const items = [];
   for (const box of boxes(read, p, start, meta.end, false)) {
@@ -291,11 +294,22 @@ function firstTag(tags, sources) {
 // 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
-// MP4/MOV가 아니거나 구조가 손상됐으면 FcError를 낸다. 단 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
+// 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
+// 깨진 파일 판별기는 아니다. moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
 function readMp4Metadata(dir, p) {
-  const target = resolveTarget(dir);
-  const size = fileSizeInside(target, p);
-  const read = makeReader(target, p);
+  const access = grant(dir, ['read']);
+  const real = access.read(p);
+  try {
+    return parseMp4(access.target, real, p);
+  } catch (err) {
+    if (err.syscall) throw new FcError(`MP4 파일을 읽을 수 없습니다: ${p} (${err.code})`);
+    throw err;
+  }
+}
+
+function parseMp4(target, real, p) {
+  const size = fileSizeInside(target, real);
+  const read = makeReader(target, real, p);
   const moov = findMoov(read, p, size);
 
   let movie = null;
@@ -317,7 +331,8 @@ function readMp4Metadata(dir, p) {
     if (box.type === 'meta') readMeta(read, p, box, tags);
   }
 
-  const units = movie?.duration || fragmentDuration;
+  // mehd는 조각까지 합한 전체 길이이고 mvhd는 moov 안 부분의 길이이므로 mehd를 먼저 쓴다.
+  const units = fragmentDuration || movie?.duration;
   const duration = units && movie?.timescale ? units / movie.timescale : null;
   const video = mainVideo(tracks);
   return {

@@ -78,6 +78,12 @@ function item(type, text, kind = 1) {
   return box(type, box('data', u32(kind), u32(0), value));
 }
 
+// keys 번호로 찾는 ilst 항목
+function numbered(index, text) {
+  const value = box('data', u32(1), u32(0), latin(text));
+  return Buffer.concat([u32(value.length + 8), u32(index), value]);
+}
+
 const isoMeta = (...items) => box('meta', u32(0), hdlr('mdir'), box('ilst', ...items));
 
 function write(dir, ...parts) {
@@ -208,10 +214,6 @@ test('QuickTime 형식 meta(버전·플래그 없음)의 iTunes 항목을 읽는
 test('QuickTime 키(mdta) 항목을 읽는다', () => {
   const dir = tempDir();
   const key = (name) => box('mdta', Buffer.from(name, 'utf8'));
-  const numbered = (index, text) => {
-    const value = box('data', u32(1), u32(0), latin(text));
-    return Buffer.concat([u32(value.length + 8), u32(index), value]);
-  };
   const meta = box(
     'meta',
     hdlr('mdta'),
@@ -332,6 +334,144 @@ test('타겟 밖과 없는 파일, 폴더는 거부한다', () => {
   assert.throws(() => readMp4Metadata(dir, path.join(outside, 'o.mp4')), /타겟 폴더 밖/);
   assert.throws(() => readMp4Metadata(dir, 'none.mp4'), FcError);
   assert.throws(() => readMp4Metadata(dir, 'd'), /파일이 아닙니다/);
+});
+
+test('mehd가 있으면 mvhd보다 먼저 쓴다', () => {
+  const dir = tempDir();
+  const mvex = box('mvex', box('mehd', u32(0), u32(100000)));
+  const result = write(dir, ftyp(), box('moov', mvhd({ duration: 1000 }), mvex));
+  assert.strictEqual(result.duration, 100);
+});
+
+test('알 수 없는 버전과 안전 범위를 넘는 길이는 없는 값으로 본다', () => {
+  const dir = tempDir();
+  const v2 = (type, size) => box(type, u32(0x02000000), Buffer.alloc(size));
+  assert.strictEqual(write(dir, ftyp(), box('moov', v2('mvhd', 96))).duration, null);
+  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd({ duration: 0 }), box('mvex', v2('mehd', 8)))).duration, null);
+  const track = box('trak', v2('tkhd', 92), box('mdia', hdlr('vide')));
+  assert.strictEqual(write(dir, ftyp(), box('moov', track)).width, null);
+  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd({ version: 1, duration: 2n ** 53n }))).duration, null);
+});
+
+test('버전 1 tkhd의 크기, 길이, 켜짐 값을 읽는다', () => {
+  const dir = tempDir();
+  const shown = trak({ version: 1, width: 0, height: 0, display: { width: 853, height: 480 } });
+  const result = write(dir, ftyp(), box('moov', shown));
+  assert.deepStrictEqual([result.width, result.height], [853, 480]);
+  const long = trak({ version: 1, width: 640, height: 360, duration: 5000 });
+  const short = trak({ version: 1, width: 1400, height: 1400, duration: 40 });
+  assert.strictEqual(write(dir, ftyp(), box('moov', short, long)).width, 640);
+  const off = trak({ version: 1, width: 1400, height: 1400, duration: 9000, flags: 2 });
+  assert.strictEqual(write(dir, ftyp(), box('moov', off, long)).width, 640);
+});
+
+test('표본 항목이 없으면 화면 크기를 쓴다', () => {
+  const dir = tempDir();
+  const noEntry = box('stsd', u32(0), u32(0), Buffer.alloc(36));
+  const track = box('trak', tkhd({ width: 640, height: 360 }), box('mdia', hdlr('vide'), box('minf', box('stbl', noEntry))));
+  assert.strictEqual(write(dir, ftyp(), box('moov', track)).width, 640);
+});
+
+test('QuickTime 형식 meta는 hdlr가 먼저 오지 않아도 읽는다', () => {
+  const dir = tempDir();
+  const onlyList = box('meta', box('ilst', item('©nam', 'T')));
+  assert.strictEqual(write(dir, ftyp(), box('moov', onlyList)).title, 'T');
+  const keysFirst = box('meta', box('keys', u32(0), u32(1), box('mdta', latin('com.apple.quicktime.title'))), hdlr('mdta'), box('ilst', numbered(1, 'K')));
+  assert.strictEqual(write(dir, ftyp(), box('moov', keysFirst)).title, 'K');
+  // 형식을 가를 4바이트도 없는 meta
+  assert.strictEqual(write(dir, ftyp(), box('moov', box('meta', Buffer.alloc(3)))).title, null);
+});
+
+test('안쪽 박스의 크기 0은 끝 표시이고, 다른 틀린 크기는 strict일 때만 오류다', () => {
+  const dir = tempDir();
+  const zeros = Buffer.alloc(16);
+  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd(), zeros)).duration, 10);
+  assert.strictEqual(write(dir, ftyp(), box('moov', zeros, mvhd())).duration, null);
+  const tagged = write(dir, ftyp(), box('moov', mvhd(), box('udta', isoMeta(item('©nam', 'T')), zeros)));
+  assert.strictEqual(tagged.title, 'T');
+  for (const bad of [Buffer.concat([u32(4), latin('free')]), Buffer.concat([u32(7), latin('free')]), Buffer.concat([u32(1), latin('free')])]) {
+    assert.throws(() => write(dir, ftyp(), box('moov', bad)), /구조가 손상됐습니다/);
+    assert.strictEqual(write(dir, ftyp(), box('moov', mvhd(), box('udta', bad))).duration, 10);
+  }
+});
+
+test('8바이트만 남은 64비트 크기 박스는 FcError다', () => {
+  const dir = tempDir();
+  assert.throws(() => write(dir, ftyp(), u32(1), latin('free')), (err) => err instanceof FcError && /moov 박스가 없습니다/.test(err.message));
+});
+
+test('keys의 틀린 값은 안전하게 무시한다', () => {
+  const dir = tempDir();
+  const ilst = box('ilst', numbered(1, 'T'), numbered(0, 'Z'));
+  const withKeys = (keys) => write(dir, ftyp(), box('moov', box('meta', hdlr('mdta'), keys, ilst))).title;
+  // 크기 0 항목과 큰 개수: 이름을 끝없이 늘리지 않는다.
+  assert.strictEqual(withKeys(box('keys', u32(0), u32(0xffffffff), Buffer.alloc(64))), null);
+  // 개수보다 많은 항목은 읽지 않는다.
+  const title = box('mdta', latin('com.apple.quicktime.title'));
+  assert.strictEqual(withKeys(box('keys', u32(0), u32(0), title)), null);
+  // 남은 길이를 넘는 항목
+  assert.strictEqual(withKeys(box('keys', u32(0), u32(1), u32(9999), latin('mdta'))), null);
+  // 너무 큰 keys
+  assert.strictEqual(withKeys(box('keys', u32(0), u32(1), title, Buffer.alloc(64 * 1024))), null);
+});
+
+test('옛 QuickTime과 3GPP의 틀린 길이와 너무 큰 값은 없는 값으로 본다', () => {
+  const dir = tempDir();
+  const udta = (...parts) => write(dir, ftyp(), box('moov', box('udta', ...parts)));
+  const head = (size) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt16BE(size, 0);
+    return b;
+  };
+  assert.strictEqual(udta(box('©nam', head(100), latin('ab'))).title, null);
+  assert.strictEqual(udta(box('©nam', head(0), latin('ab'))).title, null);
+  assert.strictEqual(udta(box('©nam', Buffer.alloc(3))).title, null);
+  assert.strictEqual(udta(box('©nam', head(65000), Buffer.alloc(64 * 1024, 0x41))).title, null);
+  assert.strictEqual(udta(box('titl', Buffer.alloc(6))).title, null);
+  assert.strictEqual(udta(box('titl', Buffer.alloc(64 * 1024 + 1, 0x41))).title, null);
+});
+
+test('UTF-16LE BOM을 따른다', () => {
+  const dir = tempDir();
+  const value = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('한글', 'utf16le')]);
+  const result = write(dir, ftyp(), box('moov', box('udta', box('titl', u32(0), Buffer.alloc(2), value))));
+  assert.strictEqual(result.title, '한글');
+});
+
+test('경로와 입출력 문제는 FcError다', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  for (const bad of ['v\0.mp4', undefined, 5, 'v.mp4:ads', 'v.mp4::$DATA']) {
+    assert.throws(() => readMp4Metadata(dir, bad), FcError, String(bad));
+  }
+  t.mock.method(fs, 'readSync', () => {
+    throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'read' });
+  });
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /EBUSY/.test(err.message));
+});
+
+test('4GiB를 넘는 위치의 moov를 읽는다', (t) => {
+  // 실제로 쓰면 디스크를 6GB 쓰므로 크기와 읽기만 흉내 낸다.
+  const dir = tempDir();
+  const gap = 6 * 2 ** 30;
+  const head = Buffer.concat([ftyp(), u32(1), latin('mdat'), u64(gap + 16)]);
+  const moov = box('moov', mvhd(), trak());
+  const total = head.length + gap + moov.length;
+  const file = path.join(dir, 'v.mp4');
+  fs.writeFileSync(file, '');
+  const { statSync, fstatSync } = fs;
+  const withSize = (stat) => Object.create(stat, { size: { value: total } });
+  t.mock.method(fs, 'statSync', (p, options) => (String(p) === file ? withSize(statSync(p, options)) : statSync(p, options)));
+  t.mock.method(fs, 'fstatSync', (fd, options) => withSize(fstatSync(fd, options)));
+  t.mock.method(fs, 'readSync', (fd, buffer, at, length, position) => {
+    buffer.fill(0, at, at + length);
+    if (position < head.length) return head.copy(buffer, at, position, Math.min(head.length, position + length));
+    if (position >= head.length + gap) return moov.copy(buffer, at, position - head.length - gap, Math.min(moov.length, position - head.length - gap + length));
+    return length;
+  });
+  const result = readMp4Metadata(dir, 'v.mp4');
+  assert.strictEqual(result.width, 1920);
+  assert.strictEqual(result.bitrate, Math.round((total * 8) / 10));
 });
 
 test('mdat과 표본 표, 큰 값의 내용은 읽지 않는다', (t) => {
