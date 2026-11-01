@@ -5,16 +5,15 @@ const path = require('node:path');
 const { FcError, freshPath } = require('./commands');
 const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
-const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
+const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository, looksLikeGitDir } = require('./flatten');
 
-// NTFS는 대소문자를 구분하지 않으므로 이름 비교는 소문자로 한다.
-const nameKey = (p) => p.toLowerCase();
+// NTFS는 대소문자를 구분하지 않으므로 이름을 대문자로 비교한다. toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만든다.
+const nameKey = (p) => p.toUpperCase();
 
 function skipReason(entry) {
   const parts = entry.relative.split(path.sep);
   if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 바꾸지 않습니다.';
   if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.';
-  if (parts.some((part) => REPOSITORY_FOLDER.test(part))) return '저장소 폴더 안의 파일이라 바꾸지 않습니다.';
   return null;
 }
 
@@ -27,6 +26,10 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   const access = grant(dir, ['read', 'write']);
   const plan = { target: access.target, renames: [], inferred: [], conflicts: [], skipped: [] };
   const entries = walk(access.target);
+  // ref와 객체 이름이 곧 내용이라 이름을 바꾸면 저장소가 깨진다. 이름이 .git이 아닌 베어 저장소도 같다.
+  rejectRepository(access.target, entries);
+  const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
+  if (bare) throw new FcError(`저장소가 들어 있어 바꾸지 않습니다: ${bare.path}`);
   const existing = new Set(entries.map((entry) => nameKey(entry.path)));
   const wanted = [];
   for (const entry of entries) {
@@ -42,7 +45,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     const result = normalizeName(path.basename(entry.path));
     if (result.reason !== null) {
-      // 번호가 없는 숨김 파일까지 보고하면 목록이 묻힌다. 번호를 옮길 수 없는 경우만 알린다.
+      // 숨김, 임시, 끝이 점인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
       if (result.number !== null || /번호가 여럿/.test(result.reason)) plan.skipped.push({ path: entry.path, reason: result.reason });
       continue;
     }
@@ -73,7 +76,9 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
         const from = access.read(entry.path);
         // 대소문자만 바뀌면 access.write가 지금 파일의 실제 표기를 돌려주므로, 원본 폴더에 새 이름을 붙여 쓴다.
         const dest = key === nameKey(entry.path) ? path.join(path.dirname(from), result.name) : access.write(to);
-        plan.renames.push({ from, to: dest, name: result.name, number: result.number });
+        // 다른 파일의 8.3 짧은 이름과 겹치면 access.write가 그 파일의 긴 경로를 돌려준다.
+        if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('같은 이름이 이미 있습니다.');
+        else plan.renames.push({ from, to: dest, name: result.name, number: result.number });
       } catch (err) {
         if (!(err instanceof FcError)) throw err;
         plan.skipped.push({ path: entry.path, reason: err.message });
@@ -84,28 +89,31 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
 }
 
 // 대소문자만 바뀌는 이름은 대상이 자기 자신으로 잡혀 덮어쓰지 않는 이동이 실패한다. 임시 이름을 거친다.
+// 임시 이름으로 옮긴 사이 그 이름에 다른 프로그램이 파일을 만들 수 있다. 그 파일을 덮어쓰지 않도록 되돌릴 때도 덮어쓰지 않는 이동을 쓴다.
 function renameCaseOnly(from, to, name) {
   const middle = freshPath(from, '.fctl-new');
   fs.renameSync(from, middle);
-  let moved = false;
+  let cause;
   try {
-    moved = moveWithoutOverwrite(middle, to);
+    // 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생기므로 먼저 본다.
+    if (!fs.lstatSync(to, { throwIfNoEntry: false }) && moveWithoutOverwrite(middle, to)) return;
+    cause = new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${name}`);
   } catch (err) {
-    restoreCaseOnly(middle, from, err.code);
-    throw err;
+    cause = err;
   }
-  if (!moved) {
-    restoreCaseOnly(middle, from, 'EEXIST');
-    throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${name}`);
-  }
+  restoreCaseOnly(middle, from, cause);
+  throw cause;
 }
 
-function restoreCaseOnly(middle, from, code) {
+function restoreCaseOnly(middle, from, cause) {
+  let restored = false;
+  let reason = 'EEXIST';
   try {
-    fs.renameSync(middle, from);
+    if (!fs.lstatSync(from, { throwIfNoEntry: false })) restored = moveWithoutOverwrite(middle, from);
   } catch (err) {
-    throw new FcError(`이름을 바꾸지 못했고 되돌리지도 못했습니다: ${middle} -> ${from} (${code}, ${err.code})`);
+    reason = err.code ?? err.message;
   }
+  if (!restored) throw new FcError(`이름을 바꾸지 못했고 되돌리지도 못했습니다. 파일은 ${middle}에 있습니다. (${cause.code ?? cause.message}, ${reason})`);
 }
 
 // 계획과 실행 사이에 원본이 링크로 바뀌었거나 이름이 찼으면 바꾸지 않는다. 덮어쓰지 않는다.

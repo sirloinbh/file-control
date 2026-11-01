@@ -101,6 +101,90 @@ test('되돌리지도 못하면 임시 이름을 알린다', (t) => {
   assert.strictEqual(fs.readFileSync(path.join(dir, left), 'utf8'), 'abc-123.mp4');
 });
 
+test('대소문자 변경 중 원래 이름에 다른 파일이 생기면 덮어쓰지 않고 임시 이름을 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['abc-123.mp4']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    renameSync(from, to);
+    count += 1;
+    if (count === 1) fs.writeFileSync(path.join(dir, 'abc-123.mp4'), '다른 프로그램');
+  });
+  const result = normalizeFiles(dir, { includeLowercase: true });
+  t.mock.restoreAll();
+  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'abc-123.mp4'), 'utf8'), '다른 프로그램');
+  const left = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
+  assert.strictEqual(fs.readFileSync(path.join(dir, left), 'utf8'), 'abc-123.mp4');
+});
+
+test('대소문자 변경 중 자리표시에 내용이 생기면 그 내용을 지우지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['abc-123.mp4']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    count += 1;
+    if (count === 2) {
+      fs.writeFileSync(to, '다른 프로그램');
+      throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    }
+    return renameSync(from, to);
+  });
+  const result = normalizeFiles(dir, { includeLowercase: true });
+  t.mock.restoreAll();
+  assert.doesNotMatch(result.failed[0].reason, /undefined/);
+  assert.match(result.failed[0].reason, /되돌리지도 못했습니다/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), '다른 프로그램');
+});
+
+test('대소문자 변경 중 끊어진 정션이 생겨도 타겟 밖에 만들지 않는다', (t) => {
+  const dir = tempDir();
+  const outside = tempDir();
+  make(dir, ['abc-123.mp4']);
+  const gone = path.join(outside, 'gone');
+  const renameSync = fs.renameSync;
+  let count = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    renameSync(from, to);
+    count += 1;
+    if (count === 1) {
+      fs.mkdirSync(gone);
+      fs.symlinkSync(gone, path.join(dir, 'ABC-123.mp4'), 'junction');
+      fs.rmdirSync(gone);
+    }
+  });
+  const result = normalizeFiles(dir, { includeLowercase: true });
+  t.mock.restoreAll();
+  assert.match(result.failed[0].reason, /되돌리지도 못했습니다/);
+  assert.deepStrictEqual(fs.readdirSync(outside), []);
+  const left = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
+  assert.ok(left);
+});
+
+test('그리스 문자처럼 대소문자 변환이 문맥을 타는 이름의 겹침도 잡는다', () => {
+  const dir = tempDir();
+  make(dir, ['[ABC-123] ΑΣ 제목.mp4', '_ABC-123_ ασ 제목.mp4']);
+  const result = normalizeFiles(dir);
+  assert.strictEqual(result.renamed.length, 0);
+  assert.deepStrictEqual(result.failed, []);
+  assert.strictEqual(result.conflicts.length, 2);
+});
+
+test('저장소가 들어 있거나 타겟이 저장소 안이면 전체를 거부한다', () => {
+  const dir = tempDir();
+  make(dir, ['repo/.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
+  assert.throws(() => normalizeFiles(dir), /저장소/);
+  assert.throws(() => normalizeFiles(path.join(dir, 'repo', '.git')), /저장소/);
+  const bare = tempDir();
+  make(bare, ['backup.git/HEAD', 'backup.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
+  fs.mkdirSync(path.join(bare, 'backup.git', 'objects'));
+  assert.throws(() => normalizeFiles(bare), /저장소/);
+  assert.throws(() => normalizeFiles(path.join(bare, 'backup.git')), /저장소/);
+  assert.ok(fs.existsSync(path.join(bare, '영상 ABC-123.mp4')));
+});
+
 test('결과가 다른 결과와 겹치면 어느 쪽도 바꾸지 않고 보고한다', () => {
   const dir = tempDir();
   const files = ['[ABC-123].mp4', '_ABC-123_.mp4', 'sub/[ABC-123].mp4', '영상 XYZ-999.mp4'];
@@ -152,16 +236,16 @@ test('계획 뒤에 원본이나 부모가 바뀌면 그 파일만 실패하고 
   assert.deepStrictEqual(fs.readdirSync(outside), ['[ABC-123].mp4']);
 });
 
-test('잔여물, 시스템 폴더, 저장소, 링크는 바꾸지 않고 보고한다', () => {
+test('잔여물, 시스템 폴더, 링크는 바꾸지 않고 보고한다', () => {
   const dir = tempDir();
   const outside = tempDir();
   make(outside, ['[ABC-123].mp4']);
-  const files = ['.fctl-old-1-2-0/[ABC-123].mp4', '$RECYCLE.BIN/[ABC-123].mp4', '.git/[ABC-123].mp4'];
+  const files = ['.fctl-old-1-2-0/[ABC-123].mp4', '$RECYCLE.BIN/[ABC-123].mp4'];
   make(dir, files);
   fs.symlinkSync(outside, path.join(dir, '[ABC-123]'), 'junction');
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir).filter((name) => !name.startsWith('[ABC-123]')), [...files].sort());
-  assert.strictEqual(result.skipped.length, 4);
+  assert.strictEqual(result.skipped.length, 3);
   assert.deepStrictEqual(fs.readdirSync(outside), ['[ABC-123].mp4']);
 });
 

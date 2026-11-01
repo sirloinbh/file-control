@@ -366,4 +366,4 @@ function formatFlatten(result) {
   return lines.join('\n');
 }
 
-module.exports = { planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, rejectRepository };
+module.exports = { planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, rejectRepository, looksLikeGitDir };
