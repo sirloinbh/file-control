@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { planFlatten, detailedName } = require('../src/flatten');
+const { planFlatten, detailedName, flatten, formatFlatten } = require('../src/flatten');
+const { run } = require('../bin/fctl');
+const { spawnSync } = require('node:child_process');
 
 const isWindows = process.platform === 'win32';
 
@@ -46,7 +48,7 @@ test('planFlatten은 하위 폴더의 모든 파일을 타겟 바로 아래로 �
     ['a/one.mkv', 'one.mkv'],
     ['z/three.txt', 'three.txt'],
   ]);
-  assert.deepStrictEqual(plan.moves[0], { from: path.join(dir, 'a', 'b', 'c', 'two.mp4'), to: path.join(dir, 'two.mp4'), name: 'two.mp4', fromFolder: false, numbered: false });
+  assert.deepStrictEqual(plan.moves[0], { from: path.join(dir, 'a', 'b', 'c', 'two.mp4'), to: path.join(dir, 'two.mp4'), name: 'two.mp4', desired: 'two.mp4', fromFolder: false, numbered: false });
   assert.deepStrictEqual(plan.stay, [path.join(dir, 'top.txt')]);
   assert.deepStrictEqual(plan.skipped, []);
 });
@@ -507,6 +509,514 @@ test('planFlatten은 타겟 바로 아래의 파일 이름을 바꾸지 않는�
   const plan = planFlatten(dir);
   assert.deepStrictEqual(plan.moves, []);
   assert.deepStrictEqual(plan.stay, [path.join(dir, 'ABC-123.mp4')]);
+});
+
+// 파일 경로와 내용을 모은다. make는 내용으로 원래 경로를 쓰므로 어느 파일이 어디로 갔는지 알 수 있다.
+function contents(dir) {
+  return Object.fromEntries(
+    fs
+      .readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => {
+        const full = path.join(entry.parentPath, entry.name);
+        return [path.relative(dir, full).split(path.sep).join('/'), fs.readFileSync(full, 'utf8')];
+      }),
+  );
+}
+
+test('flatten은 파일을 타겟 바로 아래로 옮기고 내용을 그대로 둔다', () => {
+  const dir = tempDir();
+  make(dir, ['a/one.mkv', 'a/b/c/two.mp4', 'top.txt']);
+  const result = flatten(dir);
+  assert.deepStrictEqual(contents(dir), { 'one.mkv': 'a/one.mkv', 'top.txt': 'top.txt', 'two.mp4': 'a/b/c/two.mp4' });
+  assert.deepStrictEqual(result.moved.map((move) => move.name).sort(), ['one.mkv', 'two.mp4']);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.stay, [path.join(dir, 'top.txt')]);
+});
+
+test('flatten은 이름이 겹쳐도 덮어쓰지 않고 번호를 붙인다', () => {
+  const dir = tempDir();
+  make(dir, ['v.mkv', 'a/v.mkv', 'b/v.mkv', 'V (2).MKV/inner.txt']);
+  flatten(dir);
+  const files = contents(dir);
+  assert.deepStrictEqual(Object.values(files).sort(), ['V (2).MKV/inner.txt', 'a/v.mkv', 'b/v.mkv', 'v.mkv']);
+  assert.strictEqual(files['v.mkv'], 'v.mkv');
+  assert.strictEqual(files['v (3).mkv'], 'a/v.mkv');
+  assert.strictEqual(files['v (4).mkv'], 'b/v.mkv');
+});
+
+test('flatten은 폴더명으로 고른 이름으로 옮기고 확장자를 유지한다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/abc_123.mp4', 'XYZ-001 시리즈/ep1.mp4', 'XYZ-001 시리즈/ep2.mp4']);
+  flatten(dir);
+  assert.deepStrictEqual(contents(dir), {
+    'ABC-123 제목.mp4': 'ABC-123 제목/abc_123.mp4',
+    'ep1.mp4': 'XYZ-001 시리즈/ep1.mp4',
+    'ep2.mp4': 'XYZ-001 시리즈/ep2.mp4',
+  });
+});
+
+test('flatten은 계획끼리의 8.3 짧은 이름 겹침을 실행 때 잡아 덮어쓰지 않는다', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  make(dir, ['probe-long-file-name.txt']);
+  const hasShortNames = fs.existsSync(path.join(dir, 'PROBE-~1.TXT'));
+  fs.rmSync(path.join(dir, 'probe-long-file-name.txt'));
+  if (!hasShortNames) return t.skip('이 볼륨은 8.3 이름이 꺼져 있다');
+  make(dir, ['a/longfilename.txt', 'b/LONGFI~1.TXT']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name), ['longfilename.txt', 'LONGFI~1.TXT']);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.moved.map(({ name, numbered }) => [name, numbered]), [
+    ['longfilename.txt', false],
+    ['LONGFI~1 (2).TXT', true],
+  ]);
+  const files = contents(dir);
+  assert.strictEqual(files['longfilename.txt'], 'a/longfilename.txt');
+  assert.strictEqual(files['LONGFI~1 (2).TXT'], 'b/LONGFI~1.TXT');
+});
+
+// 실행 단계의 첫 이동 직전에 끼어든다. 계획은 이미 끝난 뒤다.
+function beforeFirstMove(t, action) {
+  const open = fs.openSync;
+  let done = false;
+  t.mock.method(fs, 'openSync', (p, flags, ...rest) => {
+    if (!done && flags === 'wx') {
+      done = true;
+      action();
+    }
+    return open(p, flags, ...rest);
+  });
+}
+
+test('flatten은 계획 뒤에 대상 이름이 차면 번호를 다시 고르고 다른 계획의 이름을 뺏지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/v.txt', 'b/v.txt', 'c/w.txt']);
+  beforeFirstMove(t, () => fs.writeFileSync(path.join(dir, 'v.txt'), 'someone else'));
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.failed, []);
+  // v (2).txt는 b/v.txt 몫으로 계획됐으므로 a/v.txt는 v (3).txt로 간다.
+  assert.deepStrictEqual(result.moved.map(({ name, numbered }) => [name, numbered]), [
+    ['v (3).txt', true],
+    ['v (2).txt', true],
+    ['w.txt', false],
+  ]);
+  assert.deepStrictEqual(contents(dir), { 'v.txt': 'someone else', 'v (3).txt': 'a/v.txt', 'v (2).txt': 'b/v.txt', 'w.txt': 'c/w.txt' });
+});
+
+test('flatten은 계획 뒤에 대상이 끊어진 정션이 되면 정션을 지우지 않고 타겟 밖에 폴더를 만들지 않는다', () => {
+  const root = tempDir();
+  const target = path.join(root, 'target');
+  make(root, ['out/keep.txt', 'out/gone/x', 'target/a/x.txt']);
+  const plan = planFlatten(target);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name), ['x.txt']);
+  linkDir(path.join(root, 'out', 'gone'), path.join(target, 'x.txt'));
+  fs.rmSync(path.join(root, 'out', 'gone'), { recursive: true });
+  // 계획을 다시 세우면 이름을 피하므로, 실행 단계만 시험하도록 첫 lstat을 숨긴다.
+  const lstat = fs.lstatSync;
+  const hide = test.mock.method(fs, 'lstatSync', (p, options) => {
+    if (p === path.join(target, 'x.txt') && hide.mock.calls.filter((call) => call.arguments[0] === p).length <= 1) return undefined;
+    return lstat(p, options);
+  });
+  try {
+    const result = flatten(target);
+    assert.deepStrictEqual(result.failed, []);
+    assert.deepStrictEqual(result.moved.map((move) => move.name), ['x (2).txt']);
+  } finally {
+    hide.mock.restore();
+  }
+  assert.ok(fs.lstatSync(path.join(target, 'x.txt')).isSymbolicLink());
+  assert.ok(!fs.existsSync(path.join(root, 'out', 'gone')));
+  assert.deepStrictEqual(fs.readdirSync(path.join(root, 'out')), ['keep.txt']);
+});
+
+test('flatten은 계획 뒤에 원본이 폴더로 바뀌면 옮기지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/ok.txt']);
+  const realpath = fs.realpathSync.native;
+  let calls = 0;
+  t.mock.method(fs.realpathSync, 'native', (p) => {
+    if (p === path.join(dir, 'a', 'x.txt') && ++calls === 2) {
+      fs.rmSync(p);
+      fs.mkdirSync(p);
+      fs.writeFileSync(path.join(p, 'inner.txt'), 'inner');
+    }
+    return realpath(p);
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
+  assert.match(result.failed[0].reason, /파일이 아니게/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'x.txt', 'inner.txt'), 'utf8'), 'inner');
+});
+
+test('flatten은 계획 뒤에 부모가 안쪽을 가리키는 정션으로 바뀌면 다른 파일을 옮기지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/x.txt', 'c/ok.txt']);
+  const realpath = fs.realpathSync.native;
+  let calls = 0;
+  t.mock.method(fs.realpathSync, 'native', (p) => {
+    if (p === path.join(dir, 'a', 'x.txt') && ++calls === 2) {
+      fs.rmSync(path.join(dir, 'a'), { recursive: true });
+      linkDir(path.join(dir, 'b'), path.join(dir, 'a'));
+    }
+    return realpath(p);
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /경로가 바뀌었습니다/);
+  // b/x.txt는 a의 몫이 아니라 자기 몫으로 옮겨진다.
+  assert.strictEqual(contents(dir)['x (2).txt'], 'b/x.txt');
+  assert.ok(!Object.keys(contents(dir)).includes('x.txt'));
+});
+
+test('flatten은 자리표시에 다른 내용이 생기면 지우지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  t.mock.method(fs, 'renameSync', () => {
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'someone else');
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /다른 내용이 생겨/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'x.txt'), 'utf8'), 'someone else');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'x.txt'), 'utf8'), 'a/x.txt');
+});
+
+test('flatten은 Git 저장소가 들어 있으면 아무것도 옮기지 않는다', () => {
+  for (const files of [['.git/HEAD', 'a/x.txt'], ['sub/.git/HEAD', 'sub/src/x.js', 'y/z.txt'], ['sub/.git', 'sub/x.js'], ['sub/.GIT/HEAD', 'q/x.txt']]) {
+    const dir = tempDir();
+    make(dir, files);
+    const before = contents(dir);
+    assert.throws(() => flatten(dir), /저장소/, files.join(' '));
+    assert.throws(() => flatten(dir, { dryRun: true }), /저장소/);
+    assert.throws(() => planFlatten(dir), /저장소/);
+    assert.deepStrictEqual(contents(dir), before);
+  }
+});
+
+const GIT_FILES = ['HEAD', 'objects/ab/cdef', 'refs/heads/main'];
+
+test('flatten은 베어 저장소가 들어 있거나 타겟이 저장소 폴더 안이면 아무것도 옮기지 않는다', () => {
+  const dir = tempDir();
+  make(dir, [...GIT_FILES.map((f) => `T/backup.git/${f}`), 'T/a/y.txt', ...GIT_FILES.map((f) => `r/.git/${f}`), 'r/src/deep/x.js']);
+  const before = contents(dir);
+  for (const target of ['T', 'T/backup.git', 'T/backup.git/objects', 'r/.git', 'r/.git/objects', 'r']) {
+    assert.throws(() => flatten(path.join(dir, target)), /저장소/, target);
+    assert.throws(() => planFlatten(path.join(dir, target)), /저장소/, target);
+  }
+  assert.deepStrictEqual(contents(dir), before);
+});
+
+test('flatten은 저장소의 일반 하위 폴더와 HEAD 파일만 있는 폴더를 거부하지 않는다', () => {
+  const dir = tempDir();
+  make(dir, [...GIT_FILES.map((f) => `r/.git/${f}`), 'r/src/deep/x.js', 'plain/h/HEAD', 'plain/h/x.txt']);
+  assert.deepStrictEqual(flatten(path.join(dir, 'r', 'src')).moved.map((move) => move.name), ['x.js']);
+  assert.deepStrictEqual(flatten(path.join(dir, 'plain')).moved.map((move) => move.name).sort(), ['HEAD', 'x.txt']);
+  assert.ok(fs.existsSync(path.join(dir, 'r', '.git', 'objects', 'ab', 'cdef')));
+});
+
+test('fctl flatten은 드라이브 문자만 쓴 타겟을 거부하고 절대경로는 받는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  for (const target of ['C:', 'c:', 'D:sub']) {
+    assert.throws(() => run(['flatten', target, '--dry-run']), /드라이브 문자/, target);
+  }
+  assert.match(run(['flatten', dir, '--dry-run']), /이동 1개/);
+});
+
+test('flatten은 자리표시가 이미 사라졌으면 원래 오류를 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  t.mock.method(fs, 'renameSync', () => {
+    fs.rmSync(path.join(dir, 'x.txt'));
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /locked/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'x.txt'), 'utf8'), 'a/x.txt');
+});
+
+test('flatten은 자리표시를 확인하지 못해도 원래 오류 코드를 남긴다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  const lstat = fs.lstatSync;
+  let failed = false;
+  t.mock.method(fs, 'renameSync', () => {
+    failed = true;
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    if (failed && p === path.join(dir, 'x.txt')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return lstat(p, options);
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /EBUSY, EPERM/);
+});
+
+test('flatten은 다른 버전 관리 폴더가 들어 있거나 타겟이 그 안이어도 아무것도 옮기지 않는다', () => {
+  for (const name of ['.hg', '.svn', '.jj', '.SVN']) {
+    const dir = tempDir();
+    make(dir, [`p/${name}/store/data`, 'p/src/x.txt']);
+    const before = contents(dir);
+    assert.throws(() => flatten(dir), /저장소/, name);
+    assert.throws(() => flatten(path.join(dir, 'p', name)), /저장소/, name);
+    assert.deepStrictEqual(contents(dir), before);
+  }
+});
+
+test('flatten은 이름만 비슷한 .gitignore, .github를 저장소로 보지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['p/.gitignore', '.github/ci.yml', 'q/git/x.txt']);
+  assert.deepStrictEqual(flatten(dir).moved.map((move) => move.name).sort(), ['.gitignore', 'ci.yml', 'x.txt']);
+});
+
+test('flatten은 Windows 시스템 폴더 안의 파일을 옮기지 않고 사유를 남긴다', () => {
+  const dir = tempDir();
+  make(dir, ['$RECYCLE.BIN/S-1-5/$Rabc.txt', 'sub/System Volume Information/t.dat', 'q/$recycle.bin/y.txt', 'a/ok.txt']);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
+  assert.strictEqual(result.skipped.filter((item) => /시스템 폴더/.test(item.reason)).length, 3);
+  assert.ok(fs.existsSync(path.join(dir, '$RECYCLE.BIN', 'S-1-5', '$Rabc.txt')));
+});
+
+test('flatten은 잔여물과 이름만 비슷한 정상 파일을 구분한다', () => {
+  const dir = tempDir();
+  make(dir, ['a/.fctl-old-2024-01-보고서.txt', 'b/.fctl-new-2-3메모.md', 'c/.fctl-old-1.txt', 'd/.fctl-old-1-2-0.bak', 'e/.fctl-new-1-2-0.tar.gz']);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name).sort(), ['.fctl-new-2-3메모.md', '.fctl-old-1.txt', '.fctl-old-2024-01-보고서.txt'].sort());
+  assert.strictEqual(result.skipped.length, 2);
+});
+
+test('flatten은 정션을 거친 타겟에서 실제 폴더에 적용하고 정션을 그대로 둔다', () => {
+  const root = tempDir();
+  make(root, ['real/a/x.txt']);
+  linkDir(path.join(root, 'real'), path.join(root, 'alias'));
+  const result = flatten(path.join(root, 'alias'));
+  assert.strictEqual(result.target, path.join(root, 'real'));
+  assert.strictEqual(fs.readFileSync(path.join(root, 'real', 'x.txt'), 'utf8'), 'real/a/x.txt');
+  assert.ok(fs.lstatSync(path.join(root, 'alias')).isSymbolicLink());
+});
+
+test('fctl flatten을 프로세스로 실행하면 성공은 0, 인자 오류와 저장소는 1로 끝난다', () => {
+  const root = tempDir();
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home);
+  make(root, ['t/a/x.txt', 'wide/sub folder/b/y.txt', 'wide/z/q.txt', 'repo/.git/HEAD', 'repo/a/b.txt']);
+  const env = { ...process.env, USERPROFILE: home, HOME: home };
+  const bin = path.join(__dirname, '..', 'bin', 'fctl.js');
+  const fctl = (...args) => spawnSync(process.execPath, [bin, ...args], { encoding: 'utf8', env });
+  const ok = fctl('flatten', path.join(root, 't'));
+  assert.strictEqual(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /이동 1개/);
+  assert.ok(fs.existsSync(path.join(root, 't', 'x.txt')));
+  // 따옴표 없는 공백 경로: 앞부분인 wide를 평탄화하면 안 된다.
+  const split = fctl('flatten', path.join(root, 'wide'), 'sub', 'folder');
+  assert.strictEqual(split.status, 1);
+  assert.match(split.stderr, /타겟은 하나만/);
+  // -- 뒤의 --dry-run은 옵션이 아니므로 실제로 옮기면 안 된다.
+  const hidden = fctl('flatten', '--', path.join(root, 'wide'), '--dry-run');
+  assert.strictEqual(hidden.status, 1);
+  assert.ok(fs.existsSync(path.join(root, 'wide', 'z', 'q.txt')));
+  const permanent = fctl('flatten', path.join(root, 'wide'), '--permanent');
+  assert.strictEqual(permanent.status, 1);
+  const repo = fctl('flatten', path.join(root, 'repo'));
+  assert.strictEqual(repo.status, 1);
+  assert.match(repo.stderr, /저장소/);
+  assert.ok(fs.existsSync(path.join(root, 'repo', 'a', 'b.txt')));
+});
+
+test('flatten은 비어 있는 다음 번호 없이 이름 한도를 넘으면 실패로 알린다', (t) => {
+  const dir = tempDir();
+  const fits = `${'F'.repeat(251)}.txt`;
+  make(dir, [`a/${fits}`]);
+  beforeFirstMove(t, () => fs.writeFileSync(path.join(dir, fits), 'someone else'));
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /이름이 너무 깁니다/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', fits), 'utf8'), `a/${fits}`);
+});
+
+test('flatten은 대상이 그사이 폴더가 돼도 그 안으로 넣거나 덮어쓰지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/v.txt', 'b/z.txt']);
+  const original = fs.openSync;
+  t.mock.method(fs, 'openSync', (p, flags, ...rest) => {
+    if (flags === 'wx' && path.basename(p) === 'v.txt' && !fs.existsSync(path.join(dir, 'v.txt'))) fs.mkdirSync(path.join(dir, 'v.txt'));
+    return original(p, flags, ...rest);
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'v.txt')), []);
+  assert.strictEqual(contents(dir)['v (2).txt'], 'a/v.txt');
+});
+
+test('flatten은 한 파일이 실패해도 나머지를 옮기고 자리표시 파일을 남기지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/locked.txt', 'b/ok.txt']);
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(from) === 'locked.txt') throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
+  assert.strictEqual(result.failed.length, 1);
+  assert.strictEqual(result.failed[0].from, path.join(dir, 'a', 'locked.txt'));
+  assert.match(result.failed[0].reason, /locked/);
+  assert.deepStrictEqual(contents(dir), { 'a/locked.txt': 'a/locked.txt', 'ok.txt': 'b/ok.txt' });
+});
+
+test('flatten은 자리표시 파일을 지우지 못하면 그 위치를 실패 사유에 남긴다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  t.mock.method(fs, 'renameSync', () => {
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  const rm = fs.rmSync;
+  t.mock.method(fs, 'rmSync', (p, options) => {
+    if (p === path.join(dir, 'x.txt')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return rm(p, options);
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /자리표시 파일/);
+  assert.ok(result.failed[0].reason.includes(path.join(dir, 'x.txt')));
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'x.txt'), 'utf8'), 'a/x.txt');
+});
+
+test('flatten은 계획 뒤에 원본이 사라지면 그 항목만 실패로 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/gone.txt', 'b/ok.txt']);
+  const write = fs.lstatSync;
+  let removed = false;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    // 실행 단계의 첫 원본 검사 직전에 지운다.
+    if (!removed && p === path.join(dir, 'a', 'gone.txt')) {
+      removed = true;
+      fs.rmSync(p);
+    }
+    return write(p, options);
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
+  assert.strictEqual(result.failed.length, 1);
+  assert.deepStrictEqual(Object.keys(contents(dir)), ['ok.txt']);
+});
+
+test('flatten은 계획 뒤에 원본이 타겟 밖 링크로 바뀌면 옮기지 않는다', (t) => {
+  const root = tempDir();
+  const target = path.join(root, 'target');
+  make(root, ['outside/secret.txt', 'target/a/x.txt', 'target/b/ok.txt']);
+  const realpath = fs.realpathSync.native;
+  let calls = 0;
+  t.mock.method(fs.realpathSync, 'native', (p) => {
+    // 첫 호출은 계획 단계의 읽기 검사다. 실행 단계에서 검사하기 직전에 부모 폴더를 타겟 밖 정션으로 바꾼다.
+    if (p === path.join(target, 'a', 'x.txt') && ++calls === 2) {
+      fs.rmSync(path.join(target, 'a'), { recursive: true });
+      linkDir(path.join(root, 'outside'), path.join(target, 'a'));
+      fs.writeFileSync(path.join(root, 'outside', 'x.txt'), 'outside x');
+    }
+    return realpath(p);
+  });
+  const result = flatten(target);
+  assert.strictEqual(calls, 2, '실행 단계에서 다시 검사해야 한다');
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
+  assert.strictEqual(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /링크를 거쳐/);
+  assert.strictEqual(fs.readFileSync(path.join(root, 'outside', 'x.txt'), 'utf8'), 'outside x');
+  assert.strictEqual(fs.readFileSync(path.join(root, 'outside', 'secret.txt'), 'utf8'), 'outside/secret.txt');
+});
+
+test('flatten --dry-run은 아무것도 바꾸지 않고 실제 실행과 같은 계획을 보여 준다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/abc_123.mp4', 'a/v.txt', 'b/v.txt', 'v.txt']);
+  const before = contents(dir);
+  const preview = flatten(dir, { dryRun: true });
+  assert.deepStrictEqual(contents(dir), before);
+  assert.strictEqual(preview.dryRun, true);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved, preview.moved);
+});
+
+test('flatten은 잔여물과 링크를 옮기지 않고 사유를 남긴다', () => {
+  const root = tempDir();
+  const target = path.join(root, 'target');
+  make(root, ['outside/o.txt', 'target/sub/.fctl-old-1-2-0', 'target/sub2/.fctl-new-1-2-0.zip', 'target/sub3/.fctl-old-9-9-0/inner.txt', 'target/sub4/.fctl-notes.txt', 'target/sub5/ok.txt']);
+  linkDir(path.join(root, 'outside'), path.join(target, 'sub5', 'lnk'));
+  const result = flatten(target);
+  assert.deepStrictEqual(result.moved.map((move) => move.name).sort(), ['.fctl-notes.txt', 'ok.txt']);
+  assert.strictEqual(result.skipped.filter((item) => /잔여물/.test(item.reason)).length, 3);
+  assert.strictEqual(result.skipped.filter((item) => /링크/.test(item.reason)).length, 1);
+  assert.ok(fs.existsSync(path.join(target, 'sub', '.fctl-old-1-2-0')));
+  assert.ok(fs.existsSync(path.join(target, 'sub3', '.fctl-old-9-9-0', 'inner.txt')));
+  assert.strictEqual(fs.readFileSync(path.join(root, 'outside', 'o.txt'), 'utf8'), 'outside/o.txt');
+});
+
+test('flatten은 읽기 전용 파일도 옮기고 수정 시각을 유지한다', () => {
+  const dir = tempDir();
+  make(dir, ['a/ro.txt']);
+  fs.chmodSync(path.join(dir, 'a', 'ro.txt'), 0o444);
+  const { mtimeMs } = fs.statSync(path.join(dir, 'a', 'ro.txt'));
+  flatten(dir);
+  assert.strictEqual(fs.statSync(path.join(dir, 'ro.txt')).mtimeMs, mtimeMs);
+  fs.chmodSync(path.join(dir, 'ro.txt'), 0o666);
+});
+
+test('flatten은 비게 된 폴더를 지우지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/b/x.txt']);
+  flatten(dir);
+  assert.ok(fs.statSync(path.join(dir, 'a', 'b')).isDirectory());
+});
+
+test('formatFlatten은 이동, 건너뜀, 실패와 합계를 보여 준다', () => {
+  const dir = path.resolve('/data/t');
+  const text = formatFlatten({
+    target: dir,
+    dryRun: false,
+    moved: [{ from: path.join(dir, 'a', 'x.mp4'), name: 'ABC-1 (2).mp4', fromFolder: true, numbered: true }],
+    stay: [path.join(dir, 'top')],
+    skipped: [{ path: path.join(dir, 'l'), reason: '링크' }],
+    failed: [{ from: path.join(dir, 'b'), reason: 'locked' }],
+  });
+  assert.deepStrictEqual(text.split('\n'), [
+    `이동: ${path.join('a', 'x.mp4')} -> ABC-1 (2).mp4 (폴더명 사용, 번호 붙임)`,
+    '건너뜀: l (링크)',
+    '실패: b (locked)',
+    '이동 1개, 그대로 1개, 건너뜀 1개, 실패 1개',
+  ]);
+});
+
+test('fctl flatten은 미리보기와 실제 실행을 처리하고 인자가 없으면 오류를 낸다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  const preview = run(['flatten', dir, '--dry-run']);
+  assert.match(preview, /^\[미리보기\] 이동: /m);
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'x.txt')));
+  const done = run(['flatten', dir]);
+  assert.doesNotMatch(done, /미리보기/);
+  assert.match(done, /이동 1개/);
+  assert.strictEqual(contents(dir)['x.txt'], 'a/x.txt');
+  assert.throws(() => run(['flatten']), /사용법/);
+  assert.throws(() => run(['flatten', dir, '--force']), /--force, --permanent를 쓸 수 없습니다/);
+});
+
+test('fctl flatten은 일부가 실패하면 옮긴 내용까지 담아 오류로 끝낸다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/locked.txt', 'b/ok.txt']);
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(from) === 'locked.txt') throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => run(['flatten', dir]), (err) => err instanceof FcError && /실패 1개/.test(err.message) && /ok\.txt/.test(err.message));
+});
+
+test('flatten은 보호 경로를 타겟으로 받지 않는다', (t) => {
+  const root = tempDir();
+  const home = path.join(root, 'kim');
+  fs.mkdirSync(path.join(home, 'AppData'), { recursive: true });
+  t.mock.method(os, 'homedir', () => home);
+  assert.throws(() => flatten(home), /사용자 폴더/);
+  assert.throws(() => flatten(path.join(home, 'AppData')), /보호된 경로/);
+  assert.throws(() => run(['flatten', home, '--dry-run']), /사용자 폴더/);
 });
 
 test('planFlatten은 파일이 없는 타겟에서 빈 계획을 돌려준다', () => {
