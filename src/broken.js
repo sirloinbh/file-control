@@ -64,7 +64,7 @@ const MAX_ZIP_DIRECTORY = 64 * 1024 * 1024;
 // tar.exe로 읽는 한도. 항목이 아주 많거나 끝없이 풀리는 파일에 묶이지 않게 한다. 넘으면 판단하지 않는다.
 const TAR_LIMITS = { maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60 * 1000 };
 // tar.exe가 손상이라고 말한 경우. 잠금(Error reading), 코드페이지에 없는 이름(unreadable filename)처럼 파일 탓이 아닌 오류는 여기 들지 않는다.
-const TAR_DAMAGED = /^\S*tar(?:\.exe)?: (?:Error opening archive: )?(?:Truncated input file|Truncated tar archive|Damaged tar archive|truncated \w+ input|bzip decompression failed|Lzma library error:s+(?:No progress is possible|Corrupted input data))/m;
+const TAR_DAMAGED = /^\S*tar(?:\.exe)?: (?:Error opening archive: )?(?:Truncated input file|Truncated tar archive|Damaged tar archive|truncated \w+ input|bzip decompression failed|Lzma library error:\s+(?:No progress is possible|Corrupted input data))/m;
 const TAR_UNRECOGNIZED = /^\S*tar(?:\.exe)?: Error opening archive: Unrecognized archive format/m;
 
 const RIFF_UNKNOWN_SIZE = 0x7fff0000;
