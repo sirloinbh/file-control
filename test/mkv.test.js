@@ -166,6 +166,53 @@ test('SeekHead의 같은 항목은 한 번만 보고 순환해도 끝난다', ()
   assert.strictEqual(readMkvMetadata(dir, file).title, 'T');
 });
 
+test('SeekHead 항목 수 한도를 넘는 항목은 무시하고 예외를 내지 않는다', () => {
+  const dir = tempDir();
+  const entry = (id, position) => el(0x4dbb, el(0x53ab, Buffer.from(id, 'hex')), el(0x53ac, uint(position)));
+  const filler = Array.from({ length: 1024 }, (_, index) => entry('1549A966', 100000000 + index));
+  const head = (position) => el(0x114d9b74, ...filler, entry('1254C367', position));
+  const before = cluster();
+  const file = write(dir, 'a.mkv', header(), segment(head(head(0).length + before.length), before, tags(['COMMENT', '뒤쪽'])));
+  assert.strictEqual(readMkvMetadata(dir, file).comment, null);
+  const near = Array.from({ length: 1023 }, (_, index) => entry('1549A966', 100000000 + index));
+  const head2 = (position) => el(0x114d9b74, ...near, entry('1254C367', position));
+  const file2 = write(dir, 'b.mkv', header(), segment(head2(head2(0).length + before.length), before, tags(['COMMENT', '뒤쪽'])));
+  assert.strictEqual(readMkvMetadata(dir, file2).comment, '뒤쪽');
+});
+
+test('16MiB를 넘는 요소는 메모리에 올리지 않고 건너뛴다', (t) => {
+  const dir = tempDir();
+  const unknown = Buffer.from('18538067' + '01FFFFFFFFFFFFFF', 'hex');
+  const big = 16 * 1024 * 1024 + 1;
+  const name = write(dir, 'a.mkv', header(), unknown, info({ title: 'T' }), Buffer.from('1254C367', 'hex'), size(big));
+  const full = path.join(dir, name);
+  fs.truncateSync(full, fs.statSync(full).size + big);
+  const readSync = t.mock.method(fs, 'readSync');
+  const result = readMkvMetadata(dir, name);
+  const total = readSync.mock.calls.reduce((sum, call) => sum + call.result, 0);
+  t.mock.restoreAll();
+  assert.strictEqual(result.title, 'T');
+  assert.ok(total < 4096, `읽은 바이트: ${total}`);
+});
+
+test('실제 먹서처럼 1바이트 크기 표기를 쓴 파일을 읽는다', () => {
+  const dir = tempDir();
+  const short = (id, ...parts) => {
+    const body = Buffer.concat(parts.map((part) => (typeof part === 'string' ? Buffer.from(part) : part)));
+    assert.ok(body.length < 127);
+    return Buffer.concat([idBytes(id), Buffer.from([0x80 | body.length]), body]);
+  };
+  const seg = Buffer.concat([
+    short(0xec, Buffer.alloc(5)),
+    short(0x1549a966, short(0x2ad7b1, uint(1000000)), short(0x4489, float(5000)), short(0x7ba9, 'ABC-123')),
+    short(0x1654ae6b, short(0xae, short(0x83, Buffer.from([1])), short(0xe0, short(0xb0, Buffer.from([0x07, 0x80])), short(0xba, Buffer.from([0x04, 0x38]))))),
+    short(0x1254c367, short(0x7373, short(0x67c8, short(0x45a3, 'COMMENT'), short(0x4487, 'memo')))),
+  ]);
+  const file = write(dir, 'a.mkv', short(0x1a45dfa3, short(0x4282, 'matroska')), Buffer.from('18538067', 'hex'), Buffer.from([0x40 | (seg.length >> 8), seg.length & 0xff]), seg);
+  const result = readMkvMetadata(dir, file);
+  assert.deepStrictEqual([result.title, result.comment, result.duration, result.width, result.height], ['ABC-123', 'memo', 5, 1920, 1080]);
+});
+
 test('Void와 CRC-32 요소를 건너뛴다', () => {
   const dir = tempDir();
   const file = write(dir, 'a.mkv', header(), segment(el(0xec, Buffer.alloc(10)), el(0xbf, uint(1)), el(0x1549a966, el(0xbf, uint(1)), el(0x7ba9, 'T'))));

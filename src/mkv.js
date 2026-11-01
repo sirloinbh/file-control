@@ -222,7 +222,7 @@ function checkHeader(read, p) {
 // 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
-// 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
+// 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
 function readMkvMetadata(dir, p) {
   try {
     const access = grant(dir, ['read']);
