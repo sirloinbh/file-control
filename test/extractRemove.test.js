@@ -46,7 +46,7 @@ function tree(dir) {
 }
 
 // 무압축 zip. cut을 'entries'로 주면 항목 뒤에서, 'directory'로 주면 중앙 디렉터리 중간에서 잘린 파일이 된다.
-function zipBuffer(files, { comment = '', cut = null } = {}) {
+function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0 } = {}) {
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -57,6 +57,7 @@ function zipBuffer(files, { comment = '', cut = null } = {}) {
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(unicode ? 0x800 : 0, 6);
     local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(body.length, 18);
     local.writeUInt32LE(body.length, 22);
@@ -65,6 +66,7 @@ function zipBuffer(files, { comment = '', cut = null } = {}) {
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(unicode ? 0x800 : 0, 8);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(body.length, 20);
     central.writeUInt32LE(body.length, 24);
@@ -80,6 +82,8 @@ function zipBuffer(files, { comment = '', cut = null } = {}) {
   const end = Buffer.alloc(22);
   const count = Object.keys(files).length;
   end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(disk, 4);
+  end.writeUInt16LE(disk, 6);
   end.writeUInt16LE(count, 8);
   end.writeUInt16LE(count, 10);
   end.writeUInt32LE(directory.length, 12);
@@ -115,12 +119,12 @@ test('정상으로 풀린 압축 파일을 휴지통으로 보낸다', () => {
   assert.match(formatExtractions(result), /압축 해제 2개, 휴지통 2개, 남김 0개, 건너뜀 0개, 실패 0개/);
 });
 
-test('본문 손상을 잡는 형식은 지우고, 잡지 못하거나 확인하지 못한 형식은 풀기만 하고 남긴다', () => {
+test('.zip과 .7z만 지우고, 다른 형식은 풀기만 하고 남긴다', () => {
   const dir = tempDir();
   const source = tempDir();
   fs.writeFileSync(path.join(source, 'x.txt'), 'x');
-  const kept = ['k.tar', 'k2.tar.gz', 'k3.tgz'];
-  const removed = ['r.7z', 'r2.tar.bz2', 'r3.tbz2', 'r4.tar.xz', 'r5.txz'];
+  const kept = ['k.tar', 'k2.tar.gz', 'k3.tgz', 'k4.tar.bz2', 'k5.tbz2', 'k6.tar.xz', 'k7.txz'];
+  const removed = ['r.7z'];
   for (const name of [...kept, ...removed]) run(['zip', path.join(dir, name), path.join(source, 'x.txt')]);
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(result.failed, []);
@@ -129,6 +133,123 @@ test('본문 손상을 잡는 형식은 지우고, 잡지 못하거나 확인하
   for (const item of result.kept) assert.match(item.reason, /온전한지 확인할 수 없어/);
   for (const name of kept) assert.ok(fs.existsSync(path.join(dir, name)));
   assert.match(formatExtractions(result), /남김: k\.tar \(/);
+});
+
+// 지우면 안 되는 zip. tar.exe는 모두 오류 없이 일부만 풀거나 이름을 바꾸어 푼다.
+test('구조가 맞지 않는 zip은 풀려도 지우지 않는다', () => {
+  const inner = zipBuffer({ 'inner1.txt': '1', 'inner2.txt': '2' });
+  const whole = zipBuffer({ 'a.txt': 'a', 'inner.zip': inner });
+  const after = whole.indexOf(inner) + inner.length;
+  const first = zipBuffer({ 'A1.txt': '1', 'A2.txt': '2' });
+  const second = zipBuffer({ 'B1.txt': 'b' });
+  const cases = {
+    'cut-inner.zip': [whole.subarray(0, after), /구조가 파일 크기와 맞지 않아/],
+    'joined.zip': [Buffer.concat([first, second]), /구조가 파일 크기와 맞지 않아/],
+    'in-comment.zip': [zipBuffer({ 'real.txt': 'r' }, { comment: second.toString('latin1') }), /구조가 파일 크기와 맞지 않아/],
+    'tail.zip': [Buffer.concat([zipBuffer({ 'x.txt': 'x' }), Buffer.from('trailing')]), /끝 표시 뒤에 다른 데이터/],
+    'head.zip': [Buffer.concat([Buffer.from('prefix'), zipBuffer({ 'x.txt': 'x' })]), /zip으로 시작하지 않아/],
+    'split.zip': [zipBuffer({ 'x.txt': 'x' }, { disk: 1 }), /분할 압축/],
+  };
+  const dir = tempDir();
+  for (const [name, [data]] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), data);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(result.removed, []);
+  const reasons = Object.fromEntries([...result.kept, ...result.failed].map((item) => [path.basename(item.archive), item.reason]));
+  // tar.exe가 풀지 못한 것은 실패로 남아도 된다. 지우지 않는 것이 핵심이다.
+  for (const [name, [, reason]] of Object.entries(cases)) {
+    assert.ok(reasons[name] !== undefined, name);
+    if (result.kept.some((item) => path.basename(item.archive) === name)) assert.match(reasons[name], reason, name);
+    assert.ok(fs.existsSync(path.join(dir, name)), name);
+  }
+});
+
+test('Zip64 표시가 있는 zip은 지우지 않는다', () => {
+  const dir = tempDir();
+  const data = zipBuffer({ 'x.txt': 'x' });
+  data.writeUInt32LE(0xffffffff, data.length - 6);
+  fs.writeFileSync(path.join(dir, 'big.zip'), data);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(result.removed, []);
+});
+
+test('내용이 확장자와 다르면 풀려도 지우지 않는다', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.writeFileSync(path.join(source, 'x.txt'), 'x');
+  run(['zip', path.join(dir, 'real.tar.gz'), path.join(source, 'x.txt')]);
+  fs.copyFileSync(path.join(dir, 'real.tar.gz'), path.join(dir, 'fake.7z'));
+  fs.copyFileSync(path.join(dir, 'real.tar.gz'), path.join(dir, 'fake2.zip'));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  const reason = (name) => result.kept.find((item) => path.basename(item.archive) === name)?.reason;
+  assert.match(reason('fake.7z'), /7z로 시작하지 않아/);
+  assert.match(reason('fake2.zip'), /zip으로 시작하지 않아/);
+});
+
+test('이름이 바뀌어 풀리는 항목이 있으면 지우지 않는다', () => {
+  const dir = tempDir();
+  makeZip(dir, 'colon.zip', { 'a:b.txt': 'x' });
+  makeZip(dir, 'question.zip', { 'q?.txt': 'x' });
+  makeZip(dir, 'drive.zip', { 'C:/dir/y.txt': 'x' });
+  const data = zipBuffer({ 'abc.txt': 'x' });
+  data[data.indexOf('abc.txt')] = 0xc0;
+  fs.writeFileSync(path.join(dir, 'codepage.zip'), data);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.strictEqual(result.removed.length, 0);
+  const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
+  for (const name of ['colon.zip', 'question.zip', 'drive.zip']) assert.match(kept[name], /이름이 바뀌는 항목/);
+});
+
+test('폴더 항목에 내용이 있으면 지우지 않는다', () => {
+  const dir = tempDir();
+  const file = makeZip(dir, 'a.zip', { 'sub/': 'data', 'x.txt': 'x' });
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(file));
+  assert.strictEqual(result.removed.length, 0);
+});
+
+test('폴더 항목과 주석이 있는 정상 zip은 지운다', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'sub/': '', 'sub/x.txt': 'x', 'b\\c.txt': 'c', './d.txt': 'd' }, { comment: 'memo' });
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.deepStrictEqual(result.failed, []);
+  assert.strictEqual(result.removed.length, 1);
+});
+
+test('UTF-8 표시가 있는 한글 이름은 그대로 풀렸는지 확인하고 지운다', (t) => {
+  // tar.exe는 코드페이지에 없는 문자를 처리하지 못해 영문 Windows에서는 시험할 수 없다.
+  const codePage = realExecFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
+  if (codePage !== '949') return t.skip(`코드페이지 ${codePage}에서는 한글을 처리하지 못한다`);
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { '영상.txt': 'x' }, { unicode: true });
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.strictEqual(result.removed.length, 1);
+  assert.deepStrictEqual(tree(dir), ['a/영상.txt']);
+});
+
+test('푸는 동안 같은 크기와 수정 시각의 다른 파일로 바뀌어도 지우지 않는다', (t) => {
+  const dir = tempDir();
+  const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (String(p).includes('.fctl-new') && options?.recursive) {
+      const { atime, mtime } = fs.statSync(file);
+      const data = fs.readFileSync(file);
+      fs.rmSync(file);
+      fs.writeFileSync(file, data);
+      fs.utimesSync(file, atime, mtime);
+    }
+    return readdirSync(p, options);
+  });
+  const result = extractArchives(dir, { removeArchives: true });
+  t.mock.restoreAll();
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
 });
 
 test('확장자가 대문자여도 같게 판단한다', () => {
@@ -206,7 +327,7 @@ test('푸는 동안 압축 파일이 바뀌면 풀린 결과는 두고 원본을
   const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });
   const readdirSync = fs.readdirSync;
   t.mock.method(fs, 'readdirSync', (p, options) => {
-    if (String(p).includes('.fctl-new') && options?.recursive) fs.appendFileSync(file, 'more');
+    if (String(p).includes('.fctl-new') && options?.recursive) fs.utimesSync(file, new Date(1000), new Date(1000));
     return readdirSync(p, options);
   });
   const result = extractArchives(dir, { removeArchives: true });
