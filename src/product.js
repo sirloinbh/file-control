@@ -67,4 +67,4 @@ function findProductNumber(input) {
   return { number: list[0].number, source: list[0].source, candidates: list };
 }
 
-module.exports = { extractProductNumbers, findProductNumber };
+module.exports = { extractProductNumbers, findProductNumber, halfWidth };
