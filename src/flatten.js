@@ -123,6 +123,9 @@ function countFiles(entries) {
   return counts;
 }
 
+// 버전 관리 폴더. 안쪽 구조가 곧 내용이라 흩어지면 복구할 수 없다.
+const REPOSITORY_FOLDER = /^\.(?:git|hg|svn|jj)$/i;
+
 // HEAD, objects, refs가 함께 있으면 Git 저장소 폴더다. 베어 저장소(backup.git)처럼 이름이 .git이 아니어도 잡는다.
 function looksLikeGitDir(dir) {
   const stat = (name) => fs.statSync(path.join(dir, name), { throwIfNoEntry: false });
@@ -137,13 +140,13 @@ function looksLikeGitDir(dir) {
 // 타겟이 저장소의 일반 하위 폴더(r/src)면 저장소는 망가지지 않고 git으로 되돌릴 수 있으므로 막지 않는다.
 function rejectRepository(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
-    if (path.basename(dir).toLowerCase() === '.git' || looksLikeGitDir(dir)) throw new FcError(`Git 저장소 내부 폴더라 평탄화하지 않습니다: ${dir}`);
+    if (REPOSITORY_FOLDER.test(path.basename(dir)) || looksLikeGitDir(dir)) throw new FcError(`저장소 내부 폴더라 평탄화하지 않습니다: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
-  const dotGit = entries.find((entry) => entry.relative.split(path.sep).some((part) => part.toLowerCase() === '.git'));
-  if (dotGit) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${dotGit.path}`);
+  const folder = entries.find((entry) => entry.relative.split(path.sep).some((part) => REPOSITORY_FOLDER.test(part)));
+  if (folder) throw new FcError(`저장소가 들어 있어 평탄화하지 않습니다: ${folder.path}`);
   const bare = entries.find((entry) => entry.type === 'file' && path.basename(entry.path) === 'HEAD' && looksLikeGitDir(path.dirname(entry.path)));
-  if (bare) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${path.dirname(bare.path)}`);
+  if (bare) throw new FcError(`저장소가 들어 있어 평탄화하지 않습니다: ${path.dirname(bare.path)}`);
 }
 
 // 타겟 아래 모든 파일을 타겟 바로 아래로 옮기는 계획을 만든다. 파일은 건드리지 않는다.

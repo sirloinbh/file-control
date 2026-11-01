@@ -686,9 +686,9 @@ test('flatten은 Git 저장소가 들어 있으면 아무것도 옮기지 않는
     const dir = tempDir();
     make(dir, files);
     const before = contents(dir);
-    assert.throws(() => flatten(dir), /Git 저장소/, files.join(' '));
-    assert.throws(() => flatten(dir, { dryRun: true }), /Git 저장소/);
-    assert.throws(() => planFlatten(dir), /Git 저장소/);
+    assert.throws(() => flatten(dir), /저장소/, files.join(' '));
+    assert.throws(() => flatten(dir, { dryRun: true }), /저장소/);
+    assert.throws(() => planFlatten(dir), /저장소/);
     assert.deepStrictEqual(contents(dir), before);
   }
 });
@@ -700,8 +700,8 @@ test('flatten은 베어 저장소가 들어 있거나 타겟이 저장소 폴더
   make(dir, [...GIT_FILES.map((f) => `T/backup.git/${f}`), 'T/a/y.txt', ...GIT_FILES.map((f) => `r/.git/${f}`), 'r/src/deep/x.js']);
   const before = contents(dir);
   for (const target of ['T', 'T/backup.git', 'T/backup.git/objects', 'r/.git', 'r/.git/objects', 'r']) {
-    assert.throws(() => flatten(path.join(dir, target)), /Git 저장소/, target);
-    assert.throws(() => planFlatten(path.join(dir, target)), /Git 저장소/, target);
+    assert.throws(() => flatten(path.join(dir, target)), /저장소/, target);
+    assert.throws(() => planFlatten(path.join(dir, target)), /저장소/, target);
   }
   assert.deepStrictEqual(contents(dir), before);
 });
@@ -750,6 +750,17 @@ test('flatten은 자리표시를 확인하지 못해도 원래 오류 코드를 
   });
   const result = flatten(dir);
   assert.match(result.failed[0].reason, /EBUSY, EPERM/);
+});
+
+test('flatten은 다른 버전 관리 폴더가 들어 있거나 타겟이 그 안이어도 아무것도 옮기지 않는다', () => {
+  for (const name of ['.hg', '.svn', '.jj', '.SVN']) {
+    const dir = tempDir();
+    make(dir, [`p/${name}/store/data`, 'p/src/x.txt']);
+    const before = contents(dir);
+    assert.throws(() => flatten(dir), /저장소/, name);
+    assert.throws(() => flatten(path.join(dir, 'p', name)), /저장소/, name);
+    assert.deepStrictEqual(contents(dir), before);
+  }
 });
 
 test('flatten은 이름만 비슷한 .gitignore, .github를 저장소로 보지 않는다', () => {
@@ -809,7 +820,7 @@ test('fctl flatten을 프로세스로 실행하면 성공은 0, 인자 오류와
   assert.strictEqual(permanent.status, 1);
   const repo = fctl('flatten', path.join(root, 'repo'));
   assert.strictEqual(repo.status, 1);
-  assert.match(repo.stderr, /Git 저장소/);
+  assert.match(repo.stderr, /저장소/);
   assert.ok(fs.existsSync(path.join(root, 'repo', 'a', 'b.txt')));
 });
 
