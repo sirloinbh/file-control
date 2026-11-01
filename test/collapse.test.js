@@ -65,7 +65,7 @@ test('폴더 하나만 이어지는 구간을 맨 위 폴더 이름으로 접는
   const result = collapse(dir);
   assert.deepStrictEqual(tree(dir), ['a/f.mp4', 'a/g.mp4']);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'f.mp4'), 'utf8'), 'a/b/c/f.mp4');
-  assert.deepStrictEqual(result.collapsed[0].dropped, ['b', 'c']);
+  assert.strictEqual(result.collapsed[0].dest, path.join(dir, 'a'));
   assert.strictEqual(recycled.length, 1);
   assert.deepStrictEqual(result.failed, []);
 });
@@ -110,11 +110,96 @@ test('안쪽 이름이 가운데 폴더 이름이나 맨 위 이름과 같아도
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'b'), 'utf8'), 'a/b/c/b');
 });
 
-test('끝이 빈 폴더인 구간은 빈 맨 위 폴더 하나로 접는다', () => {
+test('끝이 빈 폴더인 구간은 사용자가 만든 구조일 수 있어 건드리지 않는다', () => {
   const dir = tempDir();
   make(dir, ['a/b/c/', 'k.txt']);
-  collapse(dir);
-  assert.deepStrictEqual(tree(dir), ['a/', 'k.txt']);
+  const result = collapse(dir);
+  assert.deepStrictEqual(tree(dir), ['a/b/c/', 'k.txt']);
+  assert.deepStrictEqual(result.collapsed, []);
+  assert.deepStrictEqual(result.skipped, []);
+});
+
+test('제품번호를 파일 이름에 넣은 뒤에는 접을 수 있다', () => {
+  const dir = tempDir();
+  make(dir, ['새 폴더/ABC-123/f.mp4', '자막/DEF-456/j.srt']);
+  assert.strictEqual(collapse(dir).skipped.length, 2);
+  run(['product-number', dir]);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.collapsed.map((item) => path.basename(item.top)), ['새 폴더']);
+  assert.match(result.skipped[0].reason, /DEF-456/);
+  assert.deepStrictEqual(tree(dir), ['새 폴더/ABC-123 f.mp4', '자막/DEF-456/j.srt']);
+});
+
+test('구간 아래에 잔여물이나 시스템 폴더가 있으면 접지 않는다', () => {
+  const dir = tempDir();
+  const files = ['a/b/.fctl-old-1-2-3/x', 'a/b/f', 'c/d/$RECYCLE.BIN/y', 'c/d/g'];
+  make(dir, files);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.collapsed, []);
+  assert.deepStrictEqual(tree(dir), [...files].sort());
+  assert.strictEqual(result.skipped.filter((item) => /접지 않습니다/.test(item.reason)).length, 3);
+});
+
+test('타겟 바로 아래의 잔여물을 보고한다', () => {
+  const dir = tempDir();
+  make(dir, ['.fctl-new-1-2-3/f.txt']);
+  const result = collapse(dir);
+  assert.match(result.skipped[0].reason, /잔여물/);
+});
+
+test('가운데 이름을 다룰 수 없는 구간은 미리보기에서도 건너뛴다', () => {
+  const dir = tempDir();
+  fs.mkdirSync(`\\\\?\\${path.join(dir, 'a', 'b.', 'c')}`, { recursive: true });
+  fs.writeFileSync(`\\\\?\\${path.join(dir, 'a', 'b.', 'c', 'f.txt')}`, 'x');
+  for (const dryRun of [true, false]) {
+    const result = collapse(dir, { dryRun });
+    assert.deepStrictEqual(result.collapsed, []);
+    assert.deepStrictEqual(result.failed, []);
+    assert.match(result.skipped[0].reason, /다르게 해석될 수 있는 이름/);
+  }
+});
+
+test('보고는 위 구간까지 접힌 최종 위치를 적는다', () => {
+  const dir = tempDir();
+  make(dir, ['p/q/1/f.txt', 'p/q/1/z/w/g.txt']);
+  const result = collapse(dir);
+  assert.deepStrictEqual(tree(dir), ['p/f.txt', 'p/z/g.txt']);
+  assert.match(formatCollapse(result), /접기: p[\\/]q[\\/]1[\\/]z[\\/]w -> p[\\/]z/);
+});
+
+test('안쪽 구간이 실패하면 그 구간을 품은 위 구간을 접지 않고, 따로 있는 구간은 계속한다', (t) => {
+  const dir = tempDir();
+  make(dir, ['p/q/1/f.txt', 'p/q/1/z/w/g.txt', 'm/n/h.txt']);
+  const renameSync = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from).endsWith(path.join('z', 'w'))) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return renameSync(from, to);
+  });
+  const result = collapse(dir);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(tree(dir), ['m/h.txt', 'p/q/1/f.txt', 'p/q/1/z/w/g.txt']);
+  assert.ok(result.failed.some((item) => /안쪽 구간이 실패해/.test(item.reason)));
+});
+
+test('이름을 옮기는 사이 맨 위 이름에 파일이 생기면 덮어쓰지 않고 되돌린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/b/f.txt']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  const mock = t.mock.method(fs, 'renameSync', (from, to) => {
+    count += 1;
+    const moved = renameSync(from, to);
+    if (count === 2) fs.writeFileSync(path.join(dir, 'a'), '사용자 파일');
+    return moved;
+  });
+  const result = collapse(dir);
+  mock.mock.restore();
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a'), 'utf8'), '사용자 파일');
+  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-old.*EEXIST/);
+  const names = fs.readdirSync(dir);
+  const lifted = names.find((name) => name.startsWith('.fctl-new'));
+  assert.ok(result.failed[0].reason.includes(lifted));
+  assert.strictEqual(fs.readFileSync(path.join(dir, lifted, 'f.txt'), 'utf8'), 'a/b/f.txt');
 });
 
 test('사라지는 폴더 이름에 제품번호가 있으면 접지 않고, 맨 위에도 있으면 접는다', () => {
@@ -206,6 +291,21 @@ test('되돌리지도 못하면 위치를 알린다', (t) => {
   assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
   const lifted = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
   assert.strictEqual(fs.readFileSync(path.join(dir, lifted, 'f.txt'), 'utf8'), 'a/b/c/f.txt');
+});
+
+test('되돌리기가 여러 곳에서 실패하면 남은 위치를 모두 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/b/c/f.txt']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    count += 1;
+    if (count >= 3) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return renameSync(from, to);
+  });
+  const result = collapse(dir);
+  t.mock.restoreAll();
+  assert.match(result.failed[0].reason, /\.fctl-old.*\.fctl-new/);
 });
 
 test('빈 폴더를 휴지통으로 보내지 못하면 접은 결과를 두고 잔여 폴더를 알린다', () => {
