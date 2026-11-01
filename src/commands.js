@@ -357,15 +357,21 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
 function moveToRecycleBin(target) {
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   const script =
-    "if (-not [Environment]::UserInteractive) { throw '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.' }; " +
+    'if (-not [Environment]::UserInteractive) { exit 75 }; ' +
     'Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
     "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
-  execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...process.env, FC_TARGET: path.resolve(target) },
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
+  try {
+    execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_TARGET: path.resolve(target) },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+  } catch (err) {
+    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
+    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    throw err;
+  }
 }
 
 function remove(targets, { permanent = false, dryRun = false } = {}) {
@@ -376,7 +382,10 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   return targets.map((target) => {
     ensureExists(target);
     // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
-    if (isSameOrUnder(realKey(target), realKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+    // 링크를 지우면 링크만 사라지므로 링크 자체로 비교한다. 글자 비교는 링크를 거쳐 들어온 현재 폴더(rm lnk, 현재 폴더 lnk/s)를 잡는다.
+    if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
+      throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+    }
     if (dryRun) claim(planned, target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));

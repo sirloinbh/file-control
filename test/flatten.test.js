@@ -14,7 +14,10 @@ const recycled = [];
 let onRecycle = () => {};
 const execFileSync = childProcess.execFileSync;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
-  if (options?.env?.FC_TARGET === undefined) return execFileSync(file, args, options);
+  if (options?.env?.FC_TARGET === undefined) {
+    if (String(args?.at(-1)).includes('SendToRecycleBin')) throw new Error('휴지통 호출이 가짜를 빠져나감');
+    return execFileSync(file, args, options);
+  }
   assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -1085,6 +1088,21 @@ test('flatten은 휴지통 호출이 실패하면 스크립트 없이 짧은 사
   assert.ok(fs.existsSync(path.join(dir, 'a')));
 });
 
+test('flatten은 비대화형 세션의 휴지통 거부 사유를 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  onRecycle = () => {
+    throw Object.assign(new Error('Command failed'), { status: 75 });
+  };
+  t.after(() => {
+    onRecycle = () => {};
+  });
+  const result = flatten(dir);
+  assert.match(result.keptFolders[0].reason, /대화형 세션이 아니면/);
+  assert.throws(() => run(['rm', path.join(dir, 'x.txt')]), (err) => err instanceof FcError && /대화형 세션이 아니면/.test(err.message));
+  assert.ok(fs.existsSync(path.join(dir, 'x.txt')));
+});
+
 test('flatten은 이동 뒤 폴더를 읽지 못해도 이동 결과를 유지하고 타겟을 .으로 보여 준다', (t) => {
   const dir = tempDir();
   make(dir, ['a/x.txt']);
@@ -1161,10 +1179,29 @@ test('rm은 정션을 거친 현재 폴더도 알아보고 그 상위를 지우�
   try {
     assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--dry-run']), /현재 폴더/);
     assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--permanent']), /현재 폴더/);
+    // 현재 폴더로 들어온 정션 자체를 지우는 것도 막는다.
+    assert.throws(() => run(['rm', path.join(dir, 'j'), '--dry-run']), /현재 폴더/);
   } finally {
     process.chdir(cwd);
   }
   assert.ok(fs.existsSync(path.join(dir, 't', 'a', 'b', 'x.txt')));
+});
+
+test('rm은 현재 폴더를 가리키는 링크 자체는 지울 수 있다', () => {
+  const dir = tempDir();
+  make(dir, ['real/s/x.txt']);
+  linkDir(path.join(dir, 'real'), path.join(dir, 'lnk'));
+  const cwd = process.cwd();
+  process.chdir(path.join(dir, 'real', 's'));
+  try {
+    assert.match(run(['rm', path.join(dir, 'lnk'), '--dry-run']), /미리보기/);
+    assert.throws(() => run(['rm', path.join(dir, 'real'), '--dry-run']), /현재 폴더/);
+    run(['rm', path.join(dir, 'lnk'), '--permanent']);
+  } finally {
+    process.chdir(cwd);
+  }
+  assert.ok(!fs.existsSync(path.join(dir, 'lnk')));
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'real', 's', 'x.txt'), 'utf8'), 'real/s/x.txt');
 });
 
 test('flatten은 현재 폴더와 그 상위를 지우지 않고 남긴 사유를 알린다', () => {
