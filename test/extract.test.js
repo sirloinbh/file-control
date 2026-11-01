@@ -284,12 +284,14 @@ test('풀려 나온 압축 파일은 다시 풀지 않는다', () => {
 
 test('깨진 압축 파일은 실패로 보고하고 나머지를 계속하며 폴더를 남기지 않는다', () => {
   const dir = tempDir();
-  fs.writeFileSync(path.join(dir, 'bad.zip'), 'not a zip');
+  fs.writeFileSync(path.join(dir, 'bad.zip'), Buffer.concat([Buffer.from('PK\x03\x04', 'latin1'), Buffer.alloc(40, 0xff)]));
   makeZip(dir, 'good.zip', { 'x.txt': 'x' });
+  fs.writeFileSync(path.join(dir, 'text.zip'), 'not a zip');
   const result = extractArchives(dir);
   assert.deepStrictEqual(result.extracted.map((item) => item.name), ['good']);
   assert.match(result.failed[0].reason, /압축을 풀지 못했습니다.*tar 종료 코드/);
-  assert.deepStrictEqual(tree(dir), ['bad.zip', 'good.zip', 'good/x.txt']);
+  assert.match(result.failed[1].reason, /압축 형식을 확인할 수 없습니다/);
+  assert.deepStrictEqual(tree(dir), ['bad.zip', 'good.zip', 'good/x.txt', 'text.zip']);
   assert.ok(!fs.existsSync(path.join(dir, 'bad')));
   noTemp(dir);
 });
