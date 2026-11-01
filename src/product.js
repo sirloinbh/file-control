@@ -28,16 +28,22 @@ function halfWidth(text) {
 // 글에서 제품번호를 찾아 대문자로 바꿔 나온 순서대로 돌려준다. 같은 번호는 한 번만 넣는다.
 // 기본은 대문자만 찾는다. 소문자·대소문자 혼합은 summer-2023, Vlog-2024처럼 보통 단어인 경우가 많기 때문이다.
 // lowercase를 켜면 전부 소문자인 말(abc-123)도 찾는다. 대소문자 혼합은 찾지 않는다.
-function extractProductNumbers(text, { lowercase = false } = {}) {
+function extractProductNumbers(text, options) {
+  return [...new Set(findProductNumberRanges(text, options).map((range) => range.number))];
+}
+
+// 제품번호와 원문에서의 위치를 나온 순서대로 { number, start, end } 목록으로 돌려준다. 같은 번호가 또 나오면 또 넣는다.
+// 전각을 반각으로 바꿔도 글자 수가 같으므로 위치는 원문 기준이다.
+function findProductNumberRanges(text, { lowercase = false } = {}) {
   if (typeof text !== 'string') return [];
-  const found = new Set();
-  for (const [match] of halfWidth(text).matchAll(CANDIDATE)) {
+  const ranges = [];
+  for (const { 0: match, index } of halfWidth(text).matchAll(CANDIDATE)) {
     const letters = match.slice(0, match.indexOf('-'));
     const upper = letters.toUpperCase();
     if (letters !== upper && !(lowercase && letters === letters.toLowerCase())) continue;
-    if (!NOT_PRODUCT.has(upper)) found.add(match.toUpperCase());
+    if (!NOT_PRODUCT.has(upper)) ranges.push({ number: match.toUpperCase(), start: index, end: index + match.length });
   }
-  return [...found];
+  return ranges;
 }
 
 // 제품번호를 찾아 { number, source, candidates }를 돌려준다. 찾지 못하면 null이다.
@@ -67,4 +73,4 @@ function findProductNumber(input) {
   return { number: list[0].number, source: list[0].source, candidates: list };
 }
 
-module.exports = { extractProductNumbers, findProductNumber, halfWidth };
+module.exports = { extractProductNumbers, findProductNumberRanges, findProductNumber, halfWidth };
