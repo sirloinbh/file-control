@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { planProductNames, addProductNumbers, formatProductNumbers } = require('../src/productName');
+const { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers } = require('../src/productName');
 const { run } = require('../bin/fctl');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
@@ -78,15 +78,123 @@ test('제목의 다른 글자는 이름에 넣지 않는다', () => {
   assert.deepStrictEqual(tree(dir), ['ABC-123 a.mp4']);
 });
 
-test('이미 번호가 있으면 대소문자와 위치에 관계없이 건너뛰고 메타데이터를 읽지 않는다', (t) => {
+test('파일명에 대문자 번호가 있으면 건너뛰고 메타데이터를 읽지 않으며, 보고에 번호를 적는다', (t) => {
   const dir = tempDir();
-  make(dir, ['ABC-123.mp4', '영상 abc-456.mkv', 'XYZ-999/ABC-789 제목.mp4']);
+  make(dir, ['ABC-123.mp4', 'XYZ-999/ABC-789 제목.mp4']);
   const readSync = t.mock.method(fs, 'readSync');
   const result = addProductNumbers(dir);
   assert.strictEqual(readSync.mock.callCount(), 0);
-  assert.deepStrictEqual(tree(dir), ['ABC-123.mp4', 'XYZ-999/ABC-789 제목.mp4', '영상 abc-456.mkv']);
-  assert.deepStrictEqual(result.already.map((item) => item.number).sort(), ['ABC-123', 'ABC-456', 'ABC-789']);
+  assert.deepStrictEqual(tree(dir), ['ABC-123.mp4', 'XYZ-999/ABC-789 제목.mp4']);
+  assert.deepStrictEqual(result.already.map((item) => item.number).sort(), ['ABC-123', 'ABC-789']);
   assert.strictEqual(result.renamed.length, 0);
+  assert.match(formatProductNumbers(result), /이미 있음: ABC-123\.mp4 \(ABC-123\)/);
+});
+
+test('파일명의 소문자 번호는 다른 곳에 번호가 없거나 같으면 건너뛰고, 다르면 엇갈림으로 보고한다', () => {
+  const dir = tempDir();
+  make(dir, ['영상 abc-456.mkv', 'ABC-123/abc-123 x.mp4', 'ABC-123/intro-01.mp4', 'ABC-123/summer-2023.mkv']);
+  fs.writeFileSync(path.join(dir, 'trip-2023.mp4'), mp4({ title: 'XYZ-999 t' }));
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.renamed.length, 0);
+  assert.deepStrictEqual(result.already.map((item) => item.number).sort(), ['ABC-123', 'ABC-456']);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.numbers).sort(), [
+    ['INTRO-01', 'ABC-123'],
+    ['SUMMER-2023', 'ABC-123'],
+    ['TRIP-2023', 'XYZ-999'],
+  ]);
+});
+
+test('파일명에 글자가 붙은 번호가 있으면 같은 번호를 또 넣지 않는다', () => {
+  const dir = tempDir();
+  const files = ['ABC-123-01.mp4', 'abc-123-02.mp4', 'ABC-123A.mp4', 'ABC-123CD1.mkv', '1ABC-123.mp4', 'Abc-123.mp4'].map((name) => `ABC-123/${name}`);
+  make(dir, files);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(tree(dir), [...files].sort());
+  assert.strictEqual(result.already.length, files.length);
+});
+
+test('번호의 일부만 겹치는 이름에는 번호를 넣는다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/ABC-1234x.mp4', 'ABC-123/QWERTYABC-123.mp4']);
+  addProductNumbers(dir);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 ABC-1234x.mp4', 'ABC-123/ABC-123 QWERTYABC-123.mp4']);
+});
+
+test('.ts와 .mts는 전송 스트림일 때만 영상으로 본다', () => {
+  const dir = tempDir();
+  make(dir, ['PROJ-123/src/index.ts', 'PROJ-123/src/mod.mts', 'PROJ-123/short.ts']);
+  const packets = (start, step) => {
+    const data = Buffer.alloc(start + step * 3);
+    for (let i = start; i < data.length; i += step) data[i] = 0x47;
+    return data;
+  };
+  fs.writeFileSync(path.join(dir, 'PROJ-123', 'a.ts'), packets(0, 188));
+  fs.writeFileSync(path.join(dir, 'PROJ-123', 'b.mts'), packets(4, 192));
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(tree(dir), ['PROJ-123/PROJ-123 a.ts', 'PROJ-123/PROJ-123 b.mts', 'PROJ-123/short.ts', 'PROJ-123/src/index.ts', 'PROJ-123/src/mod.mts']);
+  assert.strictEqual(result.notFound.length + result.skipped.length, 0);
+});
+
+test('파일을 확인하다 난 시스템 오류는 그 파일만 건너뛴다', (t) => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
+  const lstatSync = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    if (String(p).endsWith('ABC-123 a.mp4')) throw Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'lstat' });
+    return lstatSync(p, options);
+  });
+  const plan = planProductNames(dir);
+  t.mock.restoreAll();
+  assert.match(plan.skipped[0].reason, /EPERM/);
+  assert.strictEqual(plan.renames.length, 1);
+});
+
+test('계획 뒤에 원본이나 부모가 바뀌면 그 파일만 실패하고 타겟 밖을 바꾸지 않는다', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  make(outside, ['a.mp4']);
+  make(dir, ['ABC-123/link.mp4', 'ABC-123/folder.mp4', 'ABC-123/ok.mp4', 'XYZ-999/p.mp4']);
+  const plan = planProductNames(dir);
+  fs.rmSync(path.join(dir, 'ABC-123', 'link.mp4'));
+  fs.symlinkSync(outside, path.join(dir, 'ABC-123', 'link.mp4'), 'junction');
+  fs.rmSync(path.join(dir, 'ABC-123', 'folder.mp4'));
+  fs.mkdirSync(path.join(dir, 'ABC-123', 'folder.mp4'));
+  fs.rmSync(path.join(dir, 'XYZ-999'), { recursive: true });
+  fs.symlinkSync(outside, path.join(dir, 'XYZ-999'), 'junction');
+  fs.writeFileSync(path.join(outside, 'p.mp4'), 'o');
+  const result = applyProductNames(plan);
+  assert.deepStrictEqual(result.renamed.map((item) => item.name), ['ABC-123 ok.mp4']);
+  assert.strictEqual(result.failed.length, 3);
+  assert.deepStrictEqual(fs.readdirSync(outside).sort(), ['a.mp4', 'p.mp4']);
+});
+
+test('실행 때 대상이 끊어진 정션이면 원본을 남기고 타겟 밖에 만들지 않는다', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  make(dir, ['ABC-123/a.mp4']);
+  const plan = planProductNames(dir);
+  const gone = path.join(outside, 'gone');
+  fs.mkdirSync(gone);
+  fs.symlinkSync(gone, path.join(dir, 'ABC-123', 'ABC-123 a.mp4'), 'junction');
+  fs.rmdirSync(gone);
+  const result = applyProductNames(plan);
+  assert.strictEqual(result.failed.length, 1);
+  assert.ok(fs.existsSync(path.join(dir, 'ABC-123', 'a.mp4')));
+  assert.deepStrictEqual(fs.readdirSync(outside), []);
+});
+
+test('이름 변경이 실패했을 때 자리표시에 다른 내용이 생겼으면 지우지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4']);
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    fs.writeFileSync(to, '새 내용');
+    throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+  });
+  const result = addProductNumbers(dir);
+  t.mock.restoreAll();
+  assert.match(result.failed[0].reason, /지우지 않았습니다/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123', 'ABC-123 a.mp4'), 'utf8'), '새 내용');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123', 'a.mp4'), 'utf8'), 'ABC-123/a.mp4');
 });
 
 test('두 번 실행해도 번호를 또 넣지 않는다', () => {
@@ -232,8 +340,11 @@ test('링크는 바꾸지 않고, 타겟 밖을 가리키는 정션 안으로 �
   const outside = tempDir();
   make(outside, ['ABC-123/a.mp4']);
   fs.symlinkSync(path.join(outside, 'ABC-123'), path.join(dir, 'XYZ-999.mp4'), 'junction');
+  fs.symlinkSync(path.join(outside, 'ABC-123'), path.join(dir, 'ABC-123'), 'junction');
   const result = addProductNumbers(dir);
+  assert.strictEqual(result.skipped.length, 2);
   assert.match(result.skipped[0].reason, /링크/);
+  assert.match(result.skipped[1].reason, /링크/);
   assert.deepStrictEqual(tree(outside), ['ABC-123/a.mp4']);
 });
 
