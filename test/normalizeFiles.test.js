@@ -172,17 +172,50 @@ test('그리스 문자처럼 대소문자 변환이 문맥을 타는 이름의 �
   assert.strictEqual(result.conflicts.length, 2);
 });
 
-test('저장소가 들어 있거나 타겟이 저장소 안이면 전체를 거부한다', () => {
+test('저장소가 들어 있거나 타겟이 저장소 폴더 안이면 전체를 거부한다', () => {
+  const rejected = /저장소.*다루지 않습니다/;
   const dir = tempDir();
   make(dir, ['repo/.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
-  assert.throws(() => normalizeFiles(dir), /저장소/);
-  assert.throws(() => normalizeFiles(path.join(dir, 'repo', '.git')), /저장소/);
+  assert.throws(() => normalizeFiles(dir), rejected);
+  assert.throws(() => normalizeFiles(path.join(dir, 'repo', '.git')), rejected);
   const bare = tempDir();
   make(bare, ['backup.git/HEAD', 'backup.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
   fs.mkdirSync(path.join(bare, 'backup.git', 'objects'));
-  assert.throws(() => normalizeFiles(bare), /저장소/);
-  assert.throws(() => normalizeFiles(path.join(bare, 'backup.git')), /저장소/);
+  assert.throws(() => normalizeFiles(bare), rejected);
+  assert.throws(() => normalizeFiles(path.join(bare, 'backup.git')), rejected);
   assert.ok(fs.existsSync(path.join(bare, '영상 ABC-123.mp4')));
+});
+
+test('저장소 작업 트리의 일반 하위 폴더는 바꾼다', () => {
+  const dir = tempDir();
+  make(dir, ['work/.git/HEAD', 'work/.git/refs/heads/main', 'work/src/영상 ABC-123.mp4']);
+  fs.mkdirSync(path.join(dir, 'work', '.git', 'objects'));
+  normalizeFiles(path.join(dir, 'work', 'src'));
+  assert.deepStrictEqual(tree(path.join(dir, 'work', 'src')), ['ABC-123 영상.mp4']);
+});
+
+test('HEAD 표기가 소문자인 베어 저장소도 거부한다', { skip: process.platform !== 'win32' }, () => {
+  const dir = tempDir();
+  make(dir, ['backup.git/head', 'backup.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
+  fs.mkdirSync(path.join(dir, 'backup.git', 'objects'));
+  assert.throws(() => normalizeFiles(dir), /저장소.*다루지 않습니다/);
+  assert.ok(fs.existsSync(path.join(dir, '영상 ABC-123.mp4')));
+});
+
+test('결과 이름이 다른 파일의 8.3 짧은 이름과 겹치면 바꾸지 않고 보고한다', (t) => {
+  const dir = tempDir();
+  make(dir, ['[ABC-123].mp4', 'ABC-123 긴 이름.mp4']);
+  // 8.3 이름은 드라이브 설정에 따라 꺼져 있을 수 있어, 짧은 이름이 긴 이름으로 풀리는 동작을 흉내 낸다.
+  const long = (p) => (path.basename(p) === 'ABC-123.mp4' ? path.join(dir, 'ABC-123 긴 이름.mp4') : p);
+  const { lstatSync } = fs;
+  const native = fs.realpathSync.native;
+  t.mock.method(fs, 'lstatSync', (p, ...rest) => lstatSync(long(p), ...rest));
+  t.mock.method(fs.realpathSync, 'native', (p, ...rest) => native(long(p), ...rest));
+  const result = normalizeFiles(dir);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(result.renamed, []);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.reason), ['같은 이름이 이미 있습니다.']);
+  assert.ok(fs.existsSync(path.join(dir, '[ABC-123].mp4')));
 });
 
 test('결과가 다른 결과와 겹치면 어느 쪽도 바꾸지 않고 보고한다', () => {

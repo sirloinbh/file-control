@@ -29,7 +29,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   // ref와 객체 이름이 곧 내용이라 이름을 바꾸면 저장소가 깨진다. 이름이 .git이 아닌 베어 저장소도 같다.
   rejectRepository(access.target, entries);
   const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
-  if (bare) throw new FcError(`저장소가 들어 있어 바꾸지 않습니다: ${bare.path}`);
+  if (bare) throw new FcError(`저장소가 들어 있어 다루지 않습니다: ${bare.path}`);
   const existing = new Set(entries.map((entry) => nameKey(entry.path)));
   const wanted = [];
   for (const entry of entries) {
@@ -45,7 +45,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     const result = normalizeName(path.basename(entry.path));
     if (result.reason !== null) {
-      // 숨김, 임시, 끝이 점인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
+      // 숨김, 임시, 끝이 점이나 공백인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
       if (result.number !== null || /번호가 여럿/.test(result.reason)) plan.skipped.push({ path: entry.path, reason: result.reason });
       continue;
     }
