@@ -28,8 +28,8 @@ function localTime(now) {
 
 // 지울 수 있는 일반 파일만 받는다. 기록과 실제 제거 대상이 어긋나지 않게 grant.delete로 확인하고 그 실제 경로를 적는다.
 function describeItem(access, item) {
-  const label = typeof item?.path === 'string' ? item.path : JSON.stringify(item?.path);
-  if (typeof item?.path !== 'string') throw new FcError(`기록할 경로가 올바르지 않습니다: ${label}`);
+  if (typeof item?.path !== 'string') throw new FcError(`기록할 경로가 올바르지 않습니다: (${typeof item?.path})`);
+  const label = item.path;
   if (typeof item.reason !== 'string' || item.reason.trim() === '') throw new FcError(`제거 사유가 없습니다: ${label}`);
   const real = access.delete(item.path);
   let stat;
@@ -104,7 +104,7 @@ function removePartial(file, cause) {
 // 대상이 없으면 파일을 만들지 않고 null을 돌려준다.
 // 대상 하나라도 지울 수 없는 항목이면 FcError를 내고 아무것도 남기지 않는다. 오류 없이 돌아온 뒤에 제거한다.
 function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } = {}) {
-  if (typeof kind !== 'string' || kind === '') throw new FcError('제거 종류를 지정하세요.');
+  if (typeof kind !== 'string' || kind.trim() === '') throw new FcError('제거 종류를 지정하세요.');
   if (!Array.isArray(items)) throw new FcError('제거 대상은 목록이어야 합니다.');
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new FcError('기록 시각이 올바르지 않습니다.');
   const access = grant(dir, ['write', 'delete']);
@@ -112,7 +112,8 @@ function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } 
   const described = describeItems(access, items);
   const text = serialize({ kind, createdAt: localTime(now), target: access.target, count: described.length, items: described });
   const { file, fd } = claimName(access, nameStamp(now), dryRun);
-  const result = { path: file, count: described.length, items: described, dryRun };
+  // 돌려주는 items가 기록과 어긋나지 않도록 직렬화한 내용에서 되살린다.
+  const result = { path: file, count: described.length, items: JSON.parse(text).items, dryRun };
   if (dryRun) return result;
   let failure;
   try {

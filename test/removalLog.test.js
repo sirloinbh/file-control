@@ -96,7 +96,8 @@ test('기록 파일 이름을 알아볼 수 있고, 기록 파일은 제거 대�
   const second = writeRemovalLog(dir, '중복', [{ path: 'a.mp4', reason: 'r' }], { now });
   assert.match(path.basename(first.path), REMOVAL_LOG);
   assert.match(path.basename(second.path), REMOVAL_LOG);
-  assert.doesNotMatch('fctl-removed-메모.json', REMOVAL_LOG);
+  assert.match(NAME.toUpperCase(), REMOVAL_LOG);
+  for (const other of ['fctl-removed-메모.json', `x${NAME}`, `${NAME}.bak`]) assert.doesNotMatch(other, REMOVAL_LOG);
   assert.throws(() => writeRemovalLog(dir, '중복', [{ path: first.path, reason: 'r' }], { now }), /제거 기록은 제거 대상이 될 수 없습니다/);
 });
 
@@ -111,6 +112,16 @@ test('details를 직렬화할 수 없으면 미리보기에서도 입력 오류�
     }
   }
   assert.deepStrictEqual(logs(dir), []);
+});
+
+test('돌려주는 items는 JSON에 없는 값이 있어도 기록과 같고 입력과 이어지지 않는다', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': 'x' });
+  const details = { width: NaN, skip: () => {}, at: new Date(0), keep: 'b.mp4' };
+  const result = writeRemovalLog(dir, '중복', [{ path: 'a.mp4', reason: 'r', details }], { now });
+  assert.deepStrictEqual(result.items, readLog(result.path).items);
+  details.keep = 'changed';
+  assert.strictEqual(result.items[0].details.keep, 'b.mp4');
 });
 
 test('종류마다 다른 값은 details로 남긴다', () => {
@@ -211,6 +222,7 @@ test('대상 하나라도 기록할 수 없으면 아무것도 남기지 않는�
     [{ path: 'a.mp4', reason: '   ' }, /제거 사유가 없습니다/],
     [{ reason: 'r' }, /경로가 올바르지 않습니다/],
     [null, /경로가 올바르지 않습니다/],
+    [{ path: 1n, reason: 'r' }, /경로가 올바르지 않습니다/],
   ];
   for (const [bad, message] of cases) {
     assert.throws(() => writeRemovalLog(dir, '중복', [{ path: 'a.mp4', reason: 'r' }, bad], { now }), (err) => err instanceof FcError && message.test(err.message));
@@ -237,6 +249,7 @@ test('종류와 목록이 잘못되면 거부한다', () => {
   const dir = tempDir();
   assert.throws(() => writeRemovalLog(dir, '', []), /제거 종류/);
   assert.throws(() => writeRemovalLog(dir, undefined, []), /제거 종류/);
+  assert.throws(() => writeRemovalLog(dir, '   ', []), /제거 종류/);
   assert.throws(() => writeRemovalLog(dir, '중복', 'a.mp4'), /목록이어야/);
   assert.throws(() => writeRemovalLog(dir, '중복', [], { now: new Date(NaN) }), /기록 시각/);
   assert.throws(() => writeRemovalLog(dir, '중복', [], { now: 'today' }), /기록 시각/);
@@ -264,6 +277,23 @@ for (const method of ['writeFileSync', 'fsyncSync', 'closeSync']) {
     assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
   });
 }
+
+test('쓰기와 닫기가 함께 실패하면 첫 오류를 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': 'x' });
+  const writeFileSync = fs.writeFileSync;
+  const closeSync = fs.closeSync;
+  const fail = (original, code) => (...args) => {
+    if (typeof args[0] !== 'number') return original(...args);
+    if (original === closeSync) original(...args);
+    throw Object.assign(new Error(code), { code });
+  };
+  t.mock.method(fs, 'writeFileSync', fail(writeFileSync, 'ENOSPC'));
+  t.mock.method(fs, 'closeSync', fail(closeSync, 'EIO'));
+  assert.throws(() => writeRemovalLog(dir, '중복', [{ path: 'a.mp4', reason: 'r' }], { now }), /ENOSPC/);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(logs(dir), []);
+});
 
 test('쓰다 만 기록을 지우지도 못하면 그 사실을 알린다', (t) => {
   const dir = tempDir();
