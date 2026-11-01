@@ -407,6 +407,19 @@ test('detailedName은 정보가 없는 파일명만 제품번호 폴더 이름�
   }
 });
 
+test('detailedName은 제품번호 규칙을 따라 폴더명을 고른다', () => {
+  // 전각 번호도 찾고, 이름은 폴더에 적힌 그대로 쓴다.
+  assert.strictEqual(detailedName('video.mp4', ['ＡＢＣ－１２３']), 'ＡＢＣ－１２３.mp4');
+  for (const folder of ['abc-123 제목', 'summer-2023', 'PART-01', 'CD-02', 'IMG-1234', 'Vlog-2024', 'summer-TRIP-20', 'ABCDEFG-123', 'ABC-123456', 'ZZZ-2024-05-01']) {
+    assert.strictEqual(detailedName('video.mp4', [folder]), 'video.mp4', folder);
+  }
+  assert.strictEqual(detailedName('video.mp4', ['ABC-123-1080p']), 'ABC-123-1080p.mp4');
+  // 제품번호가 아닌 가까운 폴더가 바깥 폴더의 번호를 밀어내지 않는다.
+  for (const near of ['summer-2023', 'trip-20', 'scan-01', 'CD-02', 'IMG-1234']) {
+    assert.strictEqual(detailedName('video.mp4', [near, 'ABC-123 제목']), 'ABC-123 제목.mp4', near);
+  }
+});
+
 test('detailedName은 점으로 시작하는 폴더 이름을 쓰지 않는다', () => {
   assert.strictEqual(detailedName('x.mp4', ['.ABC-123']), 'x.mp4');
   assert.strictEqual(detailedName('trash.mp4', ['.trash-1000']), 'trash.mp4');
