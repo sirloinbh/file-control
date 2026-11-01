@@ -2,7 +2,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const zlib = require('node:zlib');
 const { execFileSync } = require('node:child_process');
 
 const isWindows = process.platform === 'win32';
@@ -444,60 +443,6 @@ function runTar(args, options) {
   }
 }
 
-// tar.exe는 확장자가 아니라 내용으로 형식을 고르고, mtree 글에 적힌 contents= 경로의 로컬 파일을 그대로 복사한다.
-// 내려받은 파일이 다른 파일의 내용을 끌어오지 못하게 앞 바이트가 아는 형식일 때만 tar.exe에 넘긴다.
-const ARCHIVE_MAGIC = [
-  Buffer.from('PK\x03\x04', 'latin1'), // zip
-  Buffer.from('PK\x05\x06', 'latin1'), // 빈 zip
-  Buffer.from('PK\x07\x08', 'latin1'), // 분할 zip
-  Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), // 7z
-  Buffer.from('Rar!\x1a\x07', 'latin1'), // rar
-  // bzip2와 xz는 Node로 풀어 안쪽을 볼 수 없어 겉 형식만 확인한다.
-  Buffer.from('BZh', 'latin1'), // bzip2
-  Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), // xz
-];
-const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
-const TAR_BLOCK = 512;
-const ARCHIVE_HEAD = 64 * 1024;
-
-function readHead(archive) {
-  const fd = fs.openSync(path.resolve(archive), 'r');
-  try {
-    const head = Buffer.alloc(ARCHIVE_HEAD);
-    return head.subarray(0, fs.readSync(fd, head, 0, ARCHIVE_HEAD, 0));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-// tar 머리글인지 본다. 체크섬은 ustar 표시가 없는 옛 tar에도 있다. 전부 0인 블록은 빈 tar의 끝 표시다.
-function looksLikeTar(head) {
-  if (head.length === 0) return true;
-  if (head.length < TAR_BLOCK) return false;
-  const block = head.subarray(0, TAR_BLOCK);
-  if (block.every((byte) => byte === 0)) return true;
-  const stored = Number.parseInt(block.subarray(148, 156).toString('latin1').replace(/\0.*$/, '').trim(), 8);
-  const sum = block.reduce((total, byte, index) => total + (index >= 148 && index < 156 ? 0x20 : byte), 0);
-  return stored === sum;
-}
-
-// 앞부분만 풀어 안쪽이 tar인지 본다. 잘라 읽었으니 끝까지 풀 수 없어도 오류로 보지 않는다.
-function gzipHoldsTar(head) {
-  try {
-    return looksLikeTar(zlib.gunzipSync(head, { finishFlush: zlib.constants.Z_SYNC_FLUSH }).subarray(0, TAR_BLOCK));
-  } catch {
-    return false;
-  }
-}
-
-function rejectUnknownFormat(archive) {
-  const head = readHead(archive);
-  if (head.length === 0) return;
-  if (ARCHIVE_MAGIC.some((magic) => head.subarray(0, magic.length).equals(magic))) return;
-  if (head.subarray(0, GZIP_MAGIC.length).equals(GZIP_MAGIC) ? gzipHoldsTar(head) : looksLikeTar(head)) return;
-  throw new FcError(`압축 형식을 확인할 수 없습니다: ${archive}`);
-}
-
 // 암호가 걸린 압축 파일에서 tar.exe가 콘솔에 암호를 물어 멈추지 않도록 아무 값이나 미리 준다. 틀린 암호로 실패한다.
 const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
 
@@ -506,7 +451,6 @@ const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
 // 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 첫 글자만 믿는다.
 function archiveEntries(archive) {
   ensureTarCanUse([path.resolve(archive)]);
-  rejectUnknownFormat(archive);
   const listing = runTar(['-tvf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
@@ -514,7 +458,6 @@ function archiveEntries(archive) {
 // 압축 파일 안의 항목 이름 목록. 코드페이지로 나오므로 ASCII가 아닌 이름은 믿을 수 없다.
 function archiveNames(archive) {
   ensureTarCanUse([path.resolve(archive)]);
-  rejectUnknownFormat(archive);
   const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
@@ -523,7 +466,6 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
   ensureTarCanUse([path.resolve(archive), path.resolve(dest)]);
-  rejectUnknownFormat(archive);
   let note = '';
   if (dryRun) {
     ensureCanMakeDir(dest);
