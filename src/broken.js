@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { FcError, archiveEntries } = require('./commands');
+const { FcError, probeArchive } = require('./commands');
 const { grant, walk, readRange, fileSizeInside } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { REMOVAL_LOG } = require('./removalLog');
@@ -14,7 +14,8 @@ const starts = (head, ...bytes) => head.length >= bytes.length && bytes.every((b
 const text = (head, from, to) => head.toString('latin1', from, to);
 const riff = (form) => (head) => text(head, 0, 4) === 'RIFF' && text(head, 8, 12) === form;
 
-// 확장자와 앞 바이트가 정해진 형식. 앞 바이트가 느슨한 형식(mp3, mpg, ts)과 머리글이 없는 옛 tar는 넣지 않는다. 멀쩡한 파일을 깨졌다고 하지 않기 위해서다.
+// 확장자와 앞 바이트가 정해진 형식. 앞 바이트가 느슨한 형식(mp3, mpg, ts)과 머리글이 없는 옛 tar는 넣지 않는다.
+// 앞 바이트가 맞지 않아도 그것만으로 깨졌다고 하지 않는다. 암호 걸린 Office 문서(OLE2), TS를 담은 .mp4, BigTIFF처럼 정상인 경우가 있다.
 const FORMATS = [
   { name: 'MP4/MOV', extensions: ['mp4', 'm4v', 'm4a', 'mov', '3gp', '3g2'], match: (head) => FIRST_BOXES.has(text(head, 4, 8)) },
   { name: 'MKV/WebM', extensions: ['mkv', 'mka', 'webm'], match: (head) => starts(head, 0x1a, 0x45, 0xdf, 0xa3) },
@@ -56,14 +57,37 @@ const ZIP_LOCAL = 0x04034b50;
 const ZIP_CENTRAL_SIZE = 46;
 // 항목마다 파일을 여는 검사의 한도. 넘는 항목은 보지 않는다.
 const ZIP_LOCAL_CHECKS = 5000;
+// 메모리에 올리는 zip 목록의 한도. 넘으면 판단하지 않는다.
+const MAX_ZIP_DIRECTORY = 64 * 1024 * 1024;
+// tar.exe로 읽는 한도. 항목이 아주 많거나 끝없이 풀리는 파일에 묶이지 않게 한다. 넘으면 판단하지 않는다.
+const TAR_LIMITS = { maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60 * 1000 };
+// tar.exe가 손상이라고 말한 경우. 잠금(Error reading), 코드페이지에 없는 이름(unreadable filename)처럼 파일 탓이 아닌 오류는 여기 들지 않는다.
+const TAR_DAMAGED = /^\S*tar(?:\.exe)?: (?:Truncated input file|Damaged tar archive|(?:Error opening archive: )?truncated \w+ input)/m;
+const TAR_UNRECOGNIZED = /^\S*tar(?:\.exe)?: Error opening archive: Unrecognized archive format/m;
+
+const broken = (reason) => ({ status: 'broken', reason });
+const suspect = (reason) => ({ status: 'suspect', reason });
 const SEVEN_ZIP_HEADER = 32;
 
-// RIFF 머리글의 크기가 파일보다 크면 잘린 것이다. 0과 최댓값은 크기를 모른 채 쓴 파일이고, 2GB를 넘는 AVI는 RIFF가 여럿이라 더 작기만 하다.
+// RIFF 머리글의 크기가 파일보다 크면 잘린 것이다. 크기 칸은 앞 8바이트를 빼고 적지만, 파일 전체 크기를 적는 프로그램도 있어 8바이트는 봐준다.
+// 0과 최댓값은 크기를 모른 채 쓴 파일이고, 2GB를 넘는 AVI는 RIFF가 여럿이라 더 작기만 하다.
 function checkRiff(head, size) {
   if (head.length < 8 || text(head, 0, 4) !== 'RIFF') return null;
   const declared = head.readUInt32LE(4);
   if (declared === 0 || declared === 0xffffffff) return null;
-  return declared + 8 > size ? 'RIFF 머리글의 크기보다 파일이 작습니다. 잘린 파일일 수 있습니다.' : null;
+  return declared > size ? broken('RIFF 머리글의 크기보다 파일이 작습니다. 잘린 파일일 수 있습니다.') : null;
+}
+
+// 뒤에서부터 끝 레코드를 찾는다. 주석 길이가 파일 끝과 맞는 것을 고르고, 없으면 맞지 않는 것 중 가장 뒤의 것을 돌려준다.
+// 주석 안에 같은 표시가 들어 있을 수 있어 처음 찾은 것을 그대로 믿지 않는다.
+function findZipEnd(tail) {
+  let fallback = -1;
+  for (let at = tail.lastIndexOf(ZIP_END); at !== -1; at = at === 0 ? -1 : tail.lastIndexOf(ZIP_END, at - 1)) {
+    if (at + ZIP_END_SIZE > tail.length) continue;
+    if (at + ZIP_END_SIZE + tail.readUInt16LE(at + 20) === tail.length) return { at, exact: true };
+    if (fallback === -1) fallback = at;
+  }
+  return fallback === -1 ? null : { at: fallback, exact: false };
 }
 
 // zip의 끝 레코드, 중앙 디렉터리, 항목 머리글이 맞물리는지 본다. 항목의 압축 내용(CRC)은 읽지 않는다.
@@ -71,73 +95,77 @@ function checkRiff(head, size) {
 function checkZip(target, real, size) {
   const tailOffset = Math.max(0, size - ZIP_TAIL);
   const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
-  const at = tail.lastIndexOf(ZIP_END);
-  if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'zip 끝 표시가 없습니다. 잘린 파일일 수 있습니다.';
+  const found = findZipEnd(tail);
+  if (!found) return broken('zip 끝 표시가 없습니다. 잘린 파일일 수 있습니다.');
+  const { at, exact } = found;
   if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return null;
   const total = tail.readUInt16LE(at + 10);
   const directorySize = tail.readUInt32LE(at + 12);
   const directoryOffset = tail.readUInt32LE(at + 16);
   if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return null;
-  if (directoryOffset + directorySize > tailOffset + at) return 'zip 목록이 끝 표시를 넘습니다. 파일이 손상됐습니다.';
+  if (directoryOffset + directorySize > tailOffset + at) return broken('zip 목록이 끝 표시를 넘습니다. 파일이 손상됐습니다.');
+  if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`zip 목록이 너무 커 판단하지 않았습니다: ${directorySize}바이트`);
   const directory = readRange(target, real, { offset: directoryOffset, length: directorySize });
   let pos = 0;
   for (let index = 0; index < total; index += 1) {
-    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'zip 목록이 손상됐습니다.';
+    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('zip 목록이 손상됐습니다.');
     const offset = directory.readUInt32LE(pos + 42);
     if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
       const local = readRange(target, real, { offset, length: 4 });
-      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return 'zip 항목의 머리글이 목록과 맞지 않습니다. 파일이 손상됐습니다.';
+      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return broken('zip 항목의 머리글이 목록과 맞지 않습니다. 파일이 손상됐습니다.');
     }
     pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
   }
-  return null;
+  return exact ? null : suspect('zip 끝 표시 뒤에 다른 데이터가 있습니다.');
 }
 
 // 7z 시작 머리글의 CRC와, 머리글이 가리키는 끝이 파일 안인지 본다. 내용은 읽지 않는다.
 function check7z(head, size) {
-  if (head.length < SEVEN_ZIP_HEADER) return '7z 머리글이 잘렸습니다.';
-  if (zlib.crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return '7z 머리글이 손상됐습니다.';
+  if (head.length < SEVEN_ZIP_HEADER) return broken('7z 머리글이 잘렸습니다.');
+  if (zlib.crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return broken('7z 머리글이 손상됐습니다.');
   const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
-  return end > BigInt(size) ? '7z 머리글이 가리키는 끝보다 파일이 작습니다. 잘린 파일일 수 있습니다.' : null;
+  return end > BigInt(size) ? broken('7z 머리글이 가리키는 끝보다 파일이 작습니다. 잘린 파일일 수 있습니다.') : null;
 }
 
-// tar.exe가 끝까지 읽지 못하면 손상이다. tar.exe를 실행하지 못한 경우는 파일 문제가 아니므로 판단 못함으로 나간다.
+// tar.exe로 끝까지 읽어 본다. 손상 문구가 있을 때만 깨졌다고 하고, 그 밖의 실패는 파일 탓인지 알 수 없어 판단 못함으로 나간다.
 function checkTarListing(real) {
-  let entries;
-  try {
-    entries = archiveEntries(real);
-  } catch (err) {
-    if (err instanceof FcError || typeof err.status !== 'number') throw err;
-    return { status: 'broken', reason: `tar로 끝까지 읽지 못했습니다. (종료 코드 ${err.status})` };
-  }
-  return entries.length === 0 ? { status: 'suspect', reason: '압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.' } : null;
+  const { error, status, stderr, entries } = probeArchive(real, TAR_LIMITS);
+  if (error) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (${error.code})`);
+  if (TAR_DAMAGED.test(stderr)) return broken('tar가 파일이 잘렸거나 손상됐다고 알렸습니다.');
+  if (TAR_UNRECOGNIZED.test(stderr)) return suspect('tar로 읽을 수 없는 형식입니다. tar가 아닌 파일이거나 앞부분이 손상됐을 수 있습니다.');
+  if (status !== 0) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (종료 코드 ${status}: ${stderr.split(/\r?\n/)[0].replace(/[^\x00-\x7f]+/g, '?')})`);
+  return entries === 0 ? suspect('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.') : null;
+}
+
+// 앞 바이트가 형식과 맞지 않는 파일을 판별한다. 전부 0이거나 웹 페이지면 내용이 없는 것이 확실하므로 깨졌다고 한다. 그 밖에는 정상일 수 있다.
+function checkMismatch(format, head) {
+  const actual = FORMATS.find((other) => other.match(head));
+  if (actual) return suspect(`확장자는 ${format.name}인데 내용은 ${actual.name}입니다. 이름만 바뀐 파일일 수 있습니다.`);
+  if (head.every((byte) => byte === 0)) return broken('앞부분이 모두 0입니다. 내용이 없거나 받다 멈춘 파일일 수 있습니다.');
+  if (/^\s*<(?:!doctype html|html)/i.test(text(head, 0, head.length))) return broken(`${format.name} 파일이 아니라 웹 페이지입니다. 내려받기가 잘못됐을 수 있습니다.`);
+  return suspect(`내용이 ${format.name} 형식으로 시작하지 않습니다. 암호나 다른 포장을 쓴 파일일 수 있습니다.`);
 }
 
 // 파일 하나를 판별해 { status, reason }을 돌려준다. 문제를 찾지 못하면 null이다. 입출력 문제는 예외로 나간다.
-// - broken: 이 형식으로 열 수 없다고 판단한 파일이다.
-// - suspect: 의심스럽지만 정상일 수 있어 제거 대상으로 삼지 않는다. 이름만 바뀐 파일과 뜻이 있을 수 있는 빈 파일이 그렇다.
+// - broken: 내용을 쓸 수 없다고 판단한 파일이다. 잘렸거나 구조가 손상됐거나 내용이 없다.
+// - suspect: 의심스럽지만 정상일 수 있어 제거 대상으로 삼지 않는다. 이름만 바뀐 파일, 알 수 없는 포장, 뜻이 있을 수 있는 빈 파일이 그렇다.
 function inspect(target, real, size) {
   const extension = path.extname(real).slice(1).toLowerCase();
   const format = BY_EXTENSION.get(extension);
   const listed = TAR_LISTED.test(real);
   if (size === 0) {
     // __init__.py, .gitkeep처럼 빈 파일이 뜻을 갖는 경우가 많아, 내용이 꼭 있어야 하는 형식만 깨졌다고 본다.
-    if (format || listed) return { status: 'broken', reason: '크기가 0입니다.' };
-    return { status: 'suspect', reason: '크기가 0입니다.' };
+    return format || listed ? broken('크기가 0입니다.') : suspect('크기가 0입니다.');
   }
   if (!format && !listed) return null;
   const head = readRange(target, real, { length: HEAD_SIZE });
-  if (format && !format.match(head)) {
-    const actual = FORMATS.find((other) => other.match(head));
-    if (actual) return { status: 'suspect', reason: `확장자는 ${format.name}인데 내용은 ${actual.name}입니다. 이름만 바뀐 파일일 수 있습니다.` };
-    return { status: 'broken', reason: `내용이 ${format.name} 형식으로 시작하지 않습니다.` };
-  }
-  let reason = checkRiff(head, size);
-  if (reason === null && format === MP4) reason = checkMp4Structure(target, real, real);
-  if (reason === null && format === MKV) reason = checkMkvStructure(target, real, real);
-  if (reason === null && format === ZIP) reason = checkZip(target, real, size);
-  if (reason === null && format === SEVEN_ZIP) reason = check7z(head, size);
-  if (reason !== null) return { status: 'broken', reason };
+  if (format && !format.match(head)) return checkMismatch(format, head);
+  let found = checkRiff(head, size);
+  if (found === null && format === MP4) found = checkMp4Structure(target, real, real);
+  if (found === null && format === MKV) found = checkMkvStructure(target, real, real);
+  if (found === null && format === ZIP) found = checkZip(target, real, size);
+  if (found === null && format === SEVEN_ZIP) found = check7z(head, size);
+  if (found !== null) return found;
   return listed ? checkTarListing(real) : null;
 }
 
@@ -179,8 +207,8 @@ function findBroken(dir) {
       if (found) result[found.status].push({ path: real, size, reason: found.reason });
     } catch (err) {
       if (err instanceof FcError) result.unreadable.push({ path: entry.path, reason: err.message });
-      else if (err.syscall) result.unreadable.push({ path: entry.path, reason: `파일을 읽을 수 없습니다. (${err.code})` });
-      else throw err;
+      // 파일 하나의 문제로 다른 파일의 결과까지 잃지 않게 어떤 예외든 그 파일만 판단 못함으로 둔다.
+      else result.unreadable.push({ path: entry.path, reason: `파일을 읽을 수 없습니다. (${err.code ?? err.message})` });
     }
   }
   return result;

@@ -357,51 +357,80 @@ function childBoxes(read, start, end) {
   return { list, complete: true };
 }
 
-// 트랙의 데이터 위치표(stco, co64)가 파일 안을 가리키는지 본다. 문제가 있으면 사유를 돌려준다.
+// 데이터가 다른 파일에 있는 트랙인지 본다. dref 항목의 플래그 끝 비트가 1이면 이 파일 안이다.
+function isExternalTrack(read, minf) {
+  const dinf = findChild(read, minf, 'dinf');
+  const dref = dinf && findChild(read, dinf, 'dref');
+  if (!dref || dref.end - dref.start < 8) return false;
+  return childBoxes(read, dref.start + 8, dref.end).list.some((entry) => entry.end - entry.start >= 4 && (read(entry.start, 4).readUInt32BE(0) & 1) === 0);
+}
+
+function findChild(read, parent, type) {
+  return childBoxes(read, parent.start, parent.end).list.find((box) => box.type === type);
+}
+
+// 트랙의 데이터 위치표(stco, co64)를 본다. 문제가 없으면 null을, 있으면 { outside, reason }을 돌려준다.
+// outside는 위치표가 파일 끝 너머를 가리키는 경우다. 이 파일에 데이터가 없다는 뜻이므로 다른 트랙과 상관없이 손상이다.
 function checkTrack(read, trak, size) {
-  let current = trak;
-  for (const type of ['mdia', 'minf', 'stbl']) {
-    current = childBoxes(read, current.start, current.end).list.find((box) => box.type === type);
-    if (!current) return `트랙에 ${type} 박스가 없습니다.`;
-  }
-  const table = childBoxes(read, current.start, current.end).list.find((box) => box.type === 'stco' || box.type === 'co64');
-  if (!table) return '트랙에 데이터 위치표(stco, co64)가 없습니다.';
-  if (table.end - table.start < 8) return '데이터 위치표가 잘렸습니다.';
+  const unsound = (reason) => ({ outside: false, reason });
+  const mdia = findChild(read, trak, 'mdia');
+  const minf = mdia && findChild(read, mdia, 'minf');
+  const stbl = minf && findChild(read, minf, 'stbl');
+  if (!stbl) return unsound('트랙에 mdia, minf, stbl 박스가 온전하지 않습니다.');
+  if (isExternalTrack(read, minf)) return null;
+  const table = childBoxes(read, stbl.start, stbl.end).list.find((box) => box.type === 'stco' || box.type === 'co64');
+  if (!table) return unsound('트랙에 데이터 위치표(stco, co64)가 없습니다.');
+  if (table.end - table.start < 8) return unsound('데이터 위치표가 잘렸습니다.');
   const count = read(table.start + 4, 4).readUInt32BE(0);
   if (count === 0) return null;
   const width = table.type === 'co64' ? 8 : 4;
-  if (8 + count * width > table.end - table.start) return '데이터 위치표가 잘렸습니다.';
+  if (8 + count * width > table.end - table.start) return unsound('데이터 위치표가 잘렸습니다.');
   const at = read(table.start + 8 + (count - 1) * width, width);
   const last = width === 8 ? at.readBigUInt64BE(0) : BigInt(at.readUInt32BE(0));
-  return last >= BigInt(size) ? '데이터 위치표가 파일 끝 너머를 가리킵니다. 잘린 파일일 수 있습니다.' : null;
+  return last >= BigInt(size) ? { outside: true, reason: '데이터 위치표가 파일 끝 너머를 가리킵니다. 잘린 파일일 수 있습니다.' } : null;
 }
 
-// MP4/MOV의 구조가 온전한지 본다. 손상이면 사유를, 문제를 찾지 못하면 null을 돌려준다. 입출력 문제와 읽기 한도 초과는 예외로 나간다.
+// 넘어도 잘렸다고 볼 수 있는 박스. 다른 이름은 뒤에 덧붙은 데이터일 수 있다.
+const CONTENT_BOXES = new Set(['moov', 'mdat', 'moof']);
+
+// MP4/MOV의 구조가 온전한지 본다. 손상이면 { status: 'broken', reason }을, 의심스러우면 { status: 'suspect', reason }을, 문제를 찾지 못하면 null을 돌려준다.
+// 입출력 문제와 읽기 한도 초과는 예외로 나간다.
 // 최상위 박스, moov 안의 mvhd와 trak, 트랙의 데이터 위치표까지 본다. 영상 데이터 자체는 읽지 않으므로 mdat 안의 손상은 찾지 못한다.
+// 재생에 필요한 구조가 온전하면 그 뒤의 패딩이나 덧붙은 데이터는 손상으로 보지 않는다. 압축된 moov(cmov)와 참조 무비(rmra)는 판단하지 않는다.
 function checkMp4Structure(target, real, p) {
+  const broken = (reason) => ({ status: 'broken', reason });
   const size = fileSizeInside(target, real);
   const read = makeReader(target, real, p);
   let moov = null;
+  let trailing = false;
   let offset = 0;
   while (size - offset >= 8) {
     const box = readBoxHeader(read, offset, size, true);
     const type = box ? box.type : fourcc(read(offset, 8), 4);
-    if (/[\x00-\x1f]/.test(type)) return `${offset}바이트 위치의 박스 이름이 올바르지 않습니다. 내용이 손상됐거나 0으로 채워졌을 수 있습니다.`;
-    if (!box) return `${type} 박스가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.`;
+    if (!box && CONTENT_BOXES.has(type)) return broken(`${type} 박스가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.`);
+    if (!box || /[\x00-\x1f]/.test(type)) {
+      trailing = true;
+      break;
+    }
     if (type === 'moov' && !moov) moov = box;
     offset = box.end;
   }
-  if (!moov) return 'moov 박스가 없습니다. 끝까지 받지 못한 파일일 수 있습니다.';
+  if (!moov) return broken('moov 박스가 없습니다. 끝까지 받지 못했거나 내용이 손상된 파일일 수 있습니다.');
   const { list, complete } = childBoxes(read, moov.start, moov.end);
-  if (!complete) return 'moov 박스의 구조가 손상됐습니다.';
-  if (!list.some((box) => box.type === 'mvhd')) return 'moov 박스에 mvhd가 없습니다.';
+  if (list.some((box) => box.type === 'cmov' || box.type === 'rmra')) return null;
+  if (!complete) return broken('moov 박스의 구조가 손상됐습니다.');
+  if (!list.some((box) => box.type === 'mvhd')) return broken('moov 박스에 mvhd가 없습니다.');
   const tracks = list.filter((box) => box.type === 'trak');
-  if (tracks.length === 0) return 'moov 박스에 트랙이 없습니다.';
-  for (const trak of tracks) {
-    const reason = checkTrack(read, trak, size);
-    if (reason !== null) return reason;
+  if (tracks.length === 0) {
+    if (list.some((box) => box.type === 'mvex')) return { status: 'suspect', reason: 'moov 박스에 트랙이 없습니다.' };
+    return broken('moov 박스에 트랙이 없습니다.');
   }
-  return null;
+  const problems = tracks.map((trak) => checkTrack(read, trak, size)).filter((problem) => problem !== null);
+  const outside = problems.find((problem) => problem.outside);
+  if (outside) return broken(outside.reason);
+  if (problems.length === tracks.length) return broken(problems[0].reason);
+  if (problems.length > 0) return { status: 'suspect', reason: problems[0].reason };
+  return trailing ? { status: 'suspect', reason: `${offset}바이트 위치부터 뒤에 박스가 아닌 데이터가 있습니다. 구조는 온전합니다.` } : null;
 }
 
 module.exports = { readMp4Metadata, checkMp4Structure, FIRST_BOXES };

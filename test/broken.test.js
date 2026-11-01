@@ -9,13 +9,10 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-// commands.js가 불러올 때 execFileSync를 받아 두므로 require보다 먼저 바꿔 둔다.
-const realExecFileSync = childProcess.execFileSync;
-let tarFailure = null;
-test.mock.method(childProcess, 'execFileSync', (...args) => {
-  if (tarFailure) throw tarFailure;
-  return realExecFileSync(...args);
-});
+// commands.js가 불러올 때 spawnSync를 받아 두므로 require보다 먼저 바꿔 둔다.
+const realSpawnSync = childProcess.spawnSync;
+let tarResult = null;
+test.mock.method(childProcess, 'spawnSync', (...args) => tarResult ?? realSpawnSync(...args));
 
 const { findBroken, formatBroken } = require('../src/broken');
 const { run } = require('../bin/fctl');
@@ -160,11 +157,30 @@ test('내용이 다른 형식이면 이름만 바뀐 파일일 수 있어 의심
   assert.match(found.reason, /JPEG.*PNG/);
 });
 
-test('내용이 어느 형식과도 맞지 않으면 깨졌다고 본다', () => {
+test('앞부분이 모두 0이거나 웹 페이지면 깨졌다고 본다', () => {
   for (const name of ['a.mp4', 'a.mkv', 'a.jpg', 'a.zip', 'a.7z', 'a.rar', 'a.pdf']) {
     assert.strictEqual(judge(name, latin('<html>찾을 수 없음</html>')).status, 'broken', name);
+    assert.strictEqual(judge(name, latin('\r\n<!DOCTYPE html><html></html>')).status, 'broken', name);
     assert.strictEqual(judge(name, Buffer.alloc(2048)).status, 'broken', name);
   }
+});
+
+test('앞 바이트가 맞지 않아도 정상일 수 있는 파일은 의심으로 둔다', () => {
+  const ole2 = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0]);
+  const cases = {
+    'a.docx': ole2,
+    'a.xlsx': ole2,
+    'a.pdf': Buffer.concat([latin('DRM 포장'), Buffer.alloc(2048, 0x41)]),
+    'a.mp4': Buffer.alloc(376, 0x47),
+    'a.m4a': latin('ID3\x04\x00 음악'),
+    'a.flac': latin('ID3\x04\x00fLaC'),
+    'a.tif': Buffer.from([0x49, 0x49, 0x2b, 0x00, 8, 0]),
+    'a.png': latin('<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+    'a.jar': latin('#!/bin/sh\nexec java -jar "$0"\n'),
+    'b.mp4': Buffer.concat([u32(16), latin('uuid'), Buffer.alloc(8, 1)]),
+    'a.tar.gz': tar(),
+  };
+  for (const [name, content] of Object.entries(cases)) assert.strictEqual(judge(name, content)?.status, 'suspect', name);
 });
 
 test('MP4의 잘린 mdat, 0으로 채워진 moov, 파일 밖을 가리키는 위치표를 찾는다', () => {
@@ -177,8 +193,34 @@ test('MP4의 잘린 mdat, 0으로 채워진 moov, 파일 밖을 가리키는 위
   assert.match(judge('a.mp4', zeroed).reason, /mvhd/);
   assert.match(judge('a.mp4', mp4(stco(40, 1000000))).reason, /위치표/);
   assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)))])).reason, /트랙/);
-  // 끝이 0으로 채워진 파일: 미리 자리를 잡고 받다 멈춘 파일이 이렇다.
-  assert.match(judge('a.mp4', Buffer.concat([mp4(), Buffer.alloc(64)])).reason, /0으로 채워/);
+  // 앞쪽까지 받고 나머지는 0인 파일: moov가 뒤에 올 자리가 비어 있다.
+  assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), Buffer.alloc(4096)])).status, 'broken');
+});
+
+test('MP4 구조가 온전하면 뒤에 붙은 데이터는 의심으로만 둔다', () => {
+  for (const tail of [Buffer.alloc(64), Buffer.alloc(4096), latin('뒤에 붙은 글입니다.'), Buffer.alloc(32, 0xff)]) {
+    assert.strictEqual(judge('a.mp4', Buffer.concat([mp4(), tail])).status, 'suspect');
+  }
+  assert.strictEqual(judge('a.mp4', Buffer.concat([mp4(), box('free', Buffer.alloc(8))])), null);
+  assert.strictEqual(judge('a.mp4', Buffer.concat([mp4(), Buffer.alloc(4)])), null);
+});
+
+test('옛 QuickTime과 참조형 MOV는 깨졌다고 하지 않는다', () => {
+  assert.strictEqual(judge('a.mov', Buffer.concat([box('moov', box('cmov', Buffer.alloc(32)))])), null);
+  assert.strictEqual(judge('a.mov', Buffer.concat([box('moov', box('rmra', Buffer.alloc(32)))])), null);
+  const external = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('alis', u32(0)))), box('stbl', stco(1000000))))));
+  assert.strictEqual(judge('a.mov', Buffer.concat([ftyp(), external])), null);
+  const selfContained = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('url ', u32(1)))), box('stbl', stco(1000000))))));
+  assert.strictEqual(judge('a.mov', Buffer.concat([ftyp(), selfContained])).status, 'broken');
+});
+
+test('MP4 트랙 일부만 틀리면 의심, 모두 틀리면 깨짐이다', () => {
+  const good = trak(stco(40));
+  const odd = box('trak', Buffer.alloc(16));
+  const withTracks = (...tracks) => Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)), ...tracks), box('mdat', Buffer.alloc(64))]);
+  assert.strictEqual(judge('a.mp4', withTracks(good, odd)).status, 'suspect');
+  assert.strictEqual(judge('a.mp4', withTracks(odd)).status, 'broken');
+  assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)), box('mvex', Buffer.alloc(8)))])).status, 'suspect');
 });
 
 test('조각으로 나뉜 MP4의 빈 위치표는 정상이다', () => {
@@ -189,8 +231,13 @@ test('MKV의 잘린 Cluster, 없는 Tracks, 손상된 요소를 찾는다', () =
   const whole = mkv(tracks(), cluster());
   assert.match(judge('a.mkv', whole.subarray(0, whole.length - 10)).reason, /Segment.*잘린/);
   assert.match(judge('a.mkv', mkv(cluster())).reason, /Tracks/);
-  assert.match(judge('a.mkv', mkv(tracks(), Buffer.alloc(32))).reason, /요소가 손상/);
+  assert.match(judge('a.mkv', mkv(Buffer.alloc(32))).reason, /요소가 손상/);
   assert.match(judge('a.mkv', ebml()).reason, /Segment/);
+});
+
+test('MKV의 Segment 앞 Void는 정상이고, Tracks 뒤의 패딩은 의심으로만 둔다', () => {
+  assert.strictEqual(judge('a.mkv', Buffer.concat([ebml(), element('ec', Buffer.alloc(8)), element('18538067', tracks(), cluster())])), null);
+  assert.strictEqual(judge('a.mkv', mkv(tracks(), Buffer.alloc(32))).status, 'suspect');
 });
 
 test('크기를 모르는 MKV 요소를 만나면 판단을 멈춘다', () => {
@@ -212,6 +259,33 @@ test('잘린 zip과 항목 머리글이 틀린 zip을 찾는다', () => {
   assert.match(judge('a.docx', whole.subarray(0, 20)).reason, /끝 표시/);
 });
 
+test('zip 주석 안의 끝 표시에 속지 않고, 뒤에 붙은 데이터는 의심으로만 둔다', () => {
+  const whole = zip();
+  const comment = latin('주석 PK\x05\x06 끝');
+  const commented = Buffer.concat([whole, comment]);
+  commented.writeUInt16LE(comment.length, whole.length - 2);
+  assert.strictEqual(judge('a.zip', commented), null);
+  assert.strictEqual(judge('a.zip', Buffer.concat([whole, latin('뒤에 붙음')])).status, 'suspect');
+});
+
+test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로 둔다', () => {
+  const dir = tempDir();
+  const content = zip();
+  // 끝 레코드까지 실제로 넘지 않게 파일을 키우고 목록 크기를 크게 적는다.
+  const file = path.join(dir, 'a.zip');
+  const big = 65 * 1024 * 1024;
+  const fd = fs.openSync(file, 'w');
+  fs.writeSync(fd, content.subarray(0, content.length - 22), 0);
+  const end = Buffer.from(content.subarray(content.length - 22));
+  end.writeUInt32LE(big, 12);
+  end.writeUInt32LE(0, 16);
+  fs.writeSync(fd, end, 0, end.length, big + 100);
+  fs.closeSync(fd);
+  const result = findBroken(dir);
+  assert.deepStrictEqual(result.broken, []);
+  assert.match(result.unreadable[0].reason, /너무 커/);
+});
+
 test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
   const split = zip();
   split.writeUInt16LE(1, split.length - 22 + 4);
@@ -229,26 +303,76 @@ test('잘린 7z와 머리글이 손상된 7z를 찾는다', () => {
   assert.match(judge('a.7z', damaged).reason, /머리글이 손상/);
 });
 
-test('잘린 tar.gz를 찾는다', () => {
+test('tar.exe가 손상이라고 알린 파일만 깨졌다고 본다', { skip: process.platform !== 'win32' }, () => {
   const big = Buffer.concat([tar().subarray(0, 512), crypto.randomBytes(512), Buffer.alloc(1024)]);
   const whole = zlib.gzipSync(big);
   assert.strictEqual(judge('a.tgz', whole.subarray(0, whole.length - 200)).status, 'broken');
-});
-
-test('tar.exe를 실행하지 못하면 깨졌다고 하지 않고 판단 못함으로 둔다', () => {
+  assert.strictEqual(judge('a.tgz', whole.subarray(0, 10)).status, 'broken');
+  const longer = Buffer.concat([tar().subarray(0, 1024), Buffer.alloc(0)]);
+  longer.write('00000010000\0', 124, 'latin1');
+  longer.write('        ', 148, 'latin1');
+  const sum = longer.subarray(0, 512).reduce((total, byte) => total + byte, 0);
+  longer.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'latin1');
+  assert.strictEqual(judge('a.tar', longer).status, 'broken');
+  // 종료 코드가 0이어도 손상 문구가 있으면 깨짐이다.
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.tar'), tar());
-  tarFailure = Object.assign(new Error('없음'), { code: 'ENOENT', syscall: 'spawnSync' });
+  tarResult = { status: 0, stdout: Buffer.from('a.txt\n'), stderr: Buffer.from('tar.exe: Damaged tar archive (bad header checksum)\ntar.exe: Retrying...\n') };
+  const damaged = findBroken(dir);
+  tarResult = null;
+  assert.strictEqual(damaged.broken.length, 1);
+});
+
+test('tar로 읽을 수 없는 형식은 의심, 항목이 없으면 의심이다', { skip: process.platform !== 'win32' }, () => {
+  assert.strictEqual(judge('a.tar', latin('tar가 아닌 글\n'.repeat(100))).status, 'suspect');
+  assert.strictEqual(judge('a.tar.gz', zlib.gzipSync('tar가 아닌 글\n'.repeat(100))).status, 'suspect');
+  assert.strictEqual(judge('a.tar', Buffer.alloc(1024)).status, 'suspect');
+});
+
+test('tar.exe의 그 밖의 실패는 깨졌다고 하지 않고 판단 못함으로 둔다', () => {
+  const failures = [
+    { error: Object.assign(new Error('없음'), { code: 'ENOENT' }), status: null },
+    { error: Object.assign(new Error('한도'), { code: 'ENOBUFS' }), status: null, stdout: Buffer.alloc(0) },
+    { error: Object.assign(new Error('시간'), { code: 'ETIMEDOUT' }), status: null },
+    { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Error reading C:/a.tar\n') },
+    { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Archive entry has empty or unreadable filename ... skipping.\ntar.exe: Error exit delayed from previous errors.\n') },
+    { status: 0xc0000409, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) },
+    // 항목 이름에 든 말을 손상 문구로 오해하지 않는다.
+    { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Truncated input file: Failed to open\n'.replace(/^tar\.exe: /, 'tar.exe: a/')) },
+  ];
+  for (const failure of failures) {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'a.tar'), tar());
+    tarResult = failure;
+    const result = findBroken(dir);
+    tarResult = null;
+    assert.deepStrictEqual(result.broken, []);
+    assert.strictEqual(result.unreadable.length, 1);
+    assert.match(result.unreadable[0].reason, /판단하지 않았습니다/);
+  }
+});
+
+test('파일 하나의 예상 밖 오류가 다른 파일의 결과를 지우지 않는다', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.mp4'), Buffer.alloc(16));
+  fs.writeFileSync(path.join(dir, 'b.mp4'), mp4());
+  const { fstatSync } = fs;
+  let calls = 0;
+  t.mock.method(fs, 'fstatSync', (...args) => {
+    calls += 1;
+    if (calls === 3) throw new RangeError('예상 밖');
+    return fstatSync(...args);
+  });
   const result = findBroken(dir);
-  tarFailure = null;
-  assert.deepStrictEqual(result.broken, []);
-  assert.strictEqual(result.unreadable.length, 1);
-  assert.match(result.unreadable[0].reason, /ENOENT/);
+  t.mock.restoreAll();
+  assert.strictEqual(result.broken.length + result.unreadable.length, 2);
 });
 
 test('잘린 RIFF를 찾는다', () => {
   assert.match(judge('a.avi', Buffer.concat([latin('RIFF'), u32le(1000), latin('AVI ')])).reason, /RIFF/);
   assert.strictEqual(judge('a.avi', Buffer.concat([latin('RIFF'), u32le(0), latin('AVI ')])), null);
+  // 크기 칸에 파일 전체 크기를 적는 프로그램도 있다.
+  assert.strictEqual(judge('a.wav', Buffer.concat([latin('RIFF'), u32le(12), latin('WAVE')])), null);
 });
 
 test('잠겨서 읽지 못한 파일은 깨졌다고 하지 않는다', (t) => {
@@ -270,9 +394,9 @@ test('파일을 건드리지 않고, 기록 파일과 저장소와 링크와 잔
   const dir = tempDir();
   const files = {
     'fctl-removed-2026-11-02-120000.json': '{}',
-    'repo/.git/a.mp4': '깨짐',
-    '.fctl-new-1-2-3/a.mp4': '깨짐',
-    'sub/a.mp4': '깨짐',
+    'repo/.git/a.mp4': '<html></html>',
+    '.fctl-new-1-2-3/a.mp4': '<html></html>',
+    'sub/a.mp4': '<html></html>',
   };
   for (const [name, content] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
@@ -291,7 +415,7 @@ test('파일을 건드리지 않고, 기록 파일과 저장소와 링크와 잔
 
 test('formatBroken은 상태별 줄과 개수를 보여 준다', () => {
   const dir = tempDir();
-  fs.writeFileSync(path.join(dir, 'a.mp4'), '깨짐');
+  fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
   fs.writeFileSync(path.join(dir, 'b.jpg'), png());
   const report = formatBroken(findBroken(dir));
   assert.match(report, /깨짐: a\.mp4 \(/);
@@ -301,7 +425,7 @@ test('formatBroken은 상태별 줄과 개수를 보여 준다', () => {
 
 test('fctl find-broken은 보고만 하고 성공으로 끝난다', () => {
   const dir = tempDir();
-  fs.writeFileSync(path.join(dir, 'a.mp4'), '깨짐');
+  fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
   assert.match(run(['find-broken', dir]), /깨짐: a\.mp4/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
 });
