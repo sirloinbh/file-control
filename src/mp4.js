@@ -297,10 +297,9 @@ function firstTag(tags, sources) {
 // 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
 // 깨진 파일 판별기는 아니다. moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
 function readMp4Metadata(dir, p) {
-  const access = grant(dir, ['read']);
-  const real = access.read(p);
   try {
-    return parseMp4(access.target, real, p);
+    const access = grant(dir, ['read']);
+    return parseMp4(access.target, access.read(p), p);
   } catch (err) {
     if (err.syscall) throw new FcError(`MP4 파일을 읽을 수 없습니다: ${p} (${err.code})`);
     throw err;

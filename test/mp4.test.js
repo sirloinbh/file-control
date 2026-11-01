@@ -343,12 +343,50 @@ test('mehd가 있으면 mvhd보다 먼저 쓴다', () => {
   assert.strictEqual(result.duration, 100);
 });
 
+test('mehd가 0이면 mvhd를 쓴다', () => {
+  const dir = tempDir();
+  const mvex = box('mvex', box('mehd', u32(0), u32(0)));
+  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd(), mvex)).duration, 10);
+});
+
+test('인코딩 해상도의 너비와 높이를 각각 읽는다', () => {
+  const dir = tempDir();
+  const result = write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, display: { width: 853, height: 500 } })));
+  assert.deepStrictEqual([result.width, result.height], [720, 480]);
+});
+
+test('길이가 정해지지 않은 트랙보다 길이가 있는 트랙을 고른다', () => {
+  const dir = tempDir();
+  const unknown = trak({ width: 1400, height: 1400, duration: 0xffffffff });
+  const main = trak({ width: 640, height: 360, duration: 10 });
+  assert.strictEqual(write(dir, ftyp(), box('moov', unknown, main)).width, 640);
+});
+
+test('트랙과 조각 구조의 어느 층이든 틀린 크기는 손상이다', () => {
+  const dir = tempDir();
+  const bad = Buffer.concat([u32(4), latin('free')]);
+  for (const moov of [
+    box('moov', box('trak', bad)),
+    box('moov', box('trak', box('mdia', bad))),
+    box('moov', box('trak', box('mdia', box('minf', bad)))),
+    box('moov', box('trak', box('mdia', box('minf', box('stbl', bad))))),
+    box('moov', box('mvex', bad)),
+  ]) {
+    assert.throws(() => write(dir, ftyp(), moov), /구조가 손상됐습니다/);
+  }
+});
+
 test('알 수 없는 버전과 안전 범위를 넘는 길이는 없는 값으로 본다', () => {
   const dir = tempDir();
-  const v2 = (type, size) => box(type, u32(0x02000000), Buffer.alloc(size));
-  assert.strictEqual(write(dir, ftyp(), box('moov', v2('mvhd', 96))).duration, null);
-  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd({ duration: 0 }), box('mvex', v2('mehd', 8)))).duration, null);
-  const track = box('trak', v2('tkhd', 92), box('mdia', hdlr('vide')));
+  // 값은 그대로 두고 버전만 2로 바꾼다. 버전을 보지 않으면 값이 읽힌다.
+  const v2 = (full) => {
+    const copy = Buffer.from(full);
+    copy[8] = 2;
+    return copy;
+  };
+  assert.strictEqual(write(dir, ftyp(), box('moov', v2(mvhd()))).duration, null);
+  assert.strictEqual(write(dir, ftyp(), box('moov', mvhd({ duration: 0 }), box('mvex', v2(box('mehd', u32(0), u32(30000)))))).duration, null);
+  const track = box('trak', v2(tkhd({ width: 640, height: 360 })), box('mdia', hdlr('vide')));
   assert.strictEqual(write(dir, ftyp(), box('moov', track)).width, null);
   assert.strictEqual(write(dir, ftyp(), box('moov', mvhd({ version: 1, duration: 2n ** 53n }))).duration, null);
 });
@@ -444,10 +482,16 @@ test('경로와 입출력 문제는 FcError다', (t) => {
   for (const bad of ['v\0.mp4', undefined, 5, 'v.mp4:ads', 'v.mp4::$DATA']) {
     assert.throws(() => readMp4Metadata(dir, bad), FcError, String(bad));
   }
-  t.mock.method(fs, 'readSync', () => {
+  const readSync = t.mock.method(fs, 'readSync', () => {
     throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'read' });
   });
   assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /EBUSY/.test(err.message));
+  readSync.mock.restore();
+  // 타겟 폴더를 확인하다 나는 시스템 오류도 같다.
+  t.mock.method(fs.realpathSync, 'native', () => {
+    throw Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'realpath' });
+  });
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /EPERM/.test(err.message));
 });
 
 test('4GiB를 넘는 위치의 moov를 읽는다', (t) => {
