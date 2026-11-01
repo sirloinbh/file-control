@@ -52,8 +52,20 @@ const cases = [
   ['abc-123', 'ABC-123', 'ABC-123'],
   ['abc-123.tar.GZ', 'ABC-123.tar.GZ', 'ABC-123'],
   ['영상 abc-123.tar.gz', 'ABC-123 영상.tar.gz', 'ABC-123'],
-  // .tar.mp4는 겹 확장자가 아니다.
-  ['영상 abc-123.tar.mp4', 'ABC-123 영상 tar.mp4', 'ABC-123'],
+  ['영상 abc-123.tar.mp4', 'ABC-123 영상.tar.mp4', 'ABC-123'],
+  // 번호가 맨 앞이 아니어도 꼬리를 끊지 않는다
+  ['영상 abc-123.en.srt', 'ABC-123 영상.en.srt', 'ABC-123'],
+  ['[abc-123].en.srt', 'ABC-123.en.srt', 'ABC-123'],
+  ['영상 abc-123.7z.001', 'ABC-123 영상.7z.001', 'ABC-123'],
+  ['[태그] ABC-123.part2.rar', 'ABC-123 [태그].part2.rar', 'ABC-123'],
+  ['영상 abc-123.crdownload', 'ABC-123 영상.crdownload', 'ABC-123'],
+  ['영상 abc-123.properties', 'ABC-123 영상.properties', 'ABC-123'],
+  ['영상 abc-123.mp4.part', 'ABC-123 영상.mp4.part', 'ABC-123'],
+  // 번호를 뺀 뒤 꼬리가 새로 생기는 이름
+  ['x_.en abc-123', 'ABC-123 x.en', 'ABC-123'],
+  ['Vol..2 abc-123', 'ABC-123 Vol.2', 'ABC-123'],
+  ['x-.mp4 ABC-123', 'ABC-123 x.mp4', 'ABC-123'],
+  ['〔abc-123〕영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
   // 확장자가 아닌 꼬리에 번호가 있는 경우
   ['Title.v2 ABC-123', 'ABC-123 Title.v2', 'ABC-123'],
   ['영상.ABC-123', 'ABC-123 영상', 'ABC-123'],
@@ -125,23 +137,38 @@ test('이름이 너무 길어지면 그대로 두고 사유를 알린다', () =>
   const result = normalizeName(atLimit);
   assert.strictEqual(result.name, atLimit);
   assert.strictEqual(result.number, 'ABC-123');
+  assert.strictEqual(result.inferred, true);
   assert.match(result.reason, /이름이 너무 깁니다/);
   assert.strictEqual(normalizeName(`${'가'.repeat(243)}abc-123.mp4`).reason, null);
 });
 
+test('파일 이름 한도를 넘는 입력은 처리하지 않고 바로 돌려준다', () => {
+  for (const input of [`abc-123${' '.repeat(100000)}x.mp4`, `${'('.repeat(10000)}abc-123${')'.repeat(10000)}.mp4`]) {
+    const started = Date.now();
+    const result = normalizeName(input);
+    assert.strictEqual(result.name, input);
+    assert.match(result.reason, /너무 깁니다/);
+    assert.ok(Date.now() - started < 1000);
+  }
+});
+
 test('한 번 더 정규화해도 같다', () => {
-  const parts = ['abc-123', 'ABC-123', 'ＡＢＣ－１２３', '영상', 'x', '.', ' ', '_', '-', '－', '[', ']', '(', ')', '【', '】', '.mp4', '.MP4', '.tar.gz', '.tar', '.TAR', '.en', '1080p', '😀', '\u200b'];
+  const parts = ['abc-123', 'ABC-123', 'ＡＢＣ－１２３', '영상', 'x', '.', '..', ' ', '_', '-', '－', '＿', '[', ']', '(', ')', '{', '}', '【', '】', '「', '」', '〔', '〕', '.mp4', '.MP4', '.tar.gz', '.tar', '.TAR', '.en', '.v2', '.7z.001', '1080p', '😀', '\u200b'];
+  // 곱셈 합동 생성기는 2^53을 넘어 정밀도를 잃어 입력이 몇 가지로 몰리므로 xorshift를 쓴다.
   let seed = 4242;
   const next = (limit) => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed % limit;
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) % limit;
   };
   const inputs = cases.map(([input]) => input);
-  for (let round = 0; round < 20000; round += 1) {
+  for (let round = 0; round < 50000; round += 1) {
     let input = '';
-    for (let count = 1 + next(6); count > 0; count -= 1) input += parts[next(parts.length)];
+    for (let count = 1 + next(8); count > 0; count -= 1) input += parts[next(parts.length)];
     inputs.push(input);
   }
+  assert.ok(new Set(inputs).size > 30000);
   for (const input of inputs) {
     const once = normalizeName(input);
     assert.strictEqual(normalizeName(once.name).name, once.name, JSON.stringify(input));

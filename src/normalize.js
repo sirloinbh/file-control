@@ -3,15 +3,16 @@
 const { findProductNumberRanges } = require('./product');
 
 const MAX_NAME = 255;
-// 영숫자로만 된 짧은 꼬리와 겹 확장자만 확장자로 본다. 공백이나 하이픈이 든 꼬리(Title.v2 ABC-123)는 이름의 일부다.
-const EXTENSION = /\.(?:tar\.(?:gz|bz2|xz|zst|lz|lzma|br|z)|[A-Za-z0-9]{1,8})$/i;
+// 영숫자 점 묶음 전체를 꼬리로 보고 그대로 둔다. .en.srt, .7z.001, .tar.gz, .mp4.part가 끊어지지 않는다.
+// 공백이나 하이픈이 든 꼬리(Title.v2 ABC-123)는 이름의 일부다. 번호를 가리지 않고 대소문자도 바꾸지 않으니 잘못 봐도 손해가 없다.
+const EXTENSION = /(?:\.[A-Za-z0-9]+)+$/;
 const SEPARATORS = '\\s._\\-–—－＿\\u0085';
 // 번호를 지운 자리와 그 양옆의 구분 문자. 글자가 붙지 않게 공백 하나로 바꾼다.
 const HOLE = '\0';
 const AROUND_HOLE = new RegExp(`[${SEPARATORS}]*${HOLE}[${SEPARATORS}]*`, 'g');
 const EDGE = new RegExp(`^[${SEPARATORS}]+|[${SEPARATORS}]+$`, 'g');
 const TRAILING = new RegExp(`[${SEPARATORS}]+$`);
-const BRACKETS = ['[]', '()', '{}', '（）', '［］', '｛｝', '【】', '「」', '『』', '《》', '〈〉'];
+const BRACKETS = ['[]', '()', '{}', '（）', '［］', '｛｝', '【】', '「」', '『』', '《》', '〈〉', '〔〕', '〖〗'];
 // Windows는 이름 끝의 점과 공백을 지운다.
 const ENDS_BADLY = /[.\s\u0085]$/;
 const NOT_A_NAME = /[\\/:*?"<>|\x00-\x1f]/;
@@ -48,7 +49,9 @@ function remainder(base, ranges) {
 // number는 찾은 번호이고 없으면 null이다. 소문자 번호는 이름에 대문자 번호가 없을 때만 보고, 그때 inferred가 true다.
 // 소문자 말(trip-2023)은 번호가 아닐 수 있으니 호출하는 쪽이 미리보기에서 구분해 보여 줄 수 있게 한다.
 function normalizeName(fileName) {
-  const unchanged = (reason, number = null) => ({ name: fileName, number, inferred: false, reason });
+  const unchanged = (reason, number = null, inferred = false) => ({ name: fileName, number, inferred, reason });
+  // 파일 이름은 255자를 넘을 수 없다. 긴 입력에서 정규식이 느려지거나 괄호 되풀이가 깊어지지 않게 먼저 거른다.
+  if (fileName.length > MAX_NAME) return unchanged('파일 이름이 너무 깁니다.');
   // 점으로 시작하는 이름은 숨김 파일이고, 앞에 번호를 붙이면 숨김이 풀린다. ~$는 Office가 쓰는 잠금 파일이다.
   if (fileName.startsWith('.') || fileName.startsWith('~$')) return unchanged('숨김이나 임시 파일 이름은 바꾸지 않습니다.');
   if (NOT_A_NAME.test(fileName)) return unchanged('파일 이름에 쓸 수 없는 문자가 있습니다.');
@@ -68,8 +71,9 @@ function normalizeName(fileName) {
   const rest = keepsDot ? base.slice(end).replace(TRAILING, '').replace(/^\.+/, '.') : remainder(base, ranges);
   const body = keepsDot || rest === '' ? `${number}${rest}` : `${number} ${rest}`;
   const name = `${body}${extension}`;
-  if (name.length > MAX_NAME) return unchanged(`정규화하면 이름이 너무 깁니다: ${name.length}자`, number);
-  return { name, number, inferred, reason: null };
+  if (name.length > MAX_NAME) return unchanged(`정규화하면 이름이 너무 깁니다: ${name.length}자`, number, inferred);
+  // 결과에 새로 생긴 꼬리 앞의 구분 문자처럼 첫 실행에서 정리되지 않은 것을 마저 정리한다. 이름이 줄어들거나 같아지므로 끝난다.
+  return { name: name === fileName ? name : normalizeName(name).name, number, inferred, reason: null };
 }
 
 module.exports = { normalizeName };
