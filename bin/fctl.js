@@ -8,6 +8,7 @@ const { extractArchives, formatExtractions } = require('../src/extract');
 const { collapse, formatCollapse } = require('../src/collapse');
 const { normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 const { findBroken, formatBroken } = require('../src/broken');
+const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -30,17 +31,19 @@ const HELP = `fctl - 파일 컨트롤
   collapse <타겟>               폴더 하나만 이어지는 구간(a/b/c/파일)을 맨 위 폴더로 접기
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
   find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
+  remove-broken <타겟>          깨진 파일 목록 보기 (--yes를 주면 기록을 남기고 휴지통으로)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
+  --yes         remove-broken에서 목록의 파일을 실제로 휴지통으로 보냄
   --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes']);
 
 function parse(argv) {
   const flags = new Set();
@@ -96,6 +99,7 @@ function run(argv) {
   if (!command || flags.has('help')) return HELP;
   // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
+  if (flags.has('yes') && command !== 'remove-broken') throw new fc.FcError('--yes는 remove-broken에서만 쓸 수 있습니다.');
   if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
 
   switch (command) {
@@ -181,6 +185,14 @@ function run(argv) {
       checkWholeTarget(command, args, flags);
       // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
       return formatBroken(findBroken(args[0]));
+    }
+    case 'remove-broken': {
+      checkWholeTarget(command, args, flags);
+      const result = removeBroken(args[0], { dryRun, yes: flags.has('yes') });
+      const report = formatRemoveBroken(result);
+      // 남기거나 건너뛴 것은 보고로 충분하다. 휴지통으로 보내지 못한 파일이 있을 때만 실패로 끝낸다.
+      if (result.failed.length > 0) throw new fc.FcError(report);
+      return report;
     }
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);
