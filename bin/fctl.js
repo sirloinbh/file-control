@@ -4,6 +4,7 @@
 const fc = require('../src/commands');
 const { flatten, formatFlatten } = require('../src/flatten');
 const { addProductNumbers, formatProductNumbers } = require('../src/productName');
+const { extractArchives, formatExtractions } = require('../src/extract');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -22,6 +23,7 @@ const HELP = `fctl - 파일 컨트롤
   zip <압축파일> <원본...>      압축하기 (.zip, .tar.gz 등 확장자로 형식 결정)
   flatten <타겟>                하위 폴더의 파일을 타겟 바로 아래로 옮기고 빈 폴더를 휴지통으로 (덮어쓰지 않음)
   product-number <타겟>         영상 파일 이름 앞에 제품번호 넣기 (덮어쓰지 않음)
+  extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (압축 파일은 남김)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -137,6 +139,14 @@ function run(argv) {
       const result = addProductNumbers(args[0], { dryRun });
       const report = formatProductNumbers(result);
       // 못 찾은 파일은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
+      if (result.failed.length > 0) throw new fc.FcError(report);
+      return report;
+    }
+    case 'extract-all': {
+      checkWholeTarget(command, args, flags);
+      const result = extractArchives(args[0], { dryRun });
+      const report = formatExtractions(result);
+      // 건너뛴 것은 보고로 충분하다. 풀지 못한 압축 파일이 있을 때만 실패로 끝낸다.
       if (result.failed.length > 0) throw new fc.FcError(report);
       return report;
     }
