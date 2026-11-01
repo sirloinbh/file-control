@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside, readInside, readRange, walk, grant } = require('../src/target');
+const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -182,6 +182,17 @@ test('readRange는 offset부터 length바이트를 읽고, 파일 끝을 넘으�
   assert.strictEqual(readRange(target, 'v.mp4', { offset: 8, length: 10 }).toString(), '89');
   assert.strictEqual(readRange(target, 'v.mp4', { offset: 20, length: 4 }).length, 0);
   assert.strictEqual(readRange(target, 'v.mp4', { length: 0 }).length, 0);
+});
+
+test('fileSizeInside는 타겟 안 파일의 크기만 돌려준다', () => {
+  const target = tempDir();
+  const outside = tempDir();
+  fs.writeFileSync(path.join(target, 'v.mp4'), '0123456789');
+  fs.writeFileSync(path.join(outside, 'o.mp4'), '0');
+  fs.mkdirSync(path.join(target, 'd'));
+  assert.strictEqual(fileSizeInside(target, 'v.mp4'), 10);
+  assert.throws(() => fileSizeInside(target, path.join(outside, 'o.mp4')), /타겟 폴더 밖/);
+  assert.throws(() => fileSizeInside(target, 'd'), /파일이 아닙니다/);
 });
 
 test('readRange는 잘못된 offset·length를 거부한다', () => {
