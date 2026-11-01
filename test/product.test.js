@@ -57,6 +57,15 @@ test('extractProductNumbers는 뒤에 숫자 묶음이 이어지는 문자열의
   }
 });
 
+test('extractProductNumbers는 화질 꼬리를 숫자 묶음으로 보지 않는다', () => {
+  for (const text of ['ABC-123-1080p.mp4', 'ABC-123-1080P.mp4', 'ABC-123-720p', 'ABC-123-2160p 제목', 'ABC-123-1080i', 'ABC-123-60fps', 'ABC-123-10bit']) {
+    assert.deepStrictEqual(extractProductNumbers(text), ['ABC-123'], text);
+  }
+  for (const text of ['ABC-123-01', 'ABC-123-01-02', 'ZZZ-2024-05a', 'ABC-123-1080px']) {
+    assert.deepStrictEqual(extractProductNumbers(text), [], text);
+  }
+});
+
 test('extractProductNumbers는 기본으로 소문자와 대소문자 혼합을 찾지 않는다', () => {
   for (const text of ['abc-123', 'summer-2023', 'https://site-123.com/x', 'Vlog-2024', 'Report-2023', 'aBc-123', 'ａｂｃ-１２３']) {
     assert.deepStrictEqual(extractProductNumbers(text), [], text);
