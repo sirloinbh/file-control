@@ -16,6 +16,7 @@ const ZIP = /\.zip$/i;
 const SEVEN_ZIP = /\.7z$/i;
 const ZIP_LOCAL = Buffer.from('PK\x03\x04', 'latin1');
 const SEVEN_ZIP_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+const SEVEN_ZIP_HEADER = 32;
 // zip 끝 레코드는 22바이트에 주석이 최대 65535바이트 붙는다.
 const ZIP_END_SIZE = 22;
 const ZIP_TAIL = ZIP_END_SIZE + 65535;
@@ -147,6 +148,7 @@ function readZipEntries(target, archive, entryCount) {
   if (total !== entryCount) return `zip 항목 수가 풀린 목록과 달라 남겼습니다. (${total}개, ${entryCount}개)`;
   const directory = readRange(target, archive, { offset: directoryOffset, length: directorySize });
   const entries = [];
+  let firstOffset = Infinity;
   let pos = 0;
   while (pos < directory.length) {
     if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'zip 구조를 읽지 못해 남겼습니다.';
@@ -156,10 +158,13 @@ function readZipEntries(target, archive, entryCount) {
     if (!unicode && bytes.some((byte) => byte >= 0x80)) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
     const usize = directory.readUInt32LE(pos + 24);
     if (usize === 0xffffffff) return 'Zip64 형식은 내용을 확인하지 못해 남겼습니다.';
+    firstOffset = Math.min(firstOffset, directory.readUInt32LE(pos + 42));
     entries.push({ name: bytes.toString('utf8'), size: usize });
     pos = nameEnd + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
   }
   if (pos !== directory.length || entries.length !== total) return 'zip 구조를 읽지 못해 남겼습니다.';
+  // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
+  if (firstOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
   return entries;
 }
 
@@ -182,14 +187,17 @@ function checkEntryNames(entries, dest, dryRun) {
 // 원본을 지우면 안 되는 사유. 지워도 되면 null이다.
 function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
-  const head = readRange(access.target, archive, { length: SEVEN_ZIP_MAGIC.length });
+  const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
   if (ZIP.test(archive)) {
     if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return '내용이 zip으로 시작하지 않아 남겼습니다.';
     const entries = readZipEntries(access.target, archive, entryCount);
     return typeof entries === 'string' ? entries : checkEntryNames(entries, dest, dryRun);
   }
   if (SEVEN_ZIP.test(archive)) {
-    if (!head.equals(SEVEN_ZIP_MAGIC)) return '내용이 7z로 시작하지 않아 남겼습니다.';
+    if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return '내용이 7z로 시작하지 않아 남겼습니다.';
+    // tar.exe는 첫 7z만 읽으므로, 머리글이 가리키는 끝이 파일 끝과 맞는지 본다. 어긋나면 뒤에 붙은 내용을 풀지 못했을 수 있다.
+    const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
+    if (end !== BigInt(fileSizeInside(access.target, archive))) return '7z 끝 뒤에 다른 데이터가 있어 남겼습니다.';
     const names = archiveNames(archive);
     if (names.some((name) => /[^\x00-\x7f]/.test(name))) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
     return checkEntryNames(names.map((name) => ({ name })), dest, dryRun);
@@ -208,7 +216,7 @@ function removeArchive(access, item, before, dryRun) {
 
 function removalFailure(err) {
   if (err instanceof FcError) return err.message;
-  return `풀었지만 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+  return `풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
 }
 
 function failureReason(err) {

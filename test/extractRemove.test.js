@@ -46,10 +46,10 @@ function tree(dir) {
 }
 
 // 무압축 zip. cut을 'entries'로 주면 항목 뒤에서, 'directory'로 주면 중앙 디렉터리 중간에서 잘린 파일이 된다.
-function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0 } = {}) {
-  const locals = [];
+function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0, prefix = Buffer.alloc(0) } = {}) {
+  const locals = [prefix];
   const centrals = [];
-  let offset = 0;
+  let offset = prefix.length;
   for (const [name, data] of Object.entries(files)) {
     const body = Buffer.from(data);
     const nameBytes = Buffer.from(name);
@@ -162,6 +162,44 @@ test('구조가 맞지 않는 zip은 풀려도 지우지 않는다', () => {
     if (result.kept.some((item) => path.basename(item.archive) === name)) assert.match(reasons[name], reason, name);
     assert.ok(fs.existsSync(path.join(dir, name)), name);
   }
+});
+
+test('이어 붙인 뒤 오프셋을 고친 zip은 앞쪽 항목이 풀리지 않으므로 지우지 않는다', () => {
+  const dir = tempDir();
+  const first = zipBuffer({ 'A1.txt': '1', 'A2.txt': '2' });
+  fs.writeFileSync(path.join(dir, 'a.zip'), zipBuffer({ 'B1.txt': 'b' }, { prefix: first }));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.kept[0].reason, /앞쪽에 목록에 없는 데이터/);
+  assert.ok(fs.existsSync(path.join(dir, 'a.zip')));
+});
+
+test('뒤에 데이터가 붙거나 이어 붙은 .7z는 지우지 않고, 온전한 .7z는 지운다', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.writeFileSync(path.join(source, 'x.txt'), 'x');
+  fs.writeFileSync(path.join(source, 'y.txt'), 'y');
+  const first = path.join(source, 'first.7z');
+  const second = path.join(source, 'second.7z');
+  run(['zip', first, path.join(source, 'x.txt')]);
+  run(['zip', second, path.join(source, 'y.txt')]);
+  const data = fs.readFileSync(first);
+  fs.writeFileSync(path.join(dir, 'whole.7z'), data);
+  fs.writeFileSync(path.join(dir, 'tail.7z'), Buffer.concat([data, Buffer.from('z')]));
+  fs.writeFileSync(path.join(dir, 'joined.7z'), Buffer.concat([data, fs.readFileSync(second)]));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['whole.7z']);
+  assert.deepStrictEqual(result.kept.map((item) => path.basename(item.archive)).sort(), ['joined.7z', 'tail.7z']);
+  for (const item of result.kept) assert.match(item.reason, /7z 끝 뒤에/);
+});
+
+test('너무 짧은 .7z와 .zip은 지우지 않는다', () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.7z'), Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]));
+  fs.writeFileSync(path.join(dir, 'b.zip'), 'PK\x03\x04', 'latin1');
+  extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(tree(dir), ['a.7z', 'b.zip']);
 });
 
 test('Zip64 표시가 있는 zip은 지우지 않는다', () => {
@@ -346,7 +384,7 @@ test('휴지통으로 보내지 못하면 풀린 결과와 원본을 두고 실�
     if (path.basename(target) === 'a.zip') throw Object.assign(new Error('recycle'), { status: 1 });
   };
   const result = extractArchives(dir, { removeArchives: true });
-  assert.match(result.failed[0].reason, /풀었지만 휴지통으로 보내지 못했습니다/);
+  assert.match(result.failed[0].reason, /풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다/);
   assert.strictEqual(result.extracted.length, 2);
   assert.strictEqual(result.removed.length, 1);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt', 'b/y.txt']);
