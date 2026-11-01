@@ -693,6 +693,65 @@ test('flatten은 Git 저장소가 들어 있으면 아무것도 옮기지 않는
   }
 });
 
+const GIT_FILES = ['HEAD', 'objects/ab/cdef', 'refs/heads/main'];
+
+test('flatten은 베어 저장소가 들어 있거나 타겟이 저장소 폴더 안이면 아무것도 옮기지 않는다', () => {
+  const dir = tempDir();
+  make(dir, [...GIT_FILES.map((f) => `T/backup.git/${f}`), 'T/a/y.txt', ...GIT_FILES.map((f) => `r/.git/${f}`), 'r/src/deep/x.js']);
+  const before = contents(dir);
+  for (const target of ['T', 'T/backup.git', 'T/backup.git/objects', 'r/.git', 'r/.git/objects', 'r']) {
+    assert.throws(() => flatten(path.join(dir, target)), /Git 저장소/, target);
+    assert.throws(() => planFlatten(path.join(dir, target)), /Git 저장소/, target);
+  }
+  assert.deepStrictEqual(contents(dir), before);
+});
+
+test('flatten은 저장소의 일반 하위 폴더와 HEAD 파일만 있는 폴더를 거부하지 않는다', () => {
+  const dir = tempDir();
+  make(dir, [...GIT_FILES.map((f) => `r/.git/${f}`), 'r/src/deep/x.js', 'plain/h/HEAD', 'plain/h/x.txt']);
+  assert.deepStrictEqual(flatten(path.join(dir, 'r', 'src')).moved.map((move) => move.name), ['x.js']);
+  assert.deepStrictEqual(flatten(path.join(dir, 'plain')).moved.map((move) => move.name).sort(), ['HEAD', 'x.txt']);
+  assert.ok(fs.existsSync(path.join(dir, 'r', '.git', 'objects', 'ab', 'cdef')));
+});
+
+test('fctl flatten은 드라이브 문자만 쓴 타겟을 거부하고 절대경로는 받는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  for (const target of ['C:', 'c:', 'D:sub']) {
+    assert.throws(() => run(['flatten', target, '--dry-run']), /드라이브 문자/, target);
+  }
+  assert.match(run(['flatten', dir, '--dry-run']), /이동 1개/);
+});
+
+test('flatten은 자리표시가 이미 사라졌으면 원래 오류를 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  t.mock.method(fs, 'renameSync', () => {
+    fs.rmSync(path.join(dir, 'x.txt'));
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /locked/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'x.txt'), 'utf8'), 'a/x.txt');
+});
+
+test('flatten은 자리표시를 확인하지 못해도 원래 오류 코드를 남긴다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  const lstat = fs.lstatSync;
+  let failed = false;
+  t.mock.method(fs, 'renameSync', () => {
+    failed = true;
+    throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+  });
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    if (failed && p === path.join(dir, 'x.txt')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return lstat(p, options);
+  });
+  const result = flatten(dir);
+  assert.match(result.failed[0].reason, /EBUSY, EPERM/);
+});
+
 test('flatten은 이름만 비슷한 .gitignore, .github를 저장소로 보지 않는다', () => {
   const dir = tempDir();
   make(dir, ['p/.gitignore', '.github/ci.yml', 'q/git/x.txt']);
@@ -701,10 +760,10 @@ test('flatten은 이름만 비슷한 .gitignore, .github를 저장소로 보지 
 
 test('flatten은 Windows 시스템 폴더 안의 파일을 옮기지 않고 사유를 남긴다', () => {
   const dir = tempDir();
-  make(dir, ['$RECYCLE.BIN/S-1-5/$Rabc.txt', 'sub/System Volume Information/t.dat', 'a/ok.txt']);
+  make(dir, ['$RECYCLE.BIN/S-1-5/$Rabc.txt', 'sub/System Volume Information/t.dat', 'q/$recycle.bin/y.txt', 'a/ok.txt']);
   const result = flatten(dir);
   assert.deepStrictEqual(result.moved.map((move) => move.name), ['ok.txt']);
-  assert.strictEqual(result.skipped.filter((item) => /시스템 폴더/.test(item.reason)).length, 2);
+  assert.strictEqual(result.skipped.filter((item) => /시스템 폴더/.test(item.reason)).length, 3);
   assert.ok(fs.existsSync(path.join(dir, '$RECYCLE.BIN', 'S-1-5', '$Rabc.txt')));
 });
 

@@ -123,6 +123,29 @@ function countFiles(entries) {
   return counts;
 }
 
+// HEAD, objects, refs가 함께 있으면 Git 저장소 폴더다. 베어 저장소(backup.git)처럼 이름이 .git이 아니어도 잡는다.
+function looksLikeGitDir(dir) {
+  const stat = (name) => fs.statSync(path.join(dir, name), { throwIfNoEntry: false });
+  try {
+    return Boolean(stat('HEAD')?.isFile() && stat('objects')?.isDirectory() && stat('refs')?.isDirectory());
+  } catch (err) {
+    throw new FcError(`저장소인지 확인할 수 없습니다: ${dir} (${err.code})`);
+  }
+}
+
+// 저장소는 폴더 구조 자체가 내용이라, .git 안쪽만 건너뛰어도 작업 파일이 흩어져 복구할 수 없다. 일부만 옮기지 않고 거부한다.
+// 타겟이 저장소의 일반 하위 폴더(r/src)면 저장소는 망가지지 않고 git으로 되돌릴 수 있으므로 막지 않는다.
+function rejectRepository(target, entries) {
+  for (let dir = target; ; dir = path.dirname(dir)) {
+    if (path.basename(dir).toLowerCase() === '.git' || looksLikeGitDir(dir)) throw new FcError(`Git 저장소 내부 폴더라 평탄화하지 않습니다: ${dir}`);
+    if (dir === path.dirname(dir)) break;
+  }
+  const dotGit = entries.find((entry) => entry.relative.split(path.sep).some((part) => part.toLowerCase() === '.git'));
+  if (dotGit) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${dotGit.path}`);
+  const bare = entries.find((entry) => entry.type === 'file' && path.basename(entry.path) === 'HEAD' && looksLikeGitDir(path.dirname(entry.path)));
+  if (bare) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${path.dirname(bare.path)}`);
+}
+
 // 타겟 아래 모든 파일을 타겟 바로 아래로 옮기는 계획을 만든다. 파일은 건드리지 않는다.
 // - moves: 옮길 파일 ({ from, to, name, desired, fromFolder, numbered }). desired는 번호를 붙이기 전의 이름이다. 폴더명이 더 자세하면 fromFolder가 true다.
 //   이름이 겹치면 번호를 붙이고 numbered가 true다. 이미 있는 이름은 폴더라도 피한다.
@@ -131,9 +154,7 @@ function countFiles(entries) {
 function planFlatten(dir) {
   const access = grant(dir, ['read', 'write']);
   const entries = walk(access.target);
-  // 저장소는 폴더 구조 자체가 내용이라, .git 안쪽만 건너뛰어도 작업 파일이 흩어져 복구할 수 없다. 일부만 옮기지 않고 거부한다.
-  const repository = entries.find((entry) => entry.relative.split(path.sep).some((part) => part.toLowerCase() === '.git'));
-  if (repository) throw new FcError(`Git 저장소가 들어 있어 평탄화하지 않습니다: ${repository.path}`);
+  rejectRepository(access.target, entries);
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
@@ -200,7 +221,12 @@ function moveWithoutOverwrite(from, to) {
 
 // 그사이 다른 프로그램이 내용을 썼다면 내 자리표시가 아니므로 지우지 않는다.
 function removePlaceholder(to, cause) {
-  const stat = fs.lstatSync(to, { throwIfNoEntry: false });
+  let stat;
+  try {
+    stat = fs.lstatSync(to, { throwIfNoEntry: false });
+  } catch (err) {
+    throw new FcError(`옮기지 못했고 자리표시 파일도 확인하지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+  }
   if (!stat) return;
   if (!stat.isFile() || stat.size !== 0) throw new FcError(`옮기지 못했고 자리표시 파일에 다른 내용이 생겨 지우지 않았습니다: ${to} (${cause.code})`);
   try {
