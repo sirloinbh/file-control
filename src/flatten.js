@@ -264,31 +264,54 @@ function applyMove(move, access, taken, nextNumber) {
   throw new FcError(`비어 있는 이름을 찾지 못했습니다: ${move.desired}`);
 }
 
-// 지울 수 있는 폴더 중 가장 위의 폴더만 돌려준다. 그 아래 폴더는 함께 지워진다.
-// 옮기지 않는 파일과 링크, 잔여물·시스템 폴더가 있으면 그 위의 폴더는 모두 남긴다. entries는 walk가 정렬한 목록이고, moved의 파일은 없는 것으로 본다.
-function removableFolders(entries, moved) {
+// 경로의 상위 폴더를 타겟 기준 상대경로로 돌려준다. 자신이 폴더면 자신도 넣는다.
+function folderChain(entry) {
+  const parts = entry.relative.split(path.sep);
+  const last = entry.type === 'dir' ? parts.length : parts.length - 1;
+  return Array.from({ length: last }, (_, i) => parts.slice(0, i + 1).join(path.sep));
+}
+
+// 이번에 옮긴 파일이 있던 폴더 중 비게 된 폴더를 가장 위 폴더만 돌려준다. 그 아래 폴더는 함께 지워진다.
+// 원래 비어 있던 폴더(Inbox/)는 사용자가 만든 구조일 수 있어 건드리지 않는다. 옮긴 파일이 있던 트리 안의 빈 폴더만 함께 간다.
+// 남은 파일과 링크, 잔여물·시스템 폴더와 그 안쪽이 있으면 그 위의 폴더는 모두 남긴다.
+function removableFolders(entries, movedFolders) {
   const occupied = new Set();
   for (const entry of entries) {
-    const parts = entry.relative.split(path.sep);
-    const keep = entry.type === 'dir' ? LEFTOVER.test(parts.at(-1)) || SYSTEM_FOLDER.test(parts.at(-1)) : !moved.has(entry.path);
-    if (!keep) continue;
-    const last = entry.type === 'dir' ? parts.length : parts.length - 1;
-    for (let depth = 1; depth <= last; depth++) occupied.add(parts.slice(0, depth).join(path.sep));
+    const protectedDir = entry.type === 'dir' && entry.relative.split(path.sep).some((part) => LEFTOVER.test(part) || SYSTEM_FOLDER.test(part));
+    if (entry.type !== 'dir' || protectedDir) for (const folder of folderChain(entry)) occupied.add(folder);
   }
   const free = entries.filter((entry) => entry.type === 'dir' && !occupied.has(entry.relative));
   const freeNames = new Set(free.map((entry) => entry.relative));
-  return free.filter((entry) => !freeNames.has(path.dirname(entry.relative))).map((entry) => entry.path);
+  return free.filter((entry) => !freeNames.has(path.dirname(entry.relative)) && movedFolders.has(entry.relative)).map((entry) => entry.path);
 }
 
-// 빈 폴더를 휴지통으로 보낸다. 지우기 직전에 다시 검사하고, 실패한 폴더는 kept에 남긴다.
+// 이동한 파일이 있던 폴더와 그 상위 폴더를 타겟 기준 상대경로로 모은다.
+function foldersOf(moves, target) {
+  const folders = new Set();
+  for (const { from } of moves) {
+    for (const folder of folderChain({ relative: path.relative(target, from), type: 'file' })) folders.add(folder);
+  }
+  return folders;
+}
+
+// 빈 폴더를 휴지통으로 보낸다. 폴더가 많으면 목록을 구한 뒤 오래 지나므로 지우기 직전에 하나씩 다시 검사하고, 실패한 폴더는 kept에 남긴다.
 function removeFolders(folders, access, { dryRun }) {
   const report = { removed: [], kept: [] };
   for (const folder of folders) {
     try {
-      remove([access.delete(folder)], { dryRun });
+      const real = access.delete(folder);
+      // 안쪽을 가리키는 정션으로 바뀌었으면 다른 폴더를 지우게 된다.
+      if (real !== folder) throw new FcError(`검사 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
+      if (!dryRun) {
+        if (!fs.lstatSync(real).isDirectory()) throw new FcError(`검사 뒤에 폴더가 아니게 됐습니다: ${real}`);
+        const filled = walk(real).find((entry) => entry.type !== 'dir');
+        if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
+      }
+      remove([real], { dryRun });
       report.removed.push(folder);
     } catch (err) {
-      report.kept.push({ path: folder, reason: err.message });
+      // 휴지통 호출의 실패 메시지에는 스크립트 전문이 들어가므로 쓰지 않는다.
+      report.kept.push({ path: folder, reason: err instanceof FcError ? err.message : `휴지통으로 보내지 못했습니다. (${err.code ?? err.status})` });
     }
   }
   return report;
@@ -302,8 +325,9 @@ function flatten(dir, { dryRun = false } = {}) {
   const access = grant(plan.target, ['write', 'delete']);
   const result = { target: plan.target, dryRun, moved: [], stay: plan.stay, skipped: plan.skipped, failed: [], removedFolders: [], keptFolders: [] };
   if (dryRun) {
-    const moved = new Set(plan.moves.map((move) => move.from));
-    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), moved), access, { dryRun });
+    const moving = new Set(plan.moves.map((move) => move.from));
+    const after = walk(plan.target).filter((entry) => !moving.has(entry.path));
+    const { removed, kept } = removeFolders(removableFolders(after, foldersOf(plan.moves, plan.target)), access, { dryRun });
     return { ...result, moved: plan.moves, removedFolders: removed, keptFolders: kept };
   }
   // 앞으로 옮길 파일의 이름을 뺏지 않도록 계획한 이름을 모두 차지한 것으로 본다.
@@ -318,7 +342,7 @@ function flatten(dir, { dryRun = false } = {}) {
   }
   // 계획이 아니라 이동이 끝난 실제 상태로 판단한다. 실패한 파일이나 그사이 생긴 파일이 있는 폴더는 남는다.
   try {
-    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), new Set()), access, { dryRun });
+    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target)), access, { dryRun });
     result.removedFolders = removed;
     result.keptFolders = kept;
   } catch (err) {
@@ -329,7 +353,7 @@ function flatten(dir, { dryRun = false } = {}) {
 
 // 결과를 사람이 읽을 수 있게 줄로 만든다. 자세한 보고 형식은 #19에서 다듬는다.
 function formatFlatten(result) {
-  const relative = (p) => path.relative(result.target, p);
+  const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[미리보기] ' : '';
   const lines = [];
   for (const move of result.moved) {

@@ -355,7 +355,9 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
 }
 
 function moveToRecycleBin(target) {
+  // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   const script =
+    "if (-not [Environment]::UserInteractive) { throw '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.' }; " +
     'Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
     "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
@@ -374,7 +376,7 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   return targets.map((target) => {
     ensureExists(target);
     // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
-    if (isSameOrUnder(pathKey(target), pathKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+    if (isSameOrUnder(realKey(target), realKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
     if (dryRun) claim(planned, target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));

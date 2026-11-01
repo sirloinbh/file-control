@@ -10,10 +10,14 @@ const childProcess = require('node:child_process');
 // 테스트가 사용자 휴지통을 건드리지 않게, commands.js를 불러오기 전에 휴지통 호출을 가짜로 바꿔 둔다.
 // 파일이나 링크가 든 폴더를 지우려 하면 테스트가 실패하도록 빈 폴더 트리만 지운다.
 const recycled = [];
+// 휴지통 호출 때 끼어들 동작. 테스트마다 정한다.
+let onRecycle = () => {};
 const execFileSync = childProcess.execFileSync;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_TARGET === undefined) return execFileSync(file, args, options);
+  assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
   recycled.push(options.env.FC_TARGET);
+  onRecycle(options.env.FC_TARGET);
   const filled = fs.readdirSync(options.env.FC_TARGET, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
   if (filled) throw new Error(`비어 있지 않은 폴더를 휴지통으로 보내려 함: ${filled.name}`);
   fs.rmSync(options.env.FC_TARGET, { recursive: true });
@@ -999,23 +1003,120 @@ test('flatten은 파일이 남은 폴더와 그 위 폴더를 남기고, 비어 
   assert.ok(!fs.existsSync(path.join(dir, 'e')));
 });
 
-test('flatten은 원래 비어 있던 폴더도 보낸다', () => {
+test('flatten은 옮긴 파일이 있던 트리의 빈 폴더만 함께 보내고 원래 비어 있던 다른 폴더는 그대로 둔다', () => {
   const dir = tempDir();
-  make(dir, ['a/x.txt']);
-  fs.mkdirSync(path.join(dir, 'a', 'empty', 'deep'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'lonely'));
+  make(dir, ['a/x.txt', 'p/keep./f.txt', 'p/m/y.txt']);
+  for (const folder of ['a/empty/deep', 'lonely', 'Projects/2026', 'p/other-empty']) fs.mkdirSync(path.join(dir, folder), { recursive: true });
   const result = flatten(dir);
-  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a'), path.join(dir, 'lonely')]);
-  assert.deepStrictEqual(fs.readdirSync(dir), ['x.txt']);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a'), path.join(dir, 'p', 'm')]);
+  for (const folder of ['lonely', 'Projects/2026', 'p/other-empty']) assert.ok(fs.existsSync(path.join(dir, folder)), folder);
+  assert.ok(!fs.existsSync(path.join(dir, 'a')));
 });
 
-test('flatten은 옮길 파일이 없어도 빈 폴더를 보내고, 다시 실행하면 할 일이 없다', () => {
+test('flatten은 옮길 파일이 없으면 빈 폴더를 건드리지 않고, 다시 실행해도 할 일이 없다', () => {
   const dir = tempDir();
   make(dir, ['top.txt']);
-  fs.mkdirSync(path.join(dir, 'a'));
-  assert.deepStrictEqual(flatten(dir).removedFolders, [path.join(dir, 'a')]);
-  const again = flatten(dir);
-  assert.deepStrictEqual([again.moved, again.removedFolders, again.keptFolders], [[], [], []]);
+  fs.mkdirSync(path.join(dir, 'Inbox'));
+  recycled.length = 0;
+  const result = flatten(dir);
+  assert.deepStrictEqual([result.moved, result.removedFolders, result.keptFolders], [[], [], []]);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(path.join(dir, 'Inbox')));
+});
+
+test('flatten은 지우기 직전에 폴더에 파일이 생기면 보내지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt']);
+  onRecycle = () => fs.writeFileSync(path.join(dir, 'b', 'new-important.txt'), 'new');
+  t.after(() => {
+    onRecycle = () => {};
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a')]);
+  assert.deepStrictEqual(result.keptFolders.map((item) => item.path), [path.join(dir, 'b')]);
+  assert.match(result.keptFolders[0].reason, /파일이 생겨/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'b', 'new-important.txt'), 'utf8'), 'new');
+});
+
+test('flatten은 지우기 직전에 폴더가 파일로 바뀌면 보내지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt']);
+  onRecycle = () => {
+    fs.rmSync(path.join(dir, 'b'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'b'), 'important');
+  };
+  t.after(() => {
+    onRecycle = () => {};
+  });
+  const result = flatten(dir);
+  assert.match(result.keptFolders[0].reason, /폴더가 아니게/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'b'), 'utf8'), 'important');
+});
+
+test('flatten은 지우기 직전에 경로가 안쪽 정션으로 바뀌면 다른 폴더를 지우지 않는다', (t) => {
+  const dir = tempDir();
+  make(dir, ['0first/x.txt', 'a/keep./f.txt', 'a/b/y.txt', 'other/b/keep./z.txt']);
+  onRecycle = (folder) => {
+    if (path.basename(folder) !== '0first') return;
+    fs.rmSync(path.join(dir, 'a'), { recursive: true });
+    linkDir(path.join(dir, 'other'), path.join(dir, 'a'));
+  };
+  t.after(() => {
+    onRecycle = () => {};
+  });
+  recycled.length = 0;
+  const result = flatten(dir);
+  assert.deepStrictEqual(recycled, [path.join(dir, '0first')]);
+  assert.match(result.keptFolders[0].reason, /링크|경로가 바뀌었습니다/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'other', 'b', 'keep.', 'z.txt'), 'utf8'), 'other/b/keep./z.txt');
+});
+
+test('flatten은 휴지통 호출이 실패하면 스크립트 없이 짧은 사유를 남기고 CLI는 1로 끝낸다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  onRecycle = () => {
+    throw Object.assign(new Error("Command failed: powershell Add-Type secret script"), { status: 1 });
+  };
+  t.after(() => {
+    onRecycle = () => {};
+  });
+  assert.throws(() => run(['flatten', dir]), (err) => err instanceof FcError && /이동 1개/.test(err.message) && /휴지통으로 보내지 못했습니다/.test(err.message) && !/Add-Type/.test(err.message));
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'x.txt'), 'utf8'), 'a/x.txt');
+  assert.ok(fs.existsSync(path.join(dir, 'a')));
+});
+
+test('flatten은 이동 뒤 폴더를 읽지 못해도 이동 결과를 유지하고 타겟을 .으로 보여 준다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  const rename = fs.renameSync;
+  const readdir = fs.readdirSync;
+  let moved = false;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    rename(from, to);
+    moved = true;
+  });
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (moved) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return readdir(p, options);
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['x.txt']);
+  assert.deepStrictEqual(result.keptFolders.map((item) => item.path), [dir]);
+  assert.match(formatFlatten(result), /폴더 남김: \. \(폴더를 읽을 수 없습니다/);
+});
+
+test('flatten은 잔여물과 시스템 폴더 안의 빈 폴더를 보내지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', '.fctl-old-1-2-0/f.txt', 'q/.fctl-new-1-2-0/g.txt']);
+  const inner = ['.fctl-old-1-2-0/sub', 'q/.fctl-new-1-2-0/deep', '$RECYCLE.BIN/S-1-5-21-1', 'r/System Volume Information/tracking'];
+  for (const folder of inner) fs.mkdirSync(path.join(dir, folder), { recursive: true });
+  recycled.length = 0;
+  const preview = flatten(dir, { dryRun: true });
+  assert.deepStrictEqual(preview.removedFolders, [path.join(dir, 'a')]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a')]);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'a')]);
+  for (const folder of inner) assert.ok(fs.existsSync(path.join(dir, folder)), folder);
 });
 
 test('flatten은 이동에 실패한 파일이 있는 폴더를 남긴다', (t) => {
@@ -1051,6 +1152,21 @@ test('flatten은 잔여물과 시스템 폴더를 비어 있어도 남긴다', (
   for (const folder of ['.fctl-old-1-2-0', 'q/.fctl-new-1-2-0', '$RECYCLE.BIN', 'r/System Volume Information']) assert.ok(fs.existsSync(path.join(dir, folder)), folder);
 });
 
+test('rm은 정션을 거친 현재 폴더도 알아보고 그 상위를 지우지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['t/a/b/x.txt']);
+  linkDir(path.join(dir, 't', 'a'), path.join(dir, 'j'));
+  const cwd = process.cwd();
+  process.chdir(path.join(dir, 'j', 'b'));
+  try {
+    assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--dry-run']), /현재 폴더/);
+    assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--permanent']), /현재 폴더/);
+  } finally {
+    process.chdir(cwd);
+  }
+  assert.ok(fs.existsSync(path.join(dir, 't', 'a', 'b', 'x.txt')));
+});
+
 test('flatten은 현재 폴더와 그 상위를 지우지 않고 남긴 사유를 알린다', () => {
   const dir = tempDir();
   make(dir, ['a/b/x.txt', 'c/y.txt']);
@@ -1079,17 +1195,6 @@ test('flatten은 이동 중에 생긴 파일이 있는 폴더를 지우지 않�
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'new.txt'), 'utf8'), 'new');
 });
 
-test('flatten은 폴더를 지우지 못하면 파일 이동 결과를 유지하고 사유를 남긴다', () => {
-  const dir = tempDir();
-  make(dir, ['weird./x.txt', 'a/y.txt']);
-  fs.mkdirSync(path.join(dir, 'empty.'));
-  const result = flatten(dir);
-  assert.deepStrictEqual(result.moved.map((move) => move.name), ['y.txt']);
-  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a')]);
-  assert.deepStrictEqual(result.keptFolders.map((item) => item.path), [path.join(dir, 'empty.')]);
-  assert.match(result.keptFolders[0].reason, /다르게 해석될 수 있는 이름/);
-});
-
 test('flatten 미리보기는 지울 폴더를 알려 주되 아무것도 지우지 않고 실제 실행과 일치한다', () => {
   const dir = tempDir();
   make(dir, ['a/b/x.txt', 'c/y.txt', 'd/lock./z.txt']);
@@ -1098,9 +1203,9 @@ test('flatten 미리보기는 지울 폴더를 알려 주되 아무것도 지우
   const preview = flatten(dir, { dryRun: true });
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(path.join(dir, 'a', 'b', 'x.txt')));
-  assert.ok(fs.existsSync(path.join(dir, 'empty')));
   const result = flatten(dir);
-  assert.deepStrictEqual(preview.removedFolders, [path.join(dir, 'a'), path.join(dir, 'c'), path.join(dir, 'empty')]);
+  assert.ok(fs.existsSync(path.join(dir, 'empty')));
+  assert.deepStrictEqual(preview.removedFolders, [path.join(dir, 'a'), path.join(dir, 'c')]);
   assert.deepStrictEqual(result.removedFolders, preview.removedFolders);
   assert.ok(fs.existsSync(path.join(dir, 'd', 'lock.', 'z.txt')));
 });
