@@ -272,6 +272,11 @@ function readRange(target, p, { offset = 0, length } = {}) {
   }
 }
 
+// 타겟 안 파일의 크기를 바이트로 돌려준다.
+function fileSizeInside(target, p) {
+  return fs.statSync(resolveFileInside(target, p)).size;
+}
+
 // 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
 // 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
@@ -317,4 +322,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, walk, grant };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant };
