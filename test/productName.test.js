@@ -113,6 +113,27 @@ test('파일명에 글자가 붙은 번호가 있으면 같은 번호를 또 넣
   assert.strictEqual(result.already.length, files.length);
 });
 
+test('전각으로 쓴 같은 번호도 이미 있는 것으로 본다', () => {
+  const dir = tempDir();
+  const files = ['ABC-123/ａｂｃ－１２３.mp4', 'ABC-123/ＡＢＣ－１２３-01.mp4'];
+  make(dir, files);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(tree(dir), [...files].sort());
+  assert.deepStrictEqual(result.already.map((item) => item.number), ['ABC-123', 'ABC-123']);
+  assert.strictEqual(result.conflicts.length, 0);
+});
+
+test('엇갈린 번호 목록은 파일명의 말을 함께 적고 중복을 뺀다', () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'abc-123.mp4'), mp4({ title: 'ABC-123 XYZ-999' }));
+  fs.writeFileSync(path.join(dir, 'trip-2023.mp4'), mp4({ comment: 'AAA-111 BBB-222' }));
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.numbers), [
+    ['ABC-123', 'XYZ-999'],
+    ['TRIP-2023', 'AAA-111', 'BBB-222'],
+  ]);
+});
+
 test('번호의 일부만 겹치는 이름에는 번호를 넣는다', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/ABC-1234x.mp4', 'ABC-123/QWERTYABC-123.mp4']);
@@ -123,6 +144,9 @@ test('번호의 일부만 겹치는 이름에는 번호를 넣는다', () => {
 test('.ts와 .mts는 전송 스트림일 때만 영상으로 본다', () => {
   const dir = tempDir();
   make(dir, ['PROJ-123/src/index.ts', 'PROJ-123/src/mod.mts', 'PROJ-123/short.ts']);
+  const firstOnly = Buffer.alloc(600);
+  firstOnly[0] = 0x47;
+  fs.writeFileSync(path.join(dir, 'PROJ-123', 'first.ts'), firstOnly);
   const packets = (start, step) => {
     const data = Buffer.alloc(start + step * 3);
     for (let i = start; i < data.length; i += step) data[i] = 0x47;
@@ -131,8 +155,21 @@ test('.ts와 .mts는 전송 스트림일 때만 영상으로 본다', () => {
   fs.writeFileSync(path.join(dir, 'PROJ-123', 'a.ts'), packets(0, 188));
   fs.writeFileSync(path.join(dir, 'PROJ-123', 'b.mts'), packets(4, 192));
   const result = addProductNumbers(dir);
-  assert.deepStrictEqual(tree(dir), ['PROJ-123/PROJ-123 a.ts', 'PROJ-123/PROJ-123 b.mts', 'PROJ-123/short.ts', 'PROJ-123/src/index.ts', 'PROJ-123/src/mod.mts']);
+  assert.deepStrictEqual(tree(dir), ['PROJ-123/PROJ-123 a.ts', 'PROJ-123/PROJ-123 b.mts', 'PROJ-123/first.ts', 'PROJ-123/short.ts', 'PROJ-123/src/index.ts', 'PROJ-123/src/mod.mts']);
   assert.strictEqual(result.notFound.length + result.skipped.length, 0);
+});
+
+test('영상이 아닌 .ts는 건너뛰는 자리에 있어도 보고하지 않고, 전송 스트림이면 보고한다', () => {
+  const dir = tempDir();
+  make(dir, ['PROJ-123/.eslintrc.ts', 'PROJ-123/.env.mts', '.git/x.ts', '.fctl-old-1-2-3/b.ts']);
+  const quiet = addProductNumbers(dir);
+  assert.strictEqual(quiet.skipped.length, 0);
+  const video = Buffer.alloc(188 * 3);
+  for (let i = 0; i < video.length; i += 188) video[i] = 0x47;
+  fs.writeFileSync(path.join(dir, 'PROJ-123', '.v.ts'), video);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.skipped.length, 1);
+  assert.match(result.skipped[0].reason, /점으로 시작/);
 });
 
 test('파일을 확인하다 난 시스템 오류는 그 파일만 건너뛴다', (t) => {
@@ -179,8 +216,21 @@ test('실행 때 대상이 끊어진 정션이면 원본을 남기고 타겟 밖
   fs.rmdirSync(gone);
   const result = applyProductNames(plan);
   assert.strictEqual(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /같은 이름이 이미 있어/);
   assert.ok(fs.existsSync(path.join(dir, 'ABC-123', 'a.mp4')));
   assert.deepStrictEqual(fs.readdirSync(outside), []);
+});
+
+test('계획 뒤에 부모가 타겟 안의 정션으로 바뀌면 다른 파일을 바꾸지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4']);
+  const plan = planProductNames(dir);
+  fs.rmSync(path.join(dir, 'ABC-123'), { recursive: true });
+  make(dir, ['other/a.mp4']);
+  fs.symlinkSync(path.join(dir, 'other'), path.join(dir, 'ABC-123'), 'junction');
+  const result = applyProductNames(plan);
+  assert.match(result.failed[0].reason, /계획 뒤에 경로가 바뀌었습니다/);
+  assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'other')), ['a.mp4']);
 });
 
 test('이름 변경이 실패했을 때 자리표시에 다른 내용이 생겼으면 지우지 않는다', (t) => {

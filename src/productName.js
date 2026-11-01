@@ -5,7 +5,7 @@ const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant, walk, readRange } = require('./target');
 const { readMp4Metadata } = require('./mp4');
-const { extractProductNumbers, findProductNumber } = require('./product');
+const { extractProductNumbers, findProductNumber, halfWidth } = require('./product');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // 영상 파일만 다룬다. ABC-123 폴더 안의 자막이나 메모까지 이름을 바꾸지 않는다.
@@ -40,7 +40,7 @@ function readTags(target, entry, ext) {
 // 번호에 글자가 붙어 있어도(ABC-123-01, ABC-123A, 1ABC-123) 이미 든 것으로 본다. ABC-1234는 ABC-123이 아니다.
 function containsNumber(name, number) {
   // number는 영문 대문자, 하이픈, 숫자뿐이라 그대로 정규식에 넣어도 된다.
-  return new RegExp(`(?<![A-Z])${number}(?!\\d)`).test(name.toUpperCase());
+  return new RegExp(`(?<![A-Z])${number}(?!\\d)`).test(halfWidth(name).toUpperCase());
 }
 
 // 제목과 폴더의 번호가 엇갈리면 어느 쪽이 맞는지 알 수 없다. 코멘트는 다른 글을 담을 수 있어 제목이나 폴더에 번호가 있으면 판단에 넣지 않는다.
@@ -74,53 +74,52 @@ function planProductNames(dir) {
     const transport = TRANSPORT_EXTENSIONS.has(extension);
     if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     const parts = entry.relative.split(path.sep);
-    if (parts.some((part) => LEFTOVER.test(part))) skip('이전 작업의 잔여물이라 바꾸지 않습니다.');
-    else if (parts.some((part) => SYSTEM_FOLDER.test(part))) skip('Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.');
-    else if (parts.some((part) => REPOSITORY_FOLDER.test(part))) skip('저장소 폴더 안의 파일이라 바꾸지 않습니다.');
-    else if (name.startsWith('.')) skip('점으로 시작하는 파일은 번호를 앞에 붙이면 숨김 이름이 아니게 되어 바꾸지 않습니다.');
-    else {
-      try {
-        const from = access.read(entry.path);
-        if (transport && !isTransportStream(access.target, entry.relative)) continue;
-        const inName = extractProductNumbers(name);
-        if (inName.length > 0) {
-          plan.already.push({ path: entry.path, number: inName[0] });
-          continue;
-        }
-        const lowerInName = extractProductNumbers(name, { lowercase: true });
-        const { title, comment, metadataError } = readTags(access.target, entry, extension);
-        // 파일명은 위에서 봤다. 타겟 자신과 그 위의 폴더 이름은 쓰지 않는다.
-        const found = findProductNumber({ title, comment, folders: parts.slice(0, -1).reverse() });
-        if (!found) {
-          if (lowerInName.length > 0) plan.already.push({ path: entry.path, number: lowerInName[0] });
-          else plan.notFound.push({ path: entry.path, note: metadataError ?? null });
-          continue;
-        }
-        const chosen = chooseNumber(found);
-        const numbers = found.candidates.map((candidate) => candidate.number);
-        if (!chosen) {
-          plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...numbers])] });
-          continue;
-        }
-        if (containsNumber(name, chosen.number)) {
-          plan.already.push({ path: entry.path, number: chosen.number });
-          continue;
-        }
-        if (lowerInName.length > 0) {
-          plan.conflicts.push({ path: entry.path, numbers: [...lowerInName, chosen.number] });
-          continue;
-        }
-        // 파일 안의 글은 쓰지 않고 형식을 통과한 번호만 이름에 넣으므로 제목의 경로·제어 문자가 이름에 들어오지 않는다.
-        const desired = `${chosen.number} ${base}${ext}`;
-        if (desired.length > MAX_NAME) throw new FcError(`번호를 넣으면 이름이 너무 깁니다: ${desired}`);
-        const to = path.join(path.dirname(from), desired);
-        if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}`);
-        plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source });
-      } catch (err) {
-        if (err instanceof FcError) skip(err.message);
-        else if (err.syscall) skip(`파일을 확인할 수 없습니다. (${err.code})`);
-        else throw err;
+    try {
+      const from = access.read(entry.path);
+      // 영상이 아닌 .ts는 어디에 있든 보고하지 않는다. 그래서 건너뛸지 보기 전에 내용을 확인한다.
+      if (transport && !isTransportStream(access.target, entry.relative)) continue;
+      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('이전 작업의 잔여물이라 바꾸지 않습니다.');
+      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.');
+      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('저장소 폴더 안의 파일이라 바꾸지 않습니다.');
+      if (name.startsWith('.')) throw new FcError('점으로 시작하는 파일은 번호를 앞에 붙이면 숨김 이름이 아니게 되어 바꾸지 않습니다.');
+      const inName = extractProductNumbers(name);
+      if (inName.length > 0) {
+        plan.already.push({ path: entry.path, number: inName[0] });
+        continue;
       }
+      const lowerInName = extractProductNumbers(name, { lowercase: true });
+      const { title, comment, metadataError } = readTags(access.target, entry, extension);
+      // 파일명은 위에서 봤다. 타겟 자신과 그 위의 폴더 이름은 쓰지 않는다.
+      const found = findProductNumber({ title, comment, folders: parts.slice(0, -1).reverse() });
+      if (!found) {
+        if (lowerInName.length > 0) plan.already.push({ path: entry.path, number: lowerInName[0] });
+        else plan.notFound.push({ path: entry.path, note: metadataError ?? null });
+        continue;
+      }
+      const chosen = chooseNumber(found);
+      const numbers = found.candidates.map((candidate) => candidate.number);
+      if (!chosen) {
+        plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...numbers])] });
+        continue;
+      }
+      if (containsNumber(name, chosen.number)) {
+        plan.already.push({ path: entry.path, number: chosen.number });
+        continue;
+      }
+      if (lowerInName.length > 0) {
+        plan.conflicts.push({ path: entry.path, numbers: [...lowerInName, chosen.number] });
+        continue;
+      }
+      // 파일 안의 글은 쓰지 않고 형식을 통과한 번호만 이름에 넣으므로 제목의 경로·제어 문자가 이름에 들어오지 않는다.
+      const desired = `${chosen.number} ${base}${ext}`;
+      if (desired.length > MAX_NAME) throw new FcError(`번호를 넣으면 이름이 너무 깁니다: ${desired}`);
+      const to = path.join(path.dirname(from), desired);
+      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}`);
+      plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source });
+    } catch (err) {
+      if (err instanceof FcError) skip(err.message);
+      else if (err.syscall) skip(`파일을 확인할 수 없습니다. (${err.code})`);
+      else throw err;
     }
   }
   return plan;
