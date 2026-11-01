@@ -3,6 +3,7 @@
 
 const fc = require('../src/commands');
 const { flatten, formatFlatten } = require('../src/flatten');
+const { addProductNumbers, formatProductNumbers } = require('../src/productName');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -20,6 +21,7 @@ const HELP = `fctl - 파일 컨트롤
   unzip <압축파일> [폴더]       압축 풀기 (기본: 압축파일 이름의 폴더)
   zip <압축파일> <원본...>      압축하기 (.zip, .tar.gz 등 확장자로 형식 결정)
   flatten <타겟>                하위 폴더의 파일을 타겟 바로 아래로 옮기고 빈 폴더를 휴지통으로 (덮어쓰지 않음)
+  product-number <타겟>         영상 파일 이름 앞에 제품번호 넣기 (덮어쓰지 않음)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -59,6 +61,16 @@ function rejectUnknownOptions(command, args, flags) {
 
 function need(args, count, usage) {
   if (args.length < count) throw new fc.FcError(`사용법: fctl ${usage}`);
+}
+
+// 타겟 전체를 바꾸는 명령의 공통 검사.
+function checkWholeTarget(command, args, flags) {
+  need(args, 1, `${command} <타겟>`);
+  // 되돌릴 수 없는 명령이다. 따옴표 없는 공백 경로의 앞부분만 받아 더 넓은 폴더를 다루지 않게 남는 인자를 거부한다.
+  if (args.length > 1) throw new fc.FcError(`타겟은 하나만 받습니다. 공백이 든 경로는 따옴표로 감싸세요: ${args.join(' ')}`);
+  // C:는 드라이브 루트가 아니라 그 드라이브의 현재 폴더를 뜻해서, 뜻과 다른 폴더를 다룰 수 있다.
+  if (/^[A-Za-z]:(?![\\/])/.test(args[0])) throw new fc.FcError(`드라이브 문자 뒤에 경로를 쓰세요: ${args[0]}`);
+  if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command}은 덮어쓰거나 영구 삭제하지 않으므로 --force, --permanent를 쓸 수 없습니다.`);
 }
 
 function readStdin() {
@@ -113,16 +125,19 @@ function run(argv) {
       need(args, 2, 'zip <압축파일> <원본...>');
       return fc.zip(args[0], args.slice(1), { force, dryRun });
     case 'flatten': {
-      need(args, 1, 'flatten <타겟>');
-      // 되돌릴 수 없는 명령이다. 따옴표 없는 공백 경로의 앞부분만 받아 더 넓은 폴더를 평탄화하지 않게 남는 인자를 거부한다.
-      if (args.length > 1) throw new fc.FcError(`타겟은 하나만 받습니다. 공백이 든 경로는 따옴표로 감싸세요: ${args.join(' ')}`);
-      // C:는 드라이브 루트가 아니라 그 드라이브의 현재 폴더를 뜻해서, 뜻과 다른 폴더를 평탄화할 수 있다.
-      if (/^[A-Za-z]:(?![\\/])/.test(args[0])) throw new fc.FcError(`드라이브 문자 뒤에 경로를 쓰세요: ${args[0]}`);
-      if (force || flags.has('permanent')) throw new fc.FcError('flatten은 덮어쓰거나 영구 삭제하지 않으므로 --force, --permanent를 쓸 수 없습니다.');
+      checkWholeTarget(command, args, flags);
       const result = flatten(args[0], { dryRun });
       const report = formatFlatten(result);
       // 일부가 실패하면 옮긴 내용까지 보여 주고 실패로 끝낸다.
       if (result.failed.length > 0 || result.keptFolders.length > 0) throw new fc.FcError(report);
+      return report;
+    }
+    case 'product-number': {
+      checkWholeTarget(command, args, flags);
+      const result = addProductNumbers(args[0], { dryRun });
+      const report = formatProductNumbers(result);
+      // 못 찾은 파일은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
+      if (result.failed.length > 0) throw new fc.FcError(report);
       return report;
     }
     default:
