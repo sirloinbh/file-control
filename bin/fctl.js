@@ -6,6 +6,7 @@ const { flatten, formatFlatten } = require('../src/flatten');
 const { addProductNumbers, formatProductNumbers } = require('../src/productName');
 const { extractArchives, formatExtractions } = require('../src/extract');
 const { collapse, formatCollapse } = require('../src/collapse');
+const { normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -24,6 +25,7 @@ const HELP = `fctl - 파일 컨트롤
   zip <압축파일> <원본...>      압축하기 (.zip, .tar.gz 등 확장자로 형식 결정)
   flatten <타겟>                하위 폴더의 파일을 타겟 바로 아래로 옮기고 빈 폴더를 휴지통으로 (덮어쓰지 않음)
   product-number <타겟>         영상 파일 이름 앞에 제품번호 넣기 (덮어쓰지 않음)
+  normalize <타겟>              파일 이름의 제품번호를 대문자로 맨 앞에 (덮어쓰지 않음)
   collapse <타겟>               폴더 하나만 이어지는 구간(a/b/c/파일)을 맨 위 폴더로 접기
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
 
@@ -32,10 +34,11 @@ const HELP = `fctl - 파일 컨트롤
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
+  --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase']);
 
 function parse(argv) {
   const flags = new Set();
@@ -91,6 +94,7 @@ function run(argv) {
   if (!command || flags.has('help')) return HELP;
   // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
+  if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
 
   switch (command) {
     case 'ls':
@@ -144,6 +148,14 @@ function run(argv) {
       const result = addProductNumbers(args[0], { dryRun });
       const report = formatProductNumbers(result);
       // 못 찾은 파일은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
+      if (result.failed.length > 0) throw new fc.FcError(report);
+      return report;
+    }
+    case 'normalize': {
+      checkWholeTarget(command, args, flags);
+      const result = normalizeFiles(args[0], { dryRun, includeLowercase: flags.has('include-lowercase') });
+      const report = formatNormalize(result);
+      // 겹치거나 건너뛴 것은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
       if (result.failed.length > 0) throw new fc.FcError(report);
       return report;
     }
