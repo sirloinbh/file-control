@@ -5,6 +5,7 @@ const path = require('node:path');
 const { FcError, remove, freshPath } = require('./commands');
 const { grant, walk } = require('./target');
 const { extractProductNumbers } = require('./product');
+const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
 const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository } = require('./flatten');
 
 // 폴더마다 바로 아래 항목을 모은다. 타겟 자신은 키가 ''이다.
@@ -28,18 +29,26 @@ function soleFolder(children, relative) {
 const under = (entry, folder) => entry.relative.startsWith(folder.relative + path.sep);
 const hasPart = (entry, pattern) => entry.relative.split(path.sep).some((part) => pattern.test(part));
 
+// .ts와 .mts는 내용을 보기 전에는 영상인지 모르므로 영상으로 쳐서 안전한 쪽으로 간다.
+function isVideoName(name) {
+  const extension = path.extname(name).toLowerCase();
+  return VIDEO_EXTENSIONS.has(extension) || TRANSPORT_EXTENSIONS.has(extension);
+}
+
 // 접을 수 없는 사유. 접어도 되면 null이다.
 function skipReason(chain, entries) {
   const leaf = chain.at(-1);
   const inside = entries.filter((entry) => under(entry, leaf));
   // 맨 아래 폴더를 통째로 옮기므로 그 안의 잔여물과 시스템 폴더도 따라간다. 메시지가 알려 준 위치에 있어야 복구할 수 있다.
   if (inside.some((entry) => hasPart(entry, LEFTOVER))) return '안에 이전 작업의 잔여물이 있어 접지 않습니다.';
-  if (hasPart(leaf, SYSTEM_FOLDER) || inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Windows 시스템 폴더가 관련되어 접지 않습니다.';
-  // 접으면 가운데 폴더 이름이 사라진다. 제품번호가 그 이름에만 있으면 접지 않는다.
+  if (inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Windows 시스템 폴더가 관련되어 접지 않습니다.';
+  // 접으면 가운데 폴더 이름이 사라진다. product-number는 그 이름에서 번호를 찾으므로, 파일 이름에 이미 들어간 번호만 사라져도 되는 것으로 본다.
+  // 영상이 있으면 영상 전부에, 없으면 파일 전부에 있어야 한다. 표지 하나에만 있으면 나머지 영상이 번호를 잃는다.
   const kept = new Set(extractProductNumbers(path.basename(chain[0].path)));
-  const names = inside.filter((entry) => entry.type !== 'dir').flatMap((entry) => extractProductNumbers(path.basename(entry.path)));
-  for (const name of names) kept.add(name);
-  const lost = chain.slice(1).flatMap((entry) => extractProductNumbers(path.basename(entry.path))).filter((number) => !kept.has(number));
+  const files = inside.filter((entry) => entry.type !== 'dir').map((entry) => path.basename(entry.path));
+  const videos = files.filter((name) => isVideoName(name));
+  const named = videos.length > 0 ? videos : files;
+  const lost = chain.slice(1).flatMap((entry) => extractProductNumbers(path.basename(entry.path))).filter((number) => !kept.has(number) && !named.every((name) => containsNumber(name, number)));
   if (lost.length > 0) return `접으면 폴더 이름의 제품번호가 사라집니다: ${[...new Set(lost)].join(', ')}. 파일 이름에 넣은 뒤 다시 실행하세요. product-number는 영상 파일에 넣습니다.`;
   return null;
 }
@@ -109,10 +118,10 @@ function restore(steps, cause) {
     try {
       if (!moveWithoutOverwrite(from, to)) left.push(`${from} -> ${to} (EEXIST)`);
     } catch (err) {
-      left.push(`${from} -> ${to} (${err.code})`);
+      left.push(`${from} -> ${to} (${err.code ?? err.message})`);
     }
   }
-  if (left.length > 0) throw new FcError(`접지 못했고 되돌리지도 못했습니다. (${cause.code}) ${left.join(', ')}`);
+  if (left.length > 0) throw new FcError(`접지 못했고 되돌리지도 못했습니다. (${cause.code ?? cause.message}) ${left.join(', ')}`);
 }
 
 // 폴더 통째로 이름을 바꾸므로 안쪽 항목의 이름이 가운데 폴더 이름과 같아도 충돌하지 않는다.
@@ -156,20 +165,27 @@ function collapse(dir, options = {}) {
   return applyCollapse(planCollapse(dir), options);
 }
 
-// 뒤에 접힌 구간이 앞 구간을 품으면 앞 구간의 최종 위치도 옮겨 간다.
-function withFinalPaths(collapsed) {
-  return collapsed.map((item, index) => {
-    let dest = item.top;
-    for (const later of collapsed.slice(index + 1)) {
-      if (dest === later.leaf || dest.startsWith(later.leaf + path.sep)) dest = later.top + dest.slice(later.leaf.length);
-    }
-    return { ...item, dest };
-  });
+// 접힌 구간이 경로를 품으면 그 경로도 옮겨 간다. 구간은 접힌 순서로 받는다.
+function finalPath(p, collapsed) {
+  let dest = p;
+  for (const item of collapsed) {
+    if (dest === item.leaf || dest.startsWith(item.leaf + path.sep)) dest = item.top + dest.slice(item.leaf.length);
+  }
+  return dest;
+}
+
+// 보고에는 뒤에 접힌 위 구간까지 반영한 최종 위치를 적는다.
+function withFinalPaths(result, collapsed) {
+  return {
+    ...result,
+    collapsed: collapsed.map((item, index) => ({ ...item, dest: finalPath(item.top, collapsed.slice(index + 1)) })),
+    skipped: result.skipped.map((item) => ({ ...item, path: finalPath(item.path, collapsed) })),
+  };
 }
 
 function applyCollapse(plan, { dryRun = false } = {}) {
   const result = { target: plan.target, dryRun, collapsed: [], skipped: plan.skipped, failed: [] };
-  if (dryRun) return { ...result, collapsed: withFinalPaths(plan.collapses) };
+  if (dryRun) return withFinalPaths(result, plan.collapses);
   const access = grant(plan.target, ['read', 'write', 'delete']);
   for (const item of plan.collapses) {
     // 안쪽 구간이 실패했으면 메시지가 알려 준 위치가 그대로 있어야 복구할 수 있으므로 품고 있는 구간을 옮기지 않는다.
@@ -191,7 +207,7 @@ function applyCollapse(plan, { dryRun = false } = {}) {
       result.failed.push({ path: item.top, reason: emptiedFailure(emptied, err) });
     }
   }
-  return { ...result, collapsed: withFinalPaths(result.collapsed) };
+  return withFinalPaths(result, result.collapsed);
 }
 
 function formatCollapse(result) {

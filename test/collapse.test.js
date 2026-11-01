@@ -130,6 +130,93 @@ test('제품번호를 파일 이름에 넣은 뒤에는 접을 수 있다', () =
   assert.deepStrictEqual(tree(dir), ['새 폴더/ABC-123 f.mp4', '자막/DEF-456/j.srt']);
 });
 
+test('파일 하나에만 번호가 있으면 나머지 영상이 번호를 잃으므로 접지 않는다', () => {
+  const dir = tempDir();
+  const files = ['t1/ABC-123/ABC-123.jpg', 't1/ABC-123/video.mp4', 't2/ABC-123/ABC-123 a.mp4', 't2/ABC-123/bonus.mp4', 't3/ABC-123/s1/ABC-123.txt', 't3/ABC-123/s2/x.mp4', 't4/ABC-123/ABC-123-sub/f.mp4', 't4/ABC-123/g.mp4'];
+  make(dir, files);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.collapsed, []);
+  assert.deepStrictEqual(tree(dir), [...files].sort());
+});
+
+test('모든 영상에 번호가 있으면 다른 파일에 없어도 접고, 번호가 든 표기는 같은 것으로 본다', () => {
+  const dir = tempDir();
+  make(dir, ['t1/ABC-123/ABC-123 a.mp4', 't1/ABC-123/cover.png', 't2/ABC-123/abc-123.mp4', 't3/ABC-123/ABC-123-01.mp4', 't3/ABC-123/ＡＢＣ－１２３-02.mkv']);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.skipped, []);
+  assert.strictEqual(result.collapsed.length, 3);
+});
+
+test('.ts는 영상일 수 있으므로 번호가 없으면 접지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['t/ABC-123/ABC-123.txt', 't/ABC-123/src.ts']);
+  assert.match(collapse(dir).skipped[0].reason, /ABC-123/);
+});
+
+test('영상이 없으면 모든 파일에 번호가 있어야 접는다', () => {
+  const dir = tempDir();
+  make(dir, ['t1/ABC-123/ABC-123.txt', 't1/ABC-123/ABC-123.srt', 't2/ABC-123/ABC-123.txt', 't2/ABC-123/memo.txt']);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.collapsed.map((item) => path.basename(item.top)), ['t1']);
+  assert.strictEqual(result.skipped.length, 1);
+});
+
+test('건너뛴 구간의 보고는 위 구간이 접힌 뒤의 위치를 적는다', () => {
+  const dir = tempDir();
+  make(dir, ['t/XX/x/ABC-123/f.mp4', 't/XX/y.txt']);
+  for (const dryRun of [true, false]) {
+    const result = collapse(dir, { dryRun });
+    assert.strictEqual(result.skipped[0].path, path.join(dir, 't', 'x'));
+  }
+  assert.deepStrictEqual(tree(dir), ['t/x/ABC-123/f.mp4', 't/y.txt']);
+});
+
+test('잔여물은 맨 위 하나만 보고한다', () => {
+  const dir = tempDir();
+  make(dir, ['.fctl-new-1-2-3/.fctl-old-4-5-6/a/b/f.txt']);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.skipped.map((item) => path.basename(item.path)), ['.fctl-new-1-2-3']);
+});
+
+test('치운 폴더에 파일이 생기면 휴지통으로 보내지 않고 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/b/c/f.txt']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  let emptied;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    count += 1;
+    renameSync(from, to);
+    if (count === 2) emptied = to;
+    if (count === 3) fs.writeFileSync(path.join(emptied, 'b', 'new.txt'), '새 파일');
+  });
+  const result = collapse(dir);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.failed[0].reason, /치운 폴더에 파일이 있어/);
+  assert.strictEqual(fs.readFileSync(path.join(emptied, 'b', 'new.txt'), 'utf8'), '새 파일');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'f.txt'), 'utf8'), 'a/b/c/f.txt');
+});
+
+test('자리표시에 다른 내용이 생겨 옮기지 못하면 사유를 그대로 알린다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/b/f.txt']);
+  const renameSync = fs.renameSync;
+  let count = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    count += 1;
+    if (count >= 3) {
+      fs.writeFileSync(to, '다른 내용');
+      throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    }
+    return renameSync(from, to);
+  });
+  const result = collapse(dir);
+  t.mock.restoreAll();
+  assert.doesNotMatch(result.failed[0].reason, /undefined/);
+  assert.match(result.failed[0].reason, /다른 내용이 생겨 지우지 않았습니다/);
+});
+
 test('구간 아래에 잔여물이나 시스템 폴더가 있으면 접지 않는다', () => {
   const dir = tempDir();
   const files = ['a/b/.fctl-old-1-2-3/x', 'a/b/f', 'c/d/$RECYCLE.BIN/y', 'c/d/g'];
@@ -165,6 +252,17 @@ test('보고는 위 구간까지 접힌 최종 위치를 적는다', () => {
   const result = collapse(dir);
   assert.deepStrictEqual(tree(dir), ['p/f.txt', 'p/z/g.txt']);
   assert.match(formatCollapse(result), /접기: p[\\/]q[\\/]1[\\/]z[\\/]w -> p[\\/]z/);
+});
+
+test('3층 구조의 최종 위치를 실행과 미리보기 모두 맞게 적는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/b/f.txt', 'a/b/c/d/g.txt', 'a/b/c/d/e/h/i.txt']);
+  const preview = collapse(dir, { dryRun: true });
+  const result = collapse(dir);
+  assert.deepStrictEqual(tree(dir), ['a/c/g.txt', 'a/c/e/i.txt', 'a/f.txt'].sort());
+  const dests = result.collapsed.map((item) => path.relative(dir, item.dest).replaceAll(path.sep, '/')).sort();
+  assert.deepStrictEqual(dests, ['a', 'a/c', 'a/c/e']);
+  assert.deepStrictEqual(preview.collapsed.map((item) => item.dest), result.collapsed.map((item) => item.dest));
 });
 
 test('안쪽 구간이 실패하면 그 구간을 품은 위 구간을 접지 않고, 따로 있는 구간은 계속한다', (t) => {
