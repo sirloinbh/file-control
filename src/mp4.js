@@ -357,12 +357,12 @@ function childBoxes(read, start, end) {
   return { list, complete: true };
 }
 
-// 데이터가 다른 파일에 있는 트랙인지 본다. dref 항목의 플래그 끝 비트가 1이면 이 파일 안이다.
+// 데이터가 다른 파일에 있는 트랙인지 본다. dref 항목의 플래그 끝 비트가 1이면 이 파일 안이다. 위치 문자열이 없으면 가리킬 파일이 없으므로 이 파일로 본다.
 function isExternalTrack(read, minf) {
   const dinf = findChild(read, minf, 'dinf');
   const dref = dinf && findChild(read, dinf, 'dref');
   if (!dref || dref.end - dref.start < 8) return false;
-  return childBoxes(read, dref.start + 8, dref.end).list.some((entry) => entry.end - entry.start >= 4 && (read(entry.start, 4).readUInt32BE(0) & 1) === 0);
+  return childBoxes(read, dref.start + 8, dref.end).list.some((entry) => entry.end - entry.start > 4 && (read(entry.start, 4).readUInt32BE(0) & 1) === 0);
 }
 
 function findChild(read, parent, type) {
@@ -402,6 +402,7 @@ function checkMp4Structure(target, real, p) {
   const size = fileSizeInside(target, real);
   const read = makeReader(target, real, p);
   let moov = null;
+  let fragment = false;
   let trailing = false;
   let offset = 0;
   while (size - offset >= 8) {
@@ -413,12 +414,14 @@ function checkMp4Structure(target, real, p) {
       break;
     }
     if (type === 'moov' && !moov) moov = box;
+    if (type === 'moof' || (type === 'styp' && offset === 0)) fragment = true;
     offset = box.end;
   }
+  // DASH, HLS의 미디어 조각은 moov 없이 moof만 있다. 초기화 파일이 따로 있으므로 이 파일만으로는 판단할 수 없다.
+  if (!moov && fragment) return { status: 'suspect', reason: 'moov 없이 조각(moof)만 있는 파일입니다. 스트리밍 조각일 수 있습니다.' };
   if (!moov) return broken('moov 박스가 없습니다. 끝까지 받지 못했거나 내용이 손상된 파일일 수 있습니다.');
   const { list, complete } = childBoxes(read, moov.start, moov.end);
   if (list.some((box) => box.type === 'cmov' || box.type === 'rmra')) return null;
-  if (!complete) return broken('moov 박스의 구조가 손상됐습니다.');
   if (!list.some((box) => box.type === 'mvhd')) return broken('moov 박스에 mvhd가 없습니다.');
   const tracks = list.filter((box) => box.type === 'trak');
   if (tracks.length === 0) {
@@ -430,6 +433,7 @@ function checkMp4Structure(target, real, p) {
   if (outside) return broken(outside.reason);
   if (problems.length === tracks.length) return broken(problems[0].reason);
   if (problems.length > 0) return { status: 'suspect', reason: problems[0].reason };
+  if (!complete) return { status: 'suspect', reason: 'moov 박스 끝에 박스가 아닌 데이터가 있습니다. 트랙은 온전합니다.' };
   return trailing ? { status: 'suspect', reason: `${offset}바이트 위치부터 뒤에 박스가 아닌 데이터가 있습니다. 구조는 온전합니다.` } : null;
 }
 

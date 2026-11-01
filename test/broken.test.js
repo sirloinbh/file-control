@@ -208,10 +208,29 @@ test('MP4 구조가 온전하면 뒤에 붙은 데이터는 의심으로만 둔�
 test('옛 QuickTime과 참조형 MOV는 깨졌다고 하지 않는다', () => {
   assert.strictEqual(judge('a.mov', Buffer.concat([box('moov', box('cmov', Buffer.alloc(32)))])), null);
   assert.strictEqual(judge('a.mov', Buffer.concat([box('moov', box('rmra', Buffer.alloc(32)))])), null);
-  const external = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('alis', u32(0)))), box('stbl', stco(1000000))))));
+  const external = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('alis', u32(0), latin('다른 파일.mov')))), box('stbl', stco(1000000))))));
   assert.strictEqual(judge('a.mov', Buffer.concat([ftyp(), external])), null);
   const selfContained = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('url ', u32(1)))), box('stbl', stco(1000000))))));
   assert.strictEqual(judge('a.mov', Buffer.concat([ftyp(), selfContained])).status, 'broken');
+});
+
+test('위치 문자열이 없는 dref는 이 파일로 보고 위치표를 검사한다', () => {
+  const noLocation = box('moov', box('mvhd', Buffer.alloc(100)), box('trak', box('mdia', box('minf', box('dinf', box('dref', u32(0), u32(1), box('url ', u32(0)))), box('stbl', stco(1000000))))));
+  assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), noLocation])).status, 'broken');
+});
+
+test('moov 없이 조각만 있는 MP4는 의심이고, 잘린 조각은 깨짐이다', () => {
+  const fragment = [box('moof', Buffer.alloc(16)), box('mdat', Buffer.alloc(16))];
+  assert.strictEqual(judge('a.mp4', Buffer.concat([box('styp', latin('msdh')), box('sidx', Buffer.alloc(16)), ...fragment])).status, 'suspect');
+  assert.strictEqual(judge('a.m4v', Buffer.concat([box('styp', latin('msdh')), ...fragment])).status, 'suspect');
+  assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), ...fragment])).status, 'suspect');
+  const whole = Buffer.concat([ftyp(), ...fragment]);
+  assert.strictEqual(judge('a.mp4', whole.subarray(0, whole.length - 4)).status, 'broken');
+});
+
+test('moov 끝에 쓰레기가 있어도 트랙이 온전하면 의심이다', () => {
+  const junk = box('moov', box('mvhd', Buffer.alloc(100)), trak(stco(40)), Buffer.alloc(16, 0xee));
+  assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), junk, box('mdat', Buffer.alloc(64))])).status, 'suspect');
 });
 
 test('MP4 트랙 일부만 틀리면 의심, 모두 틀리면 깨짐이다', () => {
@@ -266,6 +285,10 @@ test('zip 주석 안의 끝 표시에 속지 않고, 뒤에 붙은 데이터는 
   commented.writeUInt16LE(comment.length, whole.length - 2);
   assert.strictEqual(judge('a.zip', commented), null);
   assert.strictEqual(judge('a.zip', Buffer.concat([whole, latin('뒤에 붙음')])).status, 'suspect');
+  const fake = Buffer.alloc(22, 0xff);
+  fake.write('PK\x05\x06', 0, 'latin1');
+  assert.strictEqual(judge('a.zip', Buffer.concat([whole, fake])).status, 'suspect');
+  assert.strictEqual(judge('a.zip', Buffer.concat([zip('a.txt', '앞쪽 내용입니다'), zip('b.txt', '뒤')])).status, 'suspect');
 });
 
 test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로 둔다', () => {
@@ -323,6 +346,43 @@ test('tar.exe가 손상이라고 알린 파일만 깨졌다고 본다', { skip: 
   assert.strictEqual(damaged.broken.length, 1);
 });
 
+test('잘린 tar와 작은 tar.xz를 실제 tar.exe로 찾는다', { skip: process.platform !== 'win32' }, () => {
+  const dir = tempDir();
+  const source = path.join(dir, 'src');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'a.txt'), '작은 파일');
+  fs.writeFileSync(path.join(source, 'b.txt'), '작은 파일 둘');
+  const TAR = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
+  const made = (name, ...flags) => {
+    const file = path.join(dir, name);
+    realSpawnSync(TAR, [...flags, '-cf', file, '-C', source, '.'], { stdio: 'ignore' });
+    return fs.readFileSync(file);
+  };
+  const xz = made('w.tar.xz', '-J');
+  assert.strictEqual(judge('a.tar.xz', xz.subarray(0, xz.length >> 1)).status, 'broken');
+  const plain = made('w.tar', '--format', 'ustar');
+  // 두 번째 항목 머리글 중간에서 자른다.
+  assert.strictEqual(judge('a.tar', plain.subarray(0, 512 + 512 + 100)).status, 'broken');
+});
+
+test('압축 해제 오류와 잘림 문구는 깨짐이다', () => {
+  const phrases = [
+    'tar.exe: Truncated tar archive detected while reading next header',
+    'tar.exe: Error opening archive: Truncated tar archive detected while reading pax attribute name',
+    'tar.exe: Lzma library error:  No progress is possible',
+    'tar.exe: Lzma library error:  Corrupted input data',
+    'tar.exe: bzip decompression failed',
+  ];
+  for (const phrase of phrases) {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'a.tar'), tar());
+    tarResult = { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from(`${phrase}\n`) };
+    const result = findBroken(dir);
+    tarResult = null;
+    assert.strictEqual(result.broken.length, 1, phrase);
+  }
+});
+
 test('tar로 읽을 수 없는 형식은 의심, 항목이 없으면 의심이다', { skip: process.platform !== 'win32' }, () => {
   assert.strictEqual(judge('a.tar', latin('tar가 아닌 글\n'.repeat(100))).status, 'suspect');
   assert.strictEqual(judge('a.tar.gz', zlib.gzipSync('tar가 아닌 글\n'.repeat(100))).status, 'suspect');
@@ -373,6 +433,17 @@ test('잘린 RIFF를 찾는다', () => {
   assert.strictEqual(judge('a.avi', Buffer.concat([latin('RIFF'), u32le(0), latin('AVI ')])), null);
   // 크기 칸에 파일 전체 크기를 적는 프로그램도 있다.
   assert.strictEqual(judge('a.wav', Buffer.concat([latin('RIFF'), u32le(12), latin('WAVE')])), null);
+  // 파이프로 쓴 파일은 크기 칸이 2GB 언저리일 수 있다.
+  for (const value of [0x7ffff024, 0x7fffffff]) assert.strictEqual(judge('a.wav', Buffer.concat([latin('RIFF'), u32le(value), latin('WAVE')])).status, 'suspect');
+});
+
+test('RIFF 검사는 RIFF 형식에만 한다', { skip: process.platform !== 'win32' }, () => {
+  const named = Buffer.from(tar());
+  named.write('RIFF.txt', 0, 'latin1');
+  named.write('        ', 148, 'latin1');
+  const sum = named.subarray(0, 512).reduce((total, byte) => total + byte, 0);
+  named.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'latin1');
+  assert.strictEqual(judge('a.tar', named), null);
 });
 
 test('잠겨서 읽지 못한 파일은 깨졌다고 하지 않는다', (t) => {

@@ -57,47 +57,49 @@ const ZIP_LOCAL = 0x04034b50;
 const ZIP_CENTRAL_SIZE = 46;
 // 항목마다 파일을 여는 검사의 한도. 넘는 항목은 보지 않는다.
 const ZIP_LOCAL_CHECKS = 5000;
+// 끝 표시 후보를 검증하는 한도. 표시를 가득 채운 파일에 묶이지 않게 한다.
+const ZIP_END_CANDIDATES = 16;
 // 메모리에 올리는 zip 목록의 한도. 넘으면 판단하지 않는다.
 const MAX_ZIP_DIRECTORY = 64 * 1024 * 1024;
 // tar.exe로 읽는 한도. 항목이 아주 많거나 끝없이 풀리는 파일에 묶이지 않게 한다. 넘으면 판단하지 않는다.
 const TAR_LIMITS = { maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60 * 1000 };
 // tar.exe가 손상이라고 말한 경우. 잠금(Error reading), 코드페이지에 없는 이름(unreadable filename)처럼 파일 탓이 아닌 오류는 여기 들지 않는다.
-const TAR_DAMAGED = /^\S*tar(?:\.exe)?: (?:Truncated input file|Damaged tar archive|(?:Error opening archive: )?truncated \w+ input)/m;
+const TAR_DAMAGED = /^\S*tar(?:\.exe)?: (?:Error opening archive: )?(?:Truncated input file|Truncated tar archive|Damaged tar archive|truncated \w+ input|bzip decompression failed|Lzma library error:s+(?:No progress is possible|Corrupted input data))/m;
 const TAR_UNRECOGNIZED = /^\S*tar(?:\.exe)?: Error opening archive: Unrecognized archive format/m;
+
+const RIFF_UNKNOWN_SIZE = 0x7fff0000;
+const RIFF_FORMATS = new Set(['AVI', 'WAV', 'WebP']);
 
 const broken = (reason) => ({ status: 'broken', reason });
 const suspect = (reason) => ({ status: 'suspect', reason });
 const SEVEN_ZIP_HEADER = 32;
 
 // RIFF 머리글의 크기가 파일보다 크면 잘린 것이다. 크기 칸은 앞 8바이트를 빼고 적지만, 파일 전체 크기를 적는 프로그램도 있어 8바이트는 봐준다.
-// 0과 최댓값은 크기를 모른 채 쓴 파일이고, 2GB를 넘는 AVI는 RIFF가 여럿이라 더 작기만 하다.
+// 0과 최댓값은 크기를 모른 채 쓴 파일이고, 2GB를 넘는 AVI는 RIFF가 여럿이라 더 작기만 하다. 2GB 언저리의 값은 파이프로 쓴 파일일 수 있어 의심으로 둔다.
 function checkRiff(head, size) {
   if (head.length < 8 || text(head, 0, 4) !== 'RIFF') return null;
   const declared = head.readUInt32LE(4);
   if (declared === 0 || declared === 0xffffffff) return null;
+  if (declared > size && declared >= RIFF_UNKNOWN_SIZE) return suspect('RIFF 머리글의 크기가 크기를 모른 채 쓴 값일 수 있습니다.');
   return declared > size ? broken('RIFF 머리글의 크기보다 파일이 작습니다. 잘린 파일일 수 있습니다.') : null;
 }
 
-// 뒤에서부터 끝 레코드를 찾는다. 주석 길이가 파일 끝과 맞는 것을 고르고, 없으면 맞지 않는 것 중 가장 뒤의 것을 돌려준다.
-// 주석 안에 같은 표시가 들어 있을 수 있어 처음 찾은 것을 그대로 믿지 않는다.
-function findZipEnd(tail) {
-  let fallback = -1;
-  for (let at = tail.lastIndexOf(ZIP_END); at !== -1; at = at === 0 ? -1 : tail.lastIndexOf(ZIP_END, at - 1)) {
+// 끝 레코드 후보를 뒤에서부터 찾아 위치 목록으로 돌려준다. 주석 길이가 파일 끝과 맞는 것을 앞에 둔다.
+// 주석이나 덧붙은 데이터 안에 같은 표시가 들어 있을 수 있어 처음 찾은 것을 그대로 믿지 않는다.
+function findZipEnds(tail) {
+  const exact = [];
+  const others = [];
+  for (let at = tail.lastIndexOf(ZIP_END); at !== -1 && exact.length + others.length < ZIP_END_CANDIDATES; at = at === 0 ? -1 : tail.lastIndexOf(ZIP_END, at - 1)) {
     if (at + ZIP_END_SIZE > tail.length) continue;
-    if (at + ZIP_END_SIZE + tail.readUInt16LE(at + 20) === tail.length) return { at, exact: true };
-    if (fallback === -1) fallback = at;
+    if (at + ZIP_END_SIZE + tail.readUInt16LE(at + 20) === tail.length) exact.push(at);
+    else others.push(at);
   }
-  return fallback === -1 ? null : { at: fallback, exact: false };
+  return { exact, others };
 }
 
-// zip의 끝 레코드, 중앙 디렉터리, 항목 머리글이 맞물리는지 본다. 항목의 압축 내용(CRC)은 읽지 않는다.
+// 끝 레코드 하나에서 시작해 중앙 디렉터리와 항목 머리글이 맞물리는지 본다. 항목의 압축 내용(CRC)은 읽지 않는다.
 // 분할 압축과 Zip64는 이 방식으로 판단할 수 없어 문제를 찾지 못한 것으로 둔다.
-function checkZip(target, real, size) {
-  const tailOffset = Math.max(0, size - ZIP_TAIL);
-  const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
-  const found = findZipEnd(tail);
-  if (!found) return broken('zip 끝 표시가 없습니다. 잘린 파일일 수 있습니다.');
-  const { at, exact } = found;
+function checkZipEnd(target, real, tail, tailOffset, at) {
   if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return null;
   const total = tail.readUInt16LE(at + 10);
   const directorySize = tail.readUInt32LE(at + 12);
@@ -116,7 +118,27 @@ function checkZip(target, real, size) {
     }
     pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
   }
-  return exact ? null : suspect('zip 끝 표시 뒤에 다른 데이터가 있습니다.');
+  return null;
+}
+
+// 파일 끝과 맞는 후보가 온전하면 정상이다. 다른 후보만 온전하면 뒤에 다른 데이터가 붙은 것이므로 의심이다. 모두 틀려야 깨짐이다.
+function checkZip(target, real, size) {
+  const tailOffset = Math.max(0, size - ZIP_TAIL);
+  const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
+  const { exact, others } = findZipEnds(tail);
+  if (exact.length === 0 && others.length === 0) return broken('zip 끝 표시가 없습니다. 잘린 파일일 수 있습니다.');
+  let first = null;
+  for (const at of exact) {
+    const found = checkZipEnd(target, real, tail, tailOffset, at);
+    if (found === null) return null;
+    first ??= found;
+  }
+  for (const at of others) {
+    const found = checkZipEnd(target, real, tail, tailOffset, at);
+    if (found === null) return suspect('zip 끝 표시 뒤에 다른 데이터가 있습니다.');
+    first ??= found;
+  }
+  return first;
 }
 
 // 7z 시작 머리글의 CRC와, 머리글이 가리키는 끝이 파일 안인지 본다. 내용은 읽지 않는다.
@@ -160,7 +182,7 @@ function inspect(target, real, size) {
   if (!format && !listed) return null;
   const head = readRange(target, real, { length: HEAD_SIZE });
   if (format && !format.match(head)) return checkMismatch(format, head);
-  let found = checkRiff(head, size);
+  let found = RIFF_FORMATS.has(format?.name) ? checkRiff(head, size) : null;
   if (found === null && format === MP4) found = checkMp4Structure(target, real, real);
   if (found === null && format === MKV) found = checkMkvStructure(target, real, real);
   if (found === null && format === ZIP) found = checkZip(target, real, size);
