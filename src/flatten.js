@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, remove } = require('./commands');
+const { extractProductNumbers } = require('./product');
 const { grant, walk } = require('./target');
 
 // NTFS 파일 이름 한도 (UTF-16 글자 수)
@@ -40,9 +41,6 @@ function freeName(name, target, taken, nextNumber) {
   }
 }
 
-// 제품번호 형식(ABC-123). 정식 규칙은 #22에서 정한다. Report_2023 같은 일반 이름을 잡지 않도록 대문자와 -만 본다.
-const PRODUCT_NUMBER = /(?<![A-Za-z0-9])[A-Z]{2,}-\d{2,}(?![A-Za-z0-9])/;
-
 // 폴더 이름의 끝이 확장자처럼 보이는지 본다. Movie.2021.1080p처럼 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
 const EXTENSION_LIKE = /\.(?:[A-Za-z][A-Za-z0-9]{0,9}|7z)$/;
 
@@ -73,7 +71,7 @@ function isMoreDetailed(folder, base) {
   if (f === '' || b === '') return false;
   if (f.length > b.length && containsWords(folderWords, b)) return true;
   if (b.includes(f)) return false;
-  return PRODUCT_NUMBER.test(folder) && GENERIC_NAME.test(b);
+  return extractProductNumbers(folder).length > 0 && GENERIC_NAME.test(b);
 }
 
 // 파일 이름과 폴더 이름(가까운 폴더부터) 중 가장 자세한 이름을 확장자를 유지해 돌려준다.

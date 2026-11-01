@@ -407,6 +407,14 @@ test('detailedName은 정보가 없는 파일명만 제품번호 폴더 이름�
   }
 });
 
+test('detailedName은 제품번호 규칙을 따라 폴더명을 고른다', () => {
+  // 소문자 번호도 제품번호다. 이름은 폴더에 적힌 그대로 쓴다.
+  assert.strictEqual(detailedName('video.mp4', ['abc-123 제목']), 'abc-123 제목.mp4');
+  for (const folder of ['PART-01', 'CD-02', 'IMG-1234', 'Vlog-2024', 'summer-trip-20', 'ABCDEFG-123']) {
+    assert.strictEqual(detailedName('video.mp4', [folder]), 'video.mp4', folder);
+  }
+});
+
 test('detailedName은 점으로 시작하는 폴더 이름을 쓰지 않는다', () => {
   assert.strictEqual(detailedName('x.mp4', ['.ABC-123']), 'x.mp4');
   assert.strictEqual(detailedName('trash.mp4', ['.trash-1000']), 'trash.mp4');
