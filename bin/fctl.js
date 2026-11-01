@@ -7,6 +7,7 @@ const { addProductNumbers, formatProductNumbers } = require('../src/productName'
 const { extractArchives, formatExtractions } = require('../src/extract');
 const { collapse, formatCollapse } = require('../src/collapse');
 const { normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
+const { findBroken, formatBroken } = require('../src/broken');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -28,6 +29,7 @@ const HELP = `fctl - 파일 컨트롤
   normalize <타겟>              파일 이름의 제품번호를 대문자로 맨 앞에 (덮어쓰지 않음)
   collapse <타겟>               폴더 하나만 이어지는 구간(a/b/c/파일)을 맨 위 폴더로 접기
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
+  find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -174,6 +176,11 @@ function run(argv) {
       // 건너뛴 것은 보고로 충분하다. 풀지 못한 압축 파일이 있을 때만 실패로 끝낸다.
       if (result.failed.length > 0) throw new fc.FcError(report);
       return report;
+    }
+    case 'find-broken': {
+      checkWholeTarget(command, args, flags);
+      // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      return formatBroken(findBroken(args[0]));
     }
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);

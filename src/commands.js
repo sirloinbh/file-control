@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const isWindows = process.platform === 'win32';
 // Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
@@ -462,6 +462,14 @@ function archiveNames(archive) {
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
+// 압축 파일을 tar.exe로 끝까지 읽어 본다. 오류를 내지 않고 { error, status, stderr, entries }를 돌려준다.
+// 손상 문구는 종료 코드 0으로도 나오므로(Damaged tar archive) 판단은 stderr로 한다. error는 실행 실패나 한도 초과(ENOBUFS, ETIMEDOUT)다.
+function probeArchive(archive, { maxBuffer, timeout }) {
+  ensureTarCanUse([path.resolve(archive)]);
+  const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout });
+  return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
+}
+
 function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
@@ -551,7 +559,7 @@ module.exports = {
   remove,
   unzip,
   archiveEntries,
-  archiveNames,
+  archiveNames, probeArchive,
   freshPath,
   zip,
 };

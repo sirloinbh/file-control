@@ -36,6 +36,8 @@ const ID = {
 };
 
 const WANTED = new Set([ID.SEEK_HEAD, ID.INFO, ID.TRACKS, ID.TAGS]);
+// 어디에나 올 수 있는 요소 (Void, CRC-32)
+const GLOBAL_ELEMENTS = new Set([0xec, 0xbf]);
 // 머리 요소를 찾는 데 필요한 읽기 횟수 한도. 손상된 파일이 작은 요소를 끝없이 늘어놓아도 멈춘다.
 const MAX_READS = 20000;
 // 한 요소를 메모리에 올리는 한도. 더 크면 없는 것으로 본다. 정상 파일의 Info, Tracks, Tags는 이보다 훨씬 작다.
@@ -286,4 +288,38 @@ function parseMkv(target, real, p) {
   };
 }
 
-module.exports = { readMkvMetadata };
+// MKV/WebM의 구조가 온전한지 본다. 손상이면 { status: 'broken', reason }을, 의심스러우면 { status: 'suspect', reason }을, 문제를 찾지 못하면 null을 돌려준다.
+// 입출력 문제와 읽기 한도 초과는 예외로 나간다.
+// Segment 바로 아래 요소의 머리글을 차례로 건너뛰며 파일 끝을 넘는 요소와 Tracks를 본다. 영상 데이터는 읽지 않으므로 Cluster 안의 손상은 찾지 못한다.
+// 크기를 모르는 요소(실시간 녹화)를 만나면 끝을 알 수 없으므로 거기서 판단을 멈춘다.
+function checkMkvStructure(target, real, p) {
+  const broken = (reason) => ({ status: 'broken', reason });
+  const size = fileSizeInside(target, real);
+  const read = makeReader(target, real, p, size);
+  const ebml = headerAt(read, 0);
+  if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('EBML 머리글이 손상됐습니다.');
+  if (ebml.start + ebml.size > size) return broken('EBML 머리글이 잘렸습니다.');
+  // Segment 앞에 Void나 CRC가 올 수 있다.
+  let segment = headerAt(read, ebml.start + ebml.size);
+  while (segment && GLOBAL_ELEMENTS.has(segment.id) && segment.size !== null) segment = headerAt(read, segment.start + segment.size);
+  if (!segment || segment.id !== ID.SEGMENT) return broken('Segment 요소가 없습니다. 끝까지 받지 못한 파일일 수 있습니다.');
+  if (segment.size !== null && segment.start + segment.size > size) return broken('Segment가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.');
+  const end = segment.size === null ? size : segment.start + segment.size;
+  let tracks = false;
+  let offset = segment.start;
+  while (offset < end) {
+    const header = headerAt(read, offset);
+    if (!header) {
+      // Tracks까지 읽었으면 뒤쪽 패딩일 수 있다.
+      if (tracks) return { status: 'suspect', reason: `${offset}바이트 위치부터 요소가 아닌 데이터가 있습니다.` };
+      return broken(`${offset}바이트 위치의 요소가 손상됐습니다.`);
+    }
+    if (header.size === null) return null;
+    if (header.start + header.size > end) return broken('요소가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.');
+    if (header.id === ID.TRACKS) tracks = true;
+    offset = header.start + header.size;
+  }
+  return tracks ? null : broken('Tracks 요소가 없습니다.');
+}
+
+module.exports = { readMkvMetadata, checkMkvStructure };
