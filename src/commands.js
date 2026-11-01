@@ -455,6 +455,13 @@ function archiveEntries(archive) {
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
+// 압축 파일 안의 항목 이름 목록. 코드페이지로 나오므로 ASCII가 아닌 이름은 믿을 수 없다.
+function archiveNames(archive) {
+  ensureTarCanUse([path.resolve(archive)]);
+  const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
+}
+
 function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
@@ -544,6 +551,7 @@ module.exports = {
   remove,
   unzip,
   archiveEntries,
+  archiveNames,
   freshPath,
   zip,
 };

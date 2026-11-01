@@ -2,12 +2,29 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, archiveEntries, freshPath } = require('./commands');
-const { grant, walk, rejectAmbiguousNames } = require('./target');
+const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath } = require('./commands');
+const { grant, walk, readRange, fileSizeInside, rejectAmbiguousNames } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;
+
+// 원본을 지워도 되는지 내용으로 확인하는 형식. 나머지는 지우지 않는다.
+// .tar.gz는 본문이 변해도 tar.exe가 성공하고, .tar는 체크섬이 없다. .tar.xz와 .tar.bz2는 tar 끝 표시 뒤를 읽지 않아 무결성 검사를 건너뛸 수 있다. RAR는 확인하지 못했다.
+// tar.exe는 확장자가 아니라 내용으로 형식을 고르므로 앞 바이트도 본다.
+const ZIP = /\.zip$/i;
+const SEVEN_ZIP = /\.7z$/i;
+const ZIP_LOCAL = Buffer.from('PK\x03\x04', 'latin1');
+const SEVEN_ZIP_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+const SEVEN_ZIP_HEADER = 32;
+// zip 끝 레코드는 22바이트에 주석이 최대 65535바이트 붙는다.
+const ZIP_END_SIZE = 22;
+const ZIP_TAIL = ZIP_END_SIZE + 65535;
+const ZIP_END = Buffer.from('PK\x05\x06', 'latin1');
+const ZIP_CENTRAL = 0x02014b50;
+const ZIP_CENTRAL_SIZE = 46;
+// 이 글자가 든 이름은 tar.exe가 _로 바꾸거나 앞부분을 버린다.
+const CHANGED_NAME = /[:?*<>|"\x00-\x1f]/;
 
 // 압축 파일 이름에서 확장자를 뺀 폴더 이름. 압축 파일이 아니면 null이다.
 function folderName(name) {
@@ -111,6 +128,97 @@ function extractOne(item, access) {
   return entries;
 }
 
+// zip의 중앙 디렉터리를 읽어 항목 목록을 돌려준다. 믿을 수 없으면 사유 문자열을 돌려준다.
+// tar.exe는 끝에서 처음 만난 끝 레코드를 믿어서, 잘린 zip 안의 무압축 zip이나 이어 붙인 zip이면 일부만 풀고 성공한다.
+// 그래서 끝 레코드가 파일 끝에 딱 맞고 중앙 디렉터리가 바로 앞에 이어지는지 본다.
+function readZipEntries(target, archive, entryCount) {
+  const size = fileSizeInside(target, archive);
+  const tailOffset = Math.max(0, size - ZIP_TAIL);
+  const tail = readRange(target, archive, { offset: tailOffset, length: ZIP_TAIL });
+  const at = tail.lastIndexOf(ZIP_END);
+  if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'zip 끝 표시가 없어 잘린 파일일 수 있어 남겼습니다.';
+  const end = tailOffset + at;
+  if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'zip 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.';
+  if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  const total = tail.readUInt16LE(at + 10);
+  const directorySize = tail.readUInt32LE(at + 12);
+  const directoryOffset = tail.readUInt32LE(at + 16);
+  if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return 'Zip64 형식은 내용을 확인하지 못해 남겼습니다.';
+  if (directoryOffset + directorySize !== end) return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
+  if (total !== entryCount) return `zip 항목 수가 풀린 목록과 달라 남겼습니다. (${total}개, ${entryCount}개)`;
+  const directory = readRange(target, archive, { offset: directoryOffset, length: directorySize });
+  const entries = [];
+  let firstOffset = Infinity;
+  let pos = 0;
+  while (pos < directory.length) {
+    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'zip 구조를 읽지 못해 남겼습니다.';
+    const nameEnd = pos + ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28);
+    const bytes = directory.subarray(pos + ZIP_CENTRAL_SIZE, nameEnd);
+    const unicode = (directory.readUInt16LE(pos + 8) & 0x800) !== 0;
+    if (!unicode && bytes.some((byte) => byte >= 0x80)) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
+    const usize = directory.readUInt32LE(pos + 24);
+    if (usize === 0xffffffff) return 'Zip64 형식은 내용을 확인하지 못해 남겼습니다.';
+    firstOffset = Math.min(firstOffset, directory.readUInt32LE(pos + 42));
+    entries.push({ name: bytes.toString('utf8'), size: usize });
+    pos = nameEnd + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
+  }
+  if (pos !== directory.length || entries.length !== total) return 'zip 구조를 읽지 못해 남겼습니다.';
+  // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
+  if (firstOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
+  return entries;
+}
+
+// 항목이 원래 이름 그대로 풀렸는지 본다. 내용은 남아도 이름은 원본에만 있을 수 있다.
+// 미리보기에서는 풀린 결과가 없으니 이름 글자만 본다. size가 없으면 크기는 보지 않는다.
+function checkEntryNames(entries, dest, dryRun) {
+  for (const { name, size } of entries) {
+    if (CHANGED_NAME.test(name)) return `풀면 이름이 바뀌는 항목이 있어 남겼습니다: ${JSON.stringify(name)}`;
+    const relative = name.replaceAll('\\', '/').replace(/^(?:\.\/)+/, '');
+    const folder = relative === '' || relative.endsWith('/');
+    if (folder && size > 0) return `폴더 항목에 내용이 있어 남겼습니다: ${JSON.stringify(name)}`;
+    if (dryRun) continue;
+    const stat = fs.lstatSync(path.join(dest, relative), { throwIfNoEntry: false });
+    if (!stat) return `같은 이름으로 풀리지 않은 항목이 있어 남겼습니다: ${JSON.stringify(name)}`;
+    if (folder ? !stat.isDirectory() : size !== undefined && (!stat.isFile() || stat.size !== size)) return `풀린 크기가 달라 남겼습니다: ${JSON.stringify(name)}`;
+  }
+  return null;
+}
+
+// 원본을 지우면 안 되는 사유. 지워도 되면 null이다.
+function keepReason(access, item, entryCount, dryRun) {
+  const { archive, dest } = item;
+  const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
+  if (ZIP.test(archive)) {
+    if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return '내용이 zip으로 시작하지 않아 남겼습니다.';
+    const entries = readZipEntries(access.target, archive, entryCount);
+    return typeof entries === 'string' ? entries : checkEntryNames(entries, dest, dryRun);
+  }
+  if (SEVEN_ZIP.test(archive)) {
+    if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return '내용이 7z로 시작하지 않아 남겼습니다.';
+    // tar.exe는 첫 7z만 읽으므로, 머리글이 가리키는 끝이 파일 끝과 맞는지 본다. 어긋나면 뒤에 붙은 내용을 풀지 못했을 수 있다.
+    const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
+    if (end !== BigInt(fileSizeInside(access.target, archive))) return '7z 끝 뒤에 다른 데이터가 있어 남겼습니다.';
+    const names = archiveNames(archive);
+    if (names.some((name) => /[^\x00-\x7f]/.test(name))) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
+    return checkEntryNames(names.map((name) => ({ name })), dest, dryRun);
+  }
+  return '이 형식은 풀린 내용이 온전한지 확인할 수 없어 남겼습니다.';
+}
+
+// 푼 압축 파일이 그 뒤로 바뀌었으면 지우지 않는다. 지우는 것은 내용을 확인한 그 파일이어야 한다.
+function removeArchive(access, item, before, dryRun) {
+  const archive = access.delete(item.archive);
+  if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
+  const stat = fs.lstatSync(archive);
+  if (!stat.isFile() || stat.size !== before.size || stat.mtimeMs !== before.mtimeMs || stat.ino !== before.ino) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
+  remove([archive], { dryRun });
+}
+
+function removalFailure(err) {
+  if (err instanceof FcError) return err.message;
+  return `풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+}
+
 function failureReason(err) {
   if (err instanceof FcError) return err.message;
   // tar.exe의 오류는 코드페이지로 나와 한글이 깨지므로 종료 코드만 쓴다.
@@ -118,21 +226,39 @@ function failureReason(err) {
   return `압축을 풀지 못했습니다. (${err.code})`;
 }
 
-// 타겟 아래 압축 파일을 각각 새 폴더에 푼다. 압축 파일은 지우지 않고, 풀려 나온 압축 파일을 다시 풀지도 않는다.
-// 돌려주는 값: { target, dryRun, extracted, skipped, failed }. extracted는 { archive, dest, name, entries } 목록이고 failed는 { archive, reason } 목록이다.
-function extractArchives(dir, { dryRun = false } = {}) {
-  return applyExtractions(planExtractions(dir), { dryRun });
+// 타겟 아래 압축 파일을 각각 새 폴더에 푼다. 풀려 나온 압축 파일을 다시 풀지는 않는다.
+// removeArchives를 주면 정상으로 풀린 압축 파일을 휴지통으로 보낸다. 건너뛰거나 실패한 압축 파일은 지우지 않는다.
+// 돌려주는 값: { target, dryRun, removeArchives, extracted, skipped, removed, kept, failed }.
+// extracted는 { archive, dest, name, entries }, removed는 경로, kept와 failed는 { archive, reason } 목록이다. 풀렸지만 지우지 못한 파일은 failed에 넣는다.
+function extractArchives(dir, options = {}) {
+  return applyExtractions(planExtractions(dir), options);
 }
 
-function applyExtractions(plan, { dryRun = false } = {}) {
-  const result = { target: plan.target, dryRun, extracted: [], skipped: plan.skipped, failed: [] };
-  const access = grant(plan.target, ['read', 'write']);
+function applyExtractions(plan, { dryRun = false, removeArchives = false } = {}) {
+  const result = { target: plan.target, dryRun, removeArchives, extracted: [], skipped: plan.skipped, removed: [], kept: [], failed: [] };
+  const access = grant(plan.target, removeArchives ? ['read', 'write', 'delete'] : ['read', 'write']);
   for (const item of plan.extractions) {
+    let before;
+    let entries;
     try {
-      const entries = dryRun ? inspectArchive(item.archive).entries : extractOne(item, access);
+      before = fs.lstatSync(item.archive);
+      entries = dryRun ? inspectArchive(item.archive).entries : extractOne(item, access);
       result.extracted.push({ ...item, entries });
     } catch (err) {
       result.failed.push({ archive: item.archive, reason: failureReason(err) });
+      continue;
+    }
+    if (!removeArchives) continue;
+    try {
+      const reason = keepReason(access, item, entries, dryRun);
+      if (reason !== null) {
+        result.kept.push({ archive: item.archive, reason });
+        continue;
+      }
+      removeArchive(access, item, before, dryRun);
+      result.removed.push(item.archive);
+    } catch (err) {
+      result.failed.push({ archive: item.archive, reason: removalFailure(err) });
     }
   }
   return result;
@@ -143,9 +269,12 @@ function formatExtractions(result) {
   const prefix = result.dryRun ? '[미리보기] ' : '';
   const lines = [];
   for (const item of result.extracted) lines.push(`${prefix}압축 해제: ${relative(item.archive)} -> ${relative(item.dest)} (항목 ${item.entries}개)`);
+  for (const archive of result.removed) lines.push(`${prefix}휴지통으로 이동: ${relative(archive)}`);
+  for (const item of result.kept) lines.push(`${prefix}남김: ${relative(item.archive)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`실패: ${relative(item.archive)} (${item.reason})`);
-  lines.push(`${prefix}압축 해제 ${result.extracted.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
+  const removal = result.removeArchives ? `, 휴지통 ${result.removed.length}개, 남김 ${result.kept.length}개` : '';
+  lines.push(`${prefix}압축 해제 ${result.extracted.length}개${removal}, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
   return lines.join('\n');
 }
 
