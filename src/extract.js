@@ -2,12 +2,19 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, archiveEntries, freshPath } = require('./commands');
-const { grant, walk, rejectAmbiguousNames } = require('./target');
+const { FcError, unzip, remove, archiveEntries, freshPath } = require('./commands');
+const { grant, walk, readRange, fileSizeInside, rejectAmbiguousNames } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;
+
+// tar.exe가 본문 손상을 잡는 것을 확인한 형식. .tar.gz는 본문이 변해도 성공하고, .tar는 체크섬이 없고 잘려도 성공한다. RAR는 확인하지 못했다.
+const CHECKED_FORMAT = /\.(?:zip|7z|tar\.bz2|tbz2|tar\.xz|txz)$/i;
+const ZIP = /\.zip$/i;
+// zip 끝 레코드는 22바이트에 주석이 최대 65535바이트 붙는다.
+const ZIP_TAIL = 22 + 65535;
+const ZIP_END = Buffer.from('PK\x05\x06', 'latin1');
 
 // 압축 파일 이름에서 확장자를 뺀 폴더 이름. 압축 파일이 아니면 null이다.
 function folderName(name) {
@@ -111,6 +118,31 @@ function extractOne(item, access) {
   return entries;
 }
 
+// 원본을 지우면 안 되는 사유. 지워도 되면 null이다.
+// 끝 레코드 없이 잘린 zip은 tar.exe가 앞에서부터 읽어 성공할 수 있다. 더 있었는지 알 수 없으므로 지우지 않는다.
+function keepReason(access, archive) {
+  if (!CHECKED_FORMAT.test(archive)) return '이 형식은 풀린 내용이 온전한지 확인할 수 없어 남겼습니다.';
+  if (!ZIP.test(archive)) return null;
+  const size = fileSizeInside(access.target, archive);
+  const offset = Math.max(0, size - ZIP_TAIL);
+  if (readRange(access.target, archive, { offset, length: ZIP_TAIL }).includes(ZIP_END)) return null;
+  return 'zip 끝 표시가 없어 잘린 파일일 수 있어 남겼습니다.';
+}
+
+// 푼 압축 파일이 그 뒤로 바뀌었으면 지우지 않는다. 지우는 것은 내용을 확인한 그 파일이어야 한다.
+function removeArchive(access, item, before, dryRun) {
+  const archive = access.delete(item.archive);
+  if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
+  const stat = fs.lstatSync(archive);
+  if (!stat.isFile() || stat.size !== before.size || stat.mtimeMs !== before.mtimeMs) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
+  remove([archive], { dryRun });
+}
+
+function removalFailure(err) {
+  if (err instanceof FcError) return err.message;
+  return `풀었지만 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+}
+
 function failureReason(err) {
   if (err instanceof FcError) return err.message;
   // tar.exe의 오류는 코드페이지로 나와 한글이 깨지므로 종료 코드만 쓴다.
@@ -119,20 +151,37 @@ function failureReason(err) {
 }
 
 // 타겟 아래 압축 파일을 각각 새 폴더에 푼다. 압축 파일은 지우지 않고, 풀려 나온 압축 파일을 다시 풀지도 않는다.
-// 돌려주는 값: { target, dryRun, extracted, skipped, failed }. extracted는 { archive, dest, name, entries } 목록이고 failed는 { archive, reason } 목록이다.
-function extractArchives(dir, { dryRun = false } = {}) {
-  return applyExtractions(planExtractions(dir), { dryRun });
+// removeArchives를 주면 정상으로 풀린 압축 파일을 휴지통으로 보낸다. 건너뛰거나 실패한 압축 파일은 지우지 않는다.
+// 돌려주는 값: { target, dryRun, removeArchives, extracted, skipped, removed, kept, failed }.
+// extracted는 { archive, dest, name, entries }, removed는 경로, kept와 failed는 { archive, reason } 목록이다. 풀렸지만 지우지 못한 파일은 failed에 넣는다.
+function extractArchives(dir, options = {}) {
+  return applyExtractions(planExtractions(dir), options);
 }
 
-function applyExtractions(plan, { dryRun = false } = {}) {
-  const result = { target: plan.target, dryRun, extracted: [], skipped: plan.skipped, failed: [] };
-  const access = grant(plan.target, ['read', 'write']);
+function applyExtractions(plan, { dryRun = false, removeArchives = false } = {}) {
+  const result = { target: plan.target, dryRun, removeArchives, extracted: [], skipped: plan.skipped, removed: [], kept: [], failed: [] };
+  const access = grant(plan.target, ['read', 'write', 'delete']);
   for (const item of plan.extractions) {
+    let before;
     try {
+      before = fs.lstatSync(item.archive);
       const entries = dryRun ? inspectArchive(item.archive).entries : extractOne(item, access);
       result.extracted.push({ ...item, entries });
     } catch (err) {
       result.failed.push({ archive: item.archive, reason: failureReason(err) });
+      continue;
+    }
+    if (!removeArchives) continue;
+    try {
+      const reason = keepReason(access, item.archive);
+      if (reason !== null) {
+        result.kept.push({ archive: item.archive, reason });
+        continue;
+      }
+      removeArchive(access, item, before, dryRun);
+      result.removed.push(item.archive);
+    } catch (err) {
+      result.failed.push({ archive: item.archive, reason: removalFailure(err) });
     }
   }
   return result;
@@ -143,9 +192,12 @@ function formatExtractions(result) {
   const prefix = result.dryRun ? '[미리보기] ' : '';
   const lines = [];
   for (const item of result.extracted) lines.push(`${prefix}압축 해제: ${relative(item.archive)} -> ${relative(item.dest)} (항목 ${item.entries}개)`);
+  for (const archive of result.removed) lines.push(`${prefix}휴지통으로 이동: ${relative(archive)}`);
+  for (const item of result.kept) lines.push(`${prefix}남김: ${relative(item.archive)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`실패: ${relative(item.archive)} (${item.reason})`);
-  lines.push(`${prefix}압축 해제 ${result.extracted.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
+  const removal = result.removeArchives ? `, 휴지통 ${result.removed.length}개, 남김 ${result.kept.length}개` : '';
+  lines.push(`${prefix}압축 해제 ${result.extracted.length}개${removal}, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
   return lines.join('\n');
 }
 
