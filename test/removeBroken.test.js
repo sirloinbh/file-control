@@ -16,9 +16,11 @@ const recycled = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
 let probes = 0;
+const REAL = Symbol('실제 PowerShell 호출');
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_VOLUME !== undefined) {
     probes += 1;
+    if (volume === REAL) return realExecFileSync(file, args, options);
     return volume();
   }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
@@ -34,7 +36,8 @@ const realNow = Date.now;
 let skew = HOUR;
 test.mock.method(Date, 'now', () => realNow() + skew);
 
-const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
+const { removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE } = require('../src/removeBroken');
+const { recycleBinState } = require('../src/commands');
 const { REMOVAL_LOG } = require('../src/removalLog');
 const { run } = require('../bin/fctl');
 
@@ -316,6 +319,123 @@ test('다시 실행해도 제거 기록을 깨진 파일로 보지 않는다', (
   assert.strictEqual(again.removals.length, 0);
   assert.ok(fs.existsSync(log));
   assert.strictEqual(logs(dir).length, 1);
+});
+
+// 폴더를 옮기고 그 자리에 정션을 둔다. 파일 자체는 그대로라 식별값으로는 잡히지 않는다.
+function swapWithJunction(dir) {
+  fs.renameSync(path.join(dir, 'sub'), path.join(dir, 'moved'));
+  fs.symlinkSync(path.join(dir, 'moved'), path.join(dir, 'sub'), 'junction');
+}
+
+test('판별한 뒤 폴더가 정션으로 바뀌면 계획에서 남긴다', (t) => {
+  const dir = tempDir();
+  make(dir, { 'sub/a.mp4': BROKEN });
+  const { closeSync } = fs;
+  let swapped = false;
+  t.mock.method(fs, 'closeSync', (...args) => {
+    closeSync(...args);
+    if (!swapped) {
+      swapped = true;
+      swapWithJunction(dir);
+    }
+  });
+  const result = removeBroken(dir);
+  t.mock.restoreAll();
+  assert.strictEqual(swapped, true);
+  assert.deepStrictEqual(result.removals, []);
+  assert.strictEqual(result.kept.length, 1);
+  assert.deepStrictEqual(recycled, []);
+});
+
+test('계획한 뒤 기록 전에 폴더가 정션으로 바뀌면 지우지 않는다', () => {
+  const dir = tempDir();
+  make(dir, { 'sub/a.mp4': BROKEN });
+  const { code } = removeBroken(dir);
+  volume = () => {
+    swapWithJunction(dir);
+    return 'True|Fixed\r\n';
+  };
+  let failed;
+  try {
+    failed = removeBroken(dir, { confirm: code }).failed;
+  } catch (err) {
+    failed = [{ reason: err.message }];
+  }
+  assert.strictEqual(failed.length, 1);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(path.join(dir, 'moved', 'a.mp4')));
+});
+
+test('기록한 뒤 폴더가 정션으로 바뀌면 지우지 않고 실패로 보고한다', (t) => {
+  const dir = tempDir();
+  make(dir, { 'sub/a.mp4': BROKEN });
+  const { code } = removeBroken(dir);
+  const { fsyncSync } = fs;
+  t.mock.method(fs, 'fsyncSync', (...args) => {
+    fsyncSync(...args);
+    swapWithJunction(dir);
+  });
+  const result = removeBroken(dir, { confirm: code });
+  t.mock.restoreAll();
+  assert.strictEqual(result.failed.length, 1);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(path.join(dir, 'moved', 'a.mp4')));
+});
+
+test('판단 못함은 지우지 않고 나머지만 지운다', (t) => {
+  const dir = tempDir();
+  make(dir, { 'locked.mp4': BROKEN, 'b.mp4': BROKEN });
+  const { code } = removeBroken(dir);
+  const { openSync } = fs;
+  t.mock.method(fs, 'openSync', (file, ...rest) => {
+    if (String(file).endsWith('locked.mp4')) throw Object.assign(new Error('잠김'), { code: 'EBUSY' });
+    return openSync(file, ...rest);
+  });
+  const preview = removeBroken(dir);
+  assert.notStrictEqual(preview.code, code);
+  const result = removeBroken(dir, { confirm: preview.code });
+  t.mock.restoreAll();
+  assert.strictEqual(result.unreadable.length, 1);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'b.mp4')]);
+  assert.ok(fs.existsSync(path.join(dir, 'locked.mp4')));
+  assert.match(formatRemoveBroken(result), /판단 못함, 지우지 않음: locked\.mp4/);
+});
+
+test('확인값은 타겟, 경로, 사유, 식별값 중 하나만 달라도 달라지고 순서에는 영향받지 않는다', () => {
+  const a = { path: 'C:\\t\\a.mp4', reason: '깨짐', stamp: '1:2:3:4' };
+  const b = { path: 'C:\\t\\b.mp4', reason: '깨짐', stamp: '5:6:7:8' };
+  const base = confirmationCode({ target: 'C:\\t', removals: [a, b] });
+  assert.strictEqual(confirmationCode({ target: 'C:\\t', removals: [b, a] }), base);
+  for (const changed of [
+    { target: 'C:\\u', removals: [a, b] },
+    { target: 'C:\\t', removals: [{ ...a, path: 'C:\\t\\c.mp4' }, b] },
+    { target: 'C:\\t', removals: [{ ...a, reason: '다른 사유' }, b] },
+    { target: 'C:\\t', removals: [{ ...a, stamp: '1:2:3:9' }, b] },
+    { target: 'C:\\t', removals: [a] },
+  ]) assert.notStrictEqual(confirmationCode(changed), base);
+});
+
+test('영구 삭제를 피하는 크기 기준은 1GB다', () => {
+  assert.strictEqual(MAX_RECYCLE_SIZE, 1024 * 1024 * 1024);
+});
+
+test('볼륨 확인은 실제 PowerShell에서 세션과 드라이브 종류를 돌려준다', { skip: process.platform !== 'win32' }, () => {
+  volume = REAL;
+  const state = recycleBinState(os.tmpdir());
+  assert.strictEqual(typeof state.interactive, 'boolean');
+  assert.match(state.driveType, /^(?:Fixed|Removable|Network|CDRom|Ram|NoRootDirectory|Unknown)$/);
+});
+
+test('본 목록의 파일이 모두 남김이 되면 맞지 않는 값으로 보고한다', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN });
+  const { code } = removeBroken(dir);
+  volume = () => 'True|Removable\r\n';
+  const result = removeBroken(dir, { confirm: code });
+  assert.strictEqual(result.removals.length, 0);
+  assert.strictEqual(result.mismatch, true);
+  assert.throws(() => run(['remove-broken', dir, `--yes=${code}`]), /아무것도 지우지 않았습니다/);
+  assert.deepStrictEqual(recycled, []);
 });
 
 test('fctl remove-broken은 확인값이 맞아야 지운다', () => {

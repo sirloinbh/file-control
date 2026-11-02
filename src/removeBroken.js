@@ -28,17 +28,19 @@ function holdReason(stat, now) {
 // - kept: 깨졌지만 남기는 파일 ({ path, reason })
 // - interactive: 휴지통으로 보낼 수 있는 세션인지. 지울 파일이 없으면 확인하지 않아 null이다.
 // 의심과 판단 못함은 지우지 않는다.
-function planRemoval(dir, { now = Date.now(), maxSize = MAX_RECYCLE_SIZE } = {}) {
+function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['delete']);
   rejectRepository(access.target, walk(access.target));
   const found = findBroken(dir);
+  // 판별이 오래 걸릴 수 있어, 그동안 바뀐 파일을 시각이 미래인 파일로 잘못 보지 않게 판별한 뒤의 시각으로 잰다.
+  const checkedAt = now ?? Date.now();
   const plan = { ...found, removals: [], kept: [], interactive: null };
   for (const item of found.broken) {
     const keep = (reason) => plan.kept.push({ path: item.path, reason });
     try {
       const real = access.delete(item.path);
       const stat = fs.lstatSync(real, { bigint: true });
-      const hold = holdReason(stat, now);
+      const hold = holdReason(stat, checkedAt);
       if (real !== item.path || !stat.isFile() || fileStamp(stat) !== item.stamp) keep('판별한 뒤 파일이 바뀌어 남겼습니다.');
       else if (hold !== null) keep(hold);
       else if (item.size >= maxSize) keep('1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
@@ -85,12 +87,14 @@ function recycleFailure(err) {
 // confirm이 지금 목록의 확인값과 다르면 아무것도 지우지 않고 mismatch를 표시한다.
 // 지우기 전에 기록 파일을 남기고, 기록을 남기지 못하면 아무것도 지우지 않는다. 한 파일이 실패해도 나머지는 계속한다.
 // 돌려주는 값: planRemoval의 값에 { code, dryRun, confirmed, mismatch, removed, failed, log }를 더한 것. failed는 { path, reason } 목록이고 log는 기록 파일 경로다.
-function removeBroken(dir, { confirm, dryRun = false, now = Date.now(), maxSize = MAX_RECYCLE_SIZE } = {}) {
+function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const plan = planRemoval(dir, { now, maxSize });
   const code = confirmationCode(plan);
   const result = { ...plan, code, dryRun, confirmed: false, mismatch: false, removed: [], failed: [], log: null };
-  if (confirm === undefined || dryRun || plan.removals.length === 0) return result;
+  if (confirm === undefined || dryRun) return result;
+  // 본 목록의 파일이 모두 남김이 되어 지울 파일이 없어져도 말없이 성공으로 끝내지 않는다.
   if (confirm !== code) return { ...result, mismatch: true };
+  if (plan.removals.length === 0) return result;
   // 비대화형에서는 휴지통으로 보낼 수 없으므로 기록만 쌓이지 않게 기록 전에 멈춘다.
   if (plan.interactive !== true) throw new FcError('대화형 세션인지 확인되지 않아 휴지통으로 보낼 수 없습니다. 아무것도 지우지 않았습니다.');
   result.confirmed = true;
@@ -134,4 +138,4 @@ function formatRemoveBroken(result) {
   return lines.join('\n');
 }
 
-module.exports = { planRemoval, removeBroken, formatRemoveBroken };
+module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE };
