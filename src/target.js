@@ -277,6 +277,11 @@ function fileSizeInside(target, p) {
   return fs.statSync(resolveFileInside(target, p)).size;
 }
 
+// 파일이 그대로인지 비교하는 값. bigint로 받은 lstat 결과를 넘긴다. 수정 시각을 되돌려도 변경 시각(ctime)이 달라진다.
+function fileStamp(stat) {
+  return [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+}
+
 // 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
 // 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
@@ -322,4 +327,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, rejectAmbiguousNames };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames };
