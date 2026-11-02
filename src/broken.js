@@ -1,9 +1,10 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const { FcError, probeArchive } = require('./commands');
-const { grant, walk, readRange, fileSizeInside } = require('./target');
+const { grant, walk, readRange, fileSizeInside, fileStamp } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { REMOVAL_LOG } = require('./removalLog');
 const { checkMp4Structure, FIRST_BOXES } = require('./mp4');
@@ -199,8 +200,9 @@ function skipReason(entry) {
 }
 
 // 타겟 아래 파일에서 깨진 파일을 찾는다. 파일은 건드리지 않는다.
-// - broken: 깨진 파일 ({ path, size, reason })
-// - suspect: 의심스럽지만 정상일 수 있는 파일 ({ path, size, reason })
+// - broken: 깨진 파일 ({ path, size, reason, stamp })
+// - suspect: 의심스럽지만 정상일 수 있는 파일 ({ path, size, reason, stamp })
+//   stamp는 읽기 전에 잡은 파일 식별값이다. 판별하는 사이에 파일이 바뀌었는지 비교하는 데 쓴다.
 // - unreadable: 잠겼거나 읽지 못해 판단하지 못한 파일 ({ path, reason }). 깨진 파일이 아니다.
 // - skipped: 다루지 않는 항목 ({ path, reason })
 // - checked: 살펴본 파일 수
@@ -224,9 +226,10 @@ function findBroken(dir) {
     result.checked += 1;
     try {
       const real = access.read(entry.path);
+      const stamp = fileStamp(fs.lstatSync(real, { bigint: true }));
       const size = fileSizeInside(access.target, real);
       const found = inspect(access.target, real, size);
-      if (found) result[found.status].push({ path: real, size, reason: found.reason });
+      if (found) result[found.status].push({ path: real, size, reason: found.reason, stamp });
     } catch (err) {
       if (err instanceof FcError) result.unreadable.push({ path: entry.path, reason: err.message });
       // 파일 하나의 문제로 다른 파일의 결과까지 잃지 않게 어떤 예외든 그 파일만 판단 못함으로 둔다.

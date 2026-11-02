@@ -31,14 +31,14 @@ const HELP = `fctl - 파일 컨트롤
   collapse <타겟>               폴더 하나만 이어지는 구간(a/b/c/파일)을 맨 위 폴더로 접기
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
   find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
-  remove-broken <타겟>          깨진 파일 목록 보기 (--yes를 주면 기록을 남기고 휴지통으로)
+  remove-broken <타겟>          깨진 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
-  --yes         remove-broken에서 목록의 파일을 실제로 휴지통으로 보냄
+  --yes=확인값  remove-broken에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
   --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
@@ -48,17 +48,22 @@ const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-ar
 function parse(argv) {
   const flags = new Set();
   const args = [];
+  let confirm;
   const end = argv.indexOf('--');
   const options = end === -1 ? argv : argv.slice(0, end);
   for (const arg of options) {
     if (arg === '-h' || arg === '--help') flags.add('help');
+    else if (arg.startsWith('--yes=')) {
+      flags.add('yes');
+      confirm = arg.slice('--yes='.length);
+    }
     else if (arg.startsWith('--')) flags.add(arg.slice(2));
     else args.push(arg);
   }
   // 오타 검사는 -- 앞의 인자만 본다. 명령 이름은 빼고 넘긴다.
   const unchecked = args.slice(1);
   if (end !== -1) args.push(...argv.slice(end + 1));
-  return { command: args.shift(), args, flags, unchecked };
+  return { command: args.shift(), args, flags, unchecked, confirm };
 }
 
 // --dry-run을 잘못 치면 무시되어 실제로 실행되므로, 모르는 옵션은 아무것도 하기 전에 거부한다.
@@ -91,7 +96,7 @@ function readStdin() {
 }
 
 function run(argv) {
-  const { command, args, flags, unchecked } = parse(argv);
+  const { command, args, flags, unchecked, confirm } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
 
@@ -188,10 +193,13 @@ function run(argv) {
     }
     case 'remove-broken': {
       checkWholeTarget(command, args, flags);
-      const result = removeBroken(args[0], { dryRun, yes: flags.has('yes') });
+      const result = removeBroken(args[0], { dryRun, confirm });
       const report = formatRemoveBroken(result);
-      // 남기거나 건너뛴 것은 보고로 충분하다. 휴지통으로 보내지 못한 파일이 있을 때만 실패로 끝낸다.
-      if (result.failed.length > 0) throw new fc.FcError(report);
+      // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
+      const fail = (message) => Object.assign(new fc.FcError(message), { output: report });
+      if (result.failed.length > 0) throw fail(`휴지통으로 보내지 못한 파일이 ${result.failed.length}개 있습니다.`);
+      if (result.mismatch) throw fail('목록이 확인값을 만든 때와 달라 아무것도 지우지 않았습니다. 새 목록을 확인하세요.');
+      if (flags.has('yes') && confirm === undefined && !dryRun && result.removals.length > 0) throw fail('--yes에는 목록에 나온 확인값을 붙이세요. 아무것도 지우지 않았습니다.');
       return report;
     }
     default:
@@ -204,6 +212,7 @@ if (require.main === module) {
     const output = run(process.argv.slice(2));
     if (output) console.log(output);
   } catch (err) {
+    if (err.output) console.log(err.output);
     const detail = err.stderr ? `\n${err.stderr.toString().trim()}` : '';
     console.error(`오류: ${err.message}${detail}`);
     process.exit(1);

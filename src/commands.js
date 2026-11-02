@@ -374,6 +374,26 @@ function moveToRecycleBin(target) {
   }
 }
 
+// 휴지통을 거칠 수 있는지 미리 본다. 실패하면 알 수 없음(null)으로 돌려주어 호출한 쪽이 지우지 않게 한다.
+// 돌려주는 값: { interactive, driveType }. driveType은 Fixed, Removable, Network 같은 .NET DriveType 이름이다.
+function recycleBinState(target) {
+  const unknown = { interactive: null, driveType: null };
+  if (!isWindows) return unknown;
+  const script = '[Environment]::UserInteractive.ToString() + "|" + [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:FC_VOLUME)).DriveType';
+  try {
+    const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_VOLUME: path.resolve(target) },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60 * 1000,
+    });
+    const found = /^(True|False)\|(\w+)\s*$/.exec(output);
+    return found ? { interactive: found[1] === 'True', driveType: found[2] } : unknown;
+  } catch {
+    return unknown;
+  }
+}
+
 function remove(targets, { permanent = false, dryRun = false } = {}) {
   if (!permanent && !isWindows) {
     throw new FcError('휴지통 삭제는 Windows에서만 됩니다. 영구 삭제하려면 --permanent');
@@ -557,6 +577,7 @@ module.exports = {
   move,
   copy,
   remove,
+  recycleBinState,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
