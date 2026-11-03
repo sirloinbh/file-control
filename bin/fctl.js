@@ -9,6 +9,7 @@ const { collapse, formatCollapse } = require('../src/collapse');
 const { normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 const { findBroken, formatBroken } = require('../src/broken');
 const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
+const { findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -32,6 +33,7 @@ const HELP = `fctl - 파일 컨트롤
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
   find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
   remove-broken <타겟>          깨진 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
+  find-duplicates <타겟>        이름이나 제품번호가 같은 영상 묶기 (파일은 건드리지 않음)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -202,6 +204,10 @@ function run(argv) {
       if (flags.has('yes') && confirm === undefined && !dryRun && result.removals.length > 0) throw fail('--yes에는 목록에 나온 확인값을 붙이세요. 아무것도 지우지 않았습니다.');
       return report;
     }
+    case 'find-duplicates':
+      checkWholeTarget(command, args, flags);
+      // 찾은 묶음은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      return formatDuplicateNames(findDuplicateNames(args[0]));
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);
   }

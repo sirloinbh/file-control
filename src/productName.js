@@ -181,4 +181,4 @@ function formatProductNumbers(result) {
   return lines.join('\n');
 }
 
-module.exports = { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers, containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS };
+module.exports = { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers, containsNumber, isTransportStream, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS };
