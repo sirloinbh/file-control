@@ -33,7 +33,7 @@ const HELP = `fctl - 파일 컨트롤
   extract-all <타겟>            압축 파일마다 새 폴더에 풀기 (--remove-archives를 주면 정상으로 풀린 원본을 휴지통으로)
   find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
   remove-broken <타겟>          깨진 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
-  find-duplicates <타겟>        이름이나 제품번호가 같은 영상 묶기 (파일은 건드리지 않음)
+  find-duplicates <타겟>        이름·제품번호나 길이가 같은 영상 묶기 (파일은 건드리지 않음)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
