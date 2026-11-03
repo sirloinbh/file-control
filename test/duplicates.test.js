@@ -65,6 +65,30 @@ test('duplicateKey: 번호 바로 뒤가 아닌 자리의 조각 표시도 가�
   assert.strictEqual(keyOf('ABC-123 Episode 01.mp4'), 'ABC-123 #1');
 });
 
+test('duplicateKey: 괄호·대시 뒤의 글자, 여러 로마 숫자, 원문자, 한국어·한자 조각도 가른다', () => {
+  const pairs = [
+    ['[ABC-123] B.mp4', '[ABC-123] C.mp4'],
+    ['ABC-123(A).mp4', 'ABC-123(B).mp4'],
+    ['ABC-123 [A].mp4', 'ABC-123 [B].mp4'],
+    ['ABC-123 – A.mp4', 'ABC-123 – B.mp4'],
+    ['ABC-123 Title A.mp4', 'ABC-123 Title B.mp4'],
+    ['ABC-123 XIII.mp4', 'ABC-123 XIV.mp4'],
+    ['ABC-123 ii.mp4', 'ABC-123 iii.mp4'],
+    ['ABC-123 Ⅱ.mp4', 'ABC-123 Ⅲ.mp4'],
+    ['ABC-123 Part V.mp4', 'ABC-123 Part X.mp4'],
+    ['ABC-123 Part I.mp4', 'ABC-123.mp4'],
+    ['ABC-123 ①.mp4', 'ABC-123 ②.mp4'],
+    ['ABC-123 第一話.mp4', 'ABC-123 第二話.mp4'],
+    ['ABC-123 상.mp4', 'ABC-123 하.mp4'],
+    ['ABC-123 전편.mp4', 'ABC-123 후편.mp4'],
+  ];
+  for (const [one, other] of pairs) assert.notStrictEqual(keyOf(one), keyOf(other), `${one} / ${other}`);
+  // 로마 숫자, 로마 숫자 글자, 원문자는 같은 숫자로 맞춘다.
+  assert.strictEqual(keyOf('ABC-123 III.mp4'), 'ABC-123 #3');
+  assert.strictEqual(keyOf('ABC-123 Ⅲ.mp4'), 'ABC-123 #3');
+  assert.strictEqual(keyOf('ABC-123 ③.mp4'), 'ABC-123 #3');
+});
+
 test('duplicateKey: 전각으로 쓴 조각 표시도 반각과 같다', () => {
   assert.strictEqual(keyOf('ＡＢＣ－１２３　ＣＤ２.mp4'), 'ABC-123 #2');
   assert.strictEqual(keyOf('ＡＢＣ－１２３　２.mp4'), 'ABC-123 #2');
@@ -129,7 +153,7 @@ test('findDuplicateNames: 잔여물, 시스템 폴더는 건너뛰고 저장소 
   put(dir, path.join('$RECYCLE.BIN', 'ABC-123.mp4'));
   put(dir, path.join('.git', 'ABC-123.mp4'));
   put(dir, 'ABC-123.ts', 'export const x = 1;\n');
-  // 잔여물 폴더 안이라도 영상이 아닌 .ts는 보고하지 않는다.
+  // 잔여물 폴더 안이라도 영상이 아닌 .ts는 보고하지 않는다. 건너뛸 파일은 경로를 풀지 않고 건너뜀으로 보고한다.
   put(dir, path.join('.fctl-old-1-2-3', 'index.ts'), 'export const x = 1;\n');
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups, []);

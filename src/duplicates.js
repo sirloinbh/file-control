@@ -11,14 +11,30 @@ const SEPARATORS = /[\s._\-–—－＿\u0085]+/g;
 // 탐색기가 붙이는 복사본 꼬리. 이름 - 복사본.mp4, 이름 - Copy (2).mp4
 const COPY_SUFFIX = /\s+-\s+(?:복사본|copy)(?:\s*\(\d+\))?$/i;
 // 같은 번호의 다른 조각을 가르는 표시. 다른 영상을 한 묶음에 넣는 것보다 중복을 놓치는 쪽이 안전하므로 넓게 잡는다.
-// - 번호 바로 뒤의 글자 하나(ABC-123 B, ABC-123-A)
-// - 번호를 뺀 나머지 낱말 속의 숫자(CD2, part 1, -1, [2], 제목3, 1.5). 화질·코덱 표시와 끝의 (1) 꼬리는 뺀다.
-// - 로마 숫자(II, III, IV ...)와 前編·後編, 上巻·下巻 같은 말
-const LETTER_AFTER_NUMBER = /^[\s._-]*([A-Za-z])(?![A-Za-z0-9])/;
+// 번호를 뺀 나머지를 낱말로 나눠 본다. 화질·코덱 표시와 끝의 (1)·복사본 꼬리는 뺀다.
+// - 낱말 속의 숫자(CD2, part 1, -1, [2], 제목3, 1.5)와 원문자 숫자(①)
+// - 영문 한 글자 낱말(ABC-123 B, (A), [A], Title A)
+// - 로마 숫자(II, xiv, Ⅲ)는 숫자로 바꾼다. 한 글자(I, V, X)는 영문 한 글자로 본다.
+// - 前編·後編, 上巻·下巻, 상·하편, 第一話 같은 말
 const TOKEN_SEPARATORS = /[\s._\-–—＿\u0085[\](){}【】「」『』《》〈〉〔〕〖〗,+&~!#'"]+/;
 const QUALITY = /^(?:\d{3,4}[pi]|\d+fps|\d+bit|\d+k|[xh]26[45]|\d+ch|aac\d*|ac3|dts|ddp?\d*|mp[34]|h?vc1|av1|vp[89]|\d+kbps|\d+mbps)$/i;
-const ROMAN = /^(?:II|III|IV|VI|VII|VIII|IX|XI|XII)$/;
-const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半)$/;
+const ROMAN = /^(?=[ivxlc]{2,}$)c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
+const ROMAN_VALUES = { i: 1, v: 5, x: 10, l: 50, c: 100 };
+const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半|[상중하]편?|[전후]편)$/;
+const KANJI_NUMBER = /^第?[一二三四五六七八九十百]+[話话巻卷部章回]?$/;
+// 원문자 숫자 ①~⑳, 로마 숫자 글자 Ⅰ~Ⅻ, ⅰ~ⅻ를 숫자로 바꾼다.
+const NUMBER_SYMBOLS = /[\u2460-\u2473\u2160-\u216b\u2170-\u217b]/g;
+const symbolValue = (ch) => {
+  const code = ch.charCodeAt(0);
+  if (code >= 0x2460 && code <= 0x2473) return code - 0x2460 + 1;
+  return code >= 0x2170 ? code - 0x2170 + 1 : code - 0x2160 + 1;
+};
+
+function romanValue(token) {
+  const values = [...token.toLowerCase()].map((ch) => ROMAN_VALUES[ch]);
+  return values.reduce((sum, value, index) => sum + (value < (values[index + 1] ?? 0) ? -value : value), 0);
+}
+
 const DUPLICATE_TAIL = /\s*\(\d+\)$/;
 
 // 꼬리를 되풀이해 지운다. 이름 - 복사본 (2), 이름 (1) - 복사본
@@ -36,18 +52,18 @@ function stripTails(text, tails) {
 function findPart(original, ranges) {
   const base = halfWidth(original);
   const marks = [];
-  const letter = LETTER_AFTER_NUMBER.exec(base.slice(ranges[0].end));
-  if (letter) marks.push(letter[1].toLowerCase());
   let rest = '';
   let at = 0;
   for (const { start, end } of ranges) {
     rest += `${base.slice(at, start)} `;
     at = end;
   }
-  rest = stripTails(rest + base.slice(at), [COPY_SUFFIX, DUPLICATE_TAIL]);
+  rest = stripTails(rest + base.slice(at), [COPY_SUFFIX, DUPLICATE_TAIL]).replace(NUMBER_SYMBOLS, (ch) => ` ${symbolValue(ch)} `);
   for (const token of rest.split(TOKEN_SEPARATORS)) {
     if (token === '' || QUALITY.test(token)) continue;
-    if (ROMAN.test(token) || SECTION.test(token)) marks.push(token);
+    if (/^[A-Za-z]$/.test(token)) marks.push(token.toLowerCase());
+    else if (ROMAN.test(token)) marks.push(String(romanValue(token)));
+    else if (SECTION.test(token) || KANJI_NUMBER.test(token)) marks.push(token);
     else for (const digits of token.match(/\d+/g) ?? []) marks.push(String(Number(digits)));
   }
   return marks.length === 0 ? null : marks.join(' ');
@@ -110,7 +126,6 @@ function findDuplicateNames(dir) {
     const transport = TRANSPORT_EXTENSIONS.has(extension);
     if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
-      const real = access.read(entry.path);
       // 영상이 아닌 .ts(TypeScript 소스)는 어디에 있든 보고하지 않는다. 그래서 건너뛸지 보기 전에 내용을 확인한다.
       if (transport && !isTransportStream(access.target, entry.relative)) continue;
       const reason = skipReason(parts);
@@ -118,6 +133,7 @@ function findDuplicateNames(dir) {
         result.skipped.push({ path: entry.path, reason });
         continue;
       }
+      const real = access.read(entry.path);
       result.checked += 1;
       const found = duplicateKey(name);
       if (found === null) continue;
