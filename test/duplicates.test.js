@@ -219,7 +219,11 @@ test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
   put(dir, 'Trip.mp4');
   put(dir, 'trip.avi');
   put(dir, 'ABC-123 XYZ-456.mp4');
-  const report = formatDuplicateNames(findDuplicateNames(dir));
+  // 시험 파일은 영상 구조가 아니라 길이를 읽지 못한다. 그 보고는 다른 테스트에서 본다.
+  const report = formatDuplicateNames(findDuplicateNames(dir))
+    .split('\n')
+    .filter((line) => !line.startsWith('길이 못 읽음: '))
+    .join('\n');
   assert.strictEqual(
     report,
     [
@@ -321,6 +325,7 @@ test('groupByMetadata: 묶음 안의 어느 두 파일도 1초 넘게 차이 나
 
 test('groupByMetadata: 60초 미만이거나 길이·해상도를 모르는 영상은 묶지 않는다', () => {
   assert.deepStrictEqual(groupByMetadata([video(59), video(59)]), []);
+  assert.deepStrictEqual(groupByMetadata([video(59.9), video(59.9)]), []);
   const unknown = { ...video(600), duration: null };
   const noSize = { ...video(600), width: null, height: null };
   assert.deepStrictEqual(groupByMetadata([unknown, { ...unknown }, noSize, { ...noSize }]), []);
@@ -350,7 +355,7 @@ test('findDuplicateNames: 이름이 달라도 길이와 화면 비율이 같은 
   assert.strictEqual(result.checked, 6);
 });
 
-test('findDuplicateNames: 이름 묶음으로 이미 보인 파일만 든 길이 묶음은 되풀이하지 않는다', () => {
+test('findDuplicateNames: 이름 묶음에 이미 든 파일만 있는 길이 묶음은 표시만 하고 보고에서 되풀이하지 않는다', () => {
   const dir = tempDir();
   put(dir, 'ABC-123.mp4', mp4({ seconds: 3600 }));
   put(dir, 'ABC-123 720p.mkv', mkv({ seconds: 3600.4, width: 1280, height: 720 }));
@@ -360,9 +365,46 @@ test('findDuplicateNames: 이름 묶음으로 이미 보인 파일만 든 길이
   const other = put(dir, 'renamed.mp4', mp4({ seconds: 1800.5 }));
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups.map((group) => group.key), ['ABC-123', 'XYZ-999']);
-  assert.strictEqual(result.metadataGroups.length, 1);
-  assert.strictEqual(result.metadataGroups[0].files.length, 3);
+  // 이름과 길이가 함께 맞는다는 정보는 결과에 남는다.
+  assert.deepStrictEqual(
+    result.metadataGroups.map((group) => [group.duration, group.alsoNamed, group.files.length]),
+    [
+      [1800, false, 3],
+      [3600, true, 2],
+    ],
+  );
   assert.ok(result.metadataGroups[0].files.some((file) => file.path === other));
+  const report = formatDuplicateNames(result);
+  assert.strictEqual(report.match(/^길이가 같은 영상/gm).length, 1);
+  assert.match(report, /길이가 같은 묶음 1개\(파일 3개\)/);
+});
+
+test('findDuplicateNames: 하나뿐인 이름이나 번호가 여럿인 이름의 파일도 길이로 묶는다', () => {
+  const dir = tempDir();
+  const conflict = put(dir, 'ABC-123 XYZ-456.mp4', mp4({ seconds: 900 }));
+  const single = put(dir, 'ABC-123.mp4', mp4({ seconds: 900.3 }));
+  const result = findDuplicateNames(dir);
+  assert.deepStrictEqual(result.groups, []);
+  assert.deepStrictEqual(paths(result.metadataGroups), [[conflict, single]]);
+  assert.strictEqual(result.metadataGroups[0].alsoNamed, false);
+});
+
+test('findDuplicateNames: 길이를 읽지 못한 MP4는 예외 없이 사유와 함께 보고한다', () => {
+  const dir = tempDir();
+  const broken = put(dir, 'broken.mp4', Buffer.concat([u32(16), latin('ftyp'), latin('isomisom'), u32(100), latin('moov')]));
+  put(dir, 'old.avi', 'RIFF');
+  const result = findDuplicateNames(dir);
+  assert.strictEqual(result.unknownMetadata, 2);
+  // 읽지 못하는 형식(avi)은 사유가 없고, 읽을 수 있는 형식인데 못 읽은 파일만 사유를 남긴다.
+  assert.deepStrictEqual(result.metadataErrors.map((item) => item.path), [broken]);
+  assert.match(formatDuplicateNames(result), /^길이 못 읽음: broken\.mp4 \(.+\)$/m);
+});
+
+test('formatDuplicateNames: 길이를 반올림해 시·분·초로 쓴다', () => {
+  const dir = tempDir();
+  put(dir, 'a.mp4', mp4({ seconds: 3599.6 }));
+  put(dir, 'b.mp4', mp4({ seconds: 3599.6 }));
+  assert.match(formatDuplicateNames(findDuplicateNames(dir)), /^길이가 같은 영상 \(1:00:00, /m);
 });
 
 test('formatDuplicateNames: 해상도와 길이, 길이가 같은 묶음을 보여 준다', () => {
