@@ -136,7 +136,7 @@ test('findDuplicateNames: 영상 파일을 번호와 이름으로 묶고 하나�
   // 시험 파일은 영상 구조가 아니라 모두 읽지 못한 파일이다. 그래서 크기로 고르고, 읽지 않는 형식(.avi)은 읽지 못한 .mp4보다 앞선다.
   assert.deepStrictEqual(result.groups.map((group) => group.keep), [
     { path: a, reason: '크기가 가장 큼', doubt: null },
-    { path: d, reason: '다른 파일은 길이·해상도를 읽지 못함', doubt: null },
+    { path: d, reason: '길이나 해상도를 읽지 못한 파일을 뺌', doubt: null },
   ]);
   // 영상 구조가 아닌 시험 파일이라 길이를 모른다. 읽지 못한 사유는 note에 남지만 묶음에서 빠지지는 않는다.
   assert.strictEqual(result.groups[0].files[0].duration, null);
@@ -239,7 +239,7 @@ test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
       '  ABC-123 CD2 copy.mp4 (1B)',
       '  ABC-123 CD2.mp4 (1B) [남김: 이름이 가장 짧음]',
       '중복 후보 (이름 "trip", 2개):',
-      '  trip.avi (1B) [남김: 다른 파일은 길이·해상도를 읽지 못함]',
+      '  trip.avi (1B) [남김: 길이나 해상도를 읽지 못한 파일을 뺌]',
       '  Trip.mp4 (1B)',
       '번호가 여럿: ABC-123 XYZ-456.mp4 (ABC-123, XYZ-456)',
       '살펴본 영상 7개, 중복 후보 묶음 3개(파일 6개), 길이가 같은 묶음 0개(파일 0개), 길이 모름 7개, 번호가 여럿 1개, 판단 못함 0개, 건너뜀 0개',
@@ -465,7 +465,7 @@ test('chooseKeeper: 길이·해상도를 읽지 못한 파일은 해상도가 �
   const broken = clip('big.mp4', { size: 9000, duration: null, width: null, height: null, note: '구조가 깨졌습니다.' });
   assert.deepStrictEqual(chooseKeeper([broken, clip('small.mp4', { width: 640, height: 360 })]), {
     path: 'small.mp4',
-    reason: '다른 파일은 길이·해상도를 읽지 못함',
+    reason: '길이나 해상도를 읽지 못한 파일을 뺌',
     doubt: null,
   });
   // 읽지 않는 형식(note 없음)은 빼지 않는다.
@@ -501,6 +501,25 @@ test('chooseKeeper: 나머지가 같으면 이름이 짧은 파일, 그것도 �
     doubt: null,
   });
   assert.strictEqual(chooseKeeper([clip('b.mp4', { size: 50 }), clip('c.mp4'), clip('a.mp4')]).reason, '크기가 가장 큼, 나머지는 같아 경로 순으로 첫 파일');
+  // 경로 순은 보고와 같이 대소문자를 먼저 무시한다. 그래서 a가 B보다 앞이다.
+  assert.strictEqual(chooseKeeper([clip(path.join('B', 'x.mp4')), clip(path.join('a', 'x.mp4'))]).path, path.join('a', 'x.mp4'));
+});
+
+test('chooseKeeper: 길이를 읽지 못한 것으로 빠진 파일의 길이로는 남은 파일을 짧다고 보지 않는다', () => {
+  // 길이는 있지만 해상도가 없어 빠진 파일이 가장 길어도, 남은 파일끼리 길이를 비교한다.
+  const noSize = clip('x.mp4', { duration: 7200, width: null, height: null, note: '해상도 정보가 없습니다.' });
+  assert.deepStrictEqual(chooseKeeper([noSize, clip('long.mp4', { duration: 7000, width: 1280, height: 720 }), clip('short.mp4', { duration: 300 })]), {
+    path: 'long.mp4',
+    reason: '길이나 해상도를 읽지 못한 파일을 뺌, 길이가 가장 김',
+    doubt: '길이가 서로 달라 같은 영상이 아닐 수 있습니다.',
+  });
+  const avi = clip('a.avi', { duration: null, width: null, height: null });
+  assert.strictEqual(chooseKeeper([noSize, clip('b.mp4'), avi]).path, 'b.mp4');
+});
+
+test('chooseKeeper: 파일이 없으면 null, 하나뿐이면 그 파일을 고른다', () => {
+  assert.strictEqual(chooseKeeper([]), null);
+  assert.deepStrictEqual(chooseKeeper([clip('a.mp4')]), { path: 'a.mp4', reason: '파일이 하나뿐', doubt: null });
 });
 
 test('findDuplicateNames: 이름 묶음과 길이 묶음에 남길 파일을 붙이고, 길이가 다른 이름 묶음은 주의를 보여 준다', () => {
