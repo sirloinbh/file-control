@@ -222,7 +222,7 @@ test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
   // 시험 파일은 영상 구조가 아니라 길이를 읽지 못한다. 그 보고는 다른 테스트에서 본다.
   const report = formatDuplicateNames(findDuplicateNames(dir))
     .split('\n')
-    .filter((line) => !line.startsWith('길이 못 읽음: '))
+    .filter((line) => !line.startsWith('길이·해상도 못 읽음: '))
     .join('\n');
   assert.strictEqual(
     report,
@@ -397,7 +397,21 @@ test('findDuplicateNames: 길이를 읽지 못한 MP4는 예외 없이 사유와
   assert.strictEqual(result.unknownMetadata, 2);
   // 읽지 못하는 형식(avi)은 사유가 없고, 읽을 수 있는 형식인데 못 읽은 파일만 사유를 남긴다.
   assert.deepStrictEqual(result.metadataErrors.map((item) => item.path), [broken]);
-  assert.match(formatDuplicateNames(result), /^길이 못 읽음: broken\.mp4 \(.+\)$/m);
+  assert.match(formatDuplicateNames(result), /^길이·해상도 못 읽음: broken\.mp4 \(.+\)$/m);
+});
+
+test('findDuplicateNames: 예외 없이 길이나 해상도가 빠진 MP4도 사유와 함께 보고한다', () => {
+  const dir = tempDir();
+  // 길이를 적지 않은 MP4(조각 MP4 등)와 해상도가 없는 MP4
+  const noLength = put(dir, 'no-length.mp4', mp4({ seconds: 0 }));
+  const noSize = put(dir, 'no-size.mp4', mp4({ seconds: 600, width: 0, height: 0 }));
+  put(dir, 'no-size copy.mp4', mp4({ seconds: 600, width: 0, height: 0 }));
+  const result = findDuplicateNames(dir);
+  assert.deepStrictEqual(result.metadataGroups, []);
+  assert.strictEqual(result.unknownMetadata, 1);
+  const reasons = new Map(result.metadataErrors.map((item) => [item.path, item.reason]));
+  assert.match(reasons.get(noLength), /^길이 정보가 없습니다\.$|^길이와 해상도 정보가 없습니다\.$/);
+  assert.strictEqual(reasons.get(noSize), '해상도 정보가 없습니다.');
 });
 
 test('formatDuplicateNames: 길이를 반올림해 시·분·초로 쓴다', () => {

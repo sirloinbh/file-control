@@ -123,7 +123,10 @@ function readVideoInfo(target, real) {
   try {
     const { duration, width, height } = reader(target, real);
     const positive = (value) => (Number.isFinite(value) && value > 0 ? value : null);
-    return { duration: positive(duration), width: positive(width), height: positive(height), note: null };
+    const info = { duration: positive(duration), width: positive(width), height: positive(height) };
+    // 예외 없이 값이 빠진 경우도 사유를 남긴다. 길이를 쓰지 않는 조각 MP4, 녹화가 중단된 MKV/WebM이 그렇다.
+    const missing = [info.duration === null && '길이', (info.width === null || info.height === null) && '해상도'].filter(Boolean);
+    return { ...info, note: missing.length === 0 ? null : `${missing.join('와 ')} 정보가 없습니다.` };
   } catch (err) {
     if (err instanceof FcError) return unknown(err.message);
     return unknown(`메타데이터를 읽을 수 없습니다. (${err.code ?? err.message})`);
@@ -168,7 +171,7 @@ function groupByMetadata(files) {
 //   alsoNamed는 파일이 모두 한 이름 묶음에 이미 든 묶음이다. 파일은 길이 순이다.
 //   files의 항목은 { path, size, duration, width, height, note }다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
 // - unknownMetadata: 길이를 모르는 영상 수. 읽지 못하는 형식(avi, wmv 등)과 읽지 못한 파일이 든다.
-// - metadataErrors: 읽을 수 있는 형식인데 메타데이터를 읽지 못한 파일 ({ path, reason })
+// - metadataErrors: 읽을 수 있는 형식인데 길이나 해상도를 읽지 못한 파일 ({ path, reason })
 // - conflicts: 번호가 여럿이라 이름으로 묶지 않은 파일 ({ path, numbers }). 길이로는 묶을 수 있다.
 // - unreadable: 크기나 내용을 읽지 못해 묶지 않은 파일 ({ path, reason })
 // - skipped: 다루지 않는 항목 ({ path, reason })
@@ -263,7 +266,7 @@ function formatDuplicateNames(result) {
     for (const file of group.files) lines.push(`  ${relative(file.path)} (${describe(file)})`);
   }
   for (const item of result.conflicts) lines.push(`번호가 여럿: ${relative(item.path)} (${item.numbers.join(', ')})`);
-  for (const item of result.metadataErrors) lines.push(`길이 못 읽음: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.metadataErrors) lines.push(`길이·해상도 못 읽음: ${relative(item.path)} (${item.reason})`);
   for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
   const files = result.groups.reduce((sum, group) => sum + group.files.length, 0);
