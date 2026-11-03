@@ -56,7 +56,7 @@ function mp4({ seconds, width = 1920, height = 1080, padding = 0 }) {
   entry.writeUInt16BE(height, 26);
   const stsd = box('stsd', u32(0), u32(1), box('avc1', entry));
   const hdlr = box('hdlr', u32(0), u32(0), latin('vide'), Buffer.alloc(13));
-  const trak = box('trak', tkhd, box('mdia', hdlr, box('minf', box('stbl', stsd))));
+  const trak = box('trak', tkhd, box('mdia', hdlr, box('minf', box('stbl', stsd, box('stco', u32(0), u32(0))))));
   return Buffer.concat([box('ftyp', latin('isom'), u32(512), latin('isommp42')), box('moov', mvhd, trak), box('mdat', Buffer.alloc(64 + padding))]);
 }
 
@@ -184,6 +184,36 @@ test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율
   assert.ok(result.kept.every((item) => item.reason === '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.'));
 });
 
+// 영상 데이터(mdat)를 무작위 바이트로 채운 MP4. 0 구간 표본에 걸리지 않는다.
+function filled(options) {
+  const file = mp4(options);
+  const data = 64 + (options.padding ?? 0);
+  require('node:crypto').randomFillSync(file, file.length - data);
+  return file;
+}
+
+test('남길 파일이 잘렸거나 0으로 채워진 덜 받은 파일이면 그 묶음은 지우지 않는다 (#109)', () => {
+  const dir = tempDir();
+  const MB = 1024 * 1024;
+  const cut = filled({ seconds: 600, width: 3840, height: 2160, padding: 5000 });
+  make(dir, {
+    // 해상도가 높아 남길 파일로 골리지만 끝이 잘렸다.
+    'ABC-123 4K.mp4': cut.subarray(0, cut.length - 3000),
+    'ABC-123.mp4': filled({ seconds: 600 }),
+    // 머리는 정상이고 크기도 다 잡혀 있지만 데이터가 0이다.
+    'XYZ-999 4K.mp4': mp4({ seconds: 600, width: 3840, height: 2160, padding: 2 * MB }),
+    'XYZ-999.mp4': filled({ seconds: 600 }),
+    // 데이터가 찬 큰 파일은 남길 파일로 쓰고 사본을 지운다.
+    'QRS-555 4K.mp4': filled({ seconds: 600, width: 3840, height: 2160, padding: 2 * MB }),
+    'QRS-555.mp4': filled({ seconds: 600 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['QRS-555.mp4']);
+  const reasons = Object.fromEntries(result.kept.map((item) => [path.basename(item.path), item.reason]));
+  assert.match(reasons['ABC-123.mp4'], /^남길 파일이 깨졌을 수 있어 남겼습니다\. \(mdat 박스가 파일 끝을 넘습니다/);
+  assert.strictEqual(reasons['XYZ-999.mp4'], '남길 파일에 0으로만 채워진 구간이 있어 덜 받은 파일일 수 있어 남겼습니다.');
+});
+
 test('비대화형 세션이면 기록을 남기기 전에 멈춘다', () => {
   const dir = tempDir();
   make(dir, { 'ABC-123.mp4': mp4({ seconds: 600, padding: 100 }), 'ABC-123 (1).mp4': mp4({ seconds: 600 }) });
@@ -220,9 +250,11 @@ test('지우는 중에 남길 파일이나 다음 사본이 바뀌면 그 사본
 
 test('길이를 모르거나 60초 미만인 묶음은 지우지 않는다', () => {
   const dir = tempDir();
+  // 머리글만 있는 AVI. 깨지지는 않았지만 길이를 읽지 않는 형식이다.
+  const avi = Buffer.concat([latin('RIFF'), Buffer.from([4, 0, 0, 0]), latin('AVI ')]);
   make(dir, {
-    'Trip.avi': 'RIFF',
-    'trip - 복사본.avi': 'RIFF',
+    'Trip.avi': avi,
+    'trip - 복사본.avi': avi,
     'clip.mp4': mp4({ seconds: 30 }),
     'sub/clip - 복사본.mp4': mp4({ seconds: 30 }),
     'broken.mp4': 'x',

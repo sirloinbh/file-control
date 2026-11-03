@@ -4,7 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, recycleBinState } = require('./commands');
-const { grant, walk, fileStamp } = require('./target');
+const { grant, walk, fileStamp, readRange } = require('./target');
+const { inspect } = require('./broken');
 const { findDuplicateNames, aspectKey, groupLabel, describeVideo, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
@@ -31,13 +32,35 @@ function sameVideoReason(keeper, file) {
   return null;
 }
 
-// 남길 파일이 지금 그대로 있는지 확인하고 그 시각 표시를 돌려준다. 문제가 있으면 FcError를 낸다.
+// 0으로만 채워진 구간을 찾는 표본. 전체 크기를 미리 잡아 둔 채 멈춘 내려받기(토렌트 등)는 머리 구조가 정상이어도 받지 못한 자리가 0으로 남는다.
+// 압축된 영상 데이터에는 4KB가 모두 0인 구간이 거의 없다. 작은 파일은 머리 구조만으로 충분해 보지 않는다.
+const ZERO_CHECK_FROM = 1024 * 1024;
+const ZERO_SAMPLES = 16;
+const ZERO_BLOCK = 4096;
+
+function hasZeroBlock(target, real, size) {
+  if (size < ZERO_CHECK_FROM) return false;
+  const span = size - ZERO_CHECK_FROM - ZERO_BLOCK;
+  for (let index = 0; index < ZERO_SAMPLES; index += 1) {
+    const offset = ZERO_CHECK_FROM + Math.floor((span * index) / (ZERO_SAMPLES - 1));
+    const block = readRange(target, real, { offset, length: ZERO_BLOCK });
+    if (block.length === ZERO_BLOCK && block.every((byte) => byte === 0)) return true;
+  }
+  return false;
+}
+
+// 남길 파일이 지금 그대로이고 온전해 보이는지 확인하고 그 시각 표시를 돌려준다. 문제가 있으면 FcError를 낸다.
+// 남길 파일이 덜 받았거나 깨졌으면 사본을 지울 때 온전한 영상을 잃으므로, find-broken과 같은 판별과 0 구간 표본을 본다(#109).
 function keeperStamp(access, keeper, now) {
   const real = access.read(keeper.path);
   if (real !== keeper.path) throw new FcError('찾은 뒤 남길 파일의 경로가 바뀌어 남겼습니다.');
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile()) throw new FcError('남길 파일이 일반 파일이 아니라 남겼습니다.');
   if (holdReason(stat, now) !== null) throw new FcError('남길 파일이 방금 바뀌었거나 시각이 미래라 받는 중일 수 있어 남겼습니다.');
+  const size = Number(stat.size);
+  const found = inspect(access.target, real, size);
+  if (found !== null) throw new FcError(`남길 파일이 ${found.status === 'broken' ? '깨졌을' : '온전하지 않을'} 수 있어 남겼습니다. (${found.reason})`);
+  if (hasZeroBlock(access.target, real, size)) throw new FcError('남길 파일에 0으로만 채워진 구간이 있어 덜 받은 파일일 수 있어 남겼습니다.');
   return fileStamp(stat);
 }
 

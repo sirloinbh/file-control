@@ -250,4 +250,4 @@ function formatBroken(result) {
   return lines.join('\n');
 }
 
-module.exports = { findBroken, formatBroken };
+module.exports = { findBroken, formatBroken, inspect };
