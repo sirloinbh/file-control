@@ -40,9 +40,35 @@ test('duplicateKey: 같은 번호의 다른 조각은 다른 기준이다', () =
   assert.strictEqual(keyOf('ABC-123_B.mp4'), 'ABC-123 #b');
   assert.notStrictEqual(keyOf('ABC-123 CD1.mp4'), keyOf('ABC-123 CD2.mp4'));
   assert.notStrictEqual(keyOf('ABC-123 CD1.mp4'), keyOf('ABC-123.mp4'));
-  // 화질 숫자나 낱말 첫 글자는 조각이 아니다.
+  // 화질·코덱 표시, 낱말 첫 글자, 끝의 (1)과 복사본 꼬리는 조각이 아니다.
   assert.strictEqual(keyOf('ABC-123 1080p.mp4'), 'ABC-123');
+  assert.strictEqual(keyOf('ABC-123 x264 60fps 10bit 4K HEVC AAC2.mp4'), 'ABC-123');
   assert.strictEqual(keyOf('ABC-123 Title.mp4'), 'ABC-123');
+  assert.strictEqual(keyOf('ABC-123 (1).mp4'), 'ABC-123');
+  assert.strictEqual(keyOf('ABC-123 - 복사본 (2).mp4'), 'ABC-123');
+});
+
+test('duplicateKey: 번호 바로 뒤가 아닌 자리의 조각 표시도 가른다', () => {
+  const pairs = [
+    ['ABC-123 FHD 1.mp4', 'ABC-123 FHD 2.mp4'],
+    ['ABC-123-1080p-1.mp4', 'ABC-123-1080p-2.mp4'],
+    ['ABC-123 제목 1.mp4', 'ABC-123 제목 2.mp4'],
+    ['ABC-123 [1].mp4', 'ABC-123 [2].mp4'],
+    ['ABC-123 Episode 1.mp4', 'ABC-123 Episode 2.mp4'],
+    ['ABC-123 II.mp4', 'ABC-123 III.mp4'],
+    ['ABC-123 前編.mp4', 'ABC-123 後編.mp4'],
+    ['ABC-123 part1 CD1.mp4', 'ABC-123 part1 CD2.mp4'],
+    ['ABC-123 1.mp4', 'ABC-123 1.5.mp4'],
+    ['ABC-123.mp4', 'ABC-123 100.mp4'],
+  ];
+  for (const [one, other] of pairs) assert.notStrictEqual(keyOf(one), keyOf(other), `${one} / ${other}`);
+  assert.strictEqual(keyOf('ABC-123 Episode 01.mp4'), 'ABC-123 #1');
+});
+
+test('duplicateKey: 전각으로 쓴 조각 표시도 반각과 같다', () => {
+  assert.strictEqual(keyOf('ＡＢＣ－１２３　ＣＤ２.mp4'), 'ABC-123 #2');
+  assert.strictEqual(keyOf('ＡＢＣ－１２３　２.mp4'), 'ABC-123 #2');
+  assert.strictEqual(keyOf('ABC-123 Ｂ.mp4'), 'ABC-123 #b');
 });
 
 test('duplicateKey: 번호가 여럿이면 묶지 않는다', () => {
@@ -103,6 +129,8 @@ test('findDuplicateNames: 잔여물, 시스템 폴더는 건너뛰고 저장소 
   put(dir, path.join('$RECYCLE.BIN', 'ABC-123.mp4'));
   put(dir, path.join('.git', 'ABC-123.mp4'));
   put(dir, 'ABC-123.ts', 'export const x = 1;\n');
+  // 잔여물 폴더 안이라도 영상이 아닌 .ts는 보고하지 않는다.
+  put(dir, path.join('.fctl-old-1-2-3', 'index.ts'), 'export const x = 1;\n');
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups, []);
   assert.deepStrictEqual(
@@ -134,6 +162,22 @@ test('findDuplicateNames: 링크는 건너뛴다', (t) => {
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups, []);
   assert.deepStrictEqual(result.skipped.map((item) => item.reason), ['링크는 보지 않습니다.']);
+});
+
+test('findDuplicateNames: 영상 확장자가 아닌 폴더 링크도 건너뛰었다고 보고한다', (t) => {
+  const dir = tempDir();
+  const outside = tempDir();
+  put(outside, 'ABC-123.mp4');
+  put(dir, 'ABC-123.mp4');
+  try {
+    fs.symlinkSync(outside, path.join(dir, 'movies'), 'junction');
+  } catch (err) {
+    t.skip(`정션을 만들 수 없습니다. (${err.code})`);
+    return;
+  }
+  const result = findDuplicateNames(dir);
+  assert.deepStrictEqual(result.groups, []);
+  assert.deepStrictEqual(result.skipped, [{ path: path.join(dir, 'movies'), reason: '링크는 보지 않습니다.' }]);
 });
 
 test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {

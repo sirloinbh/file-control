@@ -10,32 +10,52 @@ const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('.
 const SEPARATORS = /[\s._\-–—－＿\u0085]+/g;
 // 탐색기가 붙이는 복사본 꼬리. 이름 - 복사본.mp4, 이름 - Copy (2).mp4
 const COPY_SUFFIX = /\s+-\s+(?:복사본|copy)(?:\s*\(\d+\))?$/i;
-// 같은 번호의 다른 조각. 낱말 뒤 숫자(CD1, part 2, disc-3)나 번호 바로 뒤의 숫자·글자 하나(ABC-123-1, ABC-123 B)다.
-const PART_WORD = /(?<![A-Za-z0-9])(?:cd|disc|disk|part|pt)[\s._-]*(\d{1,3})(?![0-9])/i;
-const PART_AFTER_NUMBER = /^[\s._-]*(?:(\d{1,2})|([A-Za-z]))(?![A-Za-z0-9])/;
+// 같은 번호의 다른 조각을 가르는 표시. 다른 영상을 한 묶음에 넣는 것보다 중복을 놓치는 쪽이 안전하므로 넓게 잡는다.
+// - 번호 바로 뒤의 글자 하나(ABC-123 B, ABC-123-A)
+// - 번호를 뺀 나머지 낱말 속의 숫자(CD2, part 1, -1, [2], 제목3, 1.5). 화질·코덱 표시와 끝의 (1) 꼬리는 뺀다.
+// - 로마 숫자(II, III, IV ...)와 前編·後編, 上巻·下巻 같은 말
+const LETTER_AFTER_NUMBER = /^[\s._-]*([A-Za-z])(?![A-Za-z0-9])/;
+const TOKEN_SEPARATORS = /[\s._\-–—＿\u0085[\](){}【】「」『』《》〈〉〔〕〖〗,+&~!#'"]+/;
+const QUALITY = /^(?:\d{3,4}[pi]|\d+fps|\d+bit|\d+k|[xh]26[45]|\d+ch|aac\d*|ac3|dts|ddp?\d*|mp[34]|h?vc1|av1|vp[89]|\d+kbps|\d+mbps)$/i;
+const ROMAN = /^(?:II|III|IV|VI|VII|VIII|IX|XI|XII)$/;
+const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半)$/;
+const DUPLICATE_TAIL = /\s*\(\d+\)$/;
 
-// 조각 표시를 같은 값으로 맞춘다. CD1, part 01, -1은 모두 1이다. 글자는 소문자로 둔다.
-function findPart(base, ranges) {
-  const after = PART_AFTER_NUMBER.exec(base.slice(ranges[0].end));
-  if (after) return after[1] !== undefined ? String(Number(after[1])) : after[2].toLowerCase();
+// 꼬리를 되풀이해 지운다. 이름 - 복사본 (2), 이름 (1) - 복사본
+function stripTails(text, tails) {
+  let current = text.trim();
+  for (let previous = null; previous !== current; ) {
+    previous = current;
+    for (const tail of tails) current = current.replace(tail, '').trim();
+  }
+  return current;
+}
+
+// 조각 표시를 나온 순서대로 이어 돌려준다. 숫자는 앞의 0을 뺀다. CD1, part 01, -1은 모두 1이다. 없으면 null이다.
+// 전각을 반각으로 바꿔도 글자 수가 같으므로 번호 위치를 그대로 쓴다.
+function findPart(original, ranges) {
+  const base = halfWidth(original);
+  const marks = [];
+  const letter = LETTER_AFTER_NUMBER.exec(base.slice(ranges[0].end));
+  if (letter) marks.push(letter[1].toLowerCase());
   let rest = '';
   let at = 0;
   for (const { start, end } of ranges) {
     rest += `${base.slice(at, start)} `;
     at = end;
   }
-  const word = PART_WORD.exec(rest + base.slice(at));
-  return word ? String(Number(word[1])) : null;
+  rest = stripTails(rest + base.slice(at), [COPY_SUFFIX, DUPLICATE_TAIL]);
+  for (const token of rest.split(TOKEN_SEPARATORS)) {
+    if (token === '' || QUALITY.test(token)) continue;
+    if (ROMAN.test(token) || SECTION.test(token)) marks.push(token);
+    else for (const digits of token.match(/\d+/g) ?? []) marks.push(String(Number(digits)));
+  }
+  return marks.length === 0 ? null : marks.join(' ');
 }
 
 // 번호가 없는 이름의 비교값. 대소문자, 전각, 조합형 한글, 구분 문자의 차이와 복사본 꼬리를 없앤다.
 function nameKey(base) {
-  let current = halfWidth(base.normalize('NFC')).trim();
-  for (let previous = null; previous !== current; ) {
-    previous = current;
-    current = current.replace(COPY_SUFFIX, '');
-  }
-  return current.replace(SEPARATORS, ' ').trim().toLowerCase();
+  return stripTails(halfWidth(base), [COPY_SUFFIX]).replace(SEPARATORS, ' ').trim().toLowerCase();
 }
 
 // 영상 파일 이름 하나의 묶음 기준을 돌려준다. 파일은 건드리지 않는 순수 함수다.
@@ -44,7 +64,8 @@ function nameKey(base) {
 // - 서로 다른 번호가 여럿이면 { kind: 'conflict', numbers }. 어느 번호로 묶을지 정하지 않는다.
 // 소문자 말(abc-123)은 번호로 보지 않는다. trip-2023처럼 보통 말인 경우가 많아서다. 먼저 normalize로 대문자로 바꾸면 번호로 묶인다.
 function duplicateKey(fileName) {
-  const base = fileName.slice(0, fileName.length - path.extname(fileName).length);
+  // 조합형 한글(macOS에서 온 이름)을 먼저 완성형으로 맞춘다. 번호 위치도 맞춘 이름 기준이다.
+  const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
   const ranges = findProductNumberRanges(base);
   const numbers = [...new Set(ranges.map((range) => range.number))];
   if (numbers.length > 1) return { kind: 'conflict', numbers };
@@ -70,7 +91,7 @@ function skipReason(parts) {
 // - unreadable: 크기나 내용을 읽지 못해 묶지 않은 파일 ({ path, reason })
 // - skipped: 다루지 않는 항목 ({ path, reason })
 // - checked: 살펴본 영상 파일 수
-// 저장소 폴더 안은 조용히 뺀다. 영상이 아닌 파일(제거 기록 fctl-removed-*.json 포함)은 보지 않는다.
+// 링크는 확장자와 관계없이 건너뜀으로 보고한다. 저장소 폴더 안은 조용히 뺀다. 영상이 아닌 파일(제거 기록 fctl-removed-*.json 포함)은 보지 않는다.
 function findDuplicateNames(dir) {
   const access = grant(dir, ['read']);
   const result = { target: access.target, groups: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
@@ -79,23 +100,24 @@ function findDuplicateNames(dir) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;
-    const name = path.basename(entry.path);
-    const extension = path.extname(name).toLowerCase();
-    const transport = TRANSPORT_EXTENSIONS.has(extension);
-    if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
+    // 폴더를 가리키는 링크도 확장자와 관계없이 그 안을 보지 않았음을 알린다.
     if (entry.type === 'link') {
       result.skipped.push({ path: entry.path, reason: '링크는 보지 않습니다.' });
       continue;
     }
-    const reason = skipReason(parts);
-    if (reason !== null) {
-      result.skipped.push({ path: entry.path, reason });
-      continue;
-    }
+    const name = path.basename(entry.path);
+    const extension = path.extname(name).toLowerCase();
+    const transport = TRANSPORT_EXTENSIONS.has(extension);
+    if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
       const real = access.read(entry.path);
-      // 영상이 아닌 .ts(TypeScript 소스)는 보고하지 않는다.
+      // 영상이 아닌 .ts(TypeScript 소스)는 어디에 있든 보고하지 않는다. 그래서 건너뛸지 보기 전에 내용을 확인한다.
       if (transport && !isTransportStream(access.target, entry.relative)) continue;
+      const reason = skipReason(parts);
+      if (reason !== null) {
+        result.skipped.push({ path: entry.path, reason });
+        continue;
+      }
       result.checked += 1;
       const found = duplicateKey(name);
       if (found === null) continue;
