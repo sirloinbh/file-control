@@ -138,4 +138,4 @@ function formatRemoveBroken(result) {
   return lines.join('\n');
 }
 
-module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE };
+module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE };
