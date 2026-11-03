@@ -10,6 +10,7 @@ const { normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 const { findBroken, formatBroken } = require('../src/broken');
 const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
 const { findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
+const { removeDuplicates, formatRemoveDuplicates } = require('../src/removeDuplicates');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -34,13 +35,14 @@ const HELP = `fctl - 파일 컨트롤
   find-broken <타겟>            깨진 파일 찾기 (파일은 건드리지 않음)
   remove-broken <타겟>          깨진 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
   find-duplicates <타겟>        이름·제품번호나 길이가 같은 영상 묶기 (파일은 건드리지 않음)
+  remove-duplicates <타겟>      중복 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
-  --yes=확인값  remove-broken에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
+  --yes=확인값  remove-broken, remove-duplicates에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
   --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
@@ -106,7 +108,7 @@ function run(argv) {
   if (!command || flags.has('help')) return HELP;
   // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
-  if (flags.has('yes') && command !== 'remove-broken') throw new fc.FcError('--yes는 remove-broken에서만 쓸 수 있습니다.');
+  if (flags.has('yes') && command !== 'remove-broken' && command !== 'remove-duplicates') throw new fc.FcError('--yes는 remove-broken, remove-duplicates에서만 쓸 수 있습니다.');
   if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
 
   switch (command) {
@@ -193,10 +195,12 @@ function run(argv) {
       // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
       return formatBroken(findBroken(args[0]));
     }
-    case 'remove-broken': {
+    case 'remove-broken':
+    case 'remove-duplicates': {
       checkWholeTarget(command, args, flags);
-      const result = removeBroken(args[0], { dryRun, confirm });
-      const report = formatRemoveBroken(result);
+      const duplicates = command === 'remove-duplicates';
+      const result = (duplicates ? removeDuplicates : removeBroken)(args[0], { dryRun, confirm });
+      const report = (duplicates ? formatRemoveDuplicates : formatRemoveBroken)(result);
       // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
       const fail = (message) => Object.assign(new fc.FcError(message), { output: report });
       if (result.failed.length > 0) throw fail(`휴지통으로 보내지 못한 파일이 ${result.failed.length}개 있습니다.`);

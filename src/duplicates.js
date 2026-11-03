@@ -292,6 +292,11 @@ function formatDuration(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+// 이름 묶음의 이름. 번호 ABC-123, 번호 ABC-123 조각 2, 이름 "trip"
+function groupLabel(group) {
+  return group.kind === 'number' ? `번호 ${group.number}${group.part === null ? '' : ` 조각 ${group.part}`}` : `이름 "${group.key}"`;
+}
+
 function describe(file) {
   const parts = [formatSize(file.size)];
   if (file.width !== null && file.height !== null) parts.push(`${file.width}x${file.height}`);
@@ -311,7 +316,7 @@ function formatDuplicateNames(result) {
     if (group.keep.doubt !== null) lines.push(`  주의: ${group.keep.doubt}`);
   };
   for (const group of result.groups) {
-    const label = group.kind === 'number' ? `번호 ${group.number}${group.part === null ? '' : ` 조각 ${group.part}`}` : `이름 "${group.key}"`;
+    const label = groupLabel(group);
     lines.push(`중복 후보 (${label}, ${group.files.length}개):`);
     pushFiles(group);
   }
@@ -333,4 +338,4 @@ function formatDuplicateNames(result) {
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, DURATION_TOLERANCE, MIN_DURATION };
+module.exports = { duplicateKey, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };
