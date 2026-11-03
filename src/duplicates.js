@@ -6,6 +6,19 @@ const { grant, walk, fileSizeInside } = require('./target');
 const { findProductNumberRanges, halfWidth } = require('./product');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
+const { readMp4Metadata } = require('./mp4');
+const { readMkvMetadata } = require('./mkv');
+
+// 길이 기준으로 묶는 조건. 다른 영상을 한 묶음에 넣지 않도록 좁게 잡는다.
+// - 길이 차이가 1초 이내. 같은 영상을 다른 형식으로 옮기면 길이가 1초 안쪽으로 달라진다.
+// - 화면 비율을 소수 첫째 자리까지 맞춘다(16:9는 1.8, 4:3은 1.3). 저장된 해상도로 계산하고 회전 정보와 화소 비율은 보지 않는다.
+//   그래서 세로로 저장한 영상(1080x1920)과 가로 영상은 묶지 않지만, 회전 정보로 세로를 표시하는 휴대폰 영상(1920x1080 + 90도)은 가로로 센다(#106).
+// - 60초 미만 영상은 묶지 않는다. 짧은 클립은 길이가 우연히 같은 경우가 많다.
+// 해상도와 크기는 보지 않는다. 다시 인코딩한 같은 영상은 이 둘이 달라지고, 어느 것을 남길지는 묶은 뒤에 고른다.
+const DURATION_TOLERANCE = 1;
+const MIN_DURATION = 60;
+const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
+const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
 
 const SEPARATORS = /[\s._\-–—－＿\u0085]+/g;
 // 탐색기가 붙이는 복사본 꼬리. 이름 - 복사본.mp4, 이름 - Copy (2).mp4
@@ -100,18 +113,76 @@ function skipReason(parts) {
   return null;
 }
 
-// 타겟 아래 영상 파일을 이름 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
-// - groups: 파일이 둘 이상인 묶음 ({ kind, key, number, part, files }). files는 { path, size } 목록이다.
+// 길이와 해상도를 읽는다. 읽을 수 있는 형식은 MP4/MOV와 MKV/WebM이다. 모르면 null이고, 읽지 못한 사유는 note에 둔다.
+// 영상 데이터는 읽지 않고 머리 구조만 본다.
+function readVideoInfo(target, real) {
+  const extension = path.extname(real).toLowerCase();
+  const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
+  const unknown = (note) => ({ duration: null, width: null, height: null, note });
+  if (!reader) return unknown(null);
+  try {
+    const { duration, width, height } = reader(target, real);
+    const positive = (value) => (Number.isFinite(value) && value > 0 ? value : null);
+    const info = { duration: positive(duration), width: positive(width), height: positive(height) };
+    // 예외 없이 값이 빠진 경우도 사유를 남긴다. 길이를 쓰지 않는 조각 MP4, 녹화가 중단된 MKV/WebM이 그렇다.
+    const missing = [info.duration === null && '길이', (info.width === null || info.height === null) && '해상도'].filter(Boolean);
+    return { ...info, note: missing.length === 0 ? null : `${missing.join('와 ')} 정보가 없습니다.` };
+  } catch (err) {
+    if (err instanceof FcError) return unknown(err.message);
+    return unknown(`메타데이터를 읽을 수 없습니다. (${err.code ?? err.message})`);
+  }
+}
+
+// 화면 비율을 소수 첫째 자리까지 맞춘 값. 해상도를 모르면 null이다.
+function aspectKey(file) {
+  return file.width === null || file.height === null ? null : (Math.round((file.width / file.height) * 10) / 10).toFixed(1);
+}
+
+// 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
+// 길이 순으로 놓고, 묶음의 가장 짧은 파일과 1초 이내인 파일까지 넣는다. 그래서 묶음 안의 어느 두 파일도 1초 넘게 차이 나지 않는다.
+// 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다.
+function groupByMetadata(files) {
+  const buckets = new Map();
+  for (const file of files) {
+    const aspect = aspectKey(file);
+    if (file.duration === null || file.duration < MIN_DURATION || aspect === null) continue;
+    if (!buckets.has(aspect)) buckets.set(aspect, []);
+    buckets.get(aspect).push(file);
+  }
+  const groups = [];
+  for (const [aspect, list] of buckets) {
+    list.sort((a, b) => a.duration - b.duration);
+    let current = null;
+    for (const file of list) {
+      if (current && file.duration - current.files[0].duration <= DURATION_TOLERANCE) current.files.push(file);
+      else groups.push((current = { aspect, files: [file] }));
+    }
+  }
+  return groups
+    .filter((group) => group.files.length > 1)
+    .map((group) => ({ ...group, duration: group.files[0].duration, sameSize: group.files.every((file) => file.size === group.files[0].size) }))
+    .sort((a, b) => a.duration - b.duration || (a.aspect < b.aspect ? -1 : 1));
+}
+
+// 타겟 아래 영상 파일을 이름 기준과 길이 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
+// - groups: 이름이 같은 묶음 ({ kind, key, number, part, files }). 파일이 둘 이상인 것만 넣는다.
 //   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
-// - conflicts: 번호가 여럿이라 묶지 않은 파일 ({ path, numbers })
+// - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
+//   alsoNamed는 파일이 모두 한 이름 묶음에 이미 든 묶음이다. 파일은 길이 순이다.
+//   files의 항목은 { path, size, duration, width, height, note }다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
+// - unknownMetadata: 길이를 모르는 영상 수. 읽지 못하는 형식(avi, wmv 등)과 읽지 못한 파일이 든다.
+// - metadataErrors: 읽을 수 있는 형식인데 길이나 해상도를 읽지 못한 파일 ({ path, reason })
+// - conflicts: 번호가 여럿이라 이름으로 묶지 않은 파일 ({ path, numbers }). 길이로는 묶을 수 있다.
 // - unreadable: 크기나 내용을 읽지 못해 묶지 않은 파일 ({ path, reason })
 // - skipped: 다루지 않는 항목 ({ path, reason })
 // - checked: 살펴본 영상 파일 수
 // 링크는 확장자와 관계없이 건너뜀으로 보고한다. 저장소 폴더 안은 조용히 뺀다. 영상이 아닌 파일(제거 기록 fctl-removed-*.json 포함)은 보지 않는다.
 function findDuplicateNames(dir) {
   const access = grant(dir, ['read']);
-  const result = { target: access.target, groups: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
+  const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
   const byKey = new Map();
+  const videos = [];
+  const nameGroupOf = new Map();
   for (const entry of walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
@@ -135,16 +206,20 @@ function findDuplicateNames(dir) {
       }
       const real = access.read(entry.path);
       result.checked += 1;
+      const size = fileSizeInside(access.target, real);
+      const file = { path: real, size, ...readVideoInfo(access.target, real) };
+      videos.push(file);
+      if (file.duration === null) result.unknownMetadata += 1;
       const found = duplicateKey(name);
       if (found === null) continue;
       if (found.kind === 'conflict') {
         result.conflicts.push({ path: real, numbers: found.numbers });
         continue;
       }
-      const size = fileSizeInside(access.target, real);
       const id = `${found.kind}\0${found.key}`;
       if (!byKey.has(id)) byKey.set(id, { kind: found.kind, key: found.key, number: found.number ?? null, part: found.part ?? null, files: [] });
-      byKey.get(id).files.push({ path: real, size });
+      byKey.get(id).files.push(file);
+      nameGroupOf.set(file, id);
     } catch (err) {
       const message = err instanceof FcError ? err.message : `파일을 읽을 수 없습니다. (${err.code ?? err.message})`;
       result.unreadable.push({ path: entry.path, reason: message });
@@ -152,7 +227,28 @@ function findDuplicateNames(dir) {
   }
   const order = (a, b) => (a.kind === b.kind ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : a.kind === 'number' ? -1 : 1);
   result.groups = [...byKey.values()].filter((group) => group.files.length > 1).sort(order);
+  // 파일이 모두 한 이름 묶음에 든 길이 묶음은 alsoNamed로 표시한다. 보고에서는 되풀이하지 않지만, 이름과 길이가 함께 맞는다는 정보는 남긴다.
+  // 하나뿐이라 이름 묶음에 나오지 않는 파일은 이름 묶음에 든 것으로 보지 않는다.
+  const shown = (file) => (byKey.get(nameGroupOf.get(file))?.files.length ?? 0) > 1;
+  const sameNameGroup = (group) => group.files.every((file) => shown(file) && nameGroupOf.get(file) === nameGroupOf.get(group.files[0]));
+  result.metadataGroups = groupByMetadata(videos).map((group) => ({ ...group, alsoNamed: sameNameGroup(group) }));
+  result.metadataErrors = videos.filter((file) => file.note !== null).map((file) => ({ path: file.path, reason: file.note }));
   return result;
+}
+
+// 초를 h:mm:ss 또는 m:ss로 쓴다.
+function formatDuration(seconds) {
+  const total = Math.round(seconds);
+  const [h, m, s] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
+  const pad = (value) => String(value).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+function describe(file) {
+  const parts = [formatSize(file.size)];
+  if (file.width !== null && file.height !== null) parts.push(`${file.width}x${file.height}`);
+  if (file.duration !== null) parts.push(formatDuration(file.duration));
+  return parts.join(', ');
 }
 
 function formatDuplicateNames(result) {
@@ -161,16 +257,24 @@ function formatDuplicateNames(result) {
   for (const group of result.groups) {
     const label = group.kind === 'number' ? `번호 ${group.number}${group.part === null ? '' : ` 조각 ${group.part}`}` : `이름 "${group.key}"`;
     lines.push(`중복 후보 (${label}, ${group.files.length}개):`);
-    for (const file of group.files) lines.push(`  ${relative(file.path)} (${formatSize(file.size)})`);
+    for (const file of group.files) lines.push(`  ${relative(file.path)} (${describe(file)})`);
+  }
+  const metadataGroups = result.metadataGroups.filter((group) => !group.alsoNamed);
+  for (const group of metadataGroups) {
+    const same = group.sameSize ? ', 크기도 같음' : '';
+    lines.push(`길이가 같은 영상 (${formatDuration(group.duration)}, 화면 비율 ${group.aspect}${same}, ${group.files.length}개):`);
+    for (const file of group.files) lines.push(`  ${relative(file.path)} (${describe(file)})`);
   }
   for (const item of result.conflicts) lines.push(`번호가 여럿: ${relative(item.path)} (${item.numbers.join(', ')})`);
+  for (const item of result.metadataErrors) lines.push(`길이·해상도 못 읽음: ${relative(item.path)} (${item.reason})`);
   for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
   const files = result.groups.reduce((sum, group) => sum + group.files.length, 0);
+  const metadataFiles = metadataGroups.reduce((sum, group) => sum + group.files.length, 0);
   lines.push(
-    `살펴본 영상 ${result.checked}개, 중복 후보 묶음 ${result.groups.length}개(파일 ${files}개), 번호가 여럿 ${result.conflicts.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`,
+    `살펴본 영상 ${result.checked}개, 중복 후보 묶음 ${result.groups.length}개(파일 ${files}개), 길이가 같은 묶음 ${metadataGroups.length}개(파일 ${metadataFiles}개), 길이 모름 ${result.unknownMetadata}개, 번호가 여럿 ${result.conflicts.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`,
   );
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, findDuplicateNames, formatDuplicateNames };
+module.exports = { duplicateKey, groupByMetadata, findDuplicateNames, formatDuplicateNames, DURATION_TOLERANCE, MIN_DURATION };
