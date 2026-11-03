@@ -164,7 +164,41 @@ function groupByMetadata(files) {
     .sort((a, b) => a.duration - b.duration || (a.aspect < b.aspect ? -1 : 1));
 }
 
+// 묶음에서 남길 파일을 하나 고른다. files는 { path, size, duration, width, height, note }이고 파일은 건드리지 않는 순수 함수다.
+// 아래 기준을 차례로 적용한다. 기준마다 가장 나은 파일들만 다음 기준으로 넘긴다.
+// 1. 읽을 수 있는 형식(.mp4, .mkv 등)인데 길이나 해상도를 읽지 못한 파일(note가 있는 파일)은 깨졌을 수 있어 뒤로 뺀다.
+//    읽지 않는 형식(.avi 등)은 깨졌는지 모르므로 빼지 않는다.
+// 2. 길이를 아는 파일 중 가장 긴 것보다 1초 넘게 짧은 파일은 덜 받았거나 잘린 사본일 수 있어 뒤로 뺀다. 길이를 모르는 파일은 빼지 않는다.
+// 3. 해상도(가로×세로 화소 수)가 가장 높은 파일. 해상도를 모르는 파일은 아는 파일보다 뒤다.
+// 4. 크기가 가장 큰 파일. 해상도가 같으면 더 많은 데이터를 담은 쪽이 화질이 나은 경우가 많다.
+// 5. 이름(확장자 포함)이 가장 짧은 파일. 복사본 꼬리(` - 복사본`, ` (1)`, ` copy`)가 붙은 쪽보다 원래 파일일 가능성이 크다.
+// 6. 그래도 같으면 경로 순으로 첫 파일.
+// 돌려주는 값은 { path, reason, doubt }다. reason은 고른 까닭이고, doubt는 길이를 아는 파일끼리 1초 넘게 달라 같은 영상이 아닐 수 있을 때의 알림이다(없으면 null).
+function chooseKeeper(files) {
+  const durations = files.map((file) => file.duration).filter((value) => value !== null);
+  const longest = durations.length === 0 ? null : Math.max(...durations);
+  const criteria = [
+    ['다른 파일은 길이·해상도를 읽지 못함', (file) => (file.note === null ? 1 : 0)],
+    ['길이가 가장 김', (file) => (file.duration !== null && longest - file.duration > DURATION_TOLERANCE ? 0 : 1)],
+    ['해상도가 가장 높음', (file) => (file.width === null || file.height === null ? -1 : file.width * file.height)],
+    ['크기가 가장 큼', (file) => file.size],
+    ['이름이 가장 짧음', (file) => -path.basename(file.path).length],
+  ];
+  let candidates = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const reasons = [];
+  for (const [reason, score] of criteria) {
+    const best = Math.max(...candidates.map(score));
+    const kept = candidates.filter((file) => score(file) === best);
+    if (kept.length < candidates.length) reasons.push(reason);
+    candidates = kept;
+  }
+  if (candidates.length > 1) reasons.push(reasons.length === 0 ? '모두 같아 경로 순으로 첫 파일' : '나머지는 같아 경로 순으로 첫 파일');
+  const doubt = durations.length > 1 && longest - Math.min(...durations) > DURATION_TOLERANCE ? '길이가 서로 달라 같은 영상이 아닐 수 있습니다.' : null;
+  return { path: candidates[0].path, reason: reasons.join(', '), doubt };
+}
+
 // 타겟 아래 영상 파일을 이름 기준과 길이 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
+// 묶음마다 남길 파일(keep: chooseKeeper의 결과)을 붙인다. 이름 묶음과 길이 묶음은 따로 고르므로, 두 묶음에 함께 든 파일은 한쪽에서는 남기고 다른 쪽에서는 남기지 않을 수 있다.
 // - groups: 이름이 같은 묶음 ({ kind, key, number, part, files }). 파일이 둘 이상인 것만 넣는다.
 //   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
 // - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
@@ -226,12 +260,15 @@ function findDuplicateNames(dir) {
     }
   }
   const order = (a, b) => (a.kind === b.kind ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : a.kind === 'number' ? -1 : 1);
-  result.groups = [...byKey.values()].filter((group) => group.files.length > 1).sort(order);
+  result.groups = [...byKey.values()]
+    .filter((group) => group.files.length > 1)
+    .sort(order)
+    .map((group) => ({ ...group, keep: chooseKeeper(group.files) }));
   // 파일이 모두 한 이름 묶음에 든 길이 묶음은 alsoNamed로 표시한다. 보고에서는 되풀이하지 않지만, 이름과 길이가 함께 맞는다는 정보는 남긴다.
   // 하나뿐이라 이름 묶음에 나오지 않는 파일은 이름 묶음에 든 것으로 보지 않는다.
   const shown = (file) => (byKey.get(nameGroupOf.get(file))?.files.length ?? 0) > 1;
   const sameNameGroup = (group) => group.files.every((file) => shown(file) && nameGroupOf.get(file) === nameGroupOf.get(group.files[0]));
-  result.metadataGroups = groupByMetadata(videos).map((group) => ({ ...group, alsoNamed: sameNameGroup(group) }));
+  result.metadataGroups = groupByMetadata(videos).map((group) => ({ ...group, alsoNamed: sameNameGroup(group), keep: chooseKeeper(group.files) }));
   result.metadataErrors = videos.filter((file) => file.note !== null).map((file) => ({ path: file.path, reason: file.note }));
   return result;
 }
@@ -254,16 +291,24 @@ function describe(file) {
 function formatDuplicateNames(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [];
+  // 묶음의 파일 줄. 남길 파일에는 고른 까닭을 붙이고, 같은 영상이 아닐 수 있으면 주의 줄을 덧붙인다.
+  const pushFiles = (group) => {
+    for (const file of group.files) {
+      const keep = file.path === group.keep.path ? ` [남김: ${group.keep.reason}]` : '';
+      lines.push(`  ${relative(file.path)} (${describe(file)})${keep}`);
+    }
+    if (group.keep.doubt !== null) lines.push(`  주의: ${group.keep.doubt}`);
+  };
   for (const group of result.groups) {
     const label = group.kind === 'number' ? `번호 ${group.number}${group.part === null ? '' : ` 조각 ${group.part}`}` : `이름 "${group.key}"`;
     lines.push(`중복 후보 (${label}, ${group.files.length}개):`);
-    for (const file of group.files) lines.push(`  ${relative(file.path)} (${describe(file)})`);
+    pushFiles(group);
   }
   const metadataGroups = result.metadataGroups.filter((group) => !group.alsoNamed);
   for (const group of metadataGroups) {
     const same = group.sameSize ? ', 크기도 같음' : '';
     lines.push(`길이가 같은 영상 (${formatDuration(group.duration)}, 화면 비율 ${group.aspect}${same}, ${group.files.length}개):`);
-    for (const file of group.files) lines.push(`  ${relative(file.path)} (${describe(file)})`);
+    pushFiles(group);
   }
   for (const item of result.conflicts) lines.push(`번호가 여럿: ${relative(item.path)} (${item.numbers.join(', ')})`);
   for (const item of result.metadataErrors) lines.push(`길이·해상도 못 읽음: ${relative(item.path)} (${item.reason})`);
@@ -277,4 +322,4 @@ function formatDuplicateNames(result) {
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, groupByMetadata, findDuplicateNames, formatDuplicateNames, DURATION_TOLERANCE, MIN_DURATION };
+module.exports = { duplicateKey, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, DURATION_TOLERANCE, MIN_DURATION };
