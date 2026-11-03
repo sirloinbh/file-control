@@ -14,10 +14,21 @@ const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./r
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
 
 // 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
-// 숫자뿐이거나 짧은 영문 접두어 뒤에 숫자뿐이면 그렇게 본다. IMG_0001, GH010001, DJI_0001, FILE0001, VID_20230101_123456, 1
+// 앞에 영문 낱말 하나(10글자까지)가 올 수 있고, 나머지 낱말이 모두 "영문 4글자까지 + 숫자 + 영문 2글자까지"이거나 영문 1~2글자이며,
+// 숫자가 하나라도 있으면 그렇게 본다.
+// IMG_0001, IMG_E0001, GH010001, DJI_0001, DJI_20230101123456_0001_D, FILE0001, VID_20230101_123456, VID-20230101-WA0001,
+// PXL_20230101_123456789.LS, 20230101_123456_F, NO20230101-123456-000001F, 1
 // 이런 클립은 길이가 정해진 경우(블랙박스 1분·3분 조각, 시간으로 나눈 녹화)가 많아 이름과 길이가 같아도 다른 영상일 수 있다(#103).
 // 제품번호(ABC-123)는 번호 묶음이라 여기에 들지 않는다.
-const GENERIC_NAME = /^(?:[a-z]{1,10} ?)?\d[\d ]*$/;
+const COUNTER = '(?:[a-z]{0,4}\\d+[a-z]{0,2}|[a-z]{1,2})';
+const GENERIC_NAME = new RegExp(`^(?:[a-z]{1,10} )?${COUNTER}(?: ${COUNTER})*$`);
+// 대문자와 하이픈으로 된 녹화기 카운터(REC-0001, FRONT-0001)는 제품번호로 보여 번호 묶음이 된다(#110).
+// 제품번호 판정은 normalize, product-number와 같이 쓰므로 바꾸지 않고, 여기서 이 접두어의 번호 묶음을 지우지 않는다.
+const COUNTER_PREFIXES = new Set(['REC', 'RECORD', 'CAM', 'CAMERA', 'MOV', 'MOVI', 'MOVIE', 'VIDEO', 'CLIP', 'FILE', 'FRONT', 'REAR', 'INSIDE', 'EVT', 'EVENT', 'NOR', 'NORMAL', 'PARK', 'PARKING', 'EMER', 'MANUAL', 'MVI', 'MAH', 'SAM', 'SDC', 'PICT', 'CIMG', 'HPIM', 'GOPR', 'DJI', 'PXL', 'IMG', 'DSC', 'VID']);
+function isGenericGroup(group) {
+  if (group.kind === 'number') return COUNTER_PREFIXES.has(group.number.split('-')[0]);
+  return /\d/.test(group.key) && GENERIC_NAME.test(group.key);
+}
 const GENERIC_REASON = '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.';
 
 // 남길 파일과 같은 영상으로 볼 수 있는지. 같으면 null, 아니면 남기는 사유를 돌려준다.
@@ -69,7 +80,7 @@ function keeperStamp(access, keeper, now) {
 // 길이만 같은 묶음(metadataGroups)은 이름이 달라 다른 영상일 수 있으므로 지우지 않는다. 이름 묶음끼리는 파일이 겹치지 않으므로,
 // 한 묶음에서 남긴 파일이 다른 묶음에서 지워지는 일은 없다.
 // - sets: 묶음마다 { label, keep: { path, size, duration, width, height, reason, stamp }, doubt }. doubt는 chooseKeeper의 알림이다.
-//   카메라·순번처럼 흔한 이름의 묶음(GENERIC_NAME)은 아무것도 지우지 않는다.
+//   카메라·순번처럼 흔한 이름의 묶음(isGenericGroup)은 아무것도 지우지 않는다.
 // - removals: 지울 파일 ({ path, size, duration, width, height, stamp, set, keep, keepStamp, reason }). set은 sets의 번호다.
 // - kept: 묶음에 들었지만 남기는 파일 ({ path, set, reason, file })
 // - lengthOnly: 지우지 않은 길이만 같은 묶음 수
@@ -86,7 +97,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
     let stamp = null;
-    let keeperProblem = group.kind === 'name' && GENERIC_NAME.test(group.key) ? GENERIC_REASON : null;
+    let keeperProblem = isGenericGroup(group) ? GENERIC_REASON : null;
     if (keeperProblem === null) {
       try {
         stamp = keeperStamp(access, keeper, checkedAt);

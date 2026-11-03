@@ -173,14 +173,30 @@ test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율
     'y/1.mp4': mp4({ seconds: 600.5 }),
     'VID_20230101_123456.mp4': mp4({ seconds: 300 }),
     'old/VID_20230101_123456.mp4': mp4({ seconds: 300 }),
-    // 흔한 이름이 아닌 이름은 그대로 지운다.
+    // 숫자 사이나 뒤에 짧은 영문이 붙은 이름: 아이폰 편집본, 블랙박스 앞뒤 카메라, 새 DJI 이름
+    'a/IMG_E0001.MOV': mp4({ seconds: 90 }),
+    'b/IMG_E0001.MOV': mp4({ seconds: 90 }),
+    'a/20230101_123456_F.mp4': mp4({ seconds: 60 }),
+    'b/20230101_123456_F.mp4': mp4({ seconds: 60 }),
+    'a/DJI_20230101123456_0001_D.MP4': mp4({ seconds: 120 }),
+    'b/DJI_20230101123456_0001_D.MP4': mp4({ seconds: 120 }),
+    // 제품번호로 보이는 대문자 블랙박스 카운터 (#110)
+    'car1/REC-0001.mp4': mp4({ seconds: 60 }),
+    'car2/REC-0001.mp4': mp4({ seconds: 60 }),
+    'car1/FRONT-0001.mp4': mp4({ seconds: 180 }),
+    'car2/FRONT-0001.mp4': mp4({ seconds: 180 }),
+    // 흔한 이름이 아닌 이름과 제품번호는 그대로 지운다.
+    'ABC-123.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/ABC-123.mp4': mp4({ seconds: 300 }),
     'Holiday.mp4': mp4({ seconds: 300, padding: 10 }),
     'old/holiday.mp4': mp4({ seconds: 300 }),
+    'My Movie 2.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/My Movie 2.mp4': mp4({ seconds: 300 }),
   });
   const result = removeDuplicates(dir);
-  assert.strictEqual(result.sets.length, 6);
-  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['holiday.mp4']);
-  assert.strictEqual(result.kept.length, 5);
+  assert.strictEqual(result.sets.length, 13);
+  assert.deepStrictEqual(result.removals.map((item) => path.relative(dir, item.path)).sort(), [path.join('old', 'ABC-123.mp4'), path.join('old', 'My Movie 2.mp4'), path.join('old', 'holiday.mp4')].sort());
+  assert.strictEqual(result.kept.length, 10);
   assert.ok(result.kept.every((item) => item.reason === '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.'));
 });
 
