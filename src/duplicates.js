@@ -172,7 +172,7 @@ function groupByMetadata(files) {
 // 3. 해상도(가로×세로 화소 수)가 가장 높은 파일. 해상도를 모르는 파일은 아는 파일보다 뒤다.
 // 4. 크기가 가장 큰 파일. 해상도가 같으면 더 많은 데이터를 담은 쪽이 화질이 나은 경우가 많다.
 // 5. 이름(확장자 포함)이 가장 짧은 파일. 복사본 꼬리(` - 복사본`, ` (1)`, ` copy`)가 붙은 쪽보다 원래 파일일 가능성이 크다.
-// 6. 그래도 같으면 경로 순으로 첫 파일. 보고에 나오는 순서와 같게 대소문자를 먼저 무시하고 비교한다.
+// 6. 그래도 같으면 경로 순으로 첫 파일. 이름 묶음의 보고 순서와 같게 대소문자를 먼저 무시하고 비교한다.
 // 돌려주는 값은 { path, reason, doubt }다. reason은 고른 까닭이고, doubt는 길이를 아는 파일끼리 1초 넘게 달라 같은 영상이 아닐 수 있을 때의 알림이다(없으면 null).
 // 파일이 하나도 없으면 null이다. 하나뿐이면 그 파일을 고르고 reason은 '파일이 하나뿐'이다.
 function chooseKeeper(files) {
@@ -204,7 +204,7 @@ function chooseKeeper(files) {
   }
   if (files.length === 1) reasons.push('파일이 하나뿐');
   else if (candidates.length > 1) reasons.push(reasons.length === 0 ? '모두 같아 경로 순으로 첫 파일' : '나머지는 같아 경로 순으로 첫 파일');
-  const doubt = durations.length > 1 && Math.max(...durations) - Math.min(...durations) > DURATION_TOLERANCE ?'길이가 서로 달라 같은 영상이 아닐 수 있습니다.' : null;
+  const doubt = durations.length > 1 && Math.max(...durations) - Math.min(...durations) > DURATION_TOLERANCE ? '길이가 서로 달라 같은 영상이 아닐 수 있습니다.' : null;
   return { path: candidates[0].path, reason: reasons.join(', '), doubt };
 }
 
