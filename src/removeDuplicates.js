@@ -12,8 +12,15 @@ const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./r
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
 
+// 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
+// 숫자뿐이거나 짧은 영문 접두어 뒤에 숫자뿐이면 그렇게 본다. IMG_0001, GH010001, DJI_0001, FILE0001, VID_20230101_123456, 1
+// 이런 클립은 길이가 정해진 경우(블랙박스 1분·3분 조각, 시간으로 나눈 녹화)가 많아 이름과 길이가 같아도 다른 영상일 수 있다(#103).
+// 제품번호(ABC-123)는 번호 묶음이라 여기에 들지 않는다.
+const GENERIC_NAME = /^(?:[a-z]{1,10} ?)?\d[\d ]*$/;
+const GENERIC_REASON = '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.';
+
 // 남길 파일과 같은 영상으로 볼 수 있는지. 같으면 null, 아니면 남기는 사유를 돌려준다.
-// 이름만 같은 다른 영상(카메라 이름 IMG_0001, 제품번호처럼 보이는 WWE-2023 등, #103)을 지우지 않도록
+// 이름만 같은 다른 영상(같은 번호의 예고편, 제품번호처럼 보이는 WWE-2023 등, #103)을 지우지 않도록
 // 길이 차이가 1초 이내이고 화면 비율이 같을 때만 같은 영상으로 본다. 길이 묶음과 같은 기준이다.
 function sameVideoReason(keeper, file) {
   if (keeper.duration === null || aspectKey(keeper) === null) return '남길 파일의 길이나 해상도를 몰라 같은 영상인지 확인하지 못해 남겼습니다.';
@@ -38,7 +45,8 @@ function keeperStamp(access, keeper, now) {
 // 이름 묶음(find-duplicates의 groups)에서만 지운다. 묶음마다 남길 파일(#34)을 두고, 그 파일과 길이·화면 비율이 같은 파일만 지운다.
 // 길이만 같은 묶음(metadataGroups)은 이름이 달라 다른 영상일 수 있으므로 지우지 않는다. 이름 묶음끼리는 파일이 겹치지 않으므로,
 // 한 묶음에서 남긴 파일이 다른 묶음에서 지워지는 일은 없다.
-// - sets: 묶음마다 { label, keep: { path, size, duration, width, height, reason, stamp } }
+// - sets: 묶음마다 { label, keep: { path, size, duration, width, height, reason, stamp }, doubt }. doubt는 chooseKeeper의 알림이다.
+//   카메라·순번처럼 흔한 이름의 묶음(GENERIC_NAME)은 아무것도 지우지 않는다.
 // - removals: 지울 파일 ({ path, size, duration, width, height, stamp, set, keep, keepStamp, reason }). set은 sets의 번호다.
 // - kept: 묶음에 들었지만 남기는 파일 ({ path, set, reason, file })
 // - lengthOnly: 지우지 않은 길이만 같은 묶음 수
@@ -55,13 +63,15 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
     let stamp = null;
-    let keeperProblem = null;
-    try {
-      stamp = keeperStamp(access, keeper, checkedAt);
-    } catch (err) {
-      keeperProblem = reasonOf(err);
+    let keeperProblem = group.kind === 'name' && GENERIC_NAME.test(group.key) ? GENERIC_REASON : null;
+    if (keeperProblem === null) {
+      try {
+        stamp = keeperStamp(access, keeper, checkedAt);
+      } catch (err) {
+        keeperProblem = reasonOf(err);
+      }
     }
-    plan.sets.push({ label: groupLabel(group), keep: { ...keeper, reason: group.keep.reason, stamp } });
+    plan.sets.push({ label: groupLabel(group), keep: { ...keeper, reason: group.keep.reason, stamp }, doubt: group.keep.doubt });
     for (const file of group.files) {
       if (file === keeper) continue;
       const reason = keeperProblem ?? sameVideoReason(keeper, file);
@@ -167,6 +177,8 @@ function formatRemoveDuplicates(result) {
   result.sets.forEach((set, index) => {
     lines.push(`묶음 (${set.label}):`);
     lines.push(`  남길 파일: ${relative(set.keep.path)} (${describeVideo(set.keep)}) [${set.keep.reason}]`);
+    // 길이가 다른 파일은 사본마다 남기지만, 묶음에 다른 영상이 섞였을 수 있음을 함께 알린다.
+    if (set.doubt !== null) lines.push(`  주의: ${set.doubt}`);
     for (const item of result.removals.filter((entry) => entry.set === index)) {
       if (!result.confirmed) lines.push(`  지울 파일: ${relative(item.path)} (${describeVideo(item)})`);
       else if (removedPaths.has(item.path)) lines.push(`  휴지통으로 이동: ${relative(item.path)} (${describeVideo(item)})`);

@@ -140,22 +140,82 @@ test('확인값이 맞으면 기록을 먼저 남기고 남길 파일과 길이�
   assert.match(report.split('\n').at(-1), /^묶음 1개, 휴지통 2개, 실패 0개, 남김 1개, 길이만 같은 묶음 1개/);
 });
 
-test('이름만 같은 다른 영상(카메라 이름, 제품번호처럼 보이는 말)은 길이가 다르면 지우지 않는다 (#103)', () => {
+test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 제목)은 길이나 화면 비율이 다르면 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   make(dir, {
-    '2023/IMG_0001.MOV': mp4({ seconds: 120 }),
-    '2024/IMG_0001.mp4': mp4({ seconds: 300 }),
     'WWE-2023 Raw.mp4': mp4({ seconds: 10800 }),
     'WWE-2023 SmackDown.mp4': mp4({ seconds: 7200 }),
-    'GH010001.MP4': mp4({ seconds: 600, width: 3840, height: 2160 }),
-    'b/GH010001.MP4': mp4({ seconds: 600, width: 1080, height: 1920 }),
+    'Holiday.mp4': mp4({ seconds: 600, width: 3840, height: 2160 }),
+    'b/holiday.mp4': mp4({ seconds: 600, width: 1080, height: 1920 }),
   });
   const result = removeDuplicates(dir);
-  assert.strictEqual(result.sets.length, 3);
+  assert.strictEqual(result.sets.length, 2);
   assert.deepStrictEqual(result.removals, []);
-  assert.strictEqual(result.kept.length, 3);
-  assert.ok(result.kept.some((item) => item.reason === '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.'));
-  assert.doesNotMatch(formatRemoveDuplicates(result), /--yes=/);
+  assert.deepStrictEqual(result.kept.map((item) => item.reason).sort(), [
+    '남길 파일과 길이가 달라 같은 영상이 아닐 수 있어 남겼습니다.',
+    '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.',
+  ]);
+  const report = formatRemoveDuplicates(result);
+  assert.match(report, /^ {2}주의: 길이가 서로 달라 같은 영상이 아닐 수 있습니다\.$/m);
+  assert.doesNotMatch(report, /--yes=/);
+});
+
+test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
+  const dir = tempDir();
+  make(dir, {
+    'cardA/FILE0001.MOV': mp4({ seconds: 180, padding: 500 }),
+    'cardB/FILE0001.MOV': mp4({ seconds: 180 }),
+    '2023/IMG_0001.MOV': mp4({ seconds: 120 }),
+    '2024/IMG-0001.mp4': mp4({ seconds: 120 }),
+    'GH010001.MP4': mp4({ seconds: 600 }),
+    'b/GH010001.MP4': mp4({ seconds: 600 }),
+    'x/1.mp4': mp4({ seconds: 600 }),
+    'y/1.mp4': mp4({ seconds: 600.5 }),
+    'VID_20230101_123456.mp4': mp4({ seconds: 300 }),
+    'old/VID_20230101_123456.mp4': mp4({ seconds: 300 }),
+    // 흔한 이름이 아닌 이름은 그대로 지운다.
+    'Holiday.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/holiday.mp4': mp4({ seconds: 300 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.strictEqual(result.sets.length, 6);
+  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['holiday.mp4']);
+  assert.strictEqual(result.kept.length, 5);
+  assert.ok(result.kept.every((item) => item.reason === '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.'));
+});
+
+test('비대화형 세션이면 기록을 남기기 전에 멈춘다', () => {
+  const dir = tempDir();
+  make(dir, { 'ABC-123.mp4': mp4({ seconds: 600, padding: 100 }), 'ABC-123 (1).mp4': mp4({ seconds: 600 }) });
+  const { code } = removeDuplicates(dir);
+  volume = () => 'False|Fixed\r\n';
+  assert.throws(() => removeDuplicates(dir, { confirm: code }), /대화형 세션인지 확인되지 않아/);
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(logs(dir), []);
+});
+
+test('지우는 중에 남길 파일이나 다음 사본이 바뀌면 그 사본은 지우지 않고 실패로 보고한다', () => {
+  const dir = tempDir();
+  const f = make(dir, {
+    'ABC-123.mp4': mp4({ seconds: 600, padding: 100 }),
+    'ABC-123 (1).mp4': mp4({ seconds: 600 }),
+    'ABC-123 (2).mp4': mp4({ seconds: 600 }),
+    'XYZ-999.mp4': mp4({ seconds: 600, padding: 100 }),
+    'XYZ-999 (1).mp4': mp4({ seconds: 600 }),
+    'XYZ-999 (2).mp4': mp4({ seconds: 600 }),
+  });
+  // ABC-123의 첫 사본을 지우면 남길 파일을 고치고, XYZ-999의 첫 사본을 지우면 다음 사본을 고친다.
+  onRecycle = (target) => {
+    if (target === f['ABC-123 (1).mp4']) fs.appendFileSync(f['ABC-123.mp4'], 'x');
+    if (target === f['XYZ-999 (1).mp4']) fs.appendFileSync(f['XYZ-999 (2).mp4'], 'x');
+  };
+  const result = confirmed(dir);
+  assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)).sort(), ['ABC-123 (1).mp4', 'XYZ-999 (1).mp4']);
+  assert.deepStrictEqual(result.failed.map((item) => path.basename(item.path)).sort(), ['ABC-123 (2).mp4', 'XYZ-999 (2).mp4']);
+  assert.match(result.failed.find((item) => item.path === f['ABC-123 (2).mp4']).reason, /남길 파일이 바뀌어 지우지 않았습니다/);
+  assert.match(result.failed.find((item) => item.path === f['XYZ-999 (2).mp4']).reason, /판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
+  assert.ok(fs.existsSync(f['ABC-123 (2).mp4']));
+  assert.ok(fs.existsSync(f['XYZ-999 (2).mp4']));
 });
 
 test('길이를 모르거나 60초 미만인 묶음은 지우지 않는다', () => {
