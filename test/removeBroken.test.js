@@ -182,9 +182,8 @@ test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남
     'sub/deep.zip.ytdl': '',
     'gone.mp4': BROKEN,
   });
-  // Safari는 표시가 폴더다.
-  fs.mkdirSync(path.join(dir, 'safari.mp4.download'));
-  make(dir, { 'safari.mp4': BROKEN });
+  // Safari는 받는 중인 파일을 표시 폴더 안에 둔다.
+  make(dir, { 'safari.mp4.download/safari.mp4': BROKEN, 'Old.mp4.Download/old.mp4': BROKEN });
   const result = confirmed(dir);
   assert.deepStrictEqual(recycled, [path.join(dir, 'gone.mp4')]);
   const kept = Object.fromEntries(result.kept.map((item) => [path.relative(dir, item.path), item.reason]));
@@ -196,14 +195,59 @@ test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남
     'thunder.mp4': 'thunder.mp4.td.cfg',
     'qb.mkv': 'qb.mkv.!qB',
     [path.join('sub', 'deep.zip')]: 'deep.zip.ytdl',
-    'safari.mp4': 'safari.mp4.download',
+    [path.join('safari.mp4.download', 'safari.mp4')]: 'safari.mp4.download',
+    [path.join('Old.mp4.Download', 'old.mp4')]: 'Old.mp4.Download',
   };
   assert.deepStrictEqual(Object.keys(kept).sort(), Object.keys(expected).sort());
   for (const [name, marker] of Object.entries(expected)) {
     assert.ok(kept[name].includes(`(${marker})`), `${name}: ${kept[name]}`);
     assert.match(kept[name], /받는 중일 수 있어 남겼습니다/);
   }
+  assert.match(kept[path.join('safari.mp4.download', 'safari.mp4')], /표시 폴더\(safari\.mp4\.download\) 안에 있어/);
   assert.match(formatRemoveBroken(result), /남김: x\.mp4 \(받기 도구의 표시 파일\(x\.mp4\.part\)이 옆에 있어/);
+});
+
+test('표시로 보는 꼬리는 모두 대소문자와 관계없이 파일을 남긴다', () => {
+  const suffixes = ['.part', '.part-Frag3', '.crdownload', '.partial', '.download', '.opdownload', '.fdmdownload', '.aria2', '.ytdl', '.td', '.td.cfg', '.xltd', '.!qB', '.!ut', '.bc!'];
+  for (const suffix of [...suffixes, ...suffixes.map((item) => item.toUpperCase())]) {
+    const dir = tempDir();
+    make(dir, { 'v.mp4': BROKEN, [`v.mp4${suffix}`]: '' });
+    const result = removeBroken(dir);
+    assert.strictEqual(result.removals.length, 0, suffix);
+    assert.ok(result.kept[0].reason.includes(`(v.mp4${suffix})`), `${suffix}: ${result.kept[0].reason}`);
+  }
+});
+
+test('방금 바뀐 파일은 표시 파일보다 방금 바뀐 사유를, 표시 파일은 1GB 사유보다 먼저 보고한다', () => {
+  const dir = tempDir();
+  make(dir, { 'x.mp4.part': '' });
+  fs.writeFileSync(path.join(dir, 'x.mp4'), BROKEN);
+  const stat = fs.lstatSync(path.join(dir, 'x.mp4'));
+  const latest = Math.max(stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs);
+  assert.match(removeBroken(dir, { now: latest + 1000 }).kept[0].reason, /방금 바뀐 파일/);
+  const big = removeBroken(dir, { maxSize: 1 });
+  assert.match(big.kept[0].reason, /표시 파일\(x\.mp4\.part\)/);
+});
+
+test('표시 파일을 보려고 폴더를 읽지 못하면 그 폴더의 깨진 파일을 모두 남기고 폴더는 한 번만 읽는다', (t) => {
+  const dir = tempDir();
+  make(dir, { 'sub/a.mp4': BROKEN, 'sub/b.mp4': BROKEN, 'c.mp4': BROKEN });
+  const sub = path.join(dir, 'sub');
+  const realReaddir = fs.readdirSync;
+  let reads = 0;
+  // 판별(walk)은 폴더를 { withFileTypes: true }로 읽으므로, 표시 파일을 보려고 이름 목록만 읽는 것을 막는다.
+  t.mock.method(fs, 'readdirSync', function readdir(target, ...rest) {
+    if (target === sub && rest.length === 0) {
+      reads += 1;
+      throw Object.assign(new Error('막힘'), { code: 'EPERM' });
+    }
+    return realReaddir.call(this, target, ...rest);
+  });
+  const result = removeBroken(dir);
+  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['c.mp4']);
+  assert.strictEqual(result.kept.length, 2);
+  assert.ok(result.kept.every((item) => /폴더를 읽지 못해 남겼습니다\. \(EPERM\)/.test(item.reason)), JSON.stringify(result.kept));
+  assert.strictEqual(reads, 1);
 });
 
 test('이름이 정확히 이어지지 않거나 다른 폴더에 있는 표시 파일은 파일을 남기지 않는다', () => {

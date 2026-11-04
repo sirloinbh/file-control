@@ -14,10 +14,11 @@ const RECENT_MS = 5 * 60 * 1000;
 // 휴지통 용량을 넘는 파일은 Windows가 묻지 않고 영구 삭제할 수 있어(#81) 이 크기부터 남긴다. 기본 휴지통 용량은 볼륨의 약 5%다.
 const MAX_RECYCLE_SIZE = 1024 * 1024 * 1024;
 
-// 받기 도구가 받는 중인 파일 옆에 두는 표시 파일의 꼬리. x.mp4를 받는 동안 x.mp4.part, x.mp4.aria2처럼 파일 이름 뒤에 붙는다.
+// 받기 도구가 받는 중에 쓰는 이름의 꼬리. x.mp4를 받는 동안 x.mp4.part, x.mp4.aria2처럼 파일 이름 뒤에 붙는다.
 // .part: Firefox, yt-dlp, JDownloader, Transmission / .crdownload: Chrome, Edge / .partial: 옛 Edge / .download: Safari / .opdownload: Opera
 // .fdmdownload: Free Download Manager / .aria2: aria2 / .ytdl, .part-Frag숫자: yt-dlp / .td, .td.cfg, .xltd: Thunder(迅雷) / .!qB: qBittorrent / .!ut: µTorrent / .bc!: BitComet
-// 크기를 미리 잡고 받는 도구(aria2, Thunder)는 받는 중인 파일을 제 이름으로 두므로, 오래 멈춰 있던 받기도 이 표시로만 알 수 있다.
+// 받는 중인 내용 자체에 이 이름을 쓰는 도구가 많지만, 제 이름의 파일을 함께 두는 도구도 있다. aria2는 크기를 미리 잡은 x.mp4 옆에 x.mp4.aria2를,
+// Firefox는 크기 0인 자리 파일 x.mp4 옆에 x.mp4.part를 둔다. 이런 x.mp4는 오래 멈춰 있으면 시각으로 알 수 없어 이 표시로만 알 수 있다.
 const DOWNLOAD_MARKER = /^(.+?)\.(?:part(?:-frag\d+)?|crdownload|partial|download|opdownload|fdmdownload|aria2|ytdl|td(?:\.cfg)?|xltd|!qb|!ut|bc!)$/i;
 
 // 폴더 안의 표시 파일을 받는 중인 파일 이름(소문자)으로 찾아볼 수 있게 모은다. Windows는 이름의 대소문자를 가리지 않는다.
@@ -51,12 +52,24 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   // 판별이 오래 걸릴 수 있어, 그동안 바뀐 파일을 시각이 미래인 파일로 잘못 보지 않게 판별한 뒤의 시각으로 잰다.
   const checkedAt = now ?? Date.now();
   const plan = { ...found, removals: [], kept: [], interactive: null };
-  // 폴더마다 표시 파일 목록을 한 번만 읽는다.
+  // 폴더마다 표시 파일 목록을 한 번만 읽는다. 읽지 못한 폴더도 기억해 그 폴더의 파일을 모두 남긴다.
   const markersIn = new Map();
-  const markerOf = (file) => {
+  const markerReason = (file) => {
     const dir = path.dirname(file);
-    if (!markersIn.has(dir)) markersIn.set(dir, downloadMarkers(dir));
-    return markersIn.get(dir).get(path.basename(file).toLowerCase()) ?? null;
+    const name = path.basename(file).toLowerCase();
+    // Safari는 받는 중인 파일을 x.mp4.download 폴더 안에 x.mp4로 둔다.
+    if (path.basename(dir).toLowerCase() === `${name}.download`) return `받기 도구의 표시 폴더(${path.basename(dir)}) 안에 있어 아직 받는 중일 수 있어 남겼습니다.`;
+    if (!markersIn.has(dir)) {
+      try {
+        markersIn.set(dir, downloadMarkers(dir));
+      } catch (err) {
+        markersIn.set(dir, err);
+      }
+    }
+    const markers = markersIn.get(dir);
+    if (markers instanceof Error) return `받기 도구의 표시 파일을 확인하려고 폴더를 읽지 못해 남겼습니다. (${markers.code ?? markers.message})`;
+    const marker = markers.get(name);
+    return marker === undefined ? null : `받기 도구의 표시 파일(${marker})이 옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.`;
   };
   for (const item of found.broken) {
     const keep = (reason) => plan.kept.push({ path: item.path, reason });
@@ -64,10 +77,10 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       const real = access.delete(item.path);
       const stat = fs.lstatSync(real, { bigint: true });
       const hold = holdReason(stat, checkedAt);
-      const marker = hold === null ? markerOf(real) : null;
+      const marker = hold === null ? markerReason(real) : null;
       if (real !== item.path || !stat.isFile() || fileStamp(stat) !== item.stamp) keep('판별한 뒤 파일이 바뀌어 남겼습니다.');
       else if (hold !== null) keep(hold);
-      else if (marker !== null) keep(`받기 도구의 표시 파일(${marker})이 옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.`);
+      else if (marker !== null) keep(marker);
       else if (item.size >= maxSize) keep('1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
       else plan.removals.push({ path: real, size: item.size, reason: item.reason, stamp: item.stamp });
     } catch (err) {
