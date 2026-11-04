@@ -380,6 +380,20 @@ test('groupByMetadata: 길이나 비율이 동떨어진 다른 파일 때문에 
   assert.deepStrictEqual(paths(groupByMetadata([video(299.4, 1720, 1000), ...pair])), expected);
 });
 
+test('groupByMetadata: 파일이 많이 몰려도 묶음의 가장 좁은·넓은 비율로 비교해 빨리 끝나고 3%를 넘지 않는다', () => {
+  // 1초·3% 범위에 몰린 파일들. 비율은 1.70~1.80 사이에 고르게 퍼져 있다.
+  const files = Array.from({ length: 10000 }, (_, index) => video(600 + (index % 10) * 0.05, 1700 + (index % 101), 1000));
+  const started = Date.now();
+  const groups = groupByMetadata(files);
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started}ms`);
+  for (const group of groups) {
+    const ratios = group.files.map((file) => file.width / file.height);
+    assert.ok(Math.max(...ratios) / Math.min(...ratios) - 1 <= 0.03 + 1e-9);
+    assert.ok(group.files.at(-1).duration - group.files[0].duration <= 1);
+  }
+  assert.strictEqual(groups.reduce((sum, group) => sum + group.files.length, 0), 10000);
+});
+
 test('findDuplicateNames: 회전한 MP4와 표시 크기가 있는 MKV를 보이는 크기로 묶고 보고에 보이는 크기를 쓴다 (#106)', () => {
   const dir = tempDir();
   const phone = put(dir, 'phone.mp4', mp4({ seconds: 600, rotate: 90 }));

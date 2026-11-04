@@ -226,22 +226,29 @@ function aspectsMatch(a, b) {
 // 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, displayWidth, displayHeight, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
 // 길이 순으로 놓고, 파일마다 먼저 만든 묶음부터 보며 가장 짧은 파일과 1초 이내이고 묶음의 모든 파일과 화면 비율이 3% 이내인 묶음에 넣는다. 없으면 새 묶음을 만든다.
 // 그래서 묶음 안의 어느 두 파일도 길이가 1초 넘게, 화면 비율이 3% 넘게 차이 나지 않는다.
-// 비율이나 길이 한쪽만으로 먼저 나누지 않으므로, 길이나 비율이 동떨어진 다른 파일이 있어도 같은 영상 쌍이 갈리지 않는다.
+// 비율이나 길이 한쪽만으로 먼저 나누지 않으므로, 길이나 비율 한쪽만 가까운 다른 파일 때문에 같은 영상 쌍이 갈리지는 않는다.
+// 다만 한 파일은 한 묶음에만 들므로, 길이와 비율이 모두 가까운 다른 영상이 먼저 묶음을 만들면 같은 영상 쌍이 갈릴 수 있다.
 // 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다. aspect는 묶음의 가장 짧은 파일의 aspectKey다.
 function groupByMetadata(files) {
   const usable = files.filter((file) => file.duration !== null && file.duration >= MIN_DURATION && aspectRatio(file) !== null);
   usable.sort((a, b) => a.duration - b.duration || aspectRatio(a) - aspectRatio(b));
   const groups = [];
+  // 열린 묶음마다 가장 좁은·넓은 비율을 들고 있다. 둘과 3% 이내면 묶음의 모든 파일과 3% 이내다.
   let open = [];
   for (const file of usable) {
+    const ratio = aspectRatio(file);
     // 길이 창을 지난 묶음은 더 볼 필요가 없다.
-    open = open.filter((group) => file.duration - group.files[0].duration <= DURATION_TOLERANCE);
-    const group = open.find((candidate) => candidate.files.every((member) => aspectsMatch(member, file)));
-    if (group) group.files.push(file);
-    else {
-      const created = { aspect: aspectKey(file), files: [file] };
-      groups.push(created);
-      open.push(created);
+    open = open.filter(({ group }) => file.duration - group.files[0].duration <= DURATION_TOLERANCE);
+    const fits = (entry) => Math.max(entry.max, ratio) / Math.min(entry.min, ratio) - 1 <= ASPECT_TOLERANCE + 1e-9;
+    const entry = open.find(fits);
+    if (entry) {
+      entry.group.files.push(file);
+      entry.min = Math.min(entry.min, ratio);
+      entry.max = Math.max(entry.max, ratio);
+    } else {
+      const group = { aspect: aspectKey(file), files: [file] };
+      groups.push(group);
+      open.push({ group, min: ratio, max: ratio });
     }
   }
   return groups
