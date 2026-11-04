@@ -10,6 +10,7 @@ const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, 
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
 const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./removeBroken');
+const { markerFinder, markerReason } = require('./downloadMarker');
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
 
@@ -58,12 +59,16 @@ function hasZeroBlock(target, real, size) {
 
 // 남길 파일이 지금 그대로이고 온전해 보이는지 확인하고 그 시각 표시를 돌려준다. 문제가 있으면 FcError를 낸다.
 // 남길 파일이 덜 받았거나 깨졌으면 사본을 지울 때 온전한 영상을 잃으므로, find-broken과 같은 판별과 0 구간 표본을 본다(#109).
-function keeperStamp(access, keeper, now) {
+// 받기 도구의 표시 파일이 옆에 있으면 받는 중일 수 있어 남긴다(#115). aria2처럼 크기를 미리 잡고 받는 파일은
+// 머리 구조가 이미 받아졌고 0 구간 표본이 마침 받은 자리에만 걸리면 위 판별로는 온전해 보인다.
+function keeperStamp(access, keeper, now, markerOf) {
   const real = access.read(keeper.path);
   if (real !== keeper.path) throw new FcError('찾은 뒤 남길 파일의 경로가 바뀌어 남겼습니다.');
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile()) throw new FcError('남길 파일이 일반 파일이 아니라 남겼습니다.');
   if (holdReason(stat, now) !== null) throw new FcError('남길 파일이 방금 바뀌었거나 시각이 미래라 받는 중일 수 있어 남겼습니다.');
+  const marker = markerReason(markerOf(real), { keeper: true });
+  if (marker !== null) throw new FcError(marker);
   const size = Number(stat.size);
   const found = inspect(access.target, real, size);
   if (found !== null) throw new FcError(`남길 파일이 ${found.status === 'broken' ? '깨졌을' : '온전하지 않을'} 수 있어 남겼습니다. (${found.reason})`);
@@ -89,6 +94,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   // 길이를 읽는 데 시간이 걸릴 수 있어 찾은 뒤의 시각으로 잰다.
   const checkedAt = now ?? Date.now();
   const plan = { ...found, sets: [], removals: [], kept: [], lengthOnly: found.metadataGroups.filter((group) => !group.alsoNamed).length, interactive: null };
+  const markerOf = markerFinder();
   found.groups.forEach((group, set) => {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
@@ -96,7 +102,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     let keeperProblem = group.generic ? GENERIC_REASON : null;
     if (keeperProblem === null) {
       try {
-        stamp = keeperStamp(access, keeper, checkedAt);
+        stamp = keeperStamp(access, keeper, checkedAt, markerOf);
       } catch (err) {
         keeperProblem = reasonOf(err);
       }
@@ -113,8 +119,11 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
         const real = access.delete(file.path);
         const stat = fs.lstatSync(real, { bigint: true });
         const hold = holdReason(stat, checkedAt);
+        // 사본도 받는 중일 수 있으면 지우지 않는다. remove-broken과 같은 순서로 본다.
+        const marker = hold === null ? markerReason(markerOf(real)) : null;
         if (real !== file.path || !stat.isFile()) keep(file, '찾은 뒤 파일이 바뀌어 남겼습니다.');
         else if (hold !== null) keep(file, hold);
+        else if (marker !== null) keep(file, marker);
         else if (Number(stat.size) >= maxSize) keep(file, '1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
         else {
           plan.removals.push({

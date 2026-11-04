@@ -322,6 +322,90 @@ test('남길 파일이 잘렸거나 0으로 채워진 덜 받은 파일이면 �
   assert.strictEqual(reasons['XYZ-999.mp4'], '남길 파일에 0으로만 채워진 구간이 있어 덜 받은 파일일 수 있어 남겼습니다.');
 });
 
+const UHD = { seconds: 600, width: 3840, height: 2160 };
+const reasonsOf = (dir, result) => Object.fromEntries(result.kept.map((item) => [path.relative(dir, item.path), item.reason]));
+
+test('남길 파일 옆에 받기 도구의 표시 파일이 있으면 그 묶음은 지우지 않고 사유를 보고한다 (#115)', () => {
+  const dir = tempDir();
+  make(dir, {
+    // aria2는 크기를 미리 잡은 파일 옆에 상태 파일을 둔다. 머리 구조는 이미 받아져 온전해 보인다.
+    'ABC-123 4K.mp4': mp4(UHD),
+    'ABC-123 4K.mp4.aria2': '받기 상태',
+    'ABC-123.mp4': mp4({ seconds: 600 }),
+    // Safari는 받는 중인 파일을 표시 폴더 안에 둔다.
+    'XYZ-999 4K.mp4.download/XYZ-999 4K.mp4': mp4(UHD),
+    'XYZ-999.mp4': mp4({ seconds: 600 }),
+    'QRS-555 4K.mp4': mp4(UHD),
+    'QRS-555.mp4': mp4({ seconds: 600 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.sets.map((set) => path.basename(set.keep.path)).sort(), ['ABC-123 4K.mp4', 'QRS-555 4K.mp4', 'XYZ-999 4K.mp4']);
+  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['QRS-555.mp4']);
+  const reasons = reasonsOf(dir, result);
+  assert.deepStrictEqual(Object.keys(reasons).sort(), ['ABC-123.mp4', 'XYZ-999.mp4']);
+  assert.strictEqual(reasons['ABC-123.mp4'], '받기 도구의 표시 파일(ABC-123 4K.mp4.aria2)이 남길 파일 옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.');
+  assert.strictEqual(reasons['XYZ-999.mp4'], '남길 파일이 받기 도구의 표시 폴더(XYZ-999 4K.mp4.download) 안에 있어 아직 받는 중일 수 있어 남겼습니다.');
+  assert.match(formatRemoveDuplicates(result), /남김: ABC-123\.mp4 \(.*\) 받기 도구의 표시 파일\(ABC-123 4K\.mp4\.aria2\)이 남길 파일 옆에 있어/);
+  confirmed(dir);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'QRS-555.mp4')]);
+});
+
+test('사본 옆에 받기 도구의 표시 파일이 있으면 그 사본만 남긴다 (#115)', () => {
+  const dir = tempDir();
+  const f = make(dir, {
+    'ABC-123 4K.mp4': mp4(UHD),
+    'ABC-123.mp4': mp4({ seconds: 600 }),
+    'abc-123.MP4.part': '',
+    'safari/ABC-123.mp4.download/ABC-123.mp4': mp4({ seconds: 600 }),
+    'old/ABC-123.mp4': mp4({ seconds: 600 }),
+  });
+  const result = confirmed(dir);
+  assert.deepStrictEqual(recycled, [f['old/ABC-123.mp4']]);
+  assert.deepStrictEqual(reasonsOf(dir, result), {
+    'ABC-123.mp4': '받기 도구의 표시 파일(abc-123.MP4.part)이 옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.',
+    [path.join('safari', 'ABC-123.mp4.download', 'ABC-123.mp4')]: '받기 도구의 표시 폴더(ABC-123.mp4.download) 안에 있어 아직 받는 중일 수 있어 남겼습니다.',
+  });
+  assert.deepStrictEqual(result.failed, []);
+});
+
+test('미리 본 뒤 남길 파일 옆에 표시 파일이 생기면 아무것도 지우지 않는다 (#115)', () => {
+  const dir = tempDir();
+  make(dir, { 'ABC-123 4K.mp4': mp4(UHD), 'ABC-123.mp4': mp4({ seconds: 600 }) });
+  const { code, removals } = removeDuplicates(dir);
+  assert.strictEqual(removals.length, 1);
+  make(dir, { 'ABC-123 4K.mp4.crdownload': '' });
+  const result = removeDuplicates(dir, { confirm: code });
+  assert.strictEqual(result.mismatch, true);
+  assert.match(result.kept[0].reason, /표시 파일\(ABC-123 4K\.mp4\.crdownload\)이 남길 파일 옆에/);
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(logs(dir), []);
+});
+
+test('표시 파일을 보려고 폴더를 읽지 못하면 남길 파일의 폴더는 그 묶음을, 사본의 폴더는 그 사본을 남긴다 (#115)', (t) => {
+  const dir = tempDir();
+  make(dir, {
+    'new/ABC-123 4K.mp4': mp4(UHD),
+    'old/ABC-123.mp4': mp4({ seconds: 600 }),
+    'XYZ-999.mp4': mp4({ seconds: 600, padding: 100 }),
+    'old/XYZ-999.mp4': mp4({ seconds: 600 }),
+    'busy/XYZ-999.mp4': mp4({ seconds: 600 }),
+  });
+  const blocked = [path.join(dir, 'new'), path.join(dir, 'busy')];
+  const realReaddir = fs.readdirSync;
+  // 찾기(walk)는 폴더를 { withFileTypes: true }로 읽으므로, 표시 파일을 보려고 이름 목록만 읽는 것을 막는다.
+  t.mock.method(fs, 'readdirSync', function readdir(target, ...rest) {
+    if (blocked.includes(target) && rest.length === 0) throw Object.assign(new Error('막힘'), { code: 'EPERM' });
+    return realReaddir.call(this, target, ...rest);
+  });
+  const result = removeDuplicates(dir);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(result.removals.map((item) => path.relative(dir, item.path)), [path.join('old', 'XYZ-999.mp4')]);
+  assert.deepStrictEqual(reasonsOf(dir, result), {
+    [path.join('old', 'ABC-123.mp4')]: '받기 도구의 표시 파일을 확인하려고 남길 파일의 폴더를 읽지 못해 남겼습니다. (EPERM)',
+    [path.join('busy', 'XYZ-999.mp4')]: '받기 도구의 표시 파일을 확인하려고 폴더를 읽지 못해 남겼습니다. (EPERM)',
+  });
+});
+
 test('비대화형 세션이면 기록을 남기기 전에 멈춘다', () => {
   const dir = tempDir();
   make(dir, { 'ABC-123.mp4': mp4({ seconds: 600, padding: 100 }), 'ABC-123 (1).mp4': mp4({ seconds: 600 }) });
