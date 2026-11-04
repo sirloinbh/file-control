@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { duplicateKey, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
+const { duplicateKey, titleWords, titlesDiffer, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
 const { run } = require('../bin/fctl');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
@@ -130,8 +130,8 @@ test('findDuplicateNames: 영상 파일을 번호와 이름으로 묶고 하나�
   assert.strictEqual(result.checked, 7);
   const brief = (groups) => groups.map(({ files, keep, ...group }) => ({ ...group, files: files.map(({ path: p, size }) => ({ path: p, size })) }));
   assert.deepStrictEqual(brief(result.groups), [
-    { kind: 'number', key: 'ABC-123', number: 'ABC-123', part: null, files: [{ path: a, size: 4 }, { path: b, size: 2 }] },
-    { kind: 'name', key: 'trip', number: null, part: null, files: [{ path: d, size: 1 }, { path: c, size: 1 }] },
+    { kind: 'number', key: 'ABC-123', number: 'ABC-123', part: null, generic: false, differentTitles: false, files: [{ path: a, size: 4 }, { path: b, size: 2 }] },
+    { kind: 'name', key: 'trip', number: null, part: null, generic: false, differentTitles: false, files: [{ path: d, size: 1 }, { path: c, size: 1 }] },
   ]);
   // 시험 파일은 영상 구조가 아니라 모두 읽지 못한 파일이다. 그래서 크기로 고르고, 읽지 않는 형식(.avi)은 읽지 못한 .mp4보다 앞선다.
   assert.deepStrictEqual(result.groups.map((group) => group.keep), [
@@ -242,7 +242,7 @@ test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
       '  trip.avi (1B) [남김: 길이나 해상도를 읽지 못한 파일을 뺌]',
       '  Trip.mp4 (1B)',
       '번호가 여럿: ABC-123 XYZ-456.mp4 (ABC-123, XYZ-456)',
-      '살펴본 영상 7개, 중복 후보 묶음 3개(파일 6개), 길이가 같은 묶음 0개(파일 0개), 길이 모름 7개, 번호가 여럿 1개, 판단 못함 0개, 건너뜀 0개',
+      '살펴본 영상 7개, 중복 후보 묶음 3개(파일 6개, 확인 필요 0개), 길이가 같은 묶음 0개(파일 0개), 길이 모름 7개, 번호가 여럿 1개, 판단 못함 0개, 건너뜀 0개',
     ].join('\n'),
   );
 });
@@ -440,7 +440,7 @@ test('formatDuplicateNames: 해상도와 길이, 길이가 같은 묶음을 보�
   assert.strictEqual(lines[3], '길이가 같은 영상 (1:35, 화면 비율 1.8, 크기도 같음, 2개):');
   assert.match(lines[4], /^ {2}a\.mp4 \(\d+B, 1920x1080, 1:35\) \[남김: 모두 같아 경로 순으로 첫 파일\]$/);
   assert.match(lines[5], /^ {2}b\.mp4 \(\d+B, 1920x1080, 1:35\)$/);
-  assert.strictEqual(lines.at(-1), '살펴본 영상 4개, 중복 후보 묶음 1개(파일 2개), 길이가 같은 묶음 1개(파일 2개), 길이 모름 0개, 번호가 여럿 0개, 판단 못함 0개, 건너뜀 0개');
+  assert.strictEqual(lines.at(-1), '살펴본 영상 4개, 중복 후보 묶음 1개(파일 2개, 확인 필요 0개), 길이가 같은 묶음 1개(파일 2개), 길이 모름 0개, 번호가 여럿 0개, 판단 못함 0개, 건너뜀 0개');
 });
 
 // 남길 파일 고르기(#34). 경로는 파일 이름만 쓴다.
@@ -538,4 +538,71 @@ test('findDuplicateNames: 이름 묶음과 길이 묶음에 남길 파일을 붙
   assert.strictEqual(lines[3], '  주의: 길이가 서로 달라 같은 영상이 아닐 수 있습니다.');
   assert.strictEqual(lines[4], '길이가 같은 영상 (15:00, 화면 비율 1.8, 2개):');
   assert.match(lines[6], /^ {2}y\.mkv \(\d+B, 3840x2160, 15:01\) \[남김: 해상도가 가장 높음\]$/);
+});
+
+test('titleWords: 번호 묶음의 제목 낱말에서 번호, 조각, 화질·배포 표시, 복사본 꼬리를 뺀다 (#103)', () => {
+  assert.deepStrictEqual(titleWords('WWE-2023 Raw.mp4'), ['raw']);
+  assert.deepStrictEqual(titleWords('IPHONE-15 review.mp4'), ['review']);
+  assert.deepStrictEqual(titleWords('[FHD] ABC-123 제목 1080p.mkv'), ['제목']);
+  assert.deepStrictEqual(titleWords('ABC-123 Title - 복사본.mp4'), ['title']);
+  assert.deepStrictEqual(titleWords('ABC-123 제목3 (1).mp4'), ['제목']);
+  for (const name of ['ABC-123.mp4', 'ABC-123 CD2.mp4', 'ABC-123 part 2 HD 자막.mp4', 'ABC-123 前編 Ⅱ 第一話.mp4', 'ABC-123 B x264.mp4']) assert.deepStrictEqual(titleWords(name), [], name);
+  // 번호가 없거나 여럿이면 제목 낱말을 정하지 않는다.
+  assert.strictEqual(titleWords('Trip.mp4'), null);
+  assert.strictEqual(titleWords('ABC-123 XYZ-456.mp4'), null);
+});
+
+test('titlesDiffer: 둘 다 제목이 있는데 겹치는 낱말이 없을 때만 다르다고 본다', () => {
+  assert.strictEqual(titlesDiffer(['raw'], ['smackdown']), true);
+  assert.strictEqual(titlesDiffer(['좋은', '영화'], ['좋은', '영상']), false);
+  assert.strictEqual(titlesDiffer(['제목'], []), false);
+  assert.strictEqual(titlesDiffer(null, ['제목']), false);
+});
+
+test('findDuplicateNames: 번호는 같은데 제목이 다른 묶음과 카메라·순번 이름 묶음에 주의를 붙인다 (#103)', () => {
+  const dir = tempDir();
+  put(dir, 'WWE-2023 Raw.mp4');
+  put(dir, 'WWE-2023 SmackDown.mp4');
+  put(dir, 'IPHONE-15 review.mp4');
+  put(dir, path.join('b', 'IPHONE-15 unboxing.mp4'));
+  // 제목이 한쪽에만 있거나 겹치면 주의를 붙이지 않는다.
+  put(dir, 'ABC-123.mp4');
+  put(dir, path.join('sub', '[FHD] ABC-123 제목 1080p.mkv'));
+  put(dir, 'XYZ-999 좋은 영화.mp4');
+  put(dir, 'XYZ-999 좋은 영화 감독판.mp4');
+  // 카메라가 붙이는 흔한 이름
+  put(dir, path.join('2023', 'IMG_0001.MOV'));
+  put(dir, path.join('2024', 'img 0001.mp4'));
+  put(dir, 'GH010001.MP4');
+  put(dir, path.join('b', 'GH010001.MP4'));
+  put(dir, 'DJI_0001.MP4');
+  put(dir, path.join('b', 'DJI_0001.MP4'));
+  put(dir, path.join('x', '1.mp4'));
+  put(dir, path.join('y', '1.mp4'));
+  put(dir, path.join('car1', 'REC-0001.mp4'));
+  put(dir, path.join('car2', 'REC-0001.mp4'));
+  // 사람이 붙인 이름은 흔한 이름이 아니다.
+  put(dir, 'Holiday.mp4');
+  put(dir, path.join('old', 'holiday.mp4'));
+
+  const result = findDuplicateNames(dir);
+  const flags = Object.fromEntries(result.groups.map((group) => [group.key, [group.generic, group.differentTitles]]));
+  assert.deepStrictEqual(flags, {
+    'ABC-123': [false, false],
+    'IPHONE-15': [false, true],
+    'REC-0001': [true, false],
+    'WWE-2023': [false, true],
+    'XYZ-999': [false, false],
+    1: [true, false],
+    'dji 0001': [true, false],
+    gh010001: [true, false],
+    holiday: [false, false],
+    'img 0001': [true, false],
+  });
+  const report = formatDuplicateNames(result);
+  const blockOf = (label) => report.split('\n').slice(report.split('\n').indexOf(label)).join('\n');
+  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. 제목이 겹치지 않는 파일은 remove-duplicates가 지우지 않습니다\.\n/);
+  assert.match(blockOf('중복 후보 (이름 "img 0001", 2개):'), /^중복 후보 \(이름 "img 0001", 2개\):\n {2}.+\n {2}.+\n {2}주의: 카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음을 지우지 않습니다\.\n/);
+  assert.match(blockOf('중복 후보 (번호 ABC-123, 2개):'), /^중복 후보 \(번호 ABC-123, 2개\):\n {2}.+\n {2}.+\n중복 후보/);
+  assert.match(report, /중복 후보 묶음 10개\(파일 20개, 확인 필요 7개\)/);
 });

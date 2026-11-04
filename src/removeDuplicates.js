@@ -6,40 +6,27 @@ const path = require('node:path');
 const { FcError, recycleBinState } = require('./commands');
 const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
-const { findDuplicateNames, aspectKey, groupLabel, describeVideo, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
+const { findDuplicateNames, aspectKey, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
 const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./removeBroken');
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
 
-// 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
-// 앞에 영문 낱말 하나(10글자까지)가 올 수 있고, 나머지 낱말이 모두 "영문 4글자까지 + 숫자 + 영문 2글자까지"이거나 영문 1~2글자이며,
-// 숫자가 하나라도 있으면 그렇게 본다.
-// IMG_0001, IMG_E0001, GH010001, DJI_0001, DJI_20230101123456_0001_D, FILE0001, VID_20230101_123456, VID-20230101-WA0001,
-// PXL_20230101_123456789.LS, 20230101_123456_F, NO20230101-123456-000001F, 1
-// 이런 클립은 길이가 정해진 경우(블랙박스 1분·3분 조각, 시간으로 나눈 녹화)가 많아 이름과 길이가 같아도 다른 영상일 수 있다(#103).
-// 제품번호(ABC-123)는 번호 묶음이라 여기에 들지 않는다.
-const COUNTER = '(?:[a-z]{0,4}\\d+[a-z]{0,2}|[a-z]{1,2})';
-const GENERIC_NAME = new RegExp(`^(?:[a-z]{1,10} )?${COUNTER}(?: ${COUNTER})*$`);
-// 대문자와 하이픈으로 된 녹화기 카운터(REC-0001, FRONT-0001)는 제품번호로 보여 번호 묶음이 된다(#110).
-// 제품번호 판정은 normalize, product-number와 같이 쓰므로 바꾸지 않고, 여기서 이 접두어의 번호 묶음을 지우지 않는다.
-const COUNTER_PREFIXES = new Set(['REC', 'RECORD', 'CAM', 'CAMERA', 'MOV', 'MOVI', 'MOVIE', 'VIDEO', 'CLIP', 'FILE', 'FRONT', 'REAR', 'INSIDE', 'EVT', 'EVENT', 'NOR', 'NORMAL', 'PARK', 'PARKING', 'EMER', 'MANUAL', 'MVI', 'MAH', 'SAM', 'SDC', 'PICT', 'CIMG', 'HPIM', 'GOPR', 'DJI', 'PXL', 'IMG', 'DSC', 'VID']);
-function isGenericGroup(group) {
-  if (group.kind === 'number') return COUNTER_PREFIXES.has(group.number.split('-')[0]);
-  return /\d/.test(group.key) && GENERIC_NAME.test(group.key);
-}
+// 카메라·순번처럼 흔한 이름의 묶음(find-duplicates의 generic, isGenericGroup)은 이름과 길이가 같아도 다른 영상일 수 있어 지우지 않는다(#103, #110).
 const GENERIC_REASON = '카메라·순번처럼 흔한 이름이라 길이가 같아도 다른 영상일 수 있어 남겼습니다.';
 
 // 남길 파일과 같은 영상으로 볼 수 있는지. 같으면 null, 아니면 남기는 사유를 돌려준다.
 // 이름만 같은 다른 영상(같은 번호의 예고편, 제품번호처럼 보이는 WWE-2023 등, #103)을 지우지 않도록
 // 길이 차이가 1초 이내이고 화면 비율이 같을 때만 같은 영상으로 본다. 길이 묶음과 같은 기준이다.
+// 번호 묶음에서 남길 파일과 제목 낱말이 하나도 겹치지 않으면 길이가 같아도 남긴다. 길이가 정해진 방송 녹화(WWE-2023 Raw와 SmackDown)가 그렇다.
 function sameVideoReason(keeper, file) {
   if (keeper.duration === null || aspectKey(keeper) === null) return '남길 파일의 길이나 해상도를 몰라 같은 영상인지 확인하지 못해 남겼습니다.';
   if (file.duration === null || aspectKey(file) === null) return '길이나 해상도를 몰라 같은 영상인지 확인하지 못해 남겼습니다.';
   if (keeper.duration < MIN_DURATION || file.duration < MIN_DURATION) return '60초 미만이라 길이로 같은 영상인지 확인할 수 없어 남겼습니다.';
   if (Math.abs(keeper.duration - file.duration) > DURATION_TOLERANCE) return '남길 파일과 길이가 달라 같은 영상이 아닐 수 있어 남겼습니다.';
   if (aspectKey(keeper) !== aspectKey(file)) return '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.';
+  if (titlesDiffer(keeper.title, file.title)) return '번호는 같지만 남길 파일과 제목이 달라 다른 영상일 수 있어 남겼습니다.';
   return null;
 }
 
@@ -97,7 +84,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
     let stamp = null;
-    let keeperProblem = isGenericGroup(group) ? GENERIC_REASON : null;
+    let keeperProblem = group.generic ? GENERIC_REASON : null;
     if (keeperProblem === null) {
       try {
         stamp = keeperStamp(access, keeper, checkedAt);

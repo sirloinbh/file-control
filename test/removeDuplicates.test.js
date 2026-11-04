@@ -160,6 +160,30 @@ test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 �
   assert.doesNotMatch(report, /--yes=/);
 });
 
+test('번호는 같은데 남길 파일과 제목이 겹치지 않는 파일은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
+  const dir = tempDir();
+  const made = make(dir, {
+    // 길이가 정해진 방송 녹화는 길이까지 같을 수 있다.
+    'WWE-2023 Raw.mp4': mp4({ seconds: 10800, padding: 10 }),
+    'old/WWE-2023 SmackDown.mp4': mp4({ seconds: 10800 }),
+    'IPHONE-15 review.mp4': mp4({ seconds: 600, padding: 10 }),
+    'b/IPHONE-15 unboxing.mp4': mp4({ seconds: 600 }),
+    // 한 묶음 안에서도 파일마다 본다. 제목이 겹치거나 한쪽에 제목이 없으면 지운다.
+    'XYZ-999 좋은 영화.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/XYZ-999 좋은 영화 1080p.mp4': mp4({ seconds: 300 }),
+    'old/XYZ-999.mp4': mp4({ seconds: 300 }),
+    'old/XYZ-999 다른 영상.mp4': mp4({ seconds: 300 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => item.path).sort(), [made['old/XYZ-999 좋은 영화 1080p.mp4'], made['old/XYZ-999.mp4']].sort());
+  const reason = '번호는 같지만 남길 파일과 제목이 달라 다른 영상일 수 있어 남겼습니다.';
+  assert.deepStrictEqual(
+    result.kept.map((item) => [item.path, item.reason]).sort(),
+    [made['old/WWE-2023 SmackDown.mp4'], made['b/IPHONE-15 unboxing.mp4'], made['old/XYZ-999 다른 영상.mp4']].sort().map((p) => [p, reason]),
+  );
+  assert.match(formatRemoveDuplicates(result), /^ {2}남김: old[\\/]XYZ-999 다른 영상\.mp4 \(.+\) 번호는 같지만 남길 파일과 제목이 달라/m);
+});
+
 test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   make(dir, {
