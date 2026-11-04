@@ -161,6 +161,91 @@ test('5분 기준은 가장 늦은 시각에서 잰다', () => {
   assert.strictEqual(removeBroken(dir, { now: latest + FIVE }).removals.length, 1);
 });
 
+test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남기고 표시 파일 이름을 보고한다', () => {
+  const dir = tempDir();
+  // 크기를 미리 잡고 받는 도구는 받는 중인 파일을 제 이름으로 두고 뒤를 0으로 채운다.
+  const ZEROS = Buffer.alloc(64);
+  make(dir, {
+    'x.mp4': BROKEN,
+    'x.mp4.part': '받는 중',
+    'z.mp4': ZEROS,
+    'z.mp4.aria2': '받기 상태',
+    'Chrome.mp4': BROKEN,
+    'chrome.MP4.crdownload': '',
+    'frag.mp4': BROKEN,
+    'frag.mp4.part-Frag12': '',
+    'thunder.mp4': ZEROS,
+    'thunder.mp4.td.cfg': '',
+    'qb.mkv': ZEROS,
+    'qb.mkv.!qB': '',
+    'sub/deep.zip': ZEROS,
+    'sub/deep.zip.ytdl': '',
+    'gone.mp4': BROKEN,
+  });
+  // Safari는 표시가 폴더다.
+  fs.mkdirSync(path.join(dir, 'safari.mp4.download'));
+  make(dir, { 'safari.mp4': BROKEN });
+  const result = confirmed(dir);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'gone.mp4')]);
+  const kept = Object.fromEntries(result.kept.map((item) => [path.relative(dir, item.path), item.reason]));
+  const expected = {
+    'x.mp4': 'x.mp4.part',
+    'z.mp4': 'z.mp4.aria2',
+    'Chrome.mp4': 'chrome.MP4.crdownload',
+    'frag.mp4': 'frag.mp4.part-Frag12',
+    'thunder.mp4': 'thunder.mp4.td.cfg',
+    'qb.mkv': 'qb.mkv.!qB',
+    [path.join('sub', 'deep.zip')]: 'deep.zip.ytdl',
+    'safari.mp4': 'safari.mp4.download',
+  };
+  assert.deepStrictEqual(Object.keys(kept).sort(), Object.keys(expected).sort());
+  for (const [name, marker] of Object.entries(expected)) {
+    assert.ok(kept[name].includes(`(${marker})`), `${name}: ${kept[name]}`);
+    assert.match(kept[name], /받는 중일 수 있어 남겼습니다/);
+  }
+  assert.match(formatRemoveBroken(result), /남김: x\.mp4 \(받기 도구의 표시 파일\(x\.mp4\.part\)이 옆에 있어/);
+});
+
+test('이름이 정확히 이어지지 않거나 다른 폴더에 있는 표시 파일은 파일을 남기지 않는다', () => {
+  const dir = tempDir();
+  make(dir, {
+    'a.mp4': BROKEN,
+    'a.mp4.bak': '',
+    'a.mp4.part.txt': '',
+    'a.part': '',
+    'xa.mp4.part': '',
+    'a.mp4part': '',
+    'other/a.mp4.crdownload': '',
+    'b.mp4': BROKEN,
+    'sub/b.mp4.aria2': '',
+  });
+  const result = removeBroken(dir);
+  assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)).sort(), ['a.mp4', 'b.mp4']);
+  assert.deepStrictEqual(result.kept, []);
+});
+
+test('표시 파일을 지우면 다음 실행에서 지울 수 있다', () => {
+  const dir = tempDir();
+  make(dir, { 'x.mp4': BROKEN, 'x.mp4.part': '받는 중' });
+  const first = removeBroken(dir);
+  assert.strictEqual(first.removals.length, 0);
+  assert.strictEqual(first.kept.length, 1);
+  fs.rmSync(path.join(dir, 'x.mp4.part'));
+  confirmed(dir);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'x.mp4')]);
+});
+
+test('미리 본 뒤 표시 파일이 생기면 아무것도 지우지 않는다', () => {
+  const dir = tempDir();
+  make(dir, { 'x.mp4': BROKEN, 'y.mp4': BROKEN });
+  const { code } = removeBroken(dir);
+  make(dir, { 'x.mp4.crdownload': '' });
+  const result = removeBroken(dir, { confirm: code });
+  assert.strictEqual(result.mismatch, true);
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(logs(dir), []);
+});
+
 test('미리 본 목록에 없던 파일이 생기면 아무것도 지우지 않는다', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN });
