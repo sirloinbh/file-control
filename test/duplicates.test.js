@@ -546,15 +546,19 @@ test('titleWords: 번호 묶음의 제목 낱말에서 번호, 조각, 화질·�
   assert.deepStrictEqual(titleWords('[FHD] ABC-123 제목 1080p.mkv'), ['제목']);
   assert.deepStrictEqual(titleWords('ABC-123 Title - 복사본.mp4'), ['title']);
   assert.deepStrictEqual(titleWords('ABC-123 제목3 (1).mp4'), ['제목']);
-  for (const name of ['ABC-123.mp4', 'ABC-123 CD2.mp4', 'ABC-123 part 2 HD 자막.mp4', 'ABC-123 前編 Ⅱ 第一話.mp4', 'ABC-123 B x264.mp4']) assert.deepStrictEqual(titleWords(name), [], name);
+  for (const name of ['ABC-123.mp4', 'ABC-123 CD2.mp4', 'ABC-123 part 2 HD 자막.mp4', 'ABC-123 前編 Ⅱ 第一話.mp4', 'ABC-123 B x264.mp4', 'ABC-123 HEVC leak.mp4']) assert.deepStrictEqual(titleWords(name), [], name);
   // 번호가 없거나 여럿이면 제목 낱말을 정하지 않는다.
   assert.strictEqual(titleWords('Trip.mp4'), null);
   assert.strictEqual(titleWords('ABC-123 XYZ-456.mp4'), null);
 });
 
-test('titlesDiffer: 둘 다 제목이 있는데 겹치는 낱말이 없을 때만 다르다고 본다', () => {
+test('titlesDiffer: 둘 다 제목이 있는데 어느 쪽 낱말도 다른 쪽에 모두 들어 있지 않으면 다르다고 본다', () => {
   assert.strictEqual(titlesDiffer(['raw'], ['smackdown']), true);
-  assert.strictEqual(titlesDiffer(['좋은', '영화'], ['좋은', '영상']), false);
+  // 되풀이한 이름이나 관사 하나만 겹쳐도 다른 제목이다.
+  assert.strictEqual(titlesDiffer(['wwe', 'raw'], ['wwe', 'smackdown']), true);
+  assert.strictEqual(titlesDiffer(['the', 'review'], ['the', 'unboxing']), true);
+  assert.strictEqual(titlesDiffer(['좋은', '영화'], ['좋은', '영화', '감독판']), false);
+  assert.strictEqual(titlesDiffer(['좋은', '영화', '감독판'], ['영화']), false);
   assert.strictEqual(titlesDiffer(['제목'], []), false);
   assert.strictEqual(titlesDiffer(null, ['제목']), false);
 });
@@ -601,7 +605,7 @@ test('findDuplicateNames: 번호는 같은데 제목이 다른 묶음과 카메�
   });
   const report = formatDuplicateNames(result);
   const blockOf = (label) => report.split('\n').slice(report.split('\n').indexOf(label)).join('\n');
-  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. 제목이 겹치지 않는 파일은 remove-duplicates가 지우지 않습니다\.\n/);
+  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음에서 남길 파일과 제목이 맞는 파일만 지웁니다\.\n/);
   assert.match(blockOf('중복 후보 (이름 "img 0001", 2개):'), /^중복 후보 \(이름 "img 0001", 2개\):\n {2}.+\n {2}.+\n {2}주의: 카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음을 지우지 않습니다\.\n/);
   assert.match(blockOf('중복 후보 (번호 ABC-123, 2개):'), /^중복 후보 \(번호 ABC-123, 2개\):\n {2}.+\n {2}.+\n중복 후보/);
   assert.match(report, /중복 후보 묶음 10개\(파일 20개, 확인 필요 7개\)/);

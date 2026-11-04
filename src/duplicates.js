@@ -90,12 +90,12 @@ function findPart(original, ranges) {
 // 제목 낱말에서 빼는 말. 배포·자막 표시, 조각을 부르는 말(CD, part), 복사본 표시다. 화질·코덱 표시(QUALITY)도 뺀다.
 const TITLE_NOISE = new Set([
   'fhd', 'hd', 'uhd', 'sd', 'hq', 'hdr', 'sub', 'subs', 'subbed', 'dub', 'dubbed', 'web', 'webrip', 'webdl', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'hdrip', 'hdtv', 'remux', 'proper', 'repack',
-  'uncensored', 'censored', 'leaked', 'cd', 'part', 'pt', 'disc', 'disk', 'ep', 'episode', 'vol', 'copy', '복사본', '자막', '한글자막', '무자막',
+  'hevc', 'avc', 'uncensored', 'censored', 'leak', 'leaked', 'cd', 'part', 'pt', 'disc', 'disk', 'ep', 'episode', 'vol', 'copy', '복사본', '자막', '한글자막', '무자막',
 ]);
 
 // 번호 묶음을 위한 제목 낱말. 번호를 뺀 나머지에서 숫자와 조각 표시, 화질·배포 표시를 뺀 낱말을 소문자로, 중복 없이 나온 순서대로 돌려준다.
 // 이름에 대문자 제품번호가 하나가 아니면 null이다. 파일은 건드리지 않는 순수 함수다.
-// 같은 번호인데 제목 낱말이 하나도 겹치지 않으면 제품번호로 잘못 알아본 말일 수 있다(WWE-2023 Raw와 WWE-2023 SmackDown, #103).
+// 같은 번호인데 제목이 다르면(titlesDiffer) 제품번호로 잘못 알아본 말일 수 있다(WWE-2023 Raw와 WWE-2023 SmackDown, #103).
 function titleWords(fileName) {
   const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
   const ranges = findProductNumberRanges(base);
@@ -110,10 +110,12 @@ function titleWords(fileName) {
   return [...words];
 }
 
-// 두 제목 낱말 목록이 둘 다 있는데 하나도 겹치지 않는지. 한쪽이라도 제목이 없으면(ABC-123.mp4) 다르다고 보지 않는다.
+// 두 제목 낱말 목록이 둘 다 있는데 서로 다른 제목인지. 한쪽 낱말이 다른 쪽에 모두 들어 있으면 같은 제목으로 본다
+// (좋은 영화와 좋은 영화 감독판). 낱말 일부만 겹치면(WWE Raw와 WWE SmackDown) 다르다. 한쪽이라도 제목이 없으면(ABC-123.mp4) 다르다고 보지 않는다.
 function titlesDiffer(a, b) {
   if (!a || !b || a.length === 0 || b.length === 0) return false;
-  return !a.some((word) => b.includes(word));
+  const within = (small, large) => small.every((word) => large.includes(word));
+  return !within(a, b) && !within(b, a);
 }
 
 // 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
@@ -140,7 +142,7 @@ function groupCautions(group) {
   const cautions = [];
   if (group.keep?.doubt) cautions.push(group.keep.doubt);
   if (group.generic) cautions.push('카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다. remove-duplicates는 이 묶음을 지우지 않습니다.');
-  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. 제목이 겹치지 않는 파일은 remove-duplicates가 지우지 않습니다.');
+  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. remove-duplicates는 이 묶음에서 남길 파일과 제목이 맞는 파일만 지웁니다.');
   return cautions;
 }
 
@@ -273,7 +275,7 @@ function chooseKeeper(files) {
 // 타겟 아래 영상 파일을 이름 기준과 길이 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
 // 묶음마다 남길 파일(keep: chooseKeeper의 결과)을 붙인다. 이름 묶음과 길이 묶음은 따로 고르므로, 두 묶음에 함께 든 파일은 한쪽에서는 남기고 다른 쪽에서는 남기지 않을 수 있다.
 // - groups: 이름이 같은 묶음 ({ kind, key, number, part, generic, differentTitles, files }). 파일이 둘 이상인 것만 넣는다.
-//   generic은 카메라·순번처럼 흔한 이름의 묶음(isGenericGroup)이고, differentTitles는 번호 묶음에 제목 낱말이 하나도 겹치지 않는 두 파일이 있는 묶음이다(#103).
+//   generic은 카메라·순번처럼 흔한 이름의 묶음(isGenericGroup)이고, differentTitles는 번호 묶음에 제목이 다른(titlesDiffer) 두 파일이 있는 묶음이다(#103).
 //   번호 묶음의 파일에는 title(titleWords의 값)이 붙는다.
 //   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
 // - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
