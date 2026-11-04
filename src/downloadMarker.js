@@ -48,7 +48,7 @@ function markerFinder() {
 function markerReason(found, { keeper = false } = {}) {
   if (found === null) return null;
   if (found.folder !== undefined) return `${keeper ? '남길 파일이 ' : ''}받기 도구의 표시 폴더(${found.folder}) 안에 있어 아직 받는 중일 수 있어 남겼습니다.`;
-  if (found.error !== undefined) return `${keeper ? '남길 파일의 ' : ''}받기 도구의 표시 파일을 확인하려고 폴더를 읽지 못해 남겼습니다. (${found.error})`;
+  if (found.error !== undefined) return `받기 도구의 표시 파일을 확인하려고 ${keeper ? '남길 파일의 ' : ''}폴더를 읽지 못해 남겼습니다. (${found.error})`;
   return `받기 도구의 표시 파일(${found.marker})이 ${keeper ? '남길 파일 ' : ''}옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.`;
 }
 
