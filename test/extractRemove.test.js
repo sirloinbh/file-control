@@ -28,6 +28,7 @@ test.beforeEach(() => {
 });
 
 const { FcError } = require('../src/commands');
+const { fileStamp } = require('../src/target');
 const { planExtractions, applyExtractions, extractArchives, formatExtractions } = require('../src/extract');
 const { run } = require('../bin/fctl');
 
@@ -286,6 +287,71 @@ test('푸는 동안 같은 크기와 수정 시각의 다른 파일로 바뀌어
   });
   const result = extractArchives(dir, { removeArchives: true });
   t.mock.restoreAll();
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+});
+
+test('푸는 동안 같은 크기와 수정 시각으로 제자리에서 다시 써도 지우지 않는다', (t) => {
+  const dir = tempDir();
+  const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  // utimesSync는 ms 아래 자리를 정확히 되돌리지 못하므로, 수정 시각을 ms 단위 값으로 맞춰 두고 그 값으로 되돌린다.
+  // 그래야 파일 번호, 크기, 수정 시각이 모두 풀기 전과 같아진다.
+  const old = new Date(Date.now() - 3600 * 1000 - 123);
+  fs.utimesSync(file, old, old);
+  // 구조가 온전하고 이름과 크기도 같아 내용 확인은 통과하는 다른 zip이다.
+  const other = zipBuffer({ 'x.txt': 'y' });
+  const original = fs.lstatSync(file, { bigint: true });
+  const before = fileStamp(original);
+  const readdirSync = fs.readdirSync;
+  let rewritten = false;
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (String(p).includes('.fctl-new') && options?.recursive) {
+      // 변경 시각이 시계 단위로 적혀 같은 단위 안이면 구분할 수 없으므로, 식별값이 달라질 때까지 다시 쓴다(#116).
+      for (let tries = 0; tries < 100 && !rewritten; tries += 1) {
+        const fd = fs.openSync(file, 'r+');
+        fs.writeSync(fd, other, 0, other.length, 0);
+        fs.closeSync(fd);
+        fs.utimesSync(file, old, old);
+        rewritten = fileStamp(fs.lstatSync(file, { bigint: true })) !== before;
+        if (!rewritten) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+      }
+    }
+    return readdirSync(p, options);
+  });
+  const result = extractArchives(dir, { removeArchives: true });
+  t.mock.restoreAll();
+  assert.ok(rewritten);
+  // 바꿔치기는 변경 시각으로만 드러난다.
+  const after = fs.lstatSync(file, { bigint: true });
+  assert.deepStrictEqual([after.ino, after.size, after.mtimeNs], [original.ino, original.size, original.mtimeNs]);
+  assert.notStrictEqual(after.ctimeNs, original.ctimeNs);
+  assert.ok(fs.readFileSync(file).equals(other));
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(result.removed, []);
+  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+});
+
+test('파일 번호가 2^53을 넘어도 하나만 달라진 것을 알아챈다', (t) => {
+  // ReFS의 파일 번호는 2^53을 넘는다. 숫자로 비교하면 아래 두 값이 같아진다.
+  const base = 2n ** 62n;
+  assert.strictEqual(Number(base), Number(base + 1n));
+  const dir = tempDir();
+  const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const { lstatSync, readdirSync } = fs;
+  let extracted = false;
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (String(p).includes('.fctl-new') && options?.recursive) extracted = true;
+    return readdirSync(p, options);
+  });
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    const stat = lstatSync(p, options);
+    if (path.resolve(String(p)) === file && options?.bigint) stat.ino = base + (extracted ? 1n : 0n);
+    return stat;
+  });
+  const result = extractArchives(dir, { removeArchives: true });
+  t.mock.restoreAll();
+  assert.ok(extracted);
   assert.deepStrictEqual(recycled, []);
   assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
 });
