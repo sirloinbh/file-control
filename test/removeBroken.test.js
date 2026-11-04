@@ -66,8 +66,8 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 const stampOf = (file) => fileStamp(fs.lstatSync(file, { bigint: true }));
 
 // 같은 크기의 다른 내용으로 다시 쓰고 시각을 되돌린다. Windows는 변경 시각을 시계 단위로 적어서
-// 같은 단위 안에 다시 쓰면 식별값이 같다(#116). 실제로는 판별과 바꿔치기 사이에 그보다 긴 시간이 지나므로,
-// 식별값이 달라질 때까지 잠깐씩 기다리며 다시 쓴다.
+// 같은 단위 안에 다시 쓰면 식별값이 같다(#116). 실제로는 그런 파일을 변경 시각이 방금이라 5분 보호가 남기지만,
+// 시험은 시계를 1시간 뒤로 옮겨 그 보호를 피하므로 식별값이 달라질 때까지 잠깐씩 기다리며 다시 쓴다.
 function replaceSameSize(file, content) {
   const before = stampOf(file);
   for (let tries = 0; tries < 100; tries += 1) {
