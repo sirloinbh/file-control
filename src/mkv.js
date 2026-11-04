@@ -21,6 +21,9 @@ const ID = {
   VIDEO: 0xe0,
   PIXEL_WIDTH: 0xb0,
   PIXEL_HEIGHT: 0xba,
+  DISPLAY_WIDTH: 0x54b0,
+  DISPLAY_HEIGHT: 0x54ba,
+  DISPLAY_UNIT: 0x54b2,
   TAGS: 0x1254c367,
   TAG: 0x7373,
   TARGETS: 0x63c0,
@@ -125,6 +128,18 @@ function parseInfo(body, found) {
   if (Number.isFinite(seconds) && seconds > 0) found.duration ??= seconds;
 }
 
+// 보이는 크기. DisplayWidth와 DisplayHeight가 없으면 화소 크기와 같다(규격의 기본값).
+// 단위(DisplayUnit)가 화소(0)면 그 값을 쓰고, cm(1)·인치(2)·화면 비율(3)이면 비율만 뜻이 있어 높이를 화소 높이에 맞춘다.
+// 단위를 모르면(4 등) 화소 크기를 쓴다. 화소 단위에서 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다(규격의 기본값).
+// 화소가 아닌 단위는 기본값이 없으므로 한쪽만 있으면 비율을 알 수 없어 화소 크기를 쓴다.
+function displaySize(width, height, shownWidth, shownHeight, unit) {
+  if (unit === null || unit > 3 || (!shownWidth && !shownHeight)) return [width, height];
+  if (unit !== 0 && (!shownWidth || !shownHeight)) return [width, height];
+  const [w, h] = [shownWidth || width, shownHeight || height];
+  if (unit === 0) return [w, h];
+  return [Math.max(1, Math.round((height * w) / h)), height];
+}
+
 function parseTracks(body, found) {
   for (const track of children(body)) {
     if (track.id !== ID.TRACK_ENTRY) continue;
@@ -137,14 +152,22 @@ function parseTracks(body, found) {
     if (type !== VIDEO_TRACK || !video) continue;
     let width = null;
     let height = null;
+    let shownWidth = null;
+    let shownHeight = null;
+    let unit = 0;
     for (const child of children(video)) {
       if (child.id === ID.PIXEL_WIDTH) width = readUint(child.body);
       if (child.id === ID.PIXEL_HEIGHT) height = readUint(child.body);
+      if (child.id === ID.DISPLAY_WIDTH) shownWidth = readUint(child.body);
+      if (child.id === ID.DISPLAY_HEIGHT) shownHeight = readUint(child.body);
+      // 빈 요소는 기본값(0, 화소)이다.
+      if (child.id === ID.DISPLAY_UNIT) unit = child.body.length === 0 ? 0 : readUint(child.body);
     }
     // 표지 같은 작은 영상 트랙이 앞에 있어도 가장 큰 트랙을 본 영상으로 친다.
     if (width && height && width * height > (found.width ?? 0) * (found.height ?? 0)) {
       found.width = width;
       found.height = height;
+      [found.displayWidth, found.displayHeight] = displaySize(width, height, shownWidth, shownHeight, unit);
     }
   }
 }
@@ -221,8 +244,10 @@ function checkHeader(read, p) {
   return header.start + header.size;
 }
 
-// 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, bitrate }를 돌려준다.
+// 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
+// width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 DisplayWidth/Height를 반영한 보이는 크기다(#106).
+// 회전(Projection) 정보와 잘라 낼 화소(PixelCrop)는 보지 않는다.
 // 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
 // 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
 function readMkvMetadata(dir, p) {
@@ -242,7 +267,7 @@ function parseMkv(target, real, p) {
   if (!segment || segment.id !== ID.SEGMENT) throw new FcError(`MKV/WebM 형식이 아닙니다: ${p}`);
   const segmentEnd = segment.size === null ? size : Math.min(size, segment.start + segment.size);
 
-  const found = { title: null, duration: null, width: null, height: null };
+  const found = { title: null, duration: null, width: null, height: null, displayWidth: null, displayHeight: null };
   const tags = new Map();
   const positions = [];
   const seen = new Set();
@@ -284,6 +309,8 @@ function parseMkv(target, real, p) {
     duration,
     width: found.width,
     height: found.height,
+    displayWidth: found.displayWidth,
+    displayHeight: found.displayHeight,
     bitrate: Number.isFinite(bitrate) && bitrate > 0 ? bitrate : null,
   };
 }

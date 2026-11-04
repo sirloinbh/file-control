@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { duplicateKey, titleWords, titlesDiffer, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
+const { duplicateKey, titleWords, titlesDiffer, aspectsMatch, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
 const { run } = require('../bin/fctl');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
@@ -271,10 +271,16 @@ function box(type, ...parts) {
   return Buffer.concat([u32(body.length + 8), latin(type), body]);
 }
 
-function mp4({ seconds, width = 1920, height = 1080, padding = 0 }) {
+// rotate가 90이면 tkhd 변환 행렬에 90도 회전을 넣는다(휴대폰 세로 영상).
+function mp4({ seconds, width = 1920, height = 1080, padding = 0, rotate = 0 }) {
   const duration = Math.round(seconds * 1000);
   const mvhd = box('mvhd', u32(0), u32(0), u32(0), u32(1000), u32(duration), Buffer.alloc(80));
-  const tkhd = box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(duration), Buffer.alloc(52), u32(width * 65536), u32(height * 65536));
+  const middle = Buffer.alloc(52);
+  if (rotate === 90) {
+    middle.writeInt32BE(0x10000, 16 + 4);
+    middle.writeInt32BE(-0x10000, 16 + 12);
+  }
+  const tkhd = box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(duration), middle, u32(width * 65536), u32(height * 65536));
   const entry = Buffer.alloc(78);
   entry.writeUInt16BE(width, 24);
   entry.writeUInt16BE(height, 26);
@@ -284,7 +290,8 @@ function mp4({ seconds, width = 1920, height = 1080, padding = 0 }) {
   return Buffer.concat([box('ftyp', latin('isom'), u32(512), latin('isommp42')), box('moov', mvhd, trak), box('mdat', Buffer.alloc(64 + padding))]);
 }
 
-function mkv({ seconds, width = 1920, height = 1080 }) {
+// display는 [DisplayWidth, DisplayHeight](화소 단위)다.
+function mkv({ seconds, width = 1920, height = 1080, display }) {
   const size = (length) => {
     const b = Buffer.alloc(8);
     b.writeBigUInt64BE(BigInt(length));
@@ -299,11 +306,13 @@ function mkv({ seconds, width = 1920, height = 1080 }) {
   const ticks = Buffer.alloc(8);
   ticks.writeDoubleBE(seconds * 1000);
   const info = el(0x1549a966, el(0x2ad7b1, u32(1000000)), el(0x4489, ticks));
-  const video = el(0xae, el(0x83, Buffer.from([1])), el(0xe0, el(0xb0, u32(width)), el(0xba, u32(height))));
+  const shown = display ? [el(0x54b0, u32(display[0])), el(0x54ba, u32(display[1]))] : [];
+  const video = el(0xae, el(0x83, Buffer.from([1])), el(0xe0, el(0xb0, u32(width)), el(0xba, u32(height)), ...shown));
   return Buffer.concat([el(0x1a45dfa3, el(0x4282, 'matroska')), el(0x18538067, info, el(0x1654ae6b, video), el(0x1f43b675, Buffer.alloc(100)))]);
 }
 
 const video = (seconds, width = 1920, height = 1080, size = 100) => ({ path: `${seconds}-${width}x${height}-${size}`, size, duration: seconds, width, height, note: null });
+const shownVideo = (seconds, width, height, displayWidth, displayHeight) => ({ ...video(seconds, width, height), path: `${seconds}-${width}x${height}-${displayWidth}x${displayHeight}`, displayWidth, displayHeight });
 const paths = (groups) => groups.map((group) => group.files.map((file) => file.path));
 
 test('groupByMetadata: 길이가 1초 이내이고 화면 비율이 같으면 해상도와 크기가 달라도 묶는다', () => {
@@ -335,6 +344,72 @@ test('groupByMetadata: 60초 미만이거나 길이·해상도를 모르는 영�
   const noSize = { ...video(600), width: null, height: null };
   assert.deepStrictEqual(groupByMetadata([unknown, { ...unknown }, noSize, { ...noSize }]), []);
   assert.strictEqual(groupByMetadata([video(60), video(60)]).length, 1);
+});
+
+test('groupByMetadata: 회전과 화소 비율을 반영한 보이는 크기로 화면 비율을 잰다 (#106)', () => {
+  // 회전 정보로 세로를 표시하는 휴대폰 영상은 세로로 다시 저장한 사본과 묶이고 가로 영상과는 묶이지 않는다.
+  const rotated = shownVideo(600, 1920, 1080, 1080, 1920);
+  assert.deepStrictEqual(paths(groupByMetadata([rotated, video(600.4, 1080, 1920), video(600.2, 1920, 1080)])), [[rotated.path, '600.4-1080x1920-100']]);
+  // DVD 16:9(720x480, 보이는 크기 853x480)는 16:9 영상과 묶이고 화소 비율을 반영하지 않은 720x480(3:2)과는 묶이지 않는다.
+  const dvd = shownVideo(900, 720, 480, 853, 480);
+  assert.deepStrictEqual(paths(groupByMetadata([dvd, video(900, 1920, 1080), video(900.5, 720, 480)])), [[dvd.path, '900-1920x1080-100']]);
+  assert.strictEqual(groupByMetadata([dvd, video(900, 1920, 1080)])[0].aspect, '1.8');
+});
+
+test('groupByMetadata, aspectsMatch: 화면 비율은 3% 이내면 같다고 본다 (#106)', () => {
+  // 반올림하면 2.4와 2.3으로 갈리던 같은 영상
+  assert.deepStrictEqual(paths(groupByMetadata([video(600, 1920, 816), video(600.5, 1920, 818)])), [['600-1920x816-100', '600.5-1920x818-100']]);
+  assert.strictEqual(aspectsMatch(video(600, 1920, 800), video(600, 1920, 816)), true);
+  // 16:9(1.78)와 1.85:1은 4% 가까이 달라 같지 않다.
+  assert.strictEqual(aspectsMatch(video(600, 1920, 1080), video(600, 1920, 1038)), false);
+  assert.deepStrictEqual(groupByMetadata([video(600, 1920, 1080), video(600, 1920, 1038)]), []);
+  assert.strictEqual(aspectsMatch(video(600), { ...video(600), width: null }), false);
+  // 묶음 안의 어느 두 파일도 3% 넘게 다르지 않다. 가장 좁은 파일에서 3%까지만 넣는다.
+  const groups = groupByMetadata([video(600, 1000, 1000), video(600, 1025, 1000), video(600, 1050, 1000), video(600, 1070, 1000)]);
+  assert.deepStrictEqual(paths(groups), [['600-1000x1000-100', '600-1025x1000-100'], ['600-1050x1000-100', '600-1070x1000-100']]);
+});
+
+test('groupByMetadata: 길이나 비율이 동떨어진 다른 파일 때문에 같은 영상 쌍이 갈리지 않는다 (#106)', () => {
+  const pair = [video(300, 1920, 1080), video(300.5, 1912, 1080)];
+  const expected = [['300-1920x1080-100', '300.5-1912x1080-100']];
+  assert.deepStrictEqual(paths(groupByMetadata(pair)), expected);
+  // 길이가 전혀 다르고 비율이 한쪽과만 3% 이내인 파일
+  assert.deepStrictEqual(paths(groupByMetadata([...pair, video(9000, 1720, 1000)])), expected);
+  // 길이 창 안에 있지만 비율이 다른 파일(세로 영상, 비율이 한쪽과만 3% 이내인 영상)
+  assert.deepStrictEqual(paths(groupByMetadata([video(299.4, 1080, 1920), ...pair])), expected);
+  assert.deepStrictEqual(paths(groupByMetadata([video(299.4, 1720, 1000), ...pair])), expected);
+});
+
+test('groupByMetadata: 파일이 많이 몰려도 묶음의 가장 좁은·넓은 비율로 비교해 빨리 끝나고 3%를 넘지 않는다', () => {
+  // 1초·3% 범위에 몰린 파일들. 비율은 1.70~1.80 사이에 고르게 퍼져 있다.
+  const files = Array.from({ length: 10000 }, (_, index) => video(600 + (index % 10) * 0.05, 1700 + (index % 101), 1000));
+  const started = Date.now();
+  const groups = groupByMetadata(files);
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started}ms`);
+  for (const group of groups) {
+    const ratios = group.files.map((file) => file.width / file.height);
+    assert.ok(Math.max(...ratios) / Math.min(...ratios) - 1 <= 0.03 + 1e-9);
+    assert.ok(group.files.at(-1).duration - group.files[0].duration <= 1);
+  }
+  assert.strictEqual(groups.reduce((sum, group) => sum + group.files.length, 0), 10000);
+});
+
+test('findDuplicateNames: 회전한 MP4와 표시 크기가 있는 MKV를 보이는 크기로 묶고 보고에 보이는 크기를 쓴다 (#106)', () => {
+  const dir = tempDir();
+  const phone = put(dir, 'phone.mp4', mp4({ seconds: 600, rotate: 90 }));
+  const edited = put(dir, 'edited.mp4', mp4({ seconds: 600.4, width: 1080, height: 1920 }));
+  put(dir, 'landscape.mp4', mp4({ seconds: 600.2 }));
+  const dvd = put(dir, 'dvd.mkv', mkv({ seconds: 900, width: 720, height: 480, display: [853, 480] }));
+  const hd = put(dir, 'hd.mp4', mp4({ seconds: 900 }));
+  const result = findDuplicateNames(dir);
+  assert.deepStrictEqual(paths(result.metadataGroups), [[phone, edited], [dvd, hd]]);
+  const phoneInfo = result.metadataGroups[0].files[0];
+  assert.deepStrictEqual([phoneInfo.width, phoneInfo.height, phoneInfo.displayWidth, phoneInfo.displayHeight], [1920, 1080, 1080, 1920]);
+  const report = formatDuplicateNames(result);
+  assert.match(report, /^ {2}phone\.mp4 \(\d+B, 1920x1080\(보이는 크기 1080x1920\), 10:00\)/m);
+  assert.match(report, /^ {2}dvd\.mkv \(\d+B, 720x480\(보이는 크기 853x480\), 15:00\)/m);
+  assert.match(report, /^ {2}hd\.mp4 \(\d+B, 1920x1080, 15:00\)/m);
+  assert.match(report, /^길이가 같은 영상 \(10:00, 화면 비율 0\.6, 크기도 같음, 2개\):$/m);
 });
 
 test('findDuplicateNames: 이름이 달라도 길이와 화면 비율이 같은 MP4·MKV를 묶는다', () => {

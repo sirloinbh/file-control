@@ -11,11 +11,12 @@ const { readMkvMetadata } = require('./mkv');
 
 // 길이 기준으로 묶는 조건. 다른 영상을 한 묶음에 넣지 않도록 좁게 잡는다.
 // - 길이 차이가 1초 이내. 같은 영상을 다른 형식으로 옮기면 길이가 1초 안쪽으로 달라진다.
-// - 화면 비율을 소수 첫째 자리까지 맞춘다(16:9는 1.8, 4:3은 1.3). 저장된 해상도로 계산하고 회전 정보와 화소 비율은 보지 않는다.
-//   그래서 세로로 저장한 영상(1080x1920)과 가로 영상은 묶지 않지만, 회전 정보로 세로를 표시하는 휴대폰 영상(1920x1080 + 90도)은 가로로 센다(#106).
+// - 보이는 화면 비율이 3% 이내. 회전 정보(MP4 tkhd)와 화소 비율(MP4 pasp, MKV DisplayWidth/Height)을 반영한 보이는 크기로 계산한다(#106).
+//   그래서 회전 정보로 세로를 표시하는 휴대폰 영상(1920x1080 + 90도)은 세로 영상(1080x1920)과 묶이고 가로 영상과는 묶이지 않는다.
 // - 60초 미만 영상은 묶지 않는다. 짧은 클립은 길이가 우연히 같은 경우가 많다.
 // 해상도와 크기는 보지 않는다. 다시 인코딩한 같은 영상은 이 둘이 달라지고, 어느 것을 남길지는 묶은 뒤에 고른다.
 const DURATION_TOLERANCE = 1;
+const ASPECT_TOLERANCE = 0.03;
 const MIN_DURATION = 60;
 const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
 const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
@@ -177,17 +178,21 @@ function skipReason(parts) {
   return null;
 }
 
-// 길이와 해상도를 읽는다. 읽을 수 있는 형식은 MP4/MOV와 MKV/WebM이다. 모르면 null이고, 읽지 못한 사유는 note에 둔다.
+// 길이와 해상도, 보이는 크기를 읽는다. 읽을 수 있는 형식은 MP4/MOV와 MKV/WebM이다. 모르면 null이고, 읽지 못한 사유는 note에 둔다.
 // 영상 데이터는 읽지 않고 머리 구조만 본다.
 function readVideoInfo(target, real) {
   const extension = path.extname(real).toLowerCase();
   const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
-  const unknown = (note) => ({ duration: null, width: null, height: null, note });
+  const unknown = (note) => ({ duration: null, width: null, height: null, displayWidth: null, displayHeight: null, note });
   if (!reader) return unknown(null);
   try {
-    const { duration, width, height } = reader(target, real);
+    const { duration, width, height, displayWidth, displayHeight } = reader(target, real);
     const positive = (value) => (Number.isFinite(value) && value > 0 ? value : null);
     const info = { duration: positive(duration), width: positive(width), height: positive(height) };
+    // 보이는 크기는 둘 다 있을 때만 쓰고, 없으면 해상도와 같다고 본다.
+    const shown = positive(displayWidth) !== null && positive(displayHeight) !== null && info.width !== null && info.height !== null;
+    info.displayWidth = shown ? displayWidth : info.width;
+    info.displayHeight = shown ? displayHeight : info.height;
     // 예외 없이 값이 빠진 경우도 사유를 남긴다. 길이를 쓰지 않는 조각 MP4, 녹화가 중단된 MKV/WebM이 그렇다.
     const missing = [info.duration === null && '길이', (info.width === null || info.height === null) && '해상도'].filter(Boolean);
     return { ...info, note: missing.length === 0 ? null : `${missing.join('와 ')} 정보가 없습니다.` };
@@ -197,29 +202,53 @@ function readVideoInfo(target, real) {
   }
 }
 
-// 화면 비율을 소수 첫째 자리까지 맞춘 값. 해상도를 모르면 null이다.
-function aspectKey(file) {
-  return file.width === null || file.height === null ? null : (Math.round((file.width / file.height) * 10) / 10).toFixed(1);
+// 보이는 화면 비율(가로÷세로). 보이는 크기(displayWidth, displayHeight)가 없으면 해상도로 계산한다. 해상도를 모르면 null이다.
+function aspectRatio(file) {
+  const width = file.displayWidth ?? file.width;
+  const height = file.displayHeight ?? file.height;
+  return width && height ? width / height : null;
 }
 
-// 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
-// 길이 순으로 놓고, 묶음의 가장 짧은 파일과 1초 이내인 파일까지 넣는다. 그래서 묶음 안의 어느 두 파일도 1초 넘게 차이 나지 않는다.
-// 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다.
+// 보고에 쓰는 화면 비율. 소수 첫째 자리까지 쓴다(16:9는 1.8, 4:3은 1.3). 해상도를 모르면 null이다.
+function aspectKey(file) {
+  const ratio = aspectRatio(file);
+  return ratio === null ? null : (Math.round(ratio * 10) / 10).toFixed(1);
+}
+
+// 두 파일의 화면 비율이 같다고 볼 수 있는지. 넓은 쪽이 좁은 쪽보다 3% 이내로 넓으면 같다. 해상도를 모르면 같지 않다.
+// 반올림한 칸으로 비교하면 1920x816(2.353)과 1920x818(2.347)처럼 칸 경계에 걸친 같은 영상이 갈린다(#106).
+function aspectsMatch(a, b) {
+  const [x, y] = [aspectRatio(a), aspectRatio(b)];
+  if (x === null || y === null) return false;
+  return Math.max(x, y) / Math.min(x, y) - 1 <= ASPECT_TOLERANCE + 1e-9;
+}
+
+// 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, displayWidth, displayHeight, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
+// 길이 순으로 놓고, 파일마다 먼저 만든 묶음부터 보며 가장 짧은 파일과 1초 이내이고 묶음의 모든 파일과 화면 비율이 3% 이내인 묶음에 넣는다. 없으면 새 묶음을 만든다.
+// 그래서 묶음 안의 어느 두 파일도 길이가 1초 넘게, 화면 비율이 3% 넘게 차이 나지 않는다.
+// 비율이나 길이 한쪽만으로 먼저 나누지 않으므로, 길이나 비율 한쪽만 가까운 다른 파일 때문에 같은 영상 쌍이 갈리지는 않는다.
+// 다만 한 파일은 한 묶음에만 들므로, 길이와 비율이 모두 가까운 다른 영상이 먼저 묶음을 만들면 같은 영상 쌍이 갈릴 수 있다.
+// 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다. aspect는 묶음의 가장 짧은 파일의 aspectKey다.
 function groupByMetadata(files) {
-  const buckets = new Map();
-  for (const file of files) {
-    const aspect = aspectKey(file);
-    if (file.duration === null || file.duration < MIN_DURATION || aspect === null) continue;
-    if (!buckets.has(aspect)) buckets.set(aspect, []);
-    buckets.get(aspect).push(file);
-  }
+  const usable = files.filter((file) => file.duration !== null && file.duration >= MIN_DURATION && aspectRatio(file) !== null);
+  usable.sort((a, b) => a.duration - b.duration || aspectRatio(a) - aspectRatio(b));
   const groups = [];
-  for (const [aspect, list] of buckets) {
-    list.sort((a, b) => a.duration - b.duration);
-    let current = null;
-    for (const file of list) {
-      if (current && file.duration - current.files[0].duration <= DURATION_TOLERANCE) current.files.push(file);
-      else groups.push((current = { aspect, files: [file] }));
+  // 열린 묶음마다 가장 좁은·넓은 비율을 들고 있다. 둘과 3% 이내면 묶음의 모든 파일과 3% 이내다.
+  let open = [];
+  for (const file of usable) {
+    const ratio = aspectRatio(file);
+    // 길이 창을 지난 묶음은 더 볼 필요가 없다.
+    open = open.filter(({ group }) => file.duration - group.files[0].duration <= DURATION_TOLERANCE);
+    const fits = (entry) => Math.max(entry.max, ratio) / Math.min(entry.min, ratio) - 1 <= ASPECT_TOLERANCE + 1e-9;
+    const entry = open.find(fits);
+    if (entry) {
+      entry.group.files.push(file);
+      entry.min = Math.min(entry.min, ratio);
+      entry.max = Math.max(entry.max, ratio);
+    } else {
+      const group = { aspect: aspectKey(file), files: [file] };
+      groups.push(group);
+      open.push({ group, min: ratio, max: ratio });
     }
   }
   return groups
@@ -280,7 +309,7 @@ function chooseKeeper(files) {
 //   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
 // - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
 //   alsoNamed는 파일이 모두 한 이름 묶음에 이미 든 묶음이다. 파일은 길이 순이다.
-//   files의 항목은 { path, size, duration, width, height, note }(번호 묶음의 파일은 title도)다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
+//   files의 항목은 { path, size, duration, width, height, displayWidth, displayHeight, note }(번호 묶음의 파일은 title도)다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
 // - unknownMetadata: 길이를 모르는 영상 수. 읽지 못하는 형식(avi, wmv 등)과 읽지 못한 파일이 든다.
 // - metadataErrors: 읽을 수 있는 형식인데 길이나 해상도를 읽지 못한 파일 ({ path, reason })
 // - conflicts: 번호가 여럿이라 이름으로 묶지 않은 파일 ({ path, numbers }). 길이로는 묶을 수 있다.
@@ -372,7 +401,11 @@ function groupLabel(group) {
 
 function describe(file) {
   const parts = [formatSize(file.size)];
-  if (file.width !== null && file.height !== null) parts.push(`${file.width}x${file.height}`);
+  if (file.width !== null && file.height !== null) {
+    // 회전이나 화소 비율로 보이는 크기가 다르면 함께 쓴다. 1920x1080(보이는 크기 1080x1920)
+    const shown = file.displayWidth != null && file.displayHeight != null && (file.displayWidth !== file.width || file.displayHeight !== file.height);
+    parts.push(shown ? `${file.width}x${file.height}(보이는 크기 ${file.displayWidth}x${file.displayHeight})` : `${file.width}x${file.height}`);
+  }
   if (file.duration !== null) parts.push(formatDuration(file.duration));
   return parts.join(', ');
 }
@@ -414,4 +447,4 @@ function formatDuplicateNames(result) {
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, titleWords, titlesDiffer, isGenericGroup, groupCautions, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };
+module.exports = { duplicateKey, titleWords, titlesDiffer, isGenericGroup, groupCautions, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };

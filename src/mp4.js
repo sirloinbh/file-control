@@ -137,25 +137,42 @@ function readMehd(read, box) {
 }
 
 // 16.16 고정소수점의 정수 부분이 화면에 보이는 크기다.
+// 변환 행렬 { a b u / c d v / x y w }에서 a와 d가 0이고 b와 c가 0이 아니면 90도나 270도 회전이다(휴대폰 세로 영상). 그러면 quarterTurn이 참이다.
 function readTkhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 96 : 84);
   if (!body) return null;
   const at = version === 1 ? 88 : 76;
+  const matrix = version === 1 ? 52 : 40;
+  const [a, b, c, d] = [0, 4, 12, 16].map((offset) => body.readInt32BE(matrix + offset));
   return {
     enabled: (body.readUInt8(3) & 1) === 1,
     duration: durationValue(body, version === 1 ? 28 : 20, version) ?? 0,
     width: body.readUInt32BE(at) >>> 16,
     height: body.readUInt32BE(at + 4) >>> 16,
+    quarterTurn: a === 0 && d === 0 && b !== 0 && c !== 0,
   };
 }
 
-// 첫 표본 항목의 인코딩 해상도를 읽는다. 항목 앞에 4+4바이트, 항목 안 32바이트 위치에 너비와 높이가 있다.
-function readStsd(read, box) {
+// 영상 표본 항목의 고정 필드 길이. 그 뒤에 avcC, pasp 같은 자식 박스가 온다.
+const VISUAL_ENTRY = 78;
+
+// 첫 표본 항목의 인코딩 해상도와 화소 비율(pasp)을 읽는다. 항목 앞에 4+4바이트, 항목 안 32바이트 위치에 너비와 높이가 있다.
+// pasp는 { h, v }로 화소 하나의 가로:세로 비율이다. 없거나 0이면 null이다.
+function readStsd(read, p, box) {
   const body = readPayload(read, box, 44);
   if (!body || body.readUInt32BE(4) === 0) return null;
-  return { width: body.readUInt16BE(40), height: body.readUInt16BE(42) };
+  const sample = { width: body.readUInt16BE(40), height: body.readUInt16BE(42), pasp: null };
+  const entry = readBoxHeader(read, box.start + 8, box.end, false);
+  if (!entry || entry.end - entry.start <= VISUAL_ENTRY) return sample;
+  for (const child of boxes(read, p, entry.start + VISUAL_ENTRY, entry.end, false)) {
+    if (child.type !== 'pasp') continue;
+    const spacing = readPayload(read, child, 8);
+    if (spacing && spacing.readUInt32BE(0) > 0 && spacing.readUInt32BE(4) > 0) sample.pasp = { h: spacing.readUInt32BE(0), v: spacing.readUInt32BE(4) };
+    break;
+  }
+  return sample;
 }
 
 function readTrack(read, p, trak) {
@@ -174,7 +191,7 @@ function readTrack(read, p, trak) {
       for (const inner of boxes(read, p, part.start, part.end, true)) {
         if (inner.type !== 'stbl') continue;
         for (const table of boxes(read, p, inner.start, inner.end, true)) {
-          if (table.type === 'stsd') sample = readStsd(read, table);
+          if (table.type === 'stsd') sample = readStsd(read, p, table);
         }
       }
     }
@@ -184,7 +201,12 @@ function readTrack(read, p, trak) {
   const width = sample?.width || header?.width || 0;
   const height = sample?.height || header?.height || 0;
   if (width === 0 || height === 0) return null;
-  return { width, height, enabled: header?.enabled ?? true, duration: header?.duration ?? 0 };
+  // 보이는 크기. 인코딩 해상도에 화소 비율(pasp)을 너비에 곱하고, 90·270도 회전이면 너비와 높이를 바꾼다.
+  // tkhd 크기를 쓴 경우는 이미 보이는 크기라 pasp를 다시 곱하지 않는다.
+  const pasp = sample?.width && sample.pasp && sample.pasp.h !== sample.pasp.v ? sample.pasp : null;
+  const shownWidth = pasp ? Math.max(1, Math.round((width * pasp.h) / pasp.v)) : width;
+  const [displayWidth, displayHeight] = header?.quarterTurn ? [height, shownWidth] : [shownWidth, height];
+  return { width, height, displayWidth, displayHeight, enabled: header?.enabled ?? true, duration: header?.duration ?? 0 };
 }
 
 // 표지 그림이나 미리보기 트랙이 본편보다 클 수 있으므로, 켜진 트랙 중 재생 시간이 긴 트랙을 고르고 같으면 큰 쪽을 고른다.
@@ -291,8 +313,9 @@ function firstTag(tags, sources) {
   return null;
 }
 
-// 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, bitrate }를 돌려준다.
+// 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
+// width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율(pasp)과 90·270도 회전을 반영한 보이는 크기다(#106).
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
 // 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
 // 깨진 파일 판별은 checkMp4Structure가 한다. 이 함수는 moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
@@ -340,6 +363,8 @@ function parseMp4(target, real, p) {
     duration,
     width: video?.width ?? null,
     height: video?.height ?? null,
+    displayWidth: video?.displayWidth ?? null,
+    displayHeight: video?.displayHeight ?? null,
     bitrate: duration ? Math.round((size * 8) / duration) : null,
   };
 }

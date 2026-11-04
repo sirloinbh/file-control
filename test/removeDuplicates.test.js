@@ -47,10 +47,16 @@ function box(type, ...parts) {
   const body = Buffer.concat(parts);
   return Buffer.concat([u32(body.length + 8), latin(type), body]);
 }
-function mp4({ seconds, width = 1920, height = 1080, padding = 0 }) {
+// rotate가 90이면 tkhd 변환 행렬에 90도 회전을 넣는다(휴대폰 세로 영상).
+function mp4({ seconds, width = 1920, height = 1080, padding = 0, rotate = 0 }) {
   const duration = Math.round(seconds * 1000);
   const mvhd = box('mvhd', u32(0), u32(0), u32(0), u32(1000), u32(duration), Buffer.alloc(80));
-  const tkhd = box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(duration), Buffer.alloc(52), u32(width * 65536), u32(height * 65536));
+  const middle = Buffer.alloc(52);
+  if (rotate === 90) {
+    middle.writeInt32BE(0x10000, 16 + 4);
+    middle.writeInt32BE(-0x10000, 16 + 12);
+  }
+  const tkhd = box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(duration), middle, u32(width * 65536), u32(height * 65536));
   const entry = Buffer.alloc(78);
   entry.writeUInt16BE(width, 24);
   entry.writeUInt16BE(height, 26);
@@ -158,6 +164,36 @@ test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 �
   const report = formatRemoveDuplicates(result);
   assert.match(report, /^ {2}주의: 길이가 서로 달라 같은 영상이 아닐 수 있습니다\.$/m);
   assert.doesNotMatch(report, /--yes=/);
+});
+
+test('화면 비율은 회전을 반영한 보이는 크기로 비교한다 (#106)', () => {
+  const dir = tempDir();
+  const made = make(dir, {
+    // 회전 정보로 세로를 표시하는 원본과 세로로 다시 저장한 사본은 같은 영상이다.
+    'Trip.mp4': mp4({ seconds: 600, rotate: 90, padding: 10 }),
+    'old/trip.mp4': mp4({ seconds: 600, width: 1080, height: 1920 }),
+    // 회전 정보가 없는 가로 영상은 이름과 길이가 같아도 화면 비율이 달라 남긴다.
+    'b/trip.mp4': mp4({ seconds: 600 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => item.path), [made['old/trip.mp4']]);
+  assert.deepStrictEqual(result.kept.map((item) => [item.path, item.reason]), [[made['b/trip.mp4'], '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.']]);
+  assert.match(formatRemoveDuplicates(result), /^ {2}남길 파일: Trip\.mp4 \(\d+B, 1920x1080\(보이는 크기 1080x1920\), 10:00\)/m);
+});
+
+test('화면 비율이 3% 이내인 사본은 지우고, 16:9와 1.85:1처럼 더 다르면 남긴다 (#106)', () => {
+  const dir = tempDir();
+  const made = make(dir, {
+    'Movie.mp4': mp4({ seconds: 600, width: 1920, height: 818 }),
+    // 반올림하면 2.4와 2.3으로 갈리던 같은 영상
+    'old/movie.mp4': mp4({ seconds: 600, width: 1920, height: 816 }),
+    'Film.mp4': mp4({ seconds: 900, width: 1920, height: 1080, padding: 10 }),
+    // 1.85:1은 16:9보다 4% 가까이 넓다.
+    'old/film.mp4': mp4({ seconds: 900, width: 1920, height: 1038 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => item.path), [made['old/movie.mp4']]);
+  assert.deepStrictEqual(result.kept.map((item) => [item.path, item.reason]), [[made['old/film.mp4'], '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.']]);
 });
 
 test('번호는 같은데 남길 파일과 제목이 겹치지 않는 파일은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
