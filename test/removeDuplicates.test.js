@@ -160,6 +160,62 @@ test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 �
   assert.doesNotMatch(report, /--yes=/);
 });
 
+test('번호는 같은데 남길 파일과 제목이 겹치지 않는 파일은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
+  const dir = tempDir();
+  const made = make(dir, {
+    // 길이가 정해진 방송 녹화는 길이까지 같을 수 있다.
+    'WWE-2023 Raw.mp4': mp4({ seconds: 10800, padding: 10 }),
+    'old/WWE-2023 SmackDown.mp4': mp4({ seconds: 10800 }),
+    'IPHONE-15 review.mp4': mp4({ seconds: 600, padding: 10 }),
+    'b/IPHONE-15 unboxing.mp4': mp4({ seconds: 600 }),
+    // 되풀이한 낱말(WWE)만 겹치면 다른 제목이다.
+    'WWE-2024 WWE Raw.mp4': mp4({ seconds: 10800, padding: 10 }),
+    'b/WWE-2024 WWE SmackDown.mp4': mp4({ seconds: 10800 }),
+    // 한 묶음 안에서도 파일마다 본다. 제목이 다른 파일이 섞인 묶음에서는 제목 낱말이 똑같은 파일만 지운다.
+    'XYZ-999 좋은 영화.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/XYZ-999 영화 좋은 1080p.mp4': mp4({ seconds: 300 }),
+    'old/XYZ-999 좋은 영화 감독판.mp4': mp4({ seconds: 300 }),
+    'old/XYZ-999 다른 영상.mp4': mp4({ seconds: 300 }),
+    // 남길 파일 제목이 서로 다른 두 제목에 모두 들어 있어도 둘 다 지우지 않는다(WWE는 WWE Raw에도 WWE SmackDown에도 든다).
+    'WWE-2026 WWE.mp4': mp4({ seconds: 10800, padding: 10 }),
+    'a/WWE-2026 WWE Raw.mp4': mp4({ seconds: 10800 }),
+    'b/WWE-2026 WWE SmackDown.mp4': mp4({ seconds: 10800 }),
+    // 제목이 다른 파일이 없는 묶음에서는 낱말을 모두 담은 제목도 같은 제목이라 지운다.
+    'LMN-200 좋은 영화.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/LMN-200 좋은 영화 감독판.mp4': mp4({ seconds: 300 }),
+    // 제목이 다른 파일이 섞인 묶음에서 제목 없는 파일은 어느 영상의 사본인지 몰라 남긴다.
+    'old/XYZ-999.mp4': mp4({ seconds: 300 }),
+    // 남길 파일에 제목이 없어도 제목이 다른 파일들을 지우지 않는다. Raw의 사본이면 SmackDown은 하나뿐인 원본일 수 있다.
+    'WWE-2025.mp4': mp4({ seconds: 10800, padding: 10 }),
+    'a/WWE-2025 Raw.mp4': mp4({ seconds: 10800 }),
+    'b/WWE-2025 SmackDown.mp4': mp4({ seconds: 10800 }),
+    // 제목이 한쪽에만 있고 제목이 다른 파일이 없으면 지운다.
+    'QRS-100 제목.mp4': mp4({ seconds: 300, padding: 10 }),
+    'old/QRS-100.mp4': mp4({ seconds: 300 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => item.path).sort(), [made['old/XYZ-999 영화 좋은 1080p.mp4'], made['old/LMN-200 좋은 영화 감독판.mp4'], made['old/QRS-100.mp4']].sort());
+  const differ = '번호는 같지만 남길 파일과 제목이 달라 다른 영상일 수 있어 남겼습니다.';
+  const untitled = '제목이 다른 파일이 섞인 묶음인데 제목이 없는 파일이 있어 어느 영상의 사본인지 확인하지 못해 남겼습니다.';
+  const notSame = '제목이 다른 파일이 섞인 묶음이라 남길 파일과 제목 낱말이 똑같은 파일만 지우고 이 파일은 남겼습니다.';
+  assert.deepStrictEqual(
+    result.kept.map((item) => [item.path, item.reason]).sort(),
+    [
+      [made['old/WWE-2023 SmackDown.mp4'], differ],
+      [made['b/IPHONE-15 unboxing.mp4'], differ],
+      [made['b/WWE-2024 WWE SmackDown.mp4'], differ],
+      [made['old/XYZ-999 다른 영상.mp4'], differ],
+      [made['old/XYZ-999.mp4'], untitled],
+      [made['a/WWE-2025 Raw.mp4'], untitled],
+      [made['b/WWE-2025 SmackDown.mp4'], untitled],
+      [made['old/XYZ-999 좋은 영화 감독판.mp4'], notSame],
+      [made['a/WWE-2026 WWE Raw.mp4'], notSame],
+      [made['b/WWE-2026 WWE SmackDown.mp4'], notSame],
+    ].sort(),
+  );
+  assert.match(formatRemoveDuplicates(result), /^ {2}남김: old[\\/]XYZ-999 다른 영상\.mp4 \(.+\) 번호는 같지만 남길 파일과 제목이 달라/m);
+});
+
 test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   make(dir, {

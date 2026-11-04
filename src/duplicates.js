@@ -60,11 +60,10 @@ function stripTails(text, tails) {
   return current;
 }
 
-// 조각 표시를 나온 순서대로 이어 돌려준다. 숫자는 앞의 0을 뺀다. CD1, part 01, -1은 모두 1이다. 없으면 null이다.
+// 번호를 뺀 나머지를 낱말로 나눈다. 끝의 (1)·복사본 꼬리는 빼고, 원문자·로마 숫자 글자는 숫자로 바꾼다.
 // 전각을 반각으로 바꿔도 글자 수가 같으므로 번호 위치를 그대로 쓴다.
-function findPart(original, ranges) {
+function restTokens(original, ranges) {
   const base = halfWidth(original);
-  const marks = [];
   let rest = '';
   let at = 0;
   for (const { start, end } of ranges) {
@@ -72,14 +71,79 @@ function findPart(original, ranges) {
     at = end;
   }
   rest = stripTails(rest + base.slice(at), [COPY_SUFFIX, DUPLICATE_TAIL]).replace(NUMBER_SYMBOLS, (ch) => ` ${symbolValue(ch)} `);
-  for (const token of rest.split(TOKEN_SEPARATORS)) {
-    if (token === '' || QUALITY.test(token)) continue;
+  return rest.split(TOKEN_SEPARATORS).filter((token) => token !== '');
+}
+
+// 조각 표시를 나온 순서대로 이어 돌려준다. 숫자는 앞의 0을 뺀다. CD1, part 01, -1은 모두 1이다. 없으면 null이다.
+function findPart(original, ranges) {
+  const marks = [];
+  for (const token of restTokens(original, ranges)) {
+    if (QUALITY.test(token)) continue;
     if (/^[A-Za-z]$/.test(token)) marks.push(token.toLowerCase());
     else if (ROMAN.test(token)) marks.push(String(romanValue(token)));
     else if (SECTION.test(token) || KANJI_NUMBER.test(token)) marks.push(token);
     else for (const digits of token.match(/\d+/g) ?? []) marks.push(String(Number(digits)));
   }
   return marks.length === 0 ? null : marks.join(' ');
+}
+
+// 제목 낱말에서 빼는 말. 배포·자막 표시, 조각을 부르는 말(CD, part), 복사본 표시다. 화질·코덱 표시(QUALITY)도 뺀다.
+const TITLE_NOISE = new Set([
+  'fhd', 'hd', 'uhd', 'sd', 'hq', 'hdr', 'sub', 'subs', 'subbed', 'dub', 'dubbed', 'web', 'webrip', 'webdl', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'hdrip', 'hdtv', 'remux', 'proper', 'repack',
+  'hevc', 'avc', 'uncensored', 'censored', 'leak', 'leaked', 'cd', 'part', 'pt', 'disc', 'disk', 'ep', 'episode', 'vol', 'copy', '복사본', '자막', '한글자막', '무자막',
+]);
+
+// 번호 묶음을 위한 제목 낱말. 번호를 뺀 나머지에서 숫자와 조각 표시, 화질·배포 표시를 뺀 낱말을 소문자로, 중복 없이 나온 순서대로 돌려준다.
+// 이름에 대문자 제품번호가 하나가 아니면 null이다. 파일은 건드리지 않는 순수 함수다.
+// 같은 번호인데 제목이 다르면(titlesDiffer) 제품번호로 잘못 알아본 말일 수 있다(WWE-2023 Raw와 WWE-2023 SmackDown, #103).
+function titleWords(fileName) {
+  const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
+  const ranges = findProductNumberRanges(base);
+  if (new Set(ranges.map((range) => range.number)).size !== 1) return null;
+  const words = new Set();
+  for (const token of restTokens(base, ranges)) {
+    if (QUALITY.test(token) || ROMAN.test(token) || SECTION.test(token) || KANJI_NUMBER.test(token)) continue;
+    const word = token.replace(/\d+/g, '').toLowerCase();
+    if (!/\p{L}/u.test(word) || /^[a-z]$/.test(word) || TITLE_NOISE.has(word)) continue;
+    words.add(word);
+  }
+  return [...words];
+}
+
+// 두 제목 낱말 목록이 둘 다 있는데 서로 다른 제목인지. 한쪽 낱말이 다른 쪽에 모두 들어 있으면 같은 제목으로 본다
+// (좋은 영화와 좋은 영화 감독판). 낱말 일부만 겹치면(WWE Raw와 WWE SmackDown) 다르다. 한쪽이라도 제목이 없으면(ABC-123.mp4) 다르다고 보지 않는다.
+function titlesDiffer(a, b) {
+  if (!a || !b || a.length === 0 || b.length === 0) return false;
+  const within = (small, large) => small.every((word) => large.includes(word));
+  return !within(a, b) && !within(b, a);
+}
+
+// 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
+// 앞에 영문 낱말 하나(10글자까지)가 올 수 있고, 나머지 낱말이 모두 "영문 4글자까지 + 숫자 + 영문 2글자까지"이거나 영문 1~2글자이며,
+// 숫자가 하나라도 있으면 그렇게 본다.
+// IMG_0001, IMG_E0001, GH010001, DJI_0001, DJI_20230101123456_0001_D, FILE0001, VID_20230101_123456, VID-20230101-WA0001,
+// PXL_20230101_123456789.LS, 20230101_123456_F, NO20230101-123456-000001F, 1
+// 이런 클립은 길이가 정해진 경우(블랙박스 1분·3분 조각, 시간으로 나눈 녹화)가 많아 이름과 길이가 같아도 다른 영상일 수 있다(#103).
+// 제품번호(ABC-123)는 번호 묶음이라 여기에 들지 않는다.
+const COUNTER = '(?:[a-z]{0,4}\\d+[a-z]{0,2}|[a-z]{1,2})';
+const GENERIC_NAME = new RegExp(`^(?:[a-z]{1,10} )?${COUNTER}(?: ${COUNTER})*$`);
+// 대문자와 하이픈으로 된 녹화기 카운터(REC-0001, FRONT-0001)는 제품번호로 보여 번호 묶음이 된다(#110).
+// 제품번호 판정은 normalize, product-number와 같이 쓰므로 바꾸지 않고, 이 접두어의 번호 묶음을 흔한 이름으로 본다.
+const COUNTER_PREFIXES = new Set(['REC', 'RECORD', 'CAM', 'CAMERA', 'MOV', 'MOVI', 'MOVIE', 'VIDEO', 'CLIP', 'FILE', 'FRONT', 'REAR', 'INSIDE', 'EVT', 'EVENT', 'NOR', 'NORMAL', 'PARK', 'PARKING', 'EMER', 'MANUAL', 'MVI', 'MAH', 'SAM', 'SDC', 'PICT', 'CIMG', 'HPIM', 'GOPR', 'DJI', 'PXL', 'IMG', 'DSC', 'VID']);
+
+// 이름 묶음({ kind, key, number })이 카메라·순번처럼 흔한 이름인지.
+function isGenericGroup(group) {
+  if (group.kind === 'number') return COUNTER_PREFIXES.has(group.number.split('-')[0]);
+  return /\d/.test(group.key) && GENERIC_NAME.test(group.key);
+}
+
+// 이름 묶음에서 확인이 필요한 까닭을 차례로 돌려준다. 없으면 빈 배열이다.
+function groupCautions(group) {
+  const cautions = [];
+  if (group.keep?.doubt) cautions.push(group.keep.doubt);
+  if (group.generic) cautions.push('카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다. remove-duplicates는 이 묶음을 지우지 않습니다.');
+  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. remove-duplicates는 이 묶음에서 남길 파일과 제목 낱말이 똑같은 파일만 지웁니다.');
+  return cautions;
 }
 
 // 번호가 없는 이름의 비교값. 대소문자, 전각, 조합형 한글, 구분 문자의 차이와 복사본 꼬리를 없앤다.
@@ -210,11 +274,13 @@ function chooseKeeper(files) {
 
 // 타겟 아래 영상 파일을 이름 기준과 길이 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
 // 묶음마다 남길 파일(keep: chooseKeeper의 결과)을 붙인다. 이름 묶음과 길이 묶음은 따로 고르므로, 두 묶음에 함께 든 파일은 한쪽에서는 남기고 다른 쪽에서는 남기지 않을 수 있다.
-// - groups: 이름이 같은 묶음 ({ kind, key, number, part, files }). 파일이 둘 이상인 것만 넣는다.
+// - groups: 이름이 같은 묶음 ({ kind, key, number, part, generic, differentTitles, files }). 파일이 둘 이상인 것만 넣는다.
+//   generic은 카메라·순번처럼 흔한 이름의 묶음(isGenericGroup)이고, differentTitles는 번호 묶음에 제목이 다른(titlesDiffer) 두 파일이 있는 묶음이다(#103).
+//   번호 묶음의 파일에는 title(titleWords의 값)이 붙는다.
 //   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
 // - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
 //   alsoNamed는 파일이 모두 한 이름 묶음에 이미 든 묶음이다. 파일은 길이 순이다.
-//   files의 항목은 { path, size, duration, width, height, note }다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
+//   files의 항목은 { path, size, duration, width, height, note }(번호 묶음의 파일은 title도)다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
 // - unknownMetadata: 길이를 모르는 영상 수. 읽지 못하는 형식(avi, wmv 등)과 읽지 못한 파일이 든다.
 // - metadataErrors: 읽을 수 있는 형식인데 길이나 해상도를 읽지 못한 파일 ({ path, reason })
 // - conflicts: 번호가 여럿이라 이름으로 묶지 않은 파일 ({ path, numbers }). 길이로는 묶을 수 있다.
@@ -263,6 +329,8 @@ function findDuplicateNames(dir) {
       }
       const id = `${found.kind}\0${found.key}`;
       if (!byKey.has(id)) byKey.set(id, { kind: found.kind, key: found.key, number: found.number ?? null, part: found.part ?? null, files: [] });
+      // 번호 묶음의 파일에는 제목 낱말을 붙인다. 같은 번호인데 제목이 다른지 볼 때 쓴다.
+      if (found.kind === 'number') file.title = titleWords(name);
       byKey.get(id).files.push(file);
       nameGroupOf.set(file, id);
     } catch (err) {
@@ -274,7 +342,12 @@ function findDuplicateNames(dir) {
   result.groups = [...byKey.values()]
     .filter((group) => group.files.length > 1)
     .sort(order)
-    .map((group) => ({ ...group, keep: chooseKeeper(group.files) }));
+    .map((group) => ({
+      ...group,
+      generic: isGenericGroup(group),
+      differentTitles: group.kind === 'number' && group.files.some((a, index) => group.files.slice(index + 1).some((b) => titlesDiffer(a.title, b.title))),
+      keep: chooseKeeper(group.files),
+    }));
   // 파일이 모두 한 이름 묶음에 든 길이 묶음은 alsoNamed로 표시한다. 보고에서는 되풀이하지 않지만, 이름과 길이가 함께 맞는다는 정보는 남긴다.
   // 하나뿐이라 이름 묶음에 나오지 않는 파일은 이름 묶음에 든 것으로 보지 않는다.
   const shown = (file) => (byKey.get(nameGroupOf.get(file))?.files.length ?? 0) > 1;
@@ -307,35 +380,38 @@ function describe(file) {
 function formatDuplicateNames(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [];
-  // 묶음의 파일 줄. 남길 파일에는 고른 까닭을 붙이고, 같은 영상이 아닐 수 있으면 주의 줄을 덧붙인다.
+  // 묶음의 파일 줄. 남길 파일에는 고른 까닭을 붙인다.
   const pushFiles = (group) => {
     for (const file of group.files) {
       const keep = file.path === group.keep.path ? ` [남김: ${group.keep.reason}]` : '';
       lines.push(`  ${relative(file.path)} (${describe(file)})${keep}`);
     }
-    if (group.keep.doubt !== null) lines.push(`  주의: ${group.keep.doubt}`);
   };
+  // 이름 묶음은 같은 영상이 아닐 수 있는 까닭(길이가 다름, 흔한 이름, 제목이 다름)을 주의 줄로 덧붙인다(#103).
   for (const group of result.groups) {
     const label = groupLabel(group);
     lines.push(`중복 후보 (${label}, ${group.files.length}개):`);
     pushFiles(group);
+    for (const caution of groupCautions(group)) lines.push(`  주의: ${caution}`);
   }
   const metadataGroups = result.metadataGroups.filter((group) => !group.alsoNamed);
   for (const group of metadataGroups) {
     const same = group.sameSize ? ', 크기도 같음' : '';
     lines.push(`길이가 같은 영상 (${formatDuration(group.duration)}, 화면 비율 ${group.aspect}${same}, ${group.files.length}개):`);
     pushFiles(group);
+    if (group.keep.doubt !== null) lines.push(`  주의: ${group.keep.doubt}`);
   }
   for (const item of result.conflicts) lines.push(`번호가 여럿: ${relative(item.path)} (${item.numbers.join(', ')})`);
   for (const item of result.metadataErrors) lines.push(`길이·해상도 못 읽음: ${relative(item.path)} (${item.reason})`);
   for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
   const files = result.groups.reduce((sum, group) => sum + group.files.length, 0);
+  const cautious = result.groups.filter((group) => groupCautions(group).length > 0).length;
   const metadataFiles = metadataGroups.reduce((sum, group) => sum + group.files.length, 0);
   lines.push(
-    `살펴본 영상 ${result.checked}개, 중복 후보 묶음 ${result.groups.length}개(파일 ${files}개), 길이가 같은 묶음 ${metadataGroups.length}개(파일 ${metadataFiles}개), 길이 모름 ${result.unknownMetadata}개, 번호가 여럿 ${result.conflicts.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`,
+    `살펴본 영상 ${result.checked}개, 중복 후보 묶음 ${result.groups.length}개(파일 ${files}개, 확인 필요 ${cautious}개), 길이가 같은 묶음 ${metadataGroups.length}개(파일 ${metadataFiles}개), 길이 모름 ${result.unknownMetadata}개, 번호가 여럿 ${result.conflicts.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`,
   );
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };
+module.exports = { duplicateKey, titleWords, titlesDiffer, isGenericGroup, groupCautions, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };
