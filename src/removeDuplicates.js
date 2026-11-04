@@ -6,7 +6,7 @@ const path = require('node:path');
 const { FcError, recycleBinState } = require('./commands');
 const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
-const { findDuplicateNames, aspectKey, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
+const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
 const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./removeBroken');
@@ -18,7 +18,7 @@ const GENERIC_REASON = '카메라·순번처럼 흔한 이름이라 길이가 �
 
 // 남길 파일과 같은 영상으로 볼 수 있는지. 같으면 null, 아니면 남기는 사유를 돌려준다.
 // 이름만 같은 다른 영상(같은 번호의 예고편, 제품번호처럼 보이는 WWE-2023 등, #103)을 지우지 않도록
-// 길이 차이가 1초 이내이고 화면 비율이 같을 때만 같은 영상으로 본다. 길이 묶음과 같은 기준이다.
+// 길이 차이가 1초 이내이고 보이는 화면 비율이 3% 이내(aspectsMatch)일 때만 같은 영상으로 본다. 길이 묶음과 같은 기준이다.
 // 번호 묶음에서 남길 파일과 제목이 다르면(titlesDiffer) 길이가 같아도 남긴다. 길이가 정해진 방송 녹화(WWE-2023 Raw와 SmackDown)가 그렇다.
 // 제목이 다른 파일이 섞인 묶음(differentTitles)에서는 남길 파일과 지울 파일 모두 제목이 있고 제목 낱말이 똑같을 때만 지운다.
 // 한쪽에 제목이 없으면 어느 영상의 사본인지 알 수 없다. 제목 없는 남길 파일이 Raw의 사본이면 SmackDown이 하나뿐인 원본일 수 있다.
@@ -27,7 +27,7 @@ function sameVideoReason(keeper, file, group) {
   if (file.duration === null || aspectKey(file) === null) return '길이나 해상도를 몰라 같은 영상인지 확인하지 못해 남겼습니다.';
   if (keeper.duration < MIN_DURATION || file.duration < MIN_DURATION) return '60초 미만이라 길이로 같은 영상인지 확인할 수 없어 남겼습니다.';
   if (Math.abs(keeper.duration - file.duration) > DURATION_TOLERANCE) return '남길 파일과 길이가 달라 같은 영상이 아닐 수 있어 남겼습니다.';
-  if (aspectKey(keeper) !== aspectKey(file)) return '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.';
+  if (!aspectsMatch(keeper, file)) return '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.';
   if (titlesDiffer(keeper.title, file.title)) return '번호는 같지만 남길 파일과 제목이 달라 다른 영상일 수 있어 남겼습니다.';
   if (!group.differentTitles) return null;
   const untitled = (item) => !item.title || item.title.length === 0;
@@ -123,6 +123,8 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
             duration: file.duration,
             width: file.width,
             height: file.height,
+            displayWidth: file.displayWidth,
+            displayHeight: file.displayHeight,
             stamp: fileStamp(stat),
             set,
             keep: keeper.path,

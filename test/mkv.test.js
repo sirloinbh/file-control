@@ -238,7 +238,7 @@ test('영상 트랙이 여럿이면 가장 큰 것을 쓴다', () => {
 test('없는 값은 null이다', () => {
   const dir = tempDir();
   const file = write(dir, 'a.mkv', header(), segment());
-  assert.deepStrictEqual(readMkvMetadata(dir, file), { title: null, comment: null, duration: null, width: null, height: null, bitrate: null });
+  assert.deepStrictEqual(readMkvMetadata(dir, file), { title: null, comment: null, duration: null, width: null, height: null, displayWidth: null, displayHeight: null, bitrate: null });
 });
 
 test('길이가 0이거나 숫자가 아니면 null이고 나누기 오류가 없다', () => {
@@ -335,4 +335,28 @@ test('product-number가 MKV의 제목과 코멘트에서 번호를 찾는다', (
   const result = addProductNumbers(dir);
   assert.deepStrictEqual(result.renamed.map((item) => [item.name, item.source]).sort(), [['ABC-123 a.mkv', 'title'], ['XYZ-999 b.webm', 'comment']]);
   assert.match(result.notFound[0].note, /MKV\/WebM 형식이 아닙니다/);
+});
+
+test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한다 (#106)', () => {
+  const dir = tempDir();
+  // 화소 크기, DisplayWidth, DisplayHeight, DisplayUnit(없으면 생략)
+  const shownTrack = (width, height, shownWidth, shownHeight, unit) =>
+    el(
+      0xae,
+      el(0x83, Buffer.from([1])),
+      el(0xe0, el(0xb0, uint(width)), el(0xba, uint(height)), ...(shownWidth ? [el(0x54b0, uint(shownWidth))] : []), ...(shownHeight ? [el(0x54ba, uint(shownHeight))] : []), ...(unit === undefined ? [] : [el(0x54b2, Buffer.from([unit]))])),
+    );
+  const size = (track) => {
+    const result = readMkvMetadata(dir, write(dir, 'd.mkv', header(), segment(info(), tracks(track), cluster())));
+    return [result.width, result.height, result.displayWidth, result.displayHeight];
+  };
+  assert.deepStrictEqual(size(videoTrack(1920, 1080)), [1920, 1080, 1920, 1080]);
+  // DVD 16:9: 화소 단위, 화면 비율 단위(16:9)
+  assert.deepStrictEqual(size(shownTrack(720, 480, 853, 480)), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size(shownTrack(720, 480, 16, 9, 3)), [720, 480, 853, 480]);
+  // 세로로 보이는 영상
+  assert.deepStrictEqual(size(shownTrack(1920, 1080, 1080, 1920, 0)), [1920, 1080, 1080, 1920]);
+  // 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다. 단위를 모르면(4) 화소 크기를 쓴다.
+  assert.deepStrictEqual(size(shownTrack(720, 480, 853)), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size(shownTrack(720, 480, 16, 9, 4)), [720, 480, 720, 480]);
 });

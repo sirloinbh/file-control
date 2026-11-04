@@ -46,8 +46,18 @@ function mvhd({ timescale = 1000, duration = 10000, version = 0 } = {}) {
   return box('mvhd', u32(0), u32(0), u32(0), u32(timescale), u32(duration), Buffer.alloc(80));
 }
 
-function tkhd({ width = 0, height = 0, duration = 0, flags = 3, version = 0 } = {}) {
-  const tail = [Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(36), u32(width * 65536), u32(height * 65536)];
+// 변환 행렬 { a b u / c d v / x y w }. rotate가 없으면 예전 시험 파일처럼 0으로 채운다.
+function matrix(rotate) {
+  const m = Buffer.alloc(36);
+  if (rotate === undefined) return m;
+  const one = 0x10000;
+  const [a, b, c, d] = { 0: [one, 0, 0, one], 90: [0, one, -one, 0], 180: [-one, 0, 0, -one], 270: [0, -one, one, 0] }[rotate];
+  [a, b, 0, c, d, 0, 0, 0, 0x40000000].forEach((value, index) => m.writeInt32BE(value, index * 4));
+  return m;
+}
+
+function tkhd({ width = 0, height = 0, duration = 0, flags = 3, version = 0, rotate } = {}) {
+  const tail = [Buffer.alloc(8), Buffer.alloc(8), matrix(rotate), u32(width * 65536), u32(height * 65536)];
   if (version === 1) return box('tkhd', u32(0x01000000 | flags), u64(0), u64(0), u32(1), u32(0), u64(duration), ...tail);
   return box('tkhd', u32(flags), u32(0), u32(0), u32(1), u32(0), u32(duration), ...tail);
 }
@@ -56,19 +66,21 @@ function hdlr(kind) {
   return box('hdlr', u32(0), u32(0), latin(kind), Buffer.alloc(13));
 }
 
-function stsd(width, height, format = 'avc1') {
+// pasp는 [가로, 세로] 화소 비율이다. 표본 항목의 자식 박스로 avcC 뒤에 붙인다.
+function stsd(width, height, format = 'avc1', pasp) {
   const entry = Buffer.alloc(78);
   entry.writeUInt16BE(width, 24);
   entry.writeUInt16BE(height, 26);
-  return box('stsd', u32(0), u32(1), box(format, entry));
+  const extra = pasp ? [box('avcC', Buffer.alloc(7)), box('pasp', u32(pasp[0]), u32(pasp[1]))] : [];
+  return box('stsd', u32(0), u32(1), box(format, entry, ...extra));
 }
 
-function trak({ kind = 'vide', width = 1920, height = 1080, display, duration = 10000, flags = 3, version = 0 } = {}) {
+function trak({ kind = 'vide', width = 1920, height = 1080, display, duration = 10000, flags = 3, version = 0, rotate, pasp } = {}) {
   const shown = display ?? { width, height };
   return box(
     'trak',
-    tkhd({ ...shown, duration, flags, version }),
-    box('mdia', hdlr(kind), box('minf', box('stbl', stsd(kind === 'vide' ? width : 0, kind === 'vide' ? height : 0)))),
+    tkhd({ ...shown, duration, flags, version, rotate }),
+    box('mdia', hdlr(kind), box('minf', box('stbl', stsd(kind === 'vide' ? width : 0, kind === 'vide' ? height : 0, 'avc1', pasp)))),
   );
 }
 
@@ -101,6 +113,8 @@ test('readMp4Metadata는 제목, 코멘트, 길이, 해상도, 비트레이트�
     duration: 10,
     width: 1920,
     height: 1080,
+    displayWidth: 1920,
+    displayHeight: 1080,
     bitrate: Math.round((size * 8) / 10),
   });
 });
@@ -113,6 +127,8 @@ test('찾지 못한 값은 null이다', () => {
     duration: null,
     width: null,
     height: null,
+    displayWidth: null,
+    displayHeight: null,
     bitrate: null,
   });
 });
@@ -528,4 +544,32 @@ test('mdat과 표본 표, 큰 값의 내용은 읽지 않는다', (t) => {
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').duration, 10);
   const bytes = readSync.mock.calls.reduce((sum, call) => sum + call.result, 0);
   assert.ok(bytes < 4096, `${bytes}바이트를 읽음`);
+});
+
+test('보이는 크기: 90·270도 회전이면 너비와 높이를 바꾸고, 인코딩 해상도는 그대로 둔다 (#106)', () => {
+  const dir = tempDir();
+  const size = (result) => [result.width, result.height, result.displayWidth, result.displayHeight];
+  for (const rotate of [90, 270]) {
+    assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ rotate })))), [1920, 1080, 1080, 1920], `${rotate}도`);
+    assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ rotate, version: 1 })))), [1920, 1080, 1080, 1920], `버전 1, ${rotate}도`);
+  }
+  for (const rotate of [0, 180]) assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ rotate })))), [1920, 1080, 1920, 1080], `${rotate}도`);
+  // 고른 본 영상 트랙의 회전을 쓴다.
+  const cover = trak({ width: 300, height: 300, duration: 10 });
+  assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', cover, trak({ rotate: 90 })))), [1920, 1080, 1080, 1920]);
+});
+
+test('보이는 크기: pasp 화소 비율을 너비에 곱하고 회전과 함께 반영한다 (#106)', () => {
+  const dir = tempDir();
+  const size = (result) => [result.width, result.height, result.displayWidth, result.displayHeight];
+  // DVD 16:9 (720x480, 화소 비율 32:27)
+  assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp: [32, 27] })))), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp: [32, 27], rotate: 90 })))), [720, 480, 480, 853]);
+  // 1:1과 0이 든 값은 반영하지 않는다.
+  for (const pasp of [[1, 1], [0, 1], [1, 0]]) {
+    assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp })))), [720, 480, 720, 480], pasp.join(':'));
+  }
+  // 인코딩 해상도가 0이라 tkhd 크기를 쓰면 그 값이 이미 보이는 크기다.
+  const shown = trak({ width: 0, height: 0, display: { width: 853, height: 480 }, pasp: [32, 27] });
+  assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', shown))), [853, 480, 853, 480]);
 });
