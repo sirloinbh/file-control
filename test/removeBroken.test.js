@@ -39,6 +39,7 @@ test.mock.method(Date, 'now', () => realNow() + skew);
 const { removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE } = require('../src/removeBroken');
 const { recycleBinState } = require('../src/commands');
 const { REMOVAL_LOG } = require('../src/removalLog');
+const { fileStamp } = require('../src/target');
 const { run } = require('../bin/fctl');
 
 const OLD = new Date(realNow() - HOUR);
@@ -59,6 +60,23 @@ function make(dir, files) {
     fs.writeFileSync(full, content);
     fs.utimesSync(full, OLD, OLD);
   }
+}
+
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const stampOf = (file) => fileStamp(fs.lstatSync(file, { bigint: true }));
+
+// 같은 크기의 다른 내용으로 다시 쓰고 시각을 되돌린다. Windows는 변경 시각을 시계 단위로 적어서
+// 같은 단위 안에 다시 쓰면 식별값이 같다(#116). 실제로는 그런 파일을 변경 시각이 방금이라 5분 보호가 남기지만,
+// 시험은 시계를 1시간 뒤로 옮겨 그 보호를 피하므로 식별값이 달라질 때까지 잠깐씩 기다리며 다시 쓴다.
+function replaceSameSize(file, content) {
+  const before = stampOf(file);
+  for (let tries = 0; tries < 100; tries += 1) {
+    fs.writeFileSync(file, content);
+    fs.utimesSync(file, OLD, OLD);
+    if (stampOf(file) !== before) return;
+    sleep(2);
+  }
+  throw new Error('식별값이 바뀌지 않았습니다: ' + file);
 }
 
 const logs = (dir) => fs.readdirSync(dir).filter((name) => REMOVAL_LOG.test(name));
@@ -319,7 +337,7 @@ test('같은 크기로 바꾸고 수정 시각을 되돌려도 확인값이 달�
   make(dir, { 'a.mp4': BROKEN });
   const { code } = removeBroken(dir);
   assert.strictEqual(Buffer.byteLength(BROKEN), Buffer.byteLength(SAME_SIZE));
-  make(dir, { 'a.mp4': SAME_SIZE });
+  replaceSameSize(path.join(dir, 'a.mp4'), SAME_SIZE);
   const result = removeBroken(dir, { confirm: code });
   assert.strictEqual(result.mismatch, true);
   assert.deepStrictEqual(recycled, []);
@@ -334,7 +352,7 @@ test('판별하는 사이에 같은 크기의 다른 파일로 바뀌면 남긴�
     const n = readSync(...args);
     if (!replaced) {
       replaced = true;
-      make(dir, { 'a.mp4': SAME_SIZE });
+      replaceSameSize(path.join(dir, 'a.mp4'), SAME_SIZE);
     }
     return n;
   });
@@ -352,7 +370,7 @@ test('기록을 쓴 뒤 파일이 바뀌면 같은 크기와 시각이어도 지
   const { fsyncSync } = fs;
   t.mock.method(fs, 'fsyncSync', (...args) => {
     fsyncSync(...args);
-    make(dir, { 'a.mp4': SAME_SIZE });
+    replaceSameSize(path.join(dir, 'a.mp4'), SAME_SIZE);
   });
   const result = removeBroken(dir, { confirm: code });
   t.mock.restoreAll();
