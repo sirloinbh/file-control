@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath } = require('./commands');
-const { grant, walk, readRange, fileSizeInside, rejectAmbiguousNames } = require('./target');
+const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
@@ -206,11 +206,12 @@ function keepReason(access, item, entryCount, dryRun) {
 }
 
 // 푼 압축 파일이 그 뒤로 바뀌었으면 지우지 않는다. 지우는 것은 내용을 확인한 그 파일이어야 한다.
+// before는 풀기 전에 잡은 fileStamp다. 변경 시각까지 보므로 같은 크기로 제자리에서 다시 쓰고 수정 시각을 되돌려도 알아챈다.
 function removeArchive(access, item, before, dryRun) {
   const archive = access.delete(item.archive);
   if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
-  const stat = fs.lstatSync(archive);
-  if (!stat.isFile() || stat.size !== before.size || stat.mtimeMs !== before.mtimeMs || stat.ino !== before.ino) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
+  const stat = fs.lstatSync(archive, { bigint: true });
+  if (!stat.isFile() || fileStamp(stat) !== before) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
   remove([archive], { dryRun });
 }
 
@@ -241,7 +242,8 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
     let before;
     let entries;
     try {
-      before = fs.lstatSync(item.archive);
+      // ReFS의 파일 번호는 2^53을 넘어 숫자로 받으면 정밀도를 잃으므로 bigint로 받는다.
+      before = fileStamp(fs.lstatSync(item.archive, { bigint: true }));
       entries = dryRun ? inspectArchive(item.archive).entries : extractOne(item, access);
       result.extracted.push({ ...item, entries });
     } catch (err) {
