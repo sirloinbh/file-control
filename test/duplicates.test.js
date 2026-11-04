@@ -369,6 +369,17 @@ test('groupByMetadata, aspectsMatch: 화면 비율은 3% 이내면 같다고 본
   assert.deepStrictEqual(paths(groups), [['600-1000x1000-100', '600-1025x1000-100'], ['600-1050x1000-100', '600-1070x1000-100']]);
 });
 
+test('groupByMetadata: 길이나 비율이 동떨어진 다른 파일 때문에 같은 영상 쌍이 갈리지 않는다 (#106)', () => {
+  const pair = [video(300, 1920, 1080), video(300.5, 1912, 1080)];
+  const expected = [['300-1920x1080-100', '300.5-1912x1080-100']];
+  assert.deepStrictEqual(paths(groupByMetadata(pair)), expected);
+  // 길이가 전혀 다르고 비율이 한쪽과만 3% 이내인 파일
+  assert.deepStrictEqual(paths(groupByMetadata([...pair, video(9000, 1720, 1000)])), expected);
+  // 길이 창 안에 있지만 비율이 다른 파일(세로 영상, 비율이 한쪽과만 3% 이내인 영상)
+  assert.deepStrictEqual(paths(groupByMetadata([video(299.4, 1080, 1920), ...pair])), expected);
+  assert.deepStrictEqual(paths(groupByMetadata([video(299.4, 1720, 1000), ...pair])), expected);
+});
+
 test('findDuplicateNames: 회전한 MP4와 표시 크기가 있는 MKV를 보이는 크기로 묶고 보고에 보이는 크기를 쓴다 (#106)', () => {
   const dir = tempDir();
   const phone = put(dir, 'phone.mp4', mp4({ seconds: 600, rotate: 90 }));

@@ -224,25 +224,24 @@ function aspectsMatch(a, b) {
 }
 
 // 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, displayWidth, displayHeight, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
-// 화면 비율 순으로 놓고 가장 좁은 파일과 3% 이내인 파일까지 한 무리로 나눈 뒤, 무리마다 길이 순으로 놓고 가장 짧은 파일과 1초 이내인 파일까지 넣는다.
-// 그래서 묶음 안의 어느 두 파일도 화면 비율이 3% 넘게, 길이가 1초 넘게 차이 나지 않는다.
+// 길이 순으로 놓고, 파일마다 먼저 만든 묶음부터 보며 가장 짧은 파일과 1초 이내이고 묶음의 모든 파일과 화면 비율이 3% 이내인 묶음에 넣는다. 없으면 새 묶음을 만든다.
+// 그래서 묶음 안의 어느 두 파일도 길이가 1초 넘게, 화면 비율이 3% 넘게 차이 나지 않는다.
+// 비율이나 길이 한쪽만으로 먼저 나누지 않으므로, 길이나 비율이 동떨어진 다른 파일이 있어도 같은 영상 쌍이 갈리지 않는다.
 // 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다. aspect는 묶음의 가장 짧은 파일의 aspectKey다.
 function groupByMetadata(files) {
   const usable = files.filter((file) => file.duration !== null && file.duration >= MIN_DURATION && aspectRatio(file) !== null);
-  usable.sort((a, b) => aspectRatio(a) - aspectRatio(b));
-  const clusters = [];
-  for (const file of usable) {
-    const last = clusters.at(-1);
-    if (last && aspectsMatch(last[0], file)) last.push(file);
-    else clusters.push([file]);
-  }
+  usable.sort((a, b) => a.duration - b.duration || aspectRatio(a) - aspectRatio(b));
   const groups = [];
-  for (const list of clusters) {
-    list.sort((a, b) => a.duration - b.duration);
-    let current = null;
-    for (const file of list) {
-      if (current && file.duration - current.files[0].duration <= DURATION_TOLERANCE) current.files.push(file);
-      else groups.push((current = { aspect: aspectKey(file), files: [file] }));
+  let open = [];
+  for (const file of usable) {
+    // 길이 창을 지난 묶음은 더 볼 필요가 없다.
+    open = open.filter((group) => file.duration - group.files[0].duration <= DURATION_TOLERANCE);
+    const group = open.find((candidate) => candidate.files.every((member) => aspectsMatch(member, file)));
+    if (group) group.files.push(file);
+    else {
+      const created = { aspect: aspectKey(file), files: [file] };
+      groups.push(created);
+      open.push(created);
     }
   }
   return groups

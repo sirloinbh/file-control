@@ -359,4 +359,8 @@ test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한
   // 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다. 단위를 모르면(4) 화소 크기를 쓴다.
   assert.deepStrictEqual(size(shownTrack(720, 480, 853)), [720, 480, 853, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, 16, 9, 4)), [720, 480, 720, 480]);
+  // 화소가 아닌 단위는 기본값이 없어 한쪽만 있으면 비율을 알 수 없다.
+  assert.deepStrictEqual(size(shownTrack(720, 480, 16, undefined, 3)), [720, 480, 720, 480]);
+  assert.deepStrictEqual(size(shownTrack(720, 480, undefined, 9, 3)), [720, 480, 720, 480]);
+  assert.deepStrictEqual(size(shownTrack(720, 480, 30, undefined, 1)), [720, 480, 720, 480]);
 });

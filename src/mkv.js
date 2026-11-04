@@ -130,9 +130,11 @@ function parseInfo(body, found) {
 
 // 보이는 크기. DisplayWidth와 DisplayHeight가 없으면 화소 크기와 같다(규격의 기본값).
 // 단위(DisplayUnit)가 화소(0)면 그 값을 쓰고, cm(1)·인치(2)·화면 비율(3)이면 비율만 뜻이 있어 높이를 화소 높이에 맞춘다.
-// 단위를 모르면(4 등) 화소 크기를 쓴다. 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다.
+// 단위를 모르면(4 등) 화소 크기를 쓴다. 화소 단위에서 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다(규격의 기본값).
+// 화소가 아닌 단위는 기본값이 없으므로 한쪽만 있으면 비율을 알 수 없어 화소 크기를 쓴다.
 function displaySize(width, height, shownWidth, shownHeight, unit) {
   if (unit === null || unit > 3 || (!shownWidth && !shownHeight)) return [width, height];
+  if (unit !== 0 && (!shownWidth || !shownHeight)) return [width, height];
   const [w, h] = [shownWidth || width, shownHeight || height];
   if (unit === 0) return [w, h];
   return [Math.max(1, Math.round((height * w) / h)), height];

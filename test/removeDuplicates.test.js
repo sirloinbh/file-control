@@ -181,6 +181,21 @@ test('화면 비율은 회전을 반영한 보이는 크기로 비교한다 (#10
   assert.match(formatRemoveDuplicates(result), /^ {2}남길 파일: Trip\.mp4 \(\d+B, 1920x1080\(보이는 크기 1080x1920\), 10:00\)/m);
 });
 
+test('화면 비율이 3% 이내인 사본은 지우고, 16:9와 1.85:1처럼 더 다르면 남긴다 (#106)', () => {
+  const dir = tempDir();
+  const made = make(dir, {
+    'Movie.mp4': mp4({ seconds: 600, width: 1920, height: 818 }),
+    // 반올림하면 2.4와 2.3으로 갈리던 같은 영상
+    'old/movie.mp4': mp4({ seconds: 600, width: 1920, height: 816 }),
+    'Film.mp4': mp4({ seconds: 900, width: 1920, height: 1080, padding: 10 }),
+    // 1.85:1은 16:9보다 4% 가까이 넓다.
+    'old/film.mp4': mp4({ seconds: 900, width: 1920, height: 1038 }),
+  });
+  const result = removeDuplicates(dir);
+  assert.deepStrictEqual(result.removals.map((item) => item.path), [made['old/movie.mp4']]);
+  assert.deepStrictEqual(result.kept.map((item) => [item.path, item.reason]), [[made['old/film.mp4'], '남길 파일과 화면 비율이 달라 같은 영상이 아닐 수 있어 남겼습니다.']]);
+});
+
 test('번호는 같은데 남길 파일과 제목이 겹치지 않는 파일은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   const made = make(dir, {
