@@ -605,7 +605,7 @@ test('findDuplicateNames: 번호는 같은데 제목이 다른 묶음과 카메�
   });
   const report = formatDuplicateNames(result);
   const blockOf = (label) => report.split('\n').slice(report.split('\n').indexOf(label)).join('\n');
-  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음에서 남길 파일과 제목이 맞는 파일만 지웁니다\.\n/);
+  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음에서 남길 파일과 제목 낱말이 똑같은 파일만 지웁니다\.\n/);
   assert.match(blockOf('중복 후보 (이름 "img 0001", 2개):'), /^중복 후보 \(이름 "img 0001", 2개\):\n {2}.+\n {2}.+\n {2}주의: 카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음을 지우지 않습니다\.\n/);
   assert.match(blockOf('중복 후보 (번호 ABC-123, 2개):'), /^중복 후보 \(번호 ABC-123, 2개\):\n {2}.+\n {2}.+\n중복 후보/);
   assert.match(report, /중복 후보 묶음 10개\(파일 20개, 확인 필요 7개\)/);

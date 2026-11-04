@@ -142,7 +142,7 @@ function groupCautions(group) {
   const cautions = [];
   if (group.keep?.doubt) cautions.push(group.keep.doubt);
   if (group.generic) cautions.push('카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다. remove-duplicates는 이 묶음을 지우지 않습니다.');
-  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. remove-duplicates는 이 묶음에서 남길 파일과 제목이 맞는 파일만 지웁니다.');
+  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. remove-duplicates는 이 묶음에서 남길 파일과 제목 낱말이 똑같은 파일만 지웁니다.');
   return cautions;
 }
 
