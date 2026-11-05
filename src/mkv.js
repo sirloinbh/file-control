@@ -299,6 +299,7 @@ function checkHeader(read, p) {
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 잘라 낼 화소(PixelCrop), DisplayWidth/Height,
 // 평면 투영의 90·270도 회전(ProjectionPoseRoll)을 반영한 보이는 크기다(#106, #113). 영상 데이터(CodecPrivate의 SPS) 안의 화소 비율은 보지 않는다. 규격상 DisplayWidth/Height가 없으면 자른 화소 크기가 보이는 크기다.
+// FFmpeg 9.0도 SPS에 32:27이 있고 DisplayWidth가 없는 MKV를 1:1로 본다(#123에서 확인).
 // 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
 // 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
 function readMkvMetadata(dir, p) {
