@@ -41,6 +41,28 @@ function rejectNewDeviceName(p) {
   if (part !== undefined) throw new FcError(`Windows가 장치로 여는 이름이라 만들지 않습니다: ${JSON.stringify(part)} (${p})`);
 }
 
+// 하드링크(링크 수 2 이상)의 내용을 바꾸면 같은 파일의 다른 이름도 함께 바뀐다. 다른 이름은 타겟 밖일 수 있어 내용은 쓰지 않는다(#48).
+// 이름만 지우거나 바꾸는 것(rm, mv --force의 교체, unzip이 기존 파일을 바꾸는 것)은 다른 이름의 내용을 그대로 두므로 막지 않는다.
+// 빌드 26200에서 write --force·내용 추가·cp --force로 폴더를 합칠 때는 다른 이름의 내용이 바뀌었고,
+// cp --force 파일 하나·mv --force·unzip은 바뀌지 않았다. cp는 Linux에서 제자리에 쓰므로 파일 하나도 막는다.
+function rejectHardLinkedWrite(p) {
+  const stat = fs.statSync(p, { throwIfNoEntry: false });
+  if (stat && stat.isFile() && stat.nlink > 1) {
+    throw new FcError(`하드링크라 내용을 바꾸면 같은 파일의 다른 이름 ${stat.nlink - 1}개도 함께 바뀌어 쓰지 않았습니다: ${p}. 먼저 지우거나 다른 이름으로 쓰세요.`);
+  }
+}
+
+// cp --force가 덮어쓸 파일 중 하드링크가 있으면 아무것도 복사하기 전에 거부한다. 폴더는 합쳐지므로 안쪽 파일까지 본다.
+function rejectHardLinkedOverwrite(src, target) {
+  if (!exists(target)) return;
+  rejectHardLinkedWrite(target);
+  if (!fs.statSync(src).isDirectory() || !fs.statSync(target).isDirectory()) return;
+  // 항목 종류는 따라가지 않고 본다. 원본 안의 끊어진 링크에서 stat이 실패하지 않게 하고, 링크는 덮어쓸 내용이 아니다.
+  for (const entry of fs.readdirSync(src, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) rejectHardLinkedWrite(path.join(target, path.relative(src, path.join(entry.parentPath, entry.name))));
+  }
+}
+
 // 장치 이름 그대로(nul, CON)가 든 경로는 tar.exe가 인자로 받으면 장치를 열고, 휴지통 이동은 실패한다(#135).
 // 휴지통 이동은 그런 폴더 안의 파일(CON\a.txt)도 실패하는 것을 빌드 26200에서 확인해 경로의 모든 이름을 본다.
 function bareDeviceName(p) {
@@ -154,6 +176,7 @@ function makeDir(dir, { dryRun = false } = {}) {
 function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
   if (!append) ensureFree(file, force);
   rejectNewDeviceName(file);
+  rejectHardLinkedWrite(file);
   if (dryRun) {
     ensureCanMakeDir(path.dirname(file));
     if (exists(file) && fs.statSync(file).isDirectory()) throw new FcError(`폴더에는 쓸 수 없습니다: ${file}`);
@@ -367,6 +390,13 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
 function copy(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`여러 개를 복사하려면 대상이 있는 폴더여야 합니다: ${dest}`);
+  }
+  // 하드링크는 여러 원본 중 하나에만 걸려도 아무것도 복사하지 않도록 먼저 모두 본다(#48). 덮어쓰기는 --force일 때만 일어난다.
+  if (force) {
+    for (const src of sources) {
+      ensureExists(src);
+      rejectHardLinkedOverwrite(src, resolveDest(src, dest));
+    }
   }
   const planned = new Set();
   return sources.map((src) => {
@@ -627,6 +657,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
 }
 
 module.exports = {
+  rejectHardLinkedWrite,
   FcError,
   perform,
   formatSize,
