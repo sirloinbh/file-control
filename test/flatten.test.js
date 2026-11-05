@@ -1439,3 +1439,44 @@ test('leftoverNote는 같은 파일의 다른 이름과 빈 파일을 이전 실
   assert.strictEqual(leftoverNote(path.join(dir, 'a', 'y.txt'), path.join(dir, 'other.txt')), '');
   assert.strictEqual(leftoverNote(path.join(dir, 'a', 'y.txt'), path.join(dir, 'missing.txt')), '');
 });
+
+test('flatten은 이전 실행이 남긴 같은 파일의 다른 이름이 있으면 번호를 붙여 세 번째 이름을 만들지 않는다 (1차 리뷰, #73)', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt']);
+  fs.linkSync(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt'));
+  // 빈 파일은 정상적인 빈 파일일 수 있어 지금처럼 번호를 붙여 피한다.
+  fs.writeFileSync(path.join(dir, 'y.txt'), '');
+  for (const dryRun of [true, false]) {
+    const result = flatten(dir, { dryRun });
+    const skipped = result.skipped.find((item) => item.path === path.join(dir, 'a', 'x.txt'));
+    assert.match(skipped?.reason ?? '', /같은 이름이 이미 있어 옮기지 않습니다: x\.txt \(원본과 같은 파일의 다른 이름/, `dryRun=${dryRun}`);
+    assert.deepStrictEqual(result.moved.map((move) => move.name).sort(), ['y (2).txt', 'z.txt'], `dryRun=${dryRun}`);
+  }
+  assert.strictEqual(fs.statSync(path.join(dir, 'x.txt')).nlink, 2);
+  assert.ok(!fs.existsSync(path.join(dir, 'x (2).txt')));
+});
+
+test('moveWithoutOverwrite는 linkSync가 실패를 알렸어도 링크가 만들어졌으면 이어서 옮긴다 (1차 리뷰, #73)', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  const link = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    link(from, to);
+    throw Object.assign(new Error('lost reply'), { code: 'EIO' });
+  });
+  assert.strictEqual(moveWithoutOverwrite(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt')), true);
+  assert.deepStrictEqual(contents(dir), { 'x.txt': 'a/x.txt' });
+  assert.strictEqual(fs.statSync(path.join(dir, 'x.txt')).nlink, 1);
+});
+
+test('leftoverNote는 파일 번호를 0으로 알리는 파일 시스템에서 다른 파일을 같은 파일로 보지 않는다 (1차 리뷰, #73)', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'x.txt']);
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    const stat = lstat(p, options);
+    if (stat && options?.bigint) stat.ino = 0n;
+    return stat;
+  });
+  assert.strictEqual(leftoverNote(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt')), '');
+});

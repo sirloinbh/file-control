@@ -343,3 +343,12 @@ test('normalize 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['normalize', dir, '--remove-archives']), /extract-all에서만/);
   assert.throws(() => run(['flatten', dir, '--include-lowercase']), /normalize에서만/);
 });
+
+test('normalize는 이전 실행이 남긴 같은 파일의 다른 이름을 겹침 사유에 알린다 (1차 리뷰, #73)', () => {
+  const dir = tempDir();
+  make(dir, ['[ABC-123].mp4']);
+  fs.linkSync(path.join(dir, '[ABC-123].mp4'), path.join(dir, 'ABC-123.mp4'));
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(result.renamed, []);
+  assert.match(result.conflicts[0].reason, /같은 이름이 이미 있습니다\. \(원본과 같은 파일의 다른 이름/);
+});

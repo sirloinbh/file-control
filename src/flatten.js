@@ -185,6 +185,11 @@ function planFlatten(dir) {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
       const detailed = detailedName(original, soleFolders(entry, fileCounts));
+      // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름이 있다. 번호를 붙여 세 번째 이름을 만들지 않는다(#73).
+      for (const candidate of new Set([detailed, original])) {
+        const there = path.join(access.target, candidate);
+        if (candidate.length <= MAX_NAME && sameFileOrFalse(from, there)) throw new FcError(`같은 이름이 이미 있어 옮기지 않습니다: ${candidate}${leftoverNote(from, there)}`);
+      }
       let desired = detailed.length > MAX_NAME ? original : detailed;
       let name = freeName(desired, access.target, taken, nextNumber);
       if (name.length > MAX_NAME && desired !== original) {
@@ -213,7 +218,8 @@ function moveWithoutOverwrite(from, to) {
       fs.linkSync(from, to);
     } catch (err) {
       if (err.code === 'EEXIST') return false;
-      return moveOverPlaceholder(from, to);
+      // 실패로 알렸어도 링크가 만들어졌을 수 있다(네트워크 응답 유실 등). 그러면 내가 만든 이름이므로 이어서 원래 이름을 지운다.
+      if (!sameFile(from, to)) return moveOverPlaceholder(from, to);
     }
     try {
       fs.unlinkSync(from);
@@ -243,10 +249,20 @@ function moveOverPlaceholder(from, to) {
 }
 
 // 같은 파일인지 파일 번호로 본다. Windows 파일 번호는 64비트라 bigint로 읽는다.
+// 파일 번호를 0으로 알리는 파일 시스템(일부 네트워크 드라이브)에서는 서로 다른 파일을 같다고 보지 않도록 같지 않다고 본다.
 function sameFile(a, b) {
   const sa = fs.lstatSync(a, { bigint: true, throwIfNoEntry: false });
   const sb = fs.lstatSync(b, { bigint: true, throwIfNoEntry: false });
-  return Boolean(sa && sb && sa.ino === sb.ino && sa.dev === sb.dev);
+  return Boolean(sa && sb && sa.ino !== 0n && sa.ino === sb.ino && sa.dev === sb.dev);
+}
+
+// 확인하지 못하면 같지 않다고 본다. 이름을 확인하지 못한 사유는 뒤의 이름 고르기가 알린다.
+function sameFileOrFalse(a, b) {
+  try {
+    return sameFile(a, b);
+  } catch {
+    return false;
+  }
 }
 
 // 원래 이름을 지우지 못했으면 만든 하드링크를 지워 되돌린다. 그사이 새 이름이 다른 파일로 바뀌었으면 지우지 않는다.

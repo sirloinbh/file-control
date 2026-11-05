@@ -70,7 +70,8 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     if (targets.get(key) > 1) {
       conflict('다른 파일도 같은 이름이 됩니다.');
     } else if (key !== nameKey(entry.path) && existing.has(key)) {
-      conflict('같은 이름이 이미 있습니다.');
+      // 이전 실행이 중간에 멈춘 흔적(같은 파일의 다른 이름, 빈 파일)이면 그 사실을 덧붙인다(#73).
+      conflict(`같은 이름이 이미 있습니다.${leftoverNote(entry.path, to)}`);
     } else {
       try {
         const from = access.read(entry.path);
