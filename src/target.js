@@ -138,7 +138,20 @@ function resolveFileInside(target, p) {
 // Node는 이름을 글자 그대로 쓰지만 PowerShell·tar.exe·.NET은 끝의 점과 공백을 지우고 스트림(:)과 장치 이름을 따로 해석한다.
 // 검사한 경로와 실제 작업 경로가 달라지지 않게 이런 이름과 Windows에서 쓸 수 없는 문자가 든 이름은 거부한다.
 const WINDOWS_BAD_CHARS = /[:<>"|?*\x00-\x1f]/;
-const WINDOWS_DEVICE_NAME = /^(con|prn|aux|nul|com[\d¹²³]|lpt[\d¹²³]|conin\$|conout\$) *(\.|$)/i;
+// 장치 이름(#53). Windows 11(빌드 22000 이상)에서 실측한 규칙: 장치 이름 그대로이거나 확장자가 하나만 붙은 이름(nul.mp4, con.txt, COM¹.txt)만
+// PowerShell이 장치로 본다. 점이 둘 이상인 이름(Con.Air.1997.mkv, nul.tar.gz), 점 앞에 공백이 있는 이름(Nul .mp4), COM0·LPT0은
+// PowerShell, tar.exe, 휴지통 이동에서 모두 같은 파일로 다뤄진다. 휴지통 이동 스크립트가 Test-Path로 폴더인지 보므로 Test-Path 기준을 따른다.
+// CONIN$·CONOUT$는 그 이름 그대로일 때만 거부한다. Windows 10 이하는 확인하지 못해 예전처럼 장치 이름으로 시작하는 이름을 모두 거부한다.
+const WINDOWS_DEVICE_NAME_WIDE = /^(con|prn|aux|nul|com[\d¹²³]|lpt[\d¹²³]|conin\$|conout\$) *(\.|$)/i;
+const WINDOWS_DEVICE_NAME_11 = /^((con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(\.[^.]*)?|conin\$|conout\$)$/i;
+
+// os.release()는 "10.0.26200"처럼 빌드 번호를 세 번째에 둔다. 읽지 못하면 넓은 규칙을 쓴다.
+function deviceNamePattern(release = os.release()) {
+  const build = Number(String(release).split('.')[2]);
+  return Number.isInteger(build) && build >= 22000 ? WINDOWS_DEVICE_NAME_11 : WINDOWS_DEVICE_NAME_WIDE;
+}
+
+const WINDOWS_DEVICE_NAME = deviceNamePattern();
 
 function rejectAmbiguousNames(rel, p) {
   if (process.platform !== 'win32') return;
@@ -327,4 +340,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames, compareRelative };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern };

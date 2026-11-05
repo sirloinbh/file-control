@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant } = require('../src/target');
+const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, deviceNamePattern } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -450,6 +450,38 @@ test('grant는 점이 들어간 평범한 이름과 장치 이름으로 시작�
   }
 });
 
+// Windows 11(빌드 22000 이상)에서는 장치 이름 + 확장자 하나만 장치로 본다(#53). 그 아래 버전은 넓게 거부한다.
+const WINDOWS_11 = Number(os.release().split('.')[2]) >= 22000;
+const DEVICE_LIKE = ['Con.Air.1997.mkv', 'Aux.2018.mp4', 'nul.tar.gz', 'Prn.Movie.mkv', 'Com0.txt', 'Lpt0.txt', 'Nul .mp4', 'NUL..mp4', 'CONIN$.txt', 'sub/Con.Air.1997/a.mkv'];
+
+test('grant는 Windows 11에서 점이 둘 이상이거나 장치 이름이 아닌 이름은 허용하고, 그 아래 버전에서는 거부한다 (#53)', { skip: !isWindows }, () => {
+  const { target } = accessFixture();
+  const access = grant(target, ['write']);
+  for (const name of DEVICE_LIKE) {
+    if (WINDOWS_11) assert.strictEqual(access.write(name), path.join(target, name), name);
+    else assert.throws(() => access.write(name), /다르게 해석될 수 있는 이름/, name);
+  }
+});
+
+test('장치 이름 규칙은 Windows 빌드에 따라 고르고, 빌드를 읽지 못하면 넓은 규칙을 쓴다 (#53)', () => {
+  const narrow = deviceNamePattern('10.0.26200');
+  assert.strictEqual(deviceNamePattern('10.0.22000'), narrow);
+  const wide = deviceNamePattern('10.0.19045');
+  for (const release of ['10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
+  // [이름, Windows 11에서 거부, 그 아래에서 거부]
+  const cases = [
+    ['NUL', true, true], ['nul', true, true], ['Nul.mp4', true, true], ['con.txt', true, true], ['Com1.mkv', true, true],
+    ['LPT9.log', true, true], ['COM¹.txt', true, true], ['lpt³', true, true], ['Con.Air', true, true], ['CONIN$', true, true], ['conout$', true, true],
+    ['Con.Air.1997.mkv', false, true], ['nul.tar.gz', false, true], ['Aux.2018.mp4', false, true], ['NUL..mp4', false, true],
+    ['Nul .mp4', false, true], ['CON .log', false, true], ['Com0.txt', false, true], ['Lpt0', false, true], ['CONIN$.txt', false, true],
+    ['console.txt', false, false], ['nullable', false, false], ['com10.txt', false, false], ['Conan.mp4', false, false], ['nul-1.mp4', false, false],
+  ];
+  for (const [name, on11, below] of cases) {
+    assert.strictEqual(narrow.test(name), on11, `11 ${name}`);
+    assert.strictEqual(wide.test(name), below, `10 ${name}`);
+  }
+});
+
 test('grant는 타겟 경로 자체의 이름은 Windows 이름 규칙으로 따지지 않는다', { skip: !isWindows }, () => {
   const { root } = accessFixture();
   fs.mkdirSync(path.join(root, 'aux.d'));
@@ -684,8 +716,13 @@ test('grant는 Windows 도구가 지우는 다른 공백 문자로 끝나는 이
 test('grant는 Windows에서 쓸 수 없는 문자와 변형 장치 이름을 거부한다', { skip: !isWindows }, () => {
   const { target } = accessFixture();
   const access = grant(target, ['write']);
-  for (const p of ['es*/new.txt', 'es?ape/new.txt', 'a*.zip', 'a|b', 'a<b', 'a>b', 'a"b', 'a\x01b', 'NUL .txt', 'CON .log', 'COM¹', 'LPT³', 'com¹.txt', 'aux .x']) {
+  for (const p of ['es*/new.txt', 'es?ape/new.txt', 'a*.zip', 'a|b', 'a<b', 'a>b', 'a"b', 'a\x01b', 'COM¹', 'LPT³', 'com¹.txt', 'sub/Con.Air/a.mkv']) {
     assert.throws(() => access.write(p), /다르게 해석될 수 있는 이름/, p);
+  }
+  // 점 앞에 공백이 있는 장치 이름은 Windows 11에서 장치가 아니다(#53).
+  for (const p of ['NUL .txt', 'CON .log', 'aux .x']) {
+    if (WINDOWS_11) assert.strictEqual(access.write(p), path.join(target, p), p);
+    else assert.throws(() => access.write(p), /다르게 해석될 수 있는 이름/, p);
   }
 });
 
