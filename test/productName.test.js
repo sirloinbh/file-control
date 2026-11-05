@@ -526,3 +526,22 @@ test('product-number는 타겟 자신을 읽을 수 없으면 아무것도 바�
   t.mock.restoreAll();
   assert.deepStrictEqual(tree(dir), ['ABC-123/a.mp4']);
 });
+
+test('fctl product-number는 읽을 수 없는 폴더만 건너뛰었으면 0으로 끝나고, 알 수 없는 읽기 오류는 전체를 실패시킨다 (1차 리뷰, #74)', (t) => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4', 'z-locked/b.mp4', 'b-locked/c.mp4']);
+  const readdirSync = fs.readdirSync;
+  let code = 'EPERM';
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (path.basename(p).endsWith('-locked')) throw Object.assign(new Error('read failed'), { code });
+    return readdirSync(p, ...rest);
+  });
+  // 여러 폴더는 이름 순으로 보고한다.
+  assert.match(run(['product-number', dir, '--dry-run']), /건너뜀: b-locked \(.*EPERM\)\n\[미리보기\] 건너뜀: z-locked \(.*EPERM\)/);
+  code = 'EIO';
+  assert.throws(() => run(['product-number', dir]), (err) => err instanceof FcError && /폴더를 읽을 수 없습니다: .*-locked \(EIO\)/.test(err.message));
+  code = 'EPERM';
+  assert.match(run(['product-number', dir]), /이름 변경 1개, .*건너뜀 2개, 실패 0개/);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b-locked/c.mp4', 'z-locked/b.mp4']);
+});
