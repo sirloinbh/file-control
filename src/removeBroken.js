@@ -40,8 +40,9 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const checkedAt = now ?? Date.now();
   const plan = { ...found, removals: [], kept: [], interactive: null };
   const markerOf = markerFinder();
-  // 지울 목록에 넣은 하드링크 파일: 파일 번호 => 경로
+  // 지울 목록에 넣은 하드링크 파일: 파일 번호 => 경로. 그 다른 이름은 볼륨 확인 뒤에 사유를 정한다.
   const linked = new Map();
+  const linkKept = [];
   for (const item of found.broken) {
     const keep = (reason) => plan.kept.push({ path: item.path, reason });
     try {
@@ -55,7 +56,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       else if (hold !== null) keep(hold);
       else if (marker !== null) keep(marker);
       else if (item.size >= maxSize) keep('1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
-      else if (sameFile !== undefined) keep(`같은 파일의 다른 이름(하드링크: ${path.relative(access.target, sameFile)})을 먼저 지우면 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행하면 지울 수 있습니다.`);
+      else if (sameFile !== undefined) linkKept.push({ path: item.path, other: sameFile });
       else {
         if (stat.nlink > 1n) linked.set(`${stat.dev}:${stat.ino}`, real);
         plan.removals.push({ path: real, size: item.size, reason: item.reason, stamp: item.stamp });
@@ -70,8 +71,14 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   plan.interactive = interactive;
   if (driveType !== 'Fixed') {
     const reason = driveType === null ? '볼륨 종류를 확인하지 못해 남겼습니다.' : `고정 디스크가 아니라(${driveType}) 영구 삭제될 수 있어 남겼습니다.`;
-    plan.kept.push(...plan.removals.map((item) => ({ path: item.path, reason })));
+    plan.kept.push(...[...plan.removals, ...linkKept].map((item) => ({ path: item.path, reason })));
     plan.removals = [];
+    return plan;
+  }
+  // 한 실행에서 같은 파일의 이름을 하나씩만 지우므로, 이름이 셋 이상이면 실행할 때마다 하나씩 줄어든다.
+  for (const item of linkKept) {
+    const reason = `같은 파일의 다른 이름(하드링크: ${path.relative(access.target, item.other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
+    plan.kept.push({ path: item.path, reason });
   }
   return plan;
 }

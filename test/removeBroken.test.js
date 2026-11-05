@@ -444,9 +444,11 @@ test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 
   assert.ok(!fs.existsSync(path.join(dir, 'b.mp4')));
 });
 
-// 전체 경로가 length자인 파일 경로. 폴더를 두 단계 만들어 길이를 맞춘다.
+// 전체 경로가 length자인 파일 경로. 파일 이름이 20자 남짓 남도록 폴더 두 단계로 길이를 맞춘다.
 function pathOfLength(dir, length, ext = '.mp4') {
-  const sub = path.join(dir, 'p'.repeat(100), 'q'.repeat(60));
+  const rest = length - dir.length - 2 - 20 - ext.length;
+  if (rest < 2) throw new Error('임시 폴더 경로가 너무 길어 시험할 수 없습니다: ' + dir);
+  const sub = path.join(dir, 'p'.repeat(Math.ceil(rest / 2)), 'q'.repeat(Math.floor(rest / 2) - 1));
   const name = 'r'.repeat(length - sub.length - 1 - ext.length) + ext;
   return path.join(sub, name);
 }
@@ -475,6 +477,8 @@ test('rm도 휴지통 한도를 넘는 경로는 PowerShell을 부르지 않고 
   assert.strictEqual(MAX_RECYCLE_PATH, 259);
 });
 
+const linkReason = (other) => `같은 파일의 다른 이름(하드링크: ${path.basename(other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
+
 test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이름은 실제 사유로 남긴다 (#101)', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN });
@@ -485,16 +489,44 @@ test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이
   const [first] = plan.removals;
   const [other] = plan.kept;
   assert.deepStrictEqual([first.path, other.path].sort(), [path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4')]);
-  assert.strictEqual(other.reason, `같은 파일의 다른 이름(하드링크: ${path.basename(first.path)})을 먼저 지우면 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행하면 지울 수 있습니다.`);
+  assert.strictEqual(other.reason, linkReason(first.path));
   const result = confirmed(dir);
   assert.deepStrictEqual(recycled, [first.path]);
   assert.deepStrictEqual(result.failed, []);
   assert.ok(fs.existsSync(other.path));
-  // 다시 실행하면 남은 이름은 변경 시각이 방금이라 5분 동안은 방금 바뀐 파일로 남고, 그 뒤에는 지운다.
-  skew = 0;
+  // 다시 실행하면 남은 이름은 5분 동안 방금 바뀐 파일로 남고, 그 뒤에는 지운다. 시계를 1분만 옮겨 미래 시각으로 보지 않게 한다.
+  skew = 60 * 1000;
   assert.deepStrictEqual(removeBroken(dir).kept, [{ path: other.path, reason: '방금 바뀐 파일이라 받는 중일 수 있어 남겼습니다.' }]);
   skew = HOUR;
   assert.deepStrictEqual(confirmed(dir).removed.map((item) => item.path), [other.path]);
+});
+
+test('하드링크 이름이 셋이면 실행할 때마다 하나씩 지운다 (#101)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN });
+  for (const name of ['b.mp4', 'c.mp4']) fs.linkSync(path.join(dir, 'a.mp4'), path.join(dir, name));
+  const first = confirmed(dir);
+  assert.deepStrictEqual(first.removed.map((item) => item.path), [path.join(dir, 'a.mp4')]);
+  assert.deepStrictEqual(first.kept.map((item) => [item.path, item.reason]), ['b.mp4', 'c.mp4'].map((name) => [path.join(dir, name), linkReason('a.mp4')]));
+  const second = confirmed(dir);
+  assert.deepStrictEqual(second.removed.map((item) => item.path), [path.join(dir, 'b.mp4')]);
+  assert.deepStrictEqual(second.kept.map((item) => [item.path, item.reason]), [[path.join(dir, 'c.mp4'), linkReason('b.mp4')]]);
+  assert.deepStrictEqual(confirmed(dir).removed.map((item) => item.path), [path.join(dir, 'c.mp4')]);
+});
+
+test('고정 디스크가 아니면 하드링크의 다른 이름도 하드링크 사유가 아니라 볼륨 사유로 남긴다 (#101)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN });
+  fs.linkSync(path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4'));
+  for (const [answer, reason] of [
+    ['True|Removable\r\n', '고정 디스크가 아니라(Removable) 영구 삭제될 수 있어 남겼습니다.'],
+    ['', '볼륨 종류를 확인하지 못해 남겼습니다.'],
+  ]) {
+    volume = () => answer;
+    const plan = removeBroken(dir);
+    assert.deepStrictEqual(plan.removals, []);
+    assert.deepStrictEqual(plan.kept.map((item) => [item.path, item.reason]).sort(), [path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4')].map((file) => [file, reason]));
+  }
 });
 
 test('타겟 밖에 다른 이름이 있는 하드링크는 그대로 지운다 (#101)', () => {
