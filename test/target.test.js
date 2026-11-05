@@ -360,15 +360,22 @@ test('resolveTarget은 Windows 시스템 폴더와 그 안, 그것을 품은 드
   if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /보호된 경로/);
 });
 
-// 테스트 안에서만 환경 변수를 바꾸고, 끝나면 되돌린다.
+// 테스트 안에서만 환경 변수를 바꾸고, 끝나면 되돌린다. t.after는 먼저 등록한 것부터 돌므로,
+// 한 테스트에서 같은 변수를 여러 번 바꿔도 처음 값으로 돌아가도록 키마다 처음 한 번만 저장한다(1차 리뷰).
+const savedEnv = new WeakMap();
 function useEnv(t, values) {
-  const saved = Object.fromEntries(Object.keys(values).map((k) => [k, process.env[k]]));
-  t.after(() => {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  });
+  if (!savedEnv.has(t)) {
+    const saved = new Map();
+    savedEnv.set(t, saved);
+    t.after(() => {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    });
+  }
+  const saved = savedEnv.get(t);
+  for (const k of Object.keys(values)) if (!saved.has(k)) saved.set(k, process.env[k]);
   for (const [k, v] of Object.entries(values)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -391,21 +398,39 @@ test('resolveTarget은 ProgramData(All Users), 64비트 Program Files, 복구 �
   assert.match(protectedReason('C:\\Recovery\\WindowsRE'), /시스템 폴더 C:\\Recovery/i);
 });
 
-test('resolveTarget은 드라이브마다 있는 휴지통·System Volume Information과 그것을 품은 드라이브 루트를 거부한다 (#50)', { skip: !isWindows }, (t) => {
+test('useEnv는 같은 변수를 여러 번 바꿔도 테스트가 끝나면 처음 값으로 되돌린다', async (t) => {
+  const before = process.env.FC_USE_ENV_PROBE;
+  await t.test('바꾸기', (t2) => {
+    useEnv(t2, { FC_USE_ENV_PROBE: 'a' });
+    useEnv(t2, { FC_USE_ENV_PROBE: 'b' });
+    assert.strictEqual(process.env.FC_USE_ENV_PROBE, 'b');
+  });
+  assert.strictEqual(process.env.FC_USE_ENV_PROBE, before);
+});
+
+test('resolveTarget은 드라이브마다 있는 휴지통·System Volume Information과 드라이브 루트를 거부한다 (#50)', { skip: !isWindows }, () => {
   for (const p of ['E:\\$RECYCLE.BIN', 'E:\\$Recycle.Bin\\S-1-5-21', 'e:\\system volume information\\x']) {
     assert.match(protectedReason(p), /시스템 폴더/, p);
   }
   assert.strictEqual(protectedReason('E:\\Recycle.Bin'), null);
   assert.strictEqual(protectedReason('E:\\data\\$Recycle.Bin'), null);
-  const existsSync = fs.existsSync;
-  t.mock.method(fs, 'existsSync', (p) => p.toLowerCase() === 'z:\\$recycle.bin' || existsSync(p));
-  assert.match(protectedReason('Z:\\'), /시스템 폴더 Z:\\\$recycle\.bin를 포함/i);
-  assert.strictEqual(protectedReason('Y:\\'), null);
-  t.mock.restoreAll();
+  // 드라이브 루트는 휴지통이 아직 없어도 막는다. 처음 rm할 때 생기므로 있는지에 따라 달라지지 않게 한다(1차 리뷰).
+  for (const p of ['Y:\\', 'z:\\']) assert.match(protectedReason(p), /드라이브 루트/, p);
+  assert.throws(() => resolveTarget(path.parse(process.cwd()).root), /보호된 경로/);
   // 실제 경로를 볼 권한이 없는 폴더는 날것 오류 대신 FcError로 거부한다(관리자로 실행하면 보호 경로로 거부된다).
   for (const p of ['C:\\$Recycle.Bin', 'C:\\System Volume Information']) {
     if (fs.existsSync(p)) assert.throws(() => resolveTarget(p), (err) => err instanceof FcError, p);
   }
+});
+
+test('resolveTarget은 stat이 실패하는 폴더도 날것 오류 대신 FcError로 거부한다 (1차 리뷰, #50)', (t) => {
+  const dir = tempDir();
+  const statSync = fs.statSync;
+  t.mock.method(fs, 'statSync', (p, opts) => {
+    if (p === dir) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    return statSync(p, opts);
+  });
+  assert.throws(() => resolveTarget(dir), (err) => err instanceof FcError && /확인할 수 없어/.test(err.message) && err.message.includes('EPERM'));
 });
 
 test('resolveTarget은 다른 사용자의 프로필과 설정 폴더, 기본 프로필을 거부하고 Public은 허용한다 (#50)', { skip: !isWindows }, (t) => {

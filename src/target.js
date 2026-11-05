@@ -13,16 +13,22 @@ function resolveTarget(dir) {
   if (dir.includes('\0')) throw new FcError('타겟 경로에 NUL 문자가 있습니다.');
   const abs = path.resolve(dir);
   rejectNetworkPath(abs);
-  const stat = fs.statSync(abs, { throwIfNoEntry: false });
+  // System Volume Information·Recovery·다른 사용자의 AppData처럼 볼 권한이 없는 폴더는 확인할 수 없어 받지 않는다.
+  const unreadable = (err) => new FcError(`타겟 폴더를 확인할 수 없어 쓸 수 없습니다: ${abs} (${err.code ?? err.message})`);
+  let stat;
+  try {
+    stat = fs.statSync(abs, { throwIfNoEntry: false });
+  } catch (err) {
+    throw unreadable(err);
+  }
   if (!stat) throw new FcError(`타겟 폴더가 없습니다: ${abs}`);
   if (!stat.isDirectory()) throw new FcError(`타겟이 폴더가 아닙니다: ${abs}`);
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
-  // System Volume Information·Recovery처럼 실제 경로를 볼 권한이 없는 폴더는 확인할 수 없어 받지 않는다.
   let target;
   try {
     target = fs.realpathSync.native(abs);
   } catch (err) {
-    throw new FcError(`타겟 폴더의 실제 경로를 확인할 수 없어 쓸 수 없습니다: ${abs} (${err.code ?? err.message})`);
+    throw unreadable(err);
   }
   rejectNetworkPath(target);
   rejectTrailingDotOrSpace(target);
@@ -72,7 +78,7 @@ function systemRoots() {
     pick(env.ProgramFiles, 'C:\\Program Files'),
     pick(env['ProgramFiles(x86)'], 'C:\\Program Files (x86)'),
     pick(env.ProgramW6432, 'C:\\Program Files'),
-    pick(env.ProgramData || env.ALLUSERSPROFILE, 'C:\\ProgramData'),
+    pick(env.ProgramData, pick(env.ALLUSERSPROFILE, 'C:\\ProgramData')),
     `${systemDrive}\\Recovery`,
   ].map(realOrResolved);
 }
@@ -80,15 +86,14 @@ function systemRoots() {
 // 드라이브마다 루트에 있는 시스템 숨김 폴더(휴지통, 복원 지점). 이름은 대소문자가 섞여 나온다(C:\$Recycle.Bin, D:\$RECYCLE.BIN).
 const DRIVE_SYSTEM_FOLDERS = ['$recycle.bin', 'system volume information'];
 
+// 드라이브 루트는 언제든 휴지통이 생길 수 있어(처음 rm할 때) 있는지와 상관없이 막는다.
+// 폴더에 연결한 볼륨(C:\mnt\vol)의 루트는 알아보지 못한다.
 function driveSystemReason(target) {
   if (process.platform !== 'win32') return null;
   const { root } = path.parse(target);
   const [first] = target.slice(root.length).split(path.sep);
-  if (first && DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `시스템 폴더 ${path.join(root, first)}`;
-  if (!first) {
-    const found = DRIVE_SYSTEM_FOLDERS.map((name) => path.join(root, name)).find((p) => fs.existsSync(p));
-    if (found) return `시스템 폴더 ${found}를 포함`;
-  }
+  if (!first) return `드라이브 루트 ${root}(휴지통·System Volume Information을 포함)`;
+  if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `시스템 폴더 ${path.join(root, first)}`;
   return null;
 }
 
