@@ -57,10 +57,15 @@ const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOT
 const DEFAULT_FOLDER = /^(?:새 폴더|New folder)(?: \(\d+\))?$/i;
 
 // 정보 없는 파일명 대신 쓸 만한 폴더 이름이면 true(#71). 제품번호가 있거나, 위의 흔한 말이 아닌 단어가 하나라도 있으면 된다.
+// 전각 글자(Ｖｉｄｅｏ)는 NFKC로 맞춰 보고, 탐색기가 붙이는 번호·복사본 표시(Downloads (2), 새 폴더 - 복사본)는 떼고 본다(1차 리뷰).
+// 한 글자뿐인 폴더 이름(a/)은 줄임말일 수 있어 쓰지 않는다.
 function informativeFolder(folder) {
   if (extractProductNumbers(folder).length > 0) return true;
-  if (DEFAULT_FOLDER.test(folder.trim())) return false;
-  return words(folder).some((word) => !PLAIN_FOLDER_WORD.test(word));
+  const plain = folder.normalize('NFKC').trim().replace(/(?:\s*\(\d+\)|\s+-\s+(?:복사본|Copy))+$/i, '');
+  if (DEFAULT_FOLDER.test(plain)) return false;
+  const folderWords = words(plain);
+  if (folderWords.join('').length < 2) return false;
+  return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
 }
 
 // 공백·기호·대소문자 차이를 빼고 단어로 나눈다.
@@ -117,15 +122,20 @@ function detailedName(fileName, folders) {
 // 정보 없는 파일명이 폴더 안의 유일한 파일이 아니어서 폴더 이름으로 바꿀 수 없을 때, 가까운 폴더 이름을 앞에 붙인 이름을 돌려준다(#71).
 // ABC-123/video.mp4와 ABC-123/sample.mp4는 ABC-123 video.mp4, ABC-123 sample.mp4가 된다. 원래 이름을 남겨 서로 구분되고,
 // 본편과 샘플이 같은 이름을 다투지 않는다. 붙일 수 없으면 원래 이름을 돌려준다.
-function prefixedName(fileName, folder) {
+// folders는 가까운 폴더부터 바깥 폴더 순이다. 가까운 폴더가 1080p/처럼 정보가 없으면 위로 올라가 처음 만나는 쓸 만한 폴더 이름을 붙인다(1차 리뷰).
+// 정보 없는지는 첫 점 앞부분으로 본다. video.en.srt도 video.mp4와 같은 접두어를 받아 자막 짝이 유지된다. 앞에 붙이기만 하므로 정보를 잃지 않는다.
+function prefixedName(fileName, folders) {
   const { name: base, ext } = path.parse(fileName);
-  if (folder === undefined || ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
-  const b = words(base).join('');
-  const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-  if (stem.trim() === '' || stem.startsWith('.') || EXTENSION_LIKE.test(stem)) return fileName;
-  const product = extractProductNumbers(stem).length > 0;
-  if (!(GENERIC_WORD.test(b) && informativeFolder(stem)) && !(product && GENERIC_NAME.test(b))) return fileName;
-  return `${stem.normalize('NFC')} ${fileName}`;
+  if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
+  const b = words(base.split('.')[0]).join('');
+  if (!GENERIC_NAME.test(b)) return fileName;
+  for (const folder of [folders].flat().filter((name) => name !== undefined)) {
+    const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
+    if (stem.trim() === '' || stem.startsWith('.') || EXTENSION_LIKE.test(stem)) continue;
+    const product = extractProductNumbers(stem).length > 0;
+    if ((GENERIC_WORD.test(b) && informativeFolder(stem)) || (product && GENERIC_NAME.test(b))) return `${stem.normalize('NFC')} ${fileName}`;
+  }
+  return fileName;
 }
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
@@ -318,7 +328,7 @@ function planFlatten(dir) {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
       let detailed = detailedName(original, soleFolders(entry, fileCounts));
-      if (detailed === original) detailed = prefixedName(original, parts.at(-2));
+      if (detailed === original) detailed = prefixedName(original, parts.slice(0, -1).reverse());
       // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
       const twin = topFiles.get(fileKey(from));
       if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);

@@ -466,8 +466,9 @@ test('planFlatten은 한 갈래로 이어진 폴더까지 거슬러 올라가지
   make(dir, ['ABC-123 제목/video/x.mp4', 'DEF-456 묶음/a/x.mp4', 'DEF-456 묶음/b/y.mp4']);
   assert.deepStrictEqual(moves(planFlatten(dir)), [
     ['ABC-123 제목/video/x.mp4', 'ABC-123 제목.mp4'],
-    ['DEF-456 묶음/a/x.mp4', 'x.mp4'],
-    ['DEF-456 묶음/b/y.mp4', 'y.mp4'],
+    // 파일이 여럿인 폴더의 이름으로 바꾸지는 않고, 정보 없는 이름이라 앞에 붙인다(#71).
+    ['DEF-456 묶음/a/x.mp4', 'DEF-456 묶음 x.mp4'],
+    ['DEF-456 묶음/b/y.mp4', 'DEF-456 묶음 y.mp4'],
   ]);
 });
 
@@ -1729,4 +1730,38 @@ test('flatten은 정보 없는 파일명의 폴더 이름을 결과 이름에 �
   });
   assert.ok(result.moved.filter((move) => move.fromFolder).length === 6);
   assert.ok(formatFlatten(result).includes(`이동: ${path.join('PART-01', 'video.mp4')} -> PART-01.mp4 (폴더명 사용)`));
+});
+
+// #71 1차 리뷰: 자막 짝, 바깥 폴더로 올라가기, 번호·복사본·전각·한 글자 폴더 이름, 긴 이름
+test('prefixedName은 video.en.srt 같은 자막에도 같은 접두어를 붙이고, 정보 없는 가까운 폴더를 건너 위로 올라간다', () => {
+  assert.strictEqual(prefixedName('video.en.srt', ['ABC-123']), 'ABC-123 video.en.srt');
+  assert.strictEqual(prefixedName('video.ko.srt', ['PART-01']), 'PART-01 video.ko.srt');
+  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Show']), 'Show video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['x', '새 폴더', 'ABC-123']), 'ABC-123 video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Videos']), 'video.mp4');
+  assert.strictEqual(prefixedName('trailer.en.srt', ['ABC-123']), 'trailer.en.srt');
+});
+
+test('detailedName은 번호·복사본이 붙은 흔한 폴더, 전각 흔한 이름, 한 글자 폴더를 정보 없는 폴더로 본다', () => {
+  for (const folder of ['Downloads (2)', 'Videos (2)', '새 폴더 (2) - 복사본', 'New folder - Copy', 'Ｖｉｄｅｏ', 'a']) {
+    assert.strictEqual(detailedName('video.mp4', [folder]), 'video.mp4', folder);
+    assert.strictEqual(prefixedName('video.mp4', [folder]), 'video.mp4', folder);
+  }
+  assert.strictEqual(detailedName('video.mp4', ['Summer Trip (2)']), 'Summer Trip (2).mp4');
+});
+
+test('flatten은 자막 짝을 유지하고 화질 폴더 위의 폴더 이름을 붙인다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/video.mp4', 'ABC-123/video.en.srt', 'Show/1080p/video.mp4', 'Show/720p/video.mp4']);
+  flatten(dir);
+  assert.deepStrictEqual(Object.keys(contents(dir)).sort(), ['ABC-123 video.en.srt', 'ABC-123 video.mp4', 'Show video (2).mp4', 'Show video.mp4']);
+});
+
+test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름으로 옮긴다', () => {
+  const dir = tempDir();
+  const folder = `ABC-123 ${'가'.repeat(240)}`;
+  make(dir, [path.join(folder, 'video.mp4'), path.join(folder, 'sample.mp4')]);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name).sort(), ['sample.mp4', 'video.mp4']);
+  assert.ok(plan.moves.every((move) => !move.fromFolder));
 });
