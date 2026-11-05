@@ -53,13 +53,24 @@ function rejectHardLinkedWrite(p) {
 }
 
 // cp --force가 덮어쓸 파일 중 하드링크가 있으면 아무것도 복사하기 전에 거부한다. 폴더는 합쳐지므로 안쪽 파일까지 본다.
-function rejectHardLinkedOverwrite(src, target) {
+// 폴더를 합칠 때 fs.cpSync는 안쪽에서 종류가 어긋나면 Node를 오류 없이 끝내거나(폴더 위에 파일 자리) 일부를 복사한 뒤 실패하고(파일 위에
+// 폴더 자리), 대상 안의 정션을 따라 그 밖에 쓴다(#140, 빌드 26200·Node 24.21에서 확인). 그래서 복사 전에 모두 찾아 거부한다.
+function checkOverwrite(src, target) {
   if (!exists(target)) return;
-  rejectHardLinkedWrite(target);
-  if (!fs.statSync(src).isDirectory() || !fs.statSync(target).isDirectory()) return;
+  const srcIsDir = fs.statSync(src).isDirectory();
+  if (srcIsDir !== fs.statSync(target).isDirectory()) throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
+  if (!srcIsDir) return rejectHardLinkedWrite(target);
   // 항목 종류는 따라가지 않고 본다. 원본 안의 끊어진 링크에서 stat이 실패하지 않게 하고, 링크는 덮어쓸 내용이 아니다.
   for (const entry of fs.readdirSync(src, { recursive: true, withFileTypes: true })) {
-    if (entry.isFile()) rejectHardLinkedWrite(path.join(target, path.relative(src, path.join(entry.parentPath, entry.name))));
+    const rel = path.relative(src, path.join(entry.parentPath, entry.name));
+    const there = path.join(target, rel);
+    const stat = fs.lstatSync(there, { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (stat.isSymbolicLink()) throw new FcError(`합칠 대상 안에 링크가 있어 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${there}`);
+    if (entry.isDirectory() !== stat.isDirectory()) {
+      throw new FcError(`합칠 폴더 안에서 파일과 폴더가 어긋나 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${path.join(src, rel)} -> ${there}`);
+    }
+    if (entry.isFile()) rejectHardLinkedWrite(there);
   }
 }
 
@@ -391,11 +402,11 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`여러 개를 복사하려면 대상이 있는 폴더여야 합니다: ${dest}`);
   }
-  // 하드링크는 여러 원본 중 하나에만 걸려도 아무것도 복사하지 않도록 먼저 모두 본다(#48). 덮어쓰기는 --force일 때만 일어난다.
+  // 덮어쓰기·합치기(--force일 때만 일어난다)는 여러 원본 중 하나에만 문제가 있어도 아무것도 복사하지 않도록 먼저 모두 본다(#48, #140).
   if (force) {
     for (const src of sources) {
       ensureExists(src);
-      rejectHardLinkedOverwrite(src, resolveDest(src, dest));
+      checkOverwrite(src, resolveDest(src, dest));
     }
   }
   const planned = new Set();
