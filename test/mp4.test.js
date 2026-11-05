@@ -612,8 +612,13 @@ test('보이는 크기: tkhd 화면 크기가 인코딩 해상도와 다르면 �
     assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 }, rotate }), [1920, 1080, 1080, 1920], `${rotate}도`);
   }
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ display: { width: 1080, height: 1920 } })))), [1920, 1080, 1080, 1920]);
+  // 회전한 뒤의 크기를 적은 tkhd는 건너뛰고 SPS의 화소 비율을 쓴다(4:3 화소의 1440x1080 = 1920x1080).
+  assert.deepStrictEqual(size({ width: 1440, height: 1080, display: { width: 1080, height: 1440 }, rotate: 90, config: h264(14) }), [1440, 1080, 1080, 1920]);
   // 회전하지 않는 영상의 바뀐 비율은 화소 비율로 본다.
   assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 } }), [1920, 1080, 1080, 1920]);
+  // tkhd 크기가 0이거나 정수 부분이 0이면(16비트 밀지 않고 적은 값) 쓰지 않는다.
+  const unshifted = box('trak', box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(10000), Buffer.alloc(16), matrix(0), u32(1920), u32(1080)), box('mdia', hdlr('vide'), box('minf', box('stbl', stsd(1920, 1088)))));
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', unshifted))), [1920, 1088, 1920, 1088]);
   // tkhd 크기가 0이면 쓰지 않는다.
   assert.deepStrictEqual(size({ display: { width: 0, height: 0 }, config: h264([32, 27]) }), [720, 480, 853, 480]);
 });

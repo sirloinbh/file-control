@@ -200,17 +200,19 @@ const stretched = (width, aspect) => (Math.abs(aspect - 1) > 1e-9 ? Math.max(1, 
 // 1. pasp: 화소 비율을 직접 적은 값이다. 1:1이면 정사각형 화소로 본다.
 // 2. tkhd 화면 크기가 인코딩 해상도와 다르면 그 크기. 규격상 표본 그림은 이 크기로 늘여 보여 준다. pasp 없이 tkhd에만 화소 비율을 반영한 파일이 있다.
 //    너비와 높이를 같은 배율로 바꾼 크기는 화소 비율 1로 보고 인코딩 해상도를 쓴다.
-//    회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일(너비와 높이가 바뀐 비율)은 화소 비율이 아니라서 쓰지 않는다.
-// 3. SPS의 화소 비율(VUI). pasp도 없고 tkhd도 인코딩 해상도와 같을 때 쓴다(ffmpeg로 만든 일부 파일).
+//    회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일(너비와 높이가 바뀐 비율)은 화소 비율이 아니라서 쓰지 않고 다음 단계로 간다.
+//    정수 부분이 0인 크기(16비트 밀지 않고 적은 틀린 값 등)는 쓰지 않는다.
+// 3. SPS의 화소 비율(VUI). pasp가 없고 tkhd에서 화소 비율을 알 수 없을 때 쓴다(ffmpeg로 만든 일부 파일).
 function unrotatedSize(sample, header, turned) {
   const { width, height } = sample;
   if (sample.pasp) return [stretched(width, sample.pasp.h / sample.pasp.v), height];
-  if (header && header.exactWidth > 0 && header.exactHeight > 0 && (header.width !== sample.width || header.height !== sample.height)) {
+  if (header && header.width >= 1 && header.height >= 1 && (header.width !== sample.width || header.height !== sample.height)) {
     const aspect = (header.exactWidth * height) / (header.exactHeight * width);
     const swapped = (header.exactWidth * width) / (header.exactHeight * height);
-    if (turned && Math.abs(swapped - 1) < 0.01) return [width, height];
-    if (Math.abs(aspect - 1) < 1e-9) return [width, height];
-    return [Math.max(1, Math.round(header.exactWidth)), Math.max(1, Math.round(header.exactHeight))];
+    if (!(turned && Math.abs(swapped - 1) < 0.01)) {
+      if (Math.abs(aspect - 1) < 1e-9) return [width, height];
+      return [Math.round(header.exactWidth), Math.round(header.exactHeight)];
+    }
   }
   if (sample.spsAspect) return [stretched(width, sample.spsAspect.h / sample.spsAspect.v), height];
   return [width, height];
@@ -358,7 +360,7 @@ function firstTag(tags, sources) {
 // 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율과 90·270도 회전을 반영한 보이는 크기다(#106, #113).
-// 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(pixelAspect), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
+// 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(unrotatedSize), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
 // 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
 // 깨진 파일 판별은 checkMp4Structure가 한다. 이 함수는 moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
