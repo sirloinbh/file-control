@@ -34,7 +34,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   return undefined;
 });
 
-const { FcError } = require('../src/commands');
+const { FcError, hiddenOrSystemEntries } = require('../src/commands');
 const { planFlatten, detailedName, flatten, formatFlatten, moveWithoutOverwrite, leftoverNote } = require('../src/flatten');
 const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
@@ -1533,13 +1533,13 @@ test('flatten은 node_modules 같은 프로그램 폴더를 통째로 남기고 
   const plan = planFlatten(dir);
   assert.deepStrictEqual(moves(plan), [['other/v.mp4', 'v.mp4']]);
   assert.deepStrictEqual(plan.skipped, [
-    { path: path.join(dir, 'p', 'node_modules'), reason: '프로그램 폴더(node_modules)라 안의 파일 3개를 옮기지 않고 폴더째 남깁니다.' },
-    { path: path.join(dir, 'q', '__pycache__'), reason: '프로그램 폴더(__pycache__)라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.' },
+    { path: path.join(dir, 'p', 'node_modules'), reason: '프로그램 폴더(node_modules)라 안의 항목 3개를 옮기지 않고 폴더째 남깁니다.' },
+    { path: path.join(dir, 'q', '__pycache__'), reason: '프로그램 폴더(__pycache__)라 안의 항목 1개를 옮기지 않고 폴더째 남깁니다.' },
   ]);
   const result = flatten(dir);
   assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'other')]);
   assert.ok(fs.existsSync(path.join(dir, 'p', 'node_modules', 'empty')));
-  assert.ok(formatFlatten(result).includes(`건너뜀: ${path.join('p', 'node_modules')} (프로그램 폴더(node_modules)라 안의 파일 3개를`));
+  assert.ok(formatFlatten(result).includes(`건너뜀: ${path.join('p', 'node_modules')} (프로그램 폴더(node_modules)라 안의 항목 3개를`));
 });
 
 test('flatten은 프로젝트 표시 파일이 있는 하위 폴더를 통째로 남긴다', () => {
@@ -1548,10 +1548,10 @@ test('flatten은 프로젝트 표시 파일이 있는 하위 폴더를 통째로
   const plan = planFlatten(dir);
   assert.deepStrictEqual(moves(plan), [['cs2/readme.txt', 'readme.txt'], ['packages/package.json.bak', 'package.json.bak']]);
   assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
-    ['cs', '프로젝트 폴더(App.sln 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
-    [path.join('cs2', 'sub'), '프로젝트 폴더(App.CSPROJ 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
-    ['lib-1.0', '프로젝트 폴더(package.json 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
-    ['tool', '프로젝트 폴더(pyvenv.cfg 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
+    ['cs', '프로젝트 폴더(App.sln 있음)라 안의 항목 2개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('cs2', 'sub'), '프로젝트 폴더(App.CSPROJ 있음)라 안의 항목 2개를 옮기지 않고 폴더째 남깁니다.'],
+    ['lib-1.0', '프로젝트 폴더(package.json 있음)라 안의 항목 2개를 옮기지 않고 폴더째 남깁니다.'],
+    ['tool', '프로젝트 폴더(pyvenv.cfg 있음)라 안의 항목 2개를 옮기지 않고 폴더째 남깁니다.'],
   ]);
 });
 
@@ -1560,7 +1560,7 @@ test('flatten은 실행 파일과 DLL이 함께 든 폴더를 프로그램 폴�
   make(dir, ['app/App.EXE', 'app/core.dll', 'app/res/icon.png', 'setup/setup.exe', 'libs/only.dll']);
   const plan = planFlatten(dir);
   assert.deepStrictEqual(moves(plan), [['libs/only.dll', 'only.dll'], ['setup/setup.exe', 'setup.exe']]);
-  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'app'), reason: '실행 파일과 DLL이 함께 든 프로그램 폴더라 안의 파일 3개를 옮기지 않고 폴더째 남깁니다.' }]);
+  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'app'), reason: '실행 파일과 DLL이 함께 든 프로그램 폴더라 안의 항목 3개를 옮기지 않고 폴더째 남깁니다.' }]);
 });
 
 test('flatten은 타겟이 프로젝트·프로그램 폴더이거나 프로그램 폴더 안이면 아무것도 옮기지 않고 거부한다', () => {
@@ -1590,9 +1590,9 @@ test('flatten은 숨김·시스템 속성 파일을 옮기지 않고, 그런 폴
   assert.deepStrictEqual(moves(plan), [['a/plain.txt', 'plain.txt'], ['b/v.mp4', 'v.mp4'], ['c/f.txt', 'f.txt']]);
   assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
     [path.join('a', 'secret.txt'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
-    [path.join('b', '.cache'), '숨김 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('b', '.cache'), '숨김 속성 폴더라 안의 항목 1개를 옮기지 않고 폴더째 남깁니다.'],
     [path.join('b', 's.sys'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
-    ['숨김😀', '숨김 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    ['숨김😀', '숨김 속성 폴더라 안의 항목 1개를 옮기지 않고 폴더째 남깁니다.'],
     [path.join('c', '.empty'), '숨김 속성 폴더라 폴더째 남깁니다.'],
   ]);
   const result = flatten(dir);
@@ -1664,4 +1664,14 @@ test('flatten은 파일이 없는 프로그램 폴더도 남긴다고 알린다'
   assert.deepStrictEqual(result.skipped, [{ path: path.join(dir, 'a', 'node_modules'), reason: '프로그램 폴더(node_modules)라 폴더째 남깁니다.' }]);
   assert.deepStrictEqual(result.removedFolders, []);
   assert.ok(fs.existsSync(path.join(dir, 'a', 'node_modules', 'empty')));
+});
+
+// 2차 리뷰: 드라이브 루트(Q:\)처럼 끝에 구분자가 붙은 경로도 상대경로가 잘리지 않는다.
+test('hiddenOrSystemEntries는 끝에 구분자가 붙은 경로에서도 같은 상대경로를 돌려준다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['sub/a.txt']);
+  execFileSync('attrib', ['+h', path.join(dir, 'sub', 'a.txt')]);
+  const expected = new Map([[path.join('sub', 'a.txt'), 2]]);
+  assert.deepStrictEqual(hiddenOrSystemEntries(dir, ['', 'sub']), expected);
+  assert.deepStrictEqual(hiddenOrSystemEntries(dir + path.sep, ['', 'sub']), expected);
 });

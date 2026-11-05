@@ -298,7 +298,7 @@ function planFlatten(dir) {
     }
   }
   for (const item of guardItems.values()) {
-    item.reason = `${item.label}라 안의 파일 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
+    item.reason = `${item.label}라 안의 항목 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
     delete item.label;
     delete item.count;
   }
