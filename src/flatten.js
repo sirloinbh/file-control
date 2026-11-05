@@ -51,7 +51,7 @@ const GENERIC_NAME = /^(?:[A-Z]|VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAM
 const GENERIC_WORD = /^(?:VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
 
 // 폴더 이름에 이것들만 있으면 정보가 없다고 본다. 영상 종류·화질·코덱 같은 말과 흔한 폴더 이름이다.
-const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOTOS?|AUDIO|SAMPLES?|UNTITLED|영상|동영상|파일|DOWNLOADS?|NEW|FOLDER|TEMP|TMP|새|폴더|[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
+const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOTOS?|AUDIO|SAMPLES?|UNTITLED|영상|동영상|파일|DOWNLOADS?|SUBS?|SUBTITLES?|자막|NEW|FOLDER|TEMP|TMP|새|폴더|[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
 
 // Windows가 새 폴더에 붙이는 이름. 번호가 붙어도 정보가 없다.
 const DEFAULT_FOLDER = /^(?:새 폴더|New folder)(?: \(\d+\))?$/i;
@@ -129,13 +129,15 @@ function prefixedName(fileName, folders) {
   if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
   const b = words(base.split('.')[0]).join('');
   if (!GENERIC_NAME.test(b)) return fileName;
-  for (const folder of [folders].flat().filter((name) => name !== undefined)) {
-    const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-    if (stem.trim() === '' || stem.startsWith('.') || EXTENSION_LIKE.test(stem)) continue;
-    const product = extractProductNumbers(stem).length > 0;
-    if ((GENERIC_WORD.test(b) && informativeFolder(stem)) || (product && GENERIC_NAME.test(b))) return `${stem.normalize('NFC')} ${fileName}`;
-  }
-  return fileName;
+  // 폴더 하나(문자열)나 없는 값도 받는다.
+  const stems = [folders]
+    .flat()
+    .filter((folder) => folder !== undefined)
+    .map((folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder))
+    .filter((stem) => stem.trim() !== '' && !stem.startsWith('.') && !EXTENSION_LIKE.test(stem));
+  // detailedName처럼 제품번호 폴더를 먼저 찾아, ABC-123/Extras/video.mp4가 Extras 대신 ABC-123을 붙이게 한다(2차 리뷰).
+  const chosen = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? (GENERIC_WORD.test(b) ? stems.find(informativeFolder) : undefined);
+  return chosen === undefined ? fileName : `${chosen.normalize('NFC')} ${fileName}`;
 }
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.

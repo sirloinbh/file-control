@@ -1765,3 +1765,14 @@ test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름�
   assert.deepStrictEqual(plan.moves.map((move) => move.name).sort(), ['sample.mp4', 'video.mp4']);
   assert.ok(plan.moves.every((move) => !move.fromFolder));
 });
+
+// #71 2차 리뷰: 자막 폴더, 접두어도 제품번호 폴더 먼저
+test('flatten은 자막 폴더 이름을 붙이지 않고, 접두어도 바깥 제품번호 폴더를 먼저 쓴다', () => {
+  assert.strictEqual(prefixedName('video.en.srt', ['Subs', 'Show']), 'Show video.en.srt');
+  for (const folder of ['Sub', 'Subtitles', '자막']) assert.strictEqual(prefixedName('video.en.srt', [folder, 'Show']), 'Show video.en.srt', folder);
+  assert.strictEqual(prefixedName('video.mp4', ['Extras', 'ABC-123']), 'ABC-123 video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['Extras', 'Show']), 'Extras video.mp4');
+  const dir = tempDir();
+  make(dir, ['Show/video.mp4', 'Show/Subs/video.en.srt', 'ABC-123/Extras/video.mp4', 'ABC-123/Extras/sample.mp4']);
+  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 sample.mp4', 'ABC-123 video.mp4', 'Show video.en.srt', 'Show video.mp4']);
+});
