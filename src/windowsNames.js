@@ -28,8 +28,9 @@ function deviceNamePattern(release = os.release()) {
 const WINDOWS_DEVICE_NAME = deviceNamePattern();
 
 // Windows는 이름 끝의 점과 공백을 지우고 연다. 그래서 com1 ·Nul.mp4.는 com1·Nul.mp4와 같은 장치다(#135).
+// 스트림(nul:x)은 : 앞의 이름으로 파일을 만들므로 그 이름도 본다.
 function isDeviceName(part, pattern = WINDOWS_DEVICE_NAME) {
-  return pattern.test(part) || pattern.test(part.replace(/[. ]+$/, ''));
+  return [part, part.split(':')[0]].some((name) => pattern.test(name) || pattern.test(name.replace(/[. ]+$/, '')));
 }
 
 // 경로에서 장치 이름인 첫 이름(드라이브·UNC 뿌리는 빼고)을 돌려준다. 없거나 Windows가 아니면 undefined다.

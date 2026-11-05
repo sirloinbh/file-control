@@ -68,6 +68,13 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
   }
   // 폴더 안으로 옮기거나 복사해도 새 이름이 장치 이름이면 거부한다.
   fs.writeFileSync(literal(path.join(dir, 'Nul.mp4')), 'N');
+  // 스트림을 붙이면 : 앞의 이름으로 파일이 생긴다. mv는 스트림 경로 검사가 먼저 거부한다.
+  for (const name of ['nul:x', 'CON:s', 'aux.txt:x']) {
+    const p = path.join(dir, name);
+    for (const attempt of [() => fc.writeFile(p, 'x'), () => fc.makeDir(p), () => fc.rename(src, name), () => fc.copy([src], p), () => fc.move([src], p), () => fc.zip(p, [src])]) {
+      assert.throws(attempt, /장치로 여는 이름이라 만들지 않습니다|스트림/, name);
+    }
+  }
   for (const dryRun of [false, true]) {
     assert.throws(() => fc.copy([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `cp dryRun=${dryRun}`);
     assert.throws(() => fc.move([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `mv dryRun=${dryRun}`);
