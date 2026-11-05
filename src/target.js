@@ -92,7 +92,7 @@ function driveSystemReason(target) {
   if (process.platform !== 'win32') return null;
   const { root } = path.parse(target);
   const [first] = target.slice(root.length).split(path.sep);
-  if (!first) return `드라이브 루트 ${root}(휴지통·System Volume Information을 포함)`;
+  if (!first) return `드라이브 루트 ${root}(휴지통·System Volume Information이 있거나 생기는 곳)`;
   if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `시스템 폴더 ${path.join(root, first)}`;
   return null;
 }

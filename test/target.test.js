@@ -393,8 +393,10 @@ test('resolveTarget은 ProgramData(All Users), 64비트 Program Files, 복구 �
   useEnv(t, { ProgramW6432: path.join(root, 'pf64'), ProgramData: path.join(root, 'pd') });
   assert.throws(() => resolveTarget(path.join(root, 'pf64')), /시스템 폴더/);
   assert.throws(() => resolveTarget(path.join(root, 'pd')), /시스템 폴더/);
-  useEnv(t, { ProgramData: undefined, ALLUSERSPROFILE: path.join(root, 'aup') });
-  assert.throws(() => resolveTarget(path.join(root, 'aup')), /시스템 폴더/);
+  for (const programDataValue of [undefined, 'relative\\pd']) {
+    useEnv(t, { ProgramData: programDataValue, ALLUSERSPROFILE: path.join(root, 'aup') });
+    assert.throws(() => resolveTarget(path.join(root, 'aup')), /시스템 폴더/, String(programDataValue));
+  }
   assert.match(protectedReason('C:\\Recovery\\WindowsRE'), /시스템 폴더 C:\\Recovery/i);
 });
 
