@@ -37,7 +37,7 @@ let skew = HOUR;
 test.mock.method(Date, 'now', () => realNow() + skew);
 
 const { removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE } = require('../src/removeBroken');
-const { recycleBinState } = require('../src/commands');
+const { recycleBinState, remove, MAX_RECYCLE_PATH } = require('../src/commands');
 const { REMOVAL_LOG } = require('../src/removalLog');
 const { fileStamp } = require('../src/target');
 const { run } = require('../bin/fctl');
@@ -442,6 +442,70 @@ test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 
   assert.strictEqual(result.removed.length, 1);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
   assert.ok(!fs.existsSync(path.join(dir, 'b.mp4')));
+});
+
+// 전체 경로가 length자인 파일 경로. 폴더를 두 단계 만들어 길이를 맞춘다.
+function pathOfLength(dir, length, ext = '.mp4') {
+  const sub = path.join(dir, 'p'.repeat(100), 'q'.repeat(60));
+  const name = 'r'.repeat(length - sub.length - 1 - ext.length) + ext;
+  return path.join(sub, name);
+}
+
+test('휴지통으로 보낼 수 없는 긴 경로(260자 이상)는 계획에서 남기고 259자는 지운다 (#101)', () => {
+  const dir = tempDir();
+  const long = pathOfLength(dir, 260);
+  const fits = pathOfLength(dir, 259, '.zip');
+  make(dir, { [path.relative(dir, long)]: BROKEN, [path.relative(dir, fits)]: Buffer.alloc(64) });
+  const plan = removeBroken(dir);
+  assert.deepStrictEqual(plan.removals.map((item) => item.path), [fits]);
+  assert.deepStrictEqual(plan.kept, [{ path: long, reason: '경로가 260자라 휴지통으로 보낼 수 있는 259자를 넘어 남겼습니다. 이름을 줄이거나 위 폴더로 옮긴 뒤 다시 실행하세요.' }]);
+  const result = confirmed(dir);
+  assert.deepStrictEqual(recycled, [fits]);
+  assert.deepStrictEqual(result.failed, []);
+  assert.ok(fs.existsSync(long));
+});
+
+test('rm도 휴지통 한도를 넘는 경로는 PowerShell을 부르지 않고 사유를 밝혀 거부한다 (#101)', () => {
+  const dir = tempDir();
+  const long = pathOfLength(dir, 300);
+  make(dir, { [path.relative(dir, long)]: 'x' });
+  assert.throws(() => remove([long]), (err) => err.message === `경로가 300자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${long}`);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(long));
+  assert.strictEqual(MAX_RECYCLE_PATH, 259);
+});
+
+test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이름은 실제 사유로 남긴다 (#101)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN });
+  fs.linkSync(path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4'));
+  const plan = removeBroken(dir);
+  assert.strictEqual(plan.removals.length, 1);
+  assert.strictEqual(plan.kept.length, 1);
+  const [first] = plan.removals;
+  const [other] = plan.kept;
+  assert.deepStrictEqual([first.path, other.path].sort(), [path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4')]);
+  assert.strictEqual(other.reason, `같은 파일의 다른 이름(하드링크: ${path.basename(first.path)})을 먼저 지우면 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행하면 지울 수 있습니다.`);
+  const result = confirmed(dir);
+  assert.deepStrictEqual(recycled, [first.path]);
+  assert.deepStrictEqual(result.failed, []);
+  assert.ok(fs.existsSync(other.path));
+  // 다시 실행하면 남은 이름은 변경 시각이 방금이라 5분 동안은 방금 바뀐 파일로 남고, 그 뒤에는 지운다.
+  skew = 0;
+  assert.deepStrictEqual(removeBroken(dir).kept, [{ path: other.path, reason: '방금 바뀐 파일이라 받는 중일 수 있어 남겼습니다.' }]);
+  skew = HOUR;
+  assert.deepStrictEqual(confirmed(dir).removed.map((item) => item.path), [other.path]);
+});
+
+test('타겟 밖에 다른 이름이 있는 하드링크는 그대로 지운다 (#101)', () => {
+  const outside = tempDir();
+  const dir = tempDir();
+  make(outside, { 'keep.mp4': BROKEN });
+  fs.linkSync(path.join(outside, 'keep.mp4'), path.join(dir, 'a.mp4'));
+  const result = confirmed(dir);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'a.mp4')]);
+  assert.deepStrictEqual(result.kept, []);
+  assert.ok(fs.existsSync(path.join(outside, 'keep.mp4')));
 });
 
 test('기록을 남기지 못하면 아무것도 지우지 않는다', (t) => {

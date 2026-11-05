@@ -354,7 +354,13 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   });
 }
 
+// 휴지통 이동(Microsoft.VisualBasic DeleteFile)이 받는 경로 길이의 한도. MAX_PATH(260, 끝의 NUL 포함)를 넘으면
+// 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
+const MAX_RECYCLE_PATH = 259;
+
 function moveToRecycleBin(target) {
+  const full = path.resolve(target);
+  if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   const script =
     'if (-not [Environment]::UserInteractive) { exit 75 }; ' +
@@ -364,7 +370,7 @@ function moveToRecycleBin(target) {
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
   try {
     execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-      env: { ...process.env, FC_TARGET: path.resolve(target) },
+      env: { ...process.env, FC_TARGET: full },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   } catch (err) {
@@ -578,6 +584,7 @@ module.exports = {
   copy,
   remove,
   recycleBinState,
+  MAX_RECYCLE_PATH,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,

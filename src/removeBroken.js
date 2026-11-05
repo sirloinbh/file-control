@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, recycleBinState } = require('./commands');
+const { FcError, remove, recycleBinState, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
@@ -28,7 +28,10 @@ function holdReason(stat, now) {
 // - removals: 지울 파일 ({ path, size, reason, stamp })
 // - kept: 깨졌지만 남기는 파일 ({ path, reason })
 // - interactive: 휴지통으로 보낼 수 있는 세션인지. 지울 파일이 없으면 확인하지 않아 null이다.
-// 의심과 판단 못함은 지우지 않는다.
+// 의심과 판단 못함은 지우지 않는다. 휴지통으로 보내다 실패할 것이 확실한 파일은 미리 남긴다(#101).
+// - 경로가 MAX_RECYCLE_PATH를 넘는 파일
+// - 같은 파일의 다른 이름(하드링크)이 먼저 지울 목록에 있는 파일. 그 이름을 휴지통으로 보내면 파일의 변경 시각이 바뀌어
+//   이 이름은 판별한 파일과 달라 보인다. 휴지통 안의 파일도 같은 파일의 이름이라 링크 수는 그대로다.
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['delete']);
   rejectRepository(access.target, walk(access.target));
@@ -37,6 +40,8 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const checkedAt = now ?? Date.now();
   const plan = { ...found, removals: [], kept: [], interactive: null };
   const markerOf = markerFinder();
+  // 지울 목록에 넣은 하드링크 파일: 파일 번호 => 경로
+  const linked = new Map();
   for (const item of found.broken) {
     const keep = (reason) => plan.kept.push({ path: item.path, reason });
     try {
@@ -44,11 +49,17 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       const stat = fs.lstatSync(real, { bigint: true });
       const hold = holdReason(stat, checkedAt);
       const marker = hold === null ? markerReason(markerOf(real)) : null;
+      const sameFile = stat.nlink > 1n ? linked.get(`${stat.dev}:${stat.ino}`) : undefined;
       if (real !== item.path || !stat.isFile() || fileStamp(stat) !== item.stamp) keep('판별한 뒤 파일이 바뀌어 남겼습니다.');
+      else if (real.length > MAX_RECYCLE_PATH) keep(`경로가 ${real.length}자라 휴지통으로 보낼 수 있는 ${MAX_RECYCLE_PATH}자를 넘어 남겼습니다. 이름을 줄이거나 위 폴더로 옮긴 뒤 다시 실행하세요.`);
       else if (hold !== null) keep(hold);
       else if (marker !== null) keep(marker);
       else if (item.size >= maxSize) keep('1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
-      else plan.removals.push({ path: real, size: item.size, reason: item.reason, stamp: item.stamp });
+      else if (sameFile !== undefined) keep(`같은 파일의 다른 이름(하드링크: ${path.relative(access.target, sameFile)})을 먼저 지우면 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행하면 지울 수 있습니다.`);
+      else {
+        if (stat.nlink > 1n) linked.set(`${stat.dev}:${stat.ino}`, real);
+        plan.removals.push({ path: real, size: item.size, reason: item.reason, stamp: item.stamp });
+      }
     } catch (err) {
       keep(reasonOf(err));
     }
