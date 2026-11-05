@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { BARE_DEVICE_NAME, deviceNamePart } = require('./windowsNames');
+const { BARE_DEVICE_NAME, deviceNamePart, isDeviceName } = require('./windowsNames');
 
 const isWindows = process.platform === 'win32';
 // Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
@@ -25,14 +25,24 @@ function ensureFree(p, force) {
 }
 
 // Node는 nul.mp4·con.txt 같은 이름을 글자 그대로 만들지만 PowerShell·탐색기는 장치로 열어, 만든 파일을 다른 프로그램에서 열거나 지울 수 없다(#135).
-// 이미 있는 항목은 이름을 바꿔 꺼낼 수 있게 두고, 새로 만드는 경로만 거부한다. 판단은 grant와 같은 규칙(windowsNames.js)으로 한다.
+// 이미 있는 항목은 이름을 바꿔 꺼낼 수 있게 두고, 새로 만드는 이름만 거부한다. 이미 있는 위 폴더(Con.Air 등)는 따지지 않는다.
+// 판단은 grant와 같은 규칙(windowsNames.js)으로 한다.
 function rejectNewDeviceName(p) {
-  if (exists(p)) return;
-  const part = deviceNamePart(p);
+  if (!isWindows) return;
+  let existing = path.resolve(p);
+  const created = [];
+  while (!exists(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    created.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const part = created.find((name) => isDeviceName(name));
   if (part !== undefined) throw new FcError(`Windows가 장치로 여는 이름이라 만들지 않습니다: ${JSON.stringify(part)} (${p})`);
 }
 
 // 장치 이름 그대로(nul, CON)가 든 경로는 tar.exe가 인자로 받으면 장치를 열고, 휴지통 이동은 실패한다(#135).
+// 휴지통 이동은 그런 폴더 안의 파일(CON\a.txt)도 실패하는 것을 빌드 26200에서 확인해 경로의 모든 이름을 본다.
 function bareDeviceName(p) {
   return deviceNamePart(p, BARE_DEVICE_NAME);
 }

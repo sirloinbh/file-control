@@ -46,8 +46,8 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
   fs.mkdirSync(path.join(dir, 'box'));
   fc.zip(path.join(dir, 'ok.zip'), [src]);
   const before = listing(dir);
-  // 어느 빌드의 규칙에서나 장치 이름이다.
-  for (const name of ['Nul.mp4', 'con.txt', 'nul', 'AUX/a.txt', 'Com1.zip']) {
+  // 어느 빌드의 규칙에서나 장치 이름이다. 끝의 점·공백은 Windows가 지우므로 같은 장치다.
+  for (const name of ['Nul.mp4', 'con.txt', 'nul', 'AUX/a.txt', 'Com1.zip', 'com1 ', 'nul ', 'Nul.mp4.', 'con.txt .', 'CON .', 'lpt¹/a.txt']) {
     const p = path.join(dir, name);
     const attempts = {
       write: () => fc.writeFile(p, 'x'),
@@ -68,9 +68,27 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
   }
   // 폴더 안으로 옮기거나 복사해도 새 이름이 장치 이름이면 거부한다.
   fs.writeFileSync(literal(path.join(dir, 'Nul.mp4')), 'N');
-  assert.throws(() => fc.copy([path.join(dir, 'Nul.mp4')], path.join(dir, 'box')), /장치로 여는 이름/);
-  assert.throws(() => fc.move([path.join(dir, 'Nul.mp4')], path.join(dir, 'box')), /장치로 여는 이름/);
+  for (const dryRun of [false, true]) {
+    assert.throws(() => fc.copy([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `cp dryRun=${dryRun}`);
+    assert.throws(() => fc.move([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `mv dryRun=${dryRun}`);
+  }
   assert.deepStrictEqual(listing(dir), [...before, 'Nul.mp4'].sort());
+});
+
+test('이미 있는 장치 이름 폴더 안에는 평범한 이름을 만들 수 있다 (#135)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const folder = path.join(dir, 'Con.Air');
+  fs.mkdirSync(literal(folder));
+  fs.writeFileSync(path.join(dir, 'src.txt'), 'S');
+  fc.zip(path.join(dir, 'ok.zip'), [path.join(dir, 'src.txt')]);
+  fc.writeFile(path.join(folder, 'notes.txt'), 'N');
+  fc.makeDir(path.join(folder, 'sub', 'deeper'));
+  fc.copy([path.join(dir, 'src.txt')], path.join(folder, 'copy.txt'));
+  fc.unzip(path.join(dir, 'ok.zip'), path.join(folder, 'out'));
+  assert.strictEqual(fc.readFile(path.join(folder, 'out', 'src.txt')), 'S');
+  // 그 안에 새로 만드는 이름이 장치 이름이면 거부한다.
+  assert.throws(() => fc.writeFile(path.join(folder, 'nul.txt'), 'x'), /장치로 여는 이름이라 만들지 않습니다: "nul.txt"/);
+  assert.throws(() => fc.makeDir(path.join(folder, 'new', 'CON', 'x')), /장치로 여는 이름이라 만들지 않습니다: "CON"/);
 });
 
 test('이미 있는 장치 이름 파일은 읽고, 덮어쓰고, 평범한 이름으로 바꾸거나 옮길 수 있다 (#135)', { skip: !isWindows }, () => {
@@ -99,6 +117,19 @@ test('zip은 장치 이름 그대로인 원본을 tar.exe에 넘기기 전에 �
   assert.deepStrictEqual(listing(dir), before);
 });
 
+test('압축 목록 읽기는 장치 이름 그대로인 압축 파일 경로를 tar.exe에 넘기지 않는다 (#135)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'A');
+  fc.zip(path.join(dir, 'a.zip'), [path.join(dir, 'a.txt')]);
+  fs.renameSync(path.join(dir, 'a.zip'), literal(path.join(dir, 'nul')));
+  const archive = path.join(dir, 'nul');
+  assert.throws(() => fc.archiveEntries(archive), /tar\.exe가 장치로 열어/);
+  assert.throws(() => fc.archiveNames(archive), /tar\.exe가 장치로 열어/);
+  assert.throws(() => fc.probeArchive(archive, { maxBuffer: 1024 * 1024, timeout: 60 * 1000 }), /tar\.exe가 장치로 열어/);
+  assert.throws(() => fc.unzip(archive, path.join(dir, 'out')), /tar\.exe가 장치로 열어/);
+  assert.deepStrictEqual(listing(dir), ['a.txt', 'nul']);
+});
+
 test('zip·unzip은 폴더 안의 장치 이름 파일을 같은 내용으로 묶고 푼다 (#135)', { skip: !isWindows }, () => {
   const dir = tempDir();
   const names = ['nul', 'CON', 'Nul.mp4', 'con.txt', 'ok.txt'];
@@ -114,6 +145,7 @@ test('rm은 장치 이름 그대로인 경로를 PowerShell을 부르기 전에 
   const dir = tempDir();
   fs.writeFileSync(literal(path.join(dir, 'nul')), 'x');
   fs.mkdirSync(literal(path.join(dir, 'CON')));
+  // CON·nul·Com1 폴더 안의 파일도 휴지통 이동이 실패한다(빌드 26200). Nul.mp4 폴더 안은 성공했다.
   fs.writeFileSync(path.join(dir, 'CON', 'a.txt'), 'A');
   const calls = t.mock.method(childProcess, 'execFileSync', () => {
     throw new Error('PowerShell을 부르면 안 된다');

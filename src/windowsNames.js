@@ -27,11 +27,16 @@ function deviceNamePattern(release = os.release()) {
 
 const WINDOWS_DEVICE_NAME = deviceNamePattern();
 
-// 경로에서 pattern에 맞는 첫 이름(드라이브·UNC 뿌리는 빼고)을 돌려준다. 없거나 Windows가 아니면 undefined다.
+// Windows는 이름 끝의 점과 공백을 지우고 연다. 그래서 com1 ·Nul.mp4.는 com1·Nul.mp4와 같은 장치다(#135).
+function isDeviceName(part, pattern = WINDOWS_DEVICE_NAME) {
+  return pattern.test(part) || pattern.test(part.replace(/[. ]+$/, ''));
+}
+
+// 경로에서 장치 이름인 첫 이름(드라이브·UNC 뿌리는 빼고)을 돌려준다. 없거나 Windows가 아니면 undefined다.
 function deviceNamePart(p, pattern = WINDOWS_DEVICE_NAME) {
   if (process.platform !== 'win32') return undefined;
   const full = path.resolve(p);
-  return full.slice(path.parse(full).root.length).split(path.sep).find((part) => pattern.test(part));
+  return full.slice(path.parse(full).root.length).split(path.sep).find((part) => isDeviceName(part, pattern));
 }
 
-module.exports = { WINDOWS_DEVICE_NAME, BARE_DEVICE_NAME, deviceNamePattern, deviceNamePart };
+module.exports = { WINDOWS_DEVICE_NAME, BARE_DEVICE_NAME, deviceNamePattern, deviceNamePart, isDeviceName };
