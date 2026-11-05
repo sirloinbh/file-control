@@ -57,8 +57,9 @@ function rejectHardLinkedOverwrite(src, target) {
   if (!exists(target)) return;
   rejectHardLinkedWrite(target);
   if (!fs.statSync(src).isDirectory() || !fs.statSync(target).isDirectory()) return;
-  for (const rel of fs.readdirSync(src, { recursive: true })) {
-    if (fs.statSync(path.join(src, rel)).isFile()) rejectHardLinkedWrite(path.join(target, rel));
+  // 항목 종류는 따라가지 않고 본다. 원본 안의 끊어진 링크에서 stat이 실패하지 않게 하고, 링크는 덮어쓸 내용이 아니다.
+  for (const entry of fs.readdirSync(src, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) rejectHardLinkedWrite(path.join(target, path.relative(src, path.join(entry.parentPath, entry.name))));
   }
 }
 
@@ -390,6 +391,13 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`여러 개를 복사하려면 대상이 있는 폴더여야 합니다: ${dest}`);
   }
+  // 하드링크는 여러 원본 중 하나에만 걸려도 아무것도 복사하지 않도록 먼저 모두 본다(#48). 덮어쓰기는 --force일 때만 일어난다.
+  if (force) {
+    for (const src of sources) {
+      ensureExists(src);
+      rejectHardLinkedOverwrite(src, resolveDest(src, dest));
+    }
+  }
   const planned = new Set();
   return sources.map((src) => {
     ensureExists(src);
@@ -397,7 +405,6 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     ensureFree(target, force);
     rejectNewDeviceName(target);
     rejectCopyIntoSelf(src, target);
-    rejectHardLinkedOverwrite(src, target);
     let note = '';
     if (dryRun) {
       ensureCanMakeDir(path.dirname(target));

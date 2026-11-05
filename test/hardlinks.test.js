@@ -59,6 +59,28 @@ test('cp --force는 하드링크를 덮어쓰지 않고, 합칠 폴더 안에 �
   assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
 });
 
+test('cp --force는 여러 원본 중 하나라도 하드링크를 덮어쓰면 아무것도 복사하지 않는다 (#48)', () => {
+  const { root, target, secret } = fixture();
+  fs.writeFileSync(path.join(root, 'a.txt'), 'A');
+  fs.writeFileSync(path.join(root, 'hard.txt'), 'H');
+  assert.throws(() => fc.copy([path.join(root, 'a.txt'), path.join(root, 'hard.txt')], target, { force: true }), HARD_LINKED);
+  assert.deepStrictEqual(fs.readdirSync(target), ['hard.txt']);
+  assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
+  // --force가 없으면 원래처럼 이미 있다고 알린다.
+  assert.throws(() => fc.copy([path.join(root, 'hard.txt')], target), /이미 있습니다/);
+});
+
+test('cp --force로 폴더를 합칠 때 원본 안의 끊어진 링크는 하드링크 검사를 막지 않는다 (#48)', () => {
+  const { root, target } = fixture();
+  fs.mkdirSync(path.join(root, 'from', 'gone'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'from', 'a.txt'), 'A');
+  fs.symlinkSync(path.join(root, 'from', 'gone'), path.join(root, 'from', 'j'), isWindows ? 'junction' : 'dir');
+  fs.rmdirSync(path.join(root, 'from', 'gone'));
+  fs.mkdirSync(path.join(target, 'from'));
+  fc.copy([path.join(root, 'from')], target, { force: true });
+  assert.strictEqual(fs.readFileSync(path.join(target, 'from', 'a.txt'), 'utf8'), 'A');
+});
+
 test('mv --force·rename·rm --permanent는 하드링크의 이름만 바꾸거나 지우고 다른 이름의 내용은 남는다 (#48)', () => {
   const { target, secret, hard, src } = fixture();
   fc.rename(hard, 'renamed.txt');
