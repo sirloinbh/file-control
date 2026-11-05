@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, hiddenOrSystemEntries } = require('./commands');
+const { FcError, remove, hiddenOrSystemEntries, recycleEmptyFolders, recycleBinState, bareDeviceInside, MAX_RECYCLE_PATH } = require('./commands');
 const { extractProductNumbers } = require('./product');
 const { grant, walk } = require('./target');
 
@@ -149,6 +149,7 @@ const SYSTEM_FOLDER = /^(?:\$RECYCLE\.BIN|System Volume Information)$/i;
 // 폴더를 꾸미거나 미리보기를 담아 두는 파일. 그 폴더에서만 뜻이 있어, 옮기면 타겟 바로 아래에 desktop (2).ini처럼 쌓인다(#65).
 // 옮기지 않고 파일 수에도 넣지 않으며, 폴더가 비면 폴더와 함께 휴지통으로 간다.
 const FOLDER_METADATA = /^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i;
+const FOLDER_METADATA_NAMES = ['desktop.ini', 'thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', '.ds_store'];
 
 const isFolderMetadata = (entry) => entry.type === 'file' && FOLDER_METADATA.test(path.basename(entry.relative));
 
@@ -526,24 +527,92 @@ function foldersOf(moves, target) {
   return folders;
 }
 
-// 빈 폴더를 휴지통으로 보낸다. 폴더가 많으면 목록을 구한 뒤 오래 지나므로 지우기 직전에 하나씩 다시 검사하고, 실패한 폴더는 kept에 남긴다.
-function removeFolders(folders, access, { dryRun }) {
+// 한 번에 PowerShell로 보내는 폴더 수. 시간 제한과 중간 보고의 단위다.
+const FOLDER_BATCH = 100;
+
+// 휴지통 일괄 이동의 결과를 사유로 바꾼다.
+const FOLDER_STATUS_REASON = {
+  moved: '검사 뒤에 경로가 바뀌었습니다(정션 등). 지우지 않았습니다.',
+  notdir: '검사 뒤에 폴더가 아니게 됐습니다.',
+  filled: '폴더에 파일이 생겨 지우지 않았습니다.',
+  gone: '폴더가 이미 없습니다.',
+  timeout: '시간 제한에 걸려 처리하지 못했습니다(오류 대화상자가 떴을 수 있습니다). 남아 있으면 다시 실행하세요.',
+};
+
+// 지우기 전에 Node에서 하는 검사. 통과하면 실제 경로를, 아니면 FcError를 낸다.
+function checkFolder(folder, access, { dryRun }) {
+  const real = access.delete(folder);
+  // 안쪽을 가리키는 정션으로 바뀌었으면 다른 폴더를 지우게 된다.
+  if (real !== folder) throw new FcError(`검사 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
+  if (!dryRun) {
+    if (!fs.lstatSync(real).isDirectory()) throw new FcError(`검사 뒤에 폴더가 아니게 됐습니다: ${real}`);
+    const filled = walk(real).find((entry) => entry.type !== 'dir' && !isFolderMetadata(entry));
+    if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
+    if (real.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${real.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${real}`);
+    // 현재 폴더와 그 상위, 장치 이름 같은 rm의 검사를 지우지 않고(미리보기로) 그대로 거친다.
+    remove([real], { dryRun: true });
+  }
+  return real;
+}
+
+// 빈 폴더를 휴지통으로 보낸다. 실패한 폴더는 kept에 남긴다. onFolder(folder, reason)는 폴더마다 끝나는 대로 불린다(reason이 없으면 보냄).
+// 폴더마다 PowerShell을 띄우면 수천 개에서 몇 시간이 걸리므로 FOLDER_BATCH개씩 묶어 보낸다(#67). 묶음마다 Node에서 다시 검사하고,
+// PowerShell도 폴더마다 지우기 직전에 실제 경로·폴더 여부·안의 파일을 다시 본다(recycleEmptyFolders).
+// 휴지통이 없을 수 있는 드라이브(고정 디스크가 아닌 것)와 대화형이 아닌 세션에서는 영구 삭제될 수 있어 지우지 않는다.
+function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   const report = { removed: [], kept: [] };
-  for (const folder of folders) {
-    try {
-      const real = access.delete(folder);
-      // 안쪽을 가리키는 정션으로 바뀌었으면 다른 폴더를 지우게 된다.
-      if (real !== folder) throw new FcError(`검사 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
-      if (!dryRun) {
-        if (!fs.lstatSync(real).isDirectory()) throw new FcError(`검사 뒤에 폴더가 아니게 됐습니다: ${real}`);
-        const filled = walk(real).find((entry) => entry.type !== 'dir' && !isFolderMetadata(entry));
-        if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
+  const done = (folder, reason) => {
+    if (reason === undefined) report.removed.push(folder);
+    else report.kept.push({ path: folder, reason });
+    onFolder(folder, reason);
+  };
+  if (folders.length === 0) return report;
+  if (dryRun) {
+    for (const folder of folders) {
+      try {
+        remove([checkFolder(folder, access, { dryRun })], { dryRun });
+        done(folder);
+      } catch (err) {
+        done(folder, err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
       }
-      remove([real], { dryRun });
-      report.removed.push(folder);
+    }
+    return report;
+  }
+  const state = recycleBinState(access.target);
+  let blocked;
+  if (state.interactive === false) blocked = '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.';
+  else if (state.driveType !== 'Fixed') blocked = `휴지통이 없어 영구 삭제될 수 있는 드라이브(${state.driveType ?? '종류를 알 수 없음'})라 빈 폴더를 지우지 않았습니다.`;
+  for (let i = 0; i < folders.length; i += FOLDER_BATCH) {
+    const batch = [];
+    for (const folder of folders.slice(i, i + FOLDER_BATCH)) {
+      if (blocked) {
+        done(folder, blocked);
+        continue;
+      }
+      try {
+        batch.push(checkFolder(folder, access, { dryRun }));
+      } catch (err) {
+        done(folder, err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
+      }
+    }
+    if (batch.length === 0) continue;
+    let results;
+    try {
+      results = recycleEmptyFolders(batch, { allowedNames: FOLDER_METADATA_NAMES });
     } catch (err) {
       // 휴지통 호출의 실패 메시지에는 스크립트 전문이 들어가므로 쓰지 않는다.
-      report.kept.push({ path: folder, reason: err instanceof FcError ? err.message : `휴지통으로 보내지 못했습니다. (${err.code ?? err.status})` });
+      const reason = err instanceof FcError ? err.message : `휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+      if (err instanceof FcError) blocked = reason;
+      for (const folder of batch) done(folder, reason);
+      continue;
+    }
+    for (const { path: folder, status } of results) {
+      if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
+      else if (status === 'error') {
+        // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135).
+        const inside = bareDeviceInside(folder);
+        done(folder, inside === undefined ? '휴지통으로 보내지 못했습니다.' : `휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+      } else done(folder, FOLDER_STATUS_REASON[status]);
     }
   }
   return report;
@@ -552,7 +621,8 @@ function removeFolders(folders, access, { dryRun }) {
 // 타겟 아래 파일을 타겟 바로 아래로 옮기고, 비게 된 폴더를 휴지통으로 보낸다. 덮어쓰지 않고, 한 파일이 실패해도 나머지는 계속 옮긴다.
 // 돌려주는 값: { target, dryRun, moved, stay, skipped, failed, removedFolders, keptFolders }.
 // failed는 { from, reason }, keptFolders는 지우지 못한 폴더의 { path, reason } 목록이다.
-function flatten(dir, { dryRun = false } = {}) {
+// onProgress(line)를 주면 실제 실행에서 파일 하나, 폴더 하나가 끝날 때마다 보고 줄을 넘긴다. 중간에 끊겨도 이미 한 일을 알 수 있다(#67).
+function flatten(dir, { dryRun = false, onProgress } = {}) {
   const plan = planFlatten(dir);
   const access = grant(plan.target, ['write', 'delete']);
   const result = { target: plan.target, dryRun, moved: [], stay: plan.stay, skipped: plan.skipped, failed: [], removedFolders: [], keptFolders: [] };
@@ -565,16 +635,22 @@ function flatten(dir, { dryRun = false } = {}) {
   // 앞으로 옮길 파일의 이름을 뺏지 않도록 계획한 이름을 모두 차지한 것으로 본다.
   const taken = new Set(plan.moves.map((move) => nameKey(move.name)));
   const nextNumber = new Map();
+  const relative = (p) => path.relative(plan.target, p) || '.';
+  const report = (line) => onProgress?.(line);
   for (const move of plan.moves) {
     try {
-      result.moved.push(applyMove(move, access, taken, nextNumber));
+      const moved = applyMove(move, access, taken, nextNumber);
+      result.moved.push(moved);
+      report(moveLine(moved, relative, ''));
     } catch (err) {
       result.failed.push({ from: move.from, reason: err.message });
+      report(`실패: ${relative(move.from)} (${err.message})`);
     }
   }
+  const onFolder = (folder, reason) => report(reason === undefined ? `빈 폴더를 휴지통으로: ${relative(folder)}` : `폴더 남김: ${relative(folder)} (${reason})`);
   // 계획이 아니라 이동이 끝난 실제 상태로 판단한다. 실패한 파일이나 그사이 생긴 파일이 있는 폴더는 남는다.
   try {
-    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target), plan.guarded), access, { dryRun });
+    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target), plan.guarded), access, { dryRun, onFolder });
     result.removedFolders = removed;
     result.keptFolders = kept;
   } catch (err) {
@@ -583,15 +659,17 @@ function flatten(dir, { dryRun = false } = {}) {
   return result;
 }
 
+function moveLine(move, relative, prefix) {
+  const notes = [move.fromFolder && '폴더명 사용', move.numbered && '번호 붙임'].filter(Boolean);
+  return `${prefix}이동: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
+}
+
 // 결과를 사람이 읽을 수 있게 줄로 만든다. 자세한 보고 형식은 #19에서 다듬는다.
 function formatFlatten(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[미리보기] ' : '';
   const lines = [];
-  for (const move of result.moved) {
-    const notes = [move.fromFolder && '폴더명 사용', move.numbered && '번호 붙임'].filter(Boolean);
-    lines.push(`${prefix}이동: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`);
-  }
+  for (const move of result.moved) lines.push(moveLine(move, relative, prefix));
   for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
   for (const folder of result.removedFolders) lines.push(`${prefix}빈 폴더를 휴지통으로: ${relative(folder)}`);
