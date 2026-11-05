@@ -760,6 +760,22 @@ test('zip으로 묶은 것을 unzip하면 같은 내용이 나온다', () => {
   assert.strictEqual(fc.readFile(path.join(dir, 'bundle', 'b.txt')), 'B');
 });
 
+// grant가 좁은 규칙에서 허용하는 장치 이름 비슷한 이름을 tar.exe가 같은 파일로 다루는지 실행 환경에서 확인한다(#53).
+const { deviceNamePattern } = require('../src/target');
+const narrowDeviceRule = isWindows && deviceNamePattern() === deviceNamePattern('10.0.26200');
+
+test('zip·unzip은 좁은 규칙에서 허용하는 장치 이름 비슷한 이름을 같은 파일로 묶고 푼다 (#53)', { skip: !narrowDeviceRule }, () => {
+  const dir = tempDir();
+  // 위첨자(COM¹)는 영어 Windows에서 tar.exe가 OEM 코드페이지로 적어 1로 바뀌므로(#136) 여기서는 ASCII 이름만 본다.
+  const names = ['Con.Air.1997.mkv', 'nul.tar.gz', 'Aux.2018.mp4', 'Nul .mp4', 'NUL..mp4', 'Com0.txt', 'Lpt0.txt', 'CONIN$.txt'];
+  names.forEach((name, i) => fc.writeFile(path.join(dir, 'src', name), `content-${i}`));
+  const archive = path.join(dir, 'bundle.zip');
+  fc.zip(archive, [path.join(dir, 'src')]);
+  fc.unzip(archive);
+  assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'bundle', 'src')).sort(), [...names].sort());
+  names.forEach((name, i) => assert.strictEqual(fc.readFile(path.join(dir, 'bundle', 'src', name)), `content-${i}`, name));
+});
+
 test('formatSize는 사람이 읽기 쉬운 단위로 바꾼다', () => {
   assert.strictEqual(fc.formatSize(512), '512B');
   assert.strictEqual(fc.formatSize(1536), '1.5KB');

@@ -29,6 +29,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 
 const { FcError } = require('../src/commands');
 const { planFlatten, detailedName, flatten, formatFlatten } = require('../src/flatten');
+const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
 const { spawnSync } = require('node:child_process');
 
@@ -237,8 +238,11 @@ test('planFlatten은 Windows에서 해석이 갈리는 이름을 조용히 빼�
   const dir = tempDir();
   make(dir, ['a/ok.txt', 'a/dot.', 'a/Con.Air.1997.mkv', 'weird./inner.txt']);
   const plan = planFlatten(dir);
-  assert.deepStrictEqual(moves(plan), [['a/ok.txt', 'ok.txt']]);
-  assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)).sort(), [path.join('a', 'Con.Air.1997.mkv'), path.join('a', 'dot.'), path.join('weird.', 'inner.txt')].sort());
+  // Con.Air.1997.mkv는 Windows 11 24H2 이상에서 장치 이름이 아니라 옮긴다(#53). 그 아래 버전에서는 건너뛴다.
+  const windows11 = deviceNamePattern() === deviceNamePattern('10.0.26200');
+  assert.deepStrictEqual(moves(plan), windows11 ? [['a/Con.Air.1997.mkv', 'Con.Air.1997.mkv'], ['a/ok.txt', 'ok.txt']] : [['a/ok.txt', 'ok.txt']]);
+  const skipped = [path.join('a', 'dot.'), path.join('weird.', 'inner.txt'), ...(windows11 ? [] : [path.join('a', 'Con.Air.1997.mkv')])];
+  assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)).sort(), skipped.sort());
   for (const item of plan.skipped) assert.match(item.reason, /다르게 해석될 수 있는 이름/);
 });
 

@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
 const { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers } = require('../src/productName');
+const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
@@ -401,10 +402,25 @@ test('링크는 바꾸지 않고, 타겟 밖을 가리키는 정션 안으로 �
 test('해석이 갈리는 이름은 건너뛴다', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/x.mp4']);
-  fs.renameSync(path.join(dir, 'ABC-123', 'x.mp4'), `\\\\?\\${path.join(dir, 'ABC-123', 'Con.Air.mp4')}`);
+  const device = path.join(dir, 'ABC-123', 'Con.mp4');
+  fs.renameSync(path.join(dir, 'ABC-123', 'x.mp4'), `\\\\?\\${device}`);
+  test.after(() => fs.rmSync(`\\\\?\\${device}`, { force: true }));
   const result = addProductNumbers(dir);
-  assert.strictEqual(result.skipped.length, 1);
+  assert.deepStrictEqual(result.skipped.map((item) => item.path), [device]);
+  assert.match(result.skipped[0].reason, /다르게 해석될 수 있는 이름/);
   assert.strictEqual(result.renamed.length, 0);
+});
+
+test('Windows 11 24H2 이상에서는 장치 이름으로 시작하지만 점이 둘 이상인 이름에 번호를 넣는다 (#53)', { skip: process.platform !== 'win32' }, () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/Con.Air.1997.mp4']);
+  const result = addProductNumbers(dir);
+  if (deviceNamePattern() === deviceNamePattern('10.0.26200')) {
+    assert.deepStrictEqual(result.renamed.map((item) => item.name), ['ABC-123 Con.Air.1997.mp4']);
+    assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 Con.Air.1997.mp4']);
+  } else {
+    assert.strictEqual(result.skipped.length, 1);
+  }
 });
 
 test('미리보기는 아무것도 바꾸지 않고 같은 계획을 보여 준다', () => {
