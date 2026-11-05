@@ -161,6 +161,13 @@ function planFlatten(dir) {
   const nextNumber = new Map();
   const fileCounts = countFiles(entries);
   const plan = { target: access.target, moves: [], stay: [], skipped: [] };
+  // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름(번호가 붙었을 수도 있다)이 있다(#73).
+  const topFiles = new Map();
+  for (const entry of entries) {
+    if (!isTop(entry) || entry.type !== 'file') continue;
+    const key = fileKey(entry.path);
+    if (key) topFiles.set(key, entry.path);
+  }
   for (const entry of entries) {
     if (isTop(entry)) {
       if (entry.type !== 'dir') plan.stay.push(entry.path);
@@ -185,11 +192,9 @@ function planFlatten(dir) {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
       const detailed = detailedName(original, soleFolders(entry, fileCounts));
-      // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름이 있다. 번호를 붙여 세 번째 이름을 만들지 않는다(#73).
-      for (const candidate of new Set([detailed, original])) {
-        const there = path.join(access.target, candidate);
-        if (candidate.length <= MAX_NAME && sameFileOrFalse(from, there)) throw new FcError(`같은 이름이 이미 있어 옮기지 않습니다: ${candidate}${leftoverNote(from, there)}`);
-      }
+      // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
+      const twin = topFiles.get(fileKey(from));
+      if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);
       let desired = detailed.length > MAX_NAME ? original : detailed;
       let name = freeName(desired, access.target, taken, nextNumber);
       if (name.length > MAX_NAME && desired !== original) {
@@ -256,12 +261,13 @@ function sameFile(a, b) {
   return Boolean(sa && sb && sa.ino !== 0n && sa.ino === sb.ino && sa.dev === sb.dev);
 }
 
-// 확인하지 못하면 같지 않다고 본다. 이름을 확인하지 못한 사유는 뒤의 이름 고르기가 알린다.
-function sameFileOrFalse(a, b) {
+// 같은 파일을 찾는 열쇠(볼륨:파일 번호). 확인하지 못하거나 파일 번호가 0이면 null이다. 확인하지 못한 사유는 뒤의 이름 고르기가 알린다.
+function fileKey(p) {
   try {
-    return sameFile(a, b);
+    const stat = fs.lstatSync(p, { bigint: true, throwIfNoEntry: false });
+    return stat && stat.ino !== 0n ? `${stat.dev}:${stat.ino}` : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

@@ -1442,18 +1442,23 @@ test('leftoverNote는 같은 파일의 다른 이름과 빈 파일을 이전 실
 
 test('flatten은 이전 실행이 남긴 같은 파일의 다른 이름이 있으면 번호를 붙여 세 번째 이름을 만들지 않는다 (1차 리뷰, #73)', () => {
   const dir = tempDir();
-  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt']);
+  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt', 'd/w.txt', 'w.txt']);
   fs.linkSync(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt'));
+  // 이전 실행 때 이미 w.txt가 있어 번호를 붙인 이름으로 하드링크한 뒤 멈춘 흔적(2차 리뷰)
+  fs.linkSync(path.join(dir, 'd', 'w.txt'), path.join(dir, 'w (2).txt'));
   // 빈 파일은 정상적인 빈 파일일 수 있어 지금처럼 번호를 붙여 피한다.
   fs.writeFileSync(path.join(dir, 'y.txt'), '');
   for (const dryRun of [true, false]) {
     const result = flatten(dir, { dryRun });
-    const skipped = result.skipped.find((item) => item.path === path.join(dir, 'a', 'x.txt'));
-    assert.match(skipped?.reason ?? '', /같은 이름이 이미 있어 옮기지 않습니다: x\.txt \(원본과 같은 파일의 다른 이름/, `dryRun=${dryRun}`);
+    const reason = (p) => result.skipped.find((item) => item.path === p)?.reason ?? '';
+    assert.match(reason(path.join(dir, 'a', 'x.txt')), /이미 있는 이름이라 옮기지 않습니다: x\.txt \(원본과 같은 파일의 다른 이름/, `dryRun=${dryRun}`);
+    assert.match(reason(path.join(dir, 'd', 'w.txt')), /이미 있는 이름이라 옮기지 않습니다: w \(2\)\.txt \(원본과 같은 파일의 다른 이름/, `dryRun=${dryRun}`);
     assert.deepStrictEqual(result.moved.map((move) => move.name).sort(), ['y (2).txt', 'z.txt'], `dryRun=${dryRun}`);
   }
   assert.strictEqual(fs.statSync(path.join(dir, 'x.txt')).nlink, 2);
+  assert.strictEqual(fs.statSync(path.join(dir, 'w (2).txt')).nlink, 2);
   assert.ok(!fs.existsSync(path.join(dir, 'x (2).txt')));
+  assert.ok(!fs.existsSync(path.join(dir, 'w (3).txt')));
 });
 
 test('moveWithoutOverwrite는 linkSync가 실패를 알렸어도 링크가 만들어졌으면 이어서 옮긴다 (1차 리뷰, #73)', (t) => {
