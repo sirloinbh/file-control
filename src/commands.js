@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { BARE_DEVICE_NAME, deviceNamePart, isDeviceName } = require('./windowsNames');
 
 const isWindows = process.platform === 'win32';
 // Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
@@ -21,6 +22,34 @@ function ensureExists(p) {
 
 function ensureFree(p, force) {
   if (exists(p) && !force) throw new FcError(`이미 있습니다: ${p} (덮어쓰려면 --force)`);
+}
+
+// Node는 nul.mp4·con.txt 같은 이름을 글자 그대로 만들지만 PowerShell·탐색기는 장치로 열어, 만든 파일을 다른 프로그램에서 열거나 지울 수 없다(#135).
+// 이미 있는 항목은 이름을 바꿔 꺼낼 수 있게 두고, 새로 만드는 이름만 거부한다. 이미 있는 위 폴더(Con.Air 등)는 따지지 않는다.
+// 판단은 grant와 같은 규칙(windowsNames.js)으로 한다.
+function rejectNewDeviceName(p) {
+  if (!isWindows) return;
+  let existing = path.resolve(p);
+  const created = [];
+  while (!exists(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    created.unshift(path.basename(existing));
+    existing = parent;
+  }
+  const part = created.find((name) => isDeviceName(name));
+  if (part !== undefined) throw new FcError(`Windows가 장치로 여는 이름이라 만들지 않습니다: ${JSON.stringify(part)} (${p})`);
+}
+
+// 장치 이름 그대로(nul, CON)가 든 경로는 tar.exe가 인자로 받으면 장치를 열고, 휴지통 이동은 실패한다(#135).
+// 휴지통 이동은 그런 폴더 안의 파일(CON\a.txt)도 실패하는 것을 빌드 26200에서 확인해 경로의 모든 이름을 본다.
+function bareDeviceName(p) {
+  return deviceNamePart(p, BARE_DEVICE_NAME);
+}
+
+function rejectBareDeviceArgs(paths, what) {
+  const found = paths.find((p) => bareDeviceName(p) !== undefined);
+  if (found !== undefined) throw new FcError(`장치 이름(${JSON.stringify(bareDeviceName(found))})이 든 경로는 ${what}: ${found}. fctl rename으로 이름을 바꾼 뒤 다시 실행하세요.`);
 }
 
 // 미리보기면 작업을 실행하지 않고 할 일만 알려 준다. 모든 변경 명령이 이 함수를 거친다.
@@ -116,6 +145,7 @@ function list(dir = '.') {
 }
 
 function makeDir(dir, { dryRun = false } = {}) {
+  rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (이미 있음)' : '';
   return perform(`폴더 생성: ${dir}${note}`, dryRun, () => fs.mkdirSync(dir, { recursive: true }));
@@ -123,6 +153,7 @@ function makeDir(dir, { dryRun = false } = {}) {
 
 function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
   if (!append) ensureFree(file, force);
+  rejectNewDeviceName(file);
   if (dryRun) {
     ensureCanMakeDir(path.dirname(file));
     if (exists(file) && fs.statSync(file).isDirectory()) throw new FcError(`폴더에는 쓸 수 없습니다: ${file}`);
@@ -147,6 +178,7 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   }
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
+  rejectNewDeviceName(dest);
   // 자기 자신의 대소문자만 바꾸는 경우는 덮어쓰기가 아니다.
   if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${dest}`);
   return perform(`이름 변경: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
@@ -311,6 +343,7 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     rejectStreamPath(target);
     rejectCurrentDir(target);
     ensureFree(target, force);
+    rejectNewDeviceName(target);
     ensureParentDir(target);
     rejectMoveOverlap(src, target);
     return { src, target };
@@ -340,6 +373,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     ensureExists(src);
     const target = resolveDest(src, dest);
     ensureFree(target, force);
+    rejectNewDeviceName(target);
     rejectCopyIntoSelf(src, target);
     let note = '';
     if (dryRun) {
@@ -376,7 +410,19 @@ function moveToRecycleBin(target) {
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
+    const inside = bareDeviceInside(full);
+    if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
     throw err;
+  }
+}
+
+function bareDeviceInside(dir) {
+  try {
+    if (!fs.lstatSync(dir).isDirectory()) return undefined;
+    return fs.readdirSync(dir, { recursive: true }).find((rel) => rel.split(path.sep).some((part) => BARE_DEVICE_NAME.test(part)));
+  } catch {
+    return undefined;
   }
 }
 
@@ -412,6 +458,7 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
     if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
       throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
     }
+    if (!permanent) rejectBareDeviceArgs([target], '휴지통으로 보낼 수 없습니다');
     if (dryRun) claim(planned, target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));
@@ -453,6 +500,12 @@ function ensureTarCanUse(paths) {
   throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${codes.join(' ')} (${where})`);
 }
 
+// args는 tar.exe에 인자로 넘기는 경로, inside는 묶을 폴더 안의 이름이다. 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135).
+function ensureTarArgs(args, inside = []) {
+  ensureTarCanUse([...args, ...inside]);
+  rejectBareDeviceArgs(args, 'tar.exe가 장치로 열어 다룰 수 없습니다');
+}
+
 // 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. tar처럼 원본과 그 안의 정션을 따라간다.
 function namesInside(src) {
   if (!fs.statSync(src).isDirectory()) return [];
@@ -476,14 +529,14 @@ const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
 // RAR는 폴더 이름에 /가 붙지 않으므로 이름으로 종류를 가리지 않는다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
 // 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 첫 글자만 믿는다.
 function archiveEntries(archive) {
-  ensureTarCanUse([path.resolve(archive)]);
+  ensureTarArgs([path.resolve(archive)]);
   const listing = runTar(['-tvf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
 // 압축 파일 안의 항목 이름 목록. 코드페이지로 나오므로 ASCII가 아닌 이름은 믿을 수 없다.
 function archiveNames(archive) {
-  ensureTarCanUse([path.resolve(archive)]);
+  ensureTarArgs([path.resolve(archive)]);
   const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
@@ -491,7 +544,7 @@ function archiveNames(archive) {
 // 압축 파일을 tar.exe로 끝까지 읽어 본다. 오류를 내지 않고 { error, status, stderr, entries }를 돌려준다.
 // 손상 문구는 종료 코드 0으로도 나오므로(Damaged tar archive) 판단은 stderr로 한다. error는 실행 실패나 한도 초과(ENOBUFS, ETIMEDOUT)다.
 function probeArchive(archive, { maxBuffer, timeout }) {
-  ensureTarCanUse([path.resolve(archive)]);
+  ensureTarArgs([path.resolve(archive)]);
   const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout });
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
@@ -499,7 +552,8 @@ function probeArchive(archive, { maxBuffer, timeout }) {
 function unzip(archive, destDir, { dryRun = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
-  ensureTarCanUse([path.resolve(archive), path.resolve(dest)]);
+  rejectNewDeviceName(dest);
+  ensureTarArgs([path.resolve(archive), path.resolve(dest)]);
   let note = '';
   if (dryRun) {
     ensureCanMakeDir(dest);
@@ -557,6 +611,7 @@ function writeArchive(archive, sources) {
 
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
+  rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
   // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
@@ -567,7 +622,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
-  ensureTarCanUse([path.resolve(archive), ...sources.map((src) => path.resolve(src)), ...sources.flatMap(namesInside)]);
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], sources.flatMap(namesInside));
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
