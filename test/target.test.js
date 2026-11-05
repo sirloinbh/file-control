@@ -450,11 +450,11 @@ test('grant는 점이 들어간 평범한 이름과 장치 이름으로 시작�
   }
 });
 
-// Windows 11(빌드 22000 이상)에서는 장치 이름 + 확장자 하나만 장치로 본다(#53). 그 아래 버전은 넓게 거부한다.
-const WINDOWS_11 = Number(os.release().split('.')[2]) >= 22000;
+// Windows 11 24H2 이상(빌드 26100 이상)에서는 장치 이름 + 확장자 하나만 장치로 본다(#53). 그 아래 버전은 넓게 거부한다.
+const WINDOWS_11 = deviceNamePattern() === deviceNamePattern('10.0.26200');
 const DEVICE_LIKE = ['Con.Air.1997.mkv', 'Aux.2018.mp4', 'nul.tar.gz', 'Prn.Movie.mkv', 'Com0.txt', 'Lpt0.txt', 'Nul .mp4', 'NUL..mp4', 'CONIN$.txt', 'sub/Con.Air.1997/a.mkv'];
 
-test('grant는 Windows 11에서 점이 둘 이상이거나 장치 이름이 아닌 이름은 허용하고, 그 아래 버전에서는 거부한다 (#53)', { skip: !isWindows }, () => {
+test('grant는 Windows 11 24H2 이상에서 점이 둘 이상이거나 장치 이름이 아닌 이름은 허용하고, 그 아래 버전에서는 거부한다 (#53)', { skip: !isWindows }, () => {
   const { target } = accessFixture();
   const access = grant(target, ['write']);
   for (const name of DEVICE_LIKE) {
@@ -465,15 +465,18 @@ test('grant는 Windows 11에서 점이 둘 이상이거나 장치 이름이 아�
 
 test('장치 이름 규칙은 Windows 빌드에 따라 고르고, 빌드를 읽지 못하면 넓은 규칙을 쓴다 (#53)', () => {
   const narrow = deviceNamePattern('10.0.26200');
-  assert.strictEqual(deviceNamePattern('10.0.22000'), narrow);
+  assert.strictEqual(deviceNamePattern('10.0.26100'), narrow);
   const wide = deviceNamePattern('10.0.19045');
-  for (const release of ['10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
+  assert.notStrictEqual(narrow, wide);
+  // 확인하지 못한 Windows 11 23H2 이하(22000~22631)와 Server 2022(20348)는 넓은 규칙이다.
+  for (const release of ['10.0.26099', '10.0.22631', '10.0.22000', '10.0.20348', '10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
   // [이름, Windows 11에서 거부, 그 아래에서 거부]
   const cases = [
     ['NUL', true, true], ['nul', true, true], ['Nul.mp4', true, true], ['con.txt', true, true], ['Com1.mkv', true, true],
-    ['LPT9.log', true, true], ['COM¹.txt', true, true], ['lpt³', true, true], ['Con.Air', true, true], ['CONIN$', true, true], ['conout$', true, true],
+    ['LPT9.log', true, true], ['COM¹.txt', true, true], ['com².mp4', true, true], ['lpt³', true, true], ['Con.Air', true, true], ['CONIN$', true, true], ['conout$', true, true],
     ['Con.Air.1997.mkv', false, true], ['nul.tar.gz', false, true], ['Aux.2018.mp4', false, true], ['NUL..mp4', false, true],
     ['Nul .mp4', false, true], ['CON .log', false, true], ['Com0.txt', false, true], ['Lpt0', false, true], ['CONIN$.txt', false, true],
+    ['COM¹.tar.gz', false, true], ['lpt².a.b', false, true], ['Lpt³ .txt', false, true], ['CONOUT$.txt', false, true], ['conin$ .txt', false, true],
     ['console.txt', false, false], ['nullable', false, false], ['com10.txt', false, false], ['Conan.mp4', false, false], ['nul-1.mp4', false, false],
   ];
   for (const [name, on11, below] of cases) {
