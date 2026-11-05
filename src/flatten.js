@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove } = require('./commands');
+const { FcError, remove, hiddenOrSystemEntries } = require('./commands');
 const { extractProductNumbers } = require('./product');
 const { grant, walk } = require('./target');
 
@@ -96,6 +96,67 @@ const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+-\d+(?:\.|$)/;
 // Windows가 관리하는 폴더. 안쪽 파일을 꺼내면 복원 정보와 함께 망가진다.
 const SYSTEM_FOLDER = /^(?:\$RECYCLE\.BIN|System Volume Information)$/i;
 
+// 폴더를 꾸미거나 미리보기를 담아 두는 파일. 그 폴더에서만 뜻이 있어, 옮기면 타겟 바로 아래에 desktop (2).ini처럼 쌓인다(#65).
+// 옮기지 않고 파일 수에도 넣지 않으며, 폴더가 비면 폴더와 함께 휴지통으로 간다.
+const FOLDER_METADATA = /^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i;
+
+const isFolderMetadata = (entry) => entry.type === 'file' && FOLDER_METADATA.test(path.basename(entry.relative));
+
+// 이름만으로 프로그램이 쓰는 폴더로 보는 것. 프로그램이 안쪽 구조와 이름으로 파일을 찾으므로 흩어지면 동작하지 않는다(#65).
+const PROGRAM_FOLDER = /^(?:node_modules|bower_components|__pycache__|site-packages)$/i;
+
+// 있으면 그 폴더를 프로젝트나 파이썬 가상환경 폴더로 보는 파일.
+const PROJECT_FILE = /^(?:package\.json|pyvenv\.cfg|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|CMakeLists\.txt|composer\.json|Gemfile|.+\.(?:sln|csproj|vcxproj|fsproj|vbproj))$/i;
+
+// 옮기지 않고 통째로 남길 폴더를 { 상대경로 -> 사유 }로 돌려준다(#65). 프로그램 폴더, 프로젝트 폴더, 실행 파일과 DLL이 함께 든 폴더,
+// 숨김 속성 폴더다. 안쪽만 남기고 옆 파일을 꺼내도 프로그램이 깨지므로 그 폴더 아래 전체를 남긴다.
+// 시스템 속성만 있는 폴더는 폴더 아이콘을 꾸밀 때 흔히 붙으므로(desktop.ini와 함께) 일반 폴더로 다룬다(1차 리뷰).
+// attributes는 hiddenOrSystemEntries가 돌려준 { 상대경로 -> 속성 비트(숨김 2, 시스템 4) }다.
+// 타겟 자신이 이런 폴더이거나 프로그램 폴더 안이면 모든 하위 폴더가 프로그램의 일부라 거부한다.
+function guardedFolders(target, entries, attributes) {
+  for (let dir = target; ; dir = path.dirname(dir)) {
+    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
+    if (dir === path.dirname(dir)) break;
+  }
+  const guarded = new Map();
+  const add = (relative, reason) => {
+    if (!guarded.has(relative)) guarded.set(relative, reason);
+  };
+  const programs = new Map();
+  for (const entry of entries) {
+    const name = path.basename(entry.relative);
+    const parent = path.dirname(entry.relative);
+    if (entry.type === 'dir') {
+      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `프로그램 폴더(${name})`);
+      else if ((attributes.get(entry.relative) ?? 0) & 2) add(entry.relative, '숨김 속성 폴더');
+      continue;
+    }
+    if (entry.type !== 'file') continue;
+    if (PROJECT_FILE.test(name)) {
+      if (parent === '.') throw new FcError(`타겟이 프로젝트 폴더로 보여(${name} 있음) 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
+      add(parent, `프로젝트 폴더(${name} 있음)`);
+    }
+    const ext = path.extname(name).toLowerCase();
+    if (ext === '.exe' || ext === '.dll') programs.set(parent, new Set([...(programs.get(parent) ?? []), ext]));
+  }
+  for (const [parent, kinds] of programs) {
+    if (kinds.size < 2) continue;
+    if (parent === '.') throw new FcError(`타겟에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
+    add(parent, '실행 파일과 DLL이 함께 든 프로그램 폴더');
+  }
+  return guarded;
+}
+
+// 경로가 남길 폴더 아래면 가장 바깥의 그 폴더 상대경로를, 아니면 undefined를 돌려준다.
+function guardOf(relative, guarded) {
+  const parts = relative.split(path.sep);
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const folder = parts.slice(0, depth).join(path.sep);
+    if (guarded.has(folder)) return folder;
+  }
+  return undefined;
+}
+
 // 파일이 그 폴더(하위 포함)의 유일한 항목일 때만 폴더 이름을 쓸 수 있다. 여럿이면 ep1, ep2 같은 구분을 잃는다.
 function soleFolders(entry, fileCounts) {
   const parts = entry.relative.split(path.sep).slice(0, -1);
@@ -107,11 +168,11 @@ function soleFolders(entry, fileCounts) {
   return folders;
 }
 
-// 폴더마다 안에 든 파일과 링크 수를 하위까지 합쳐 센다.
+// 폴더마다 안에 든 파일과 링크 수를 하위까지 합쳐 센다. 폴더 설정·미리보기 파일(desktop.ini 등)은 세지 않는다.
 function countFiles(entries) {
   const counts = new Map();
   for (const entry of entries) {
-    if (entry.type === 'dir') continue;
+    if (entry.type === 'dir' || isFolderMetadata(entry)) continue;
     const parts = entry.relative.split(path.sep).slice(0, -1);
     for (let depth = 1; depth <= parts.length; depth++) {
       const key = parts.slice(0, depth).join(path.sep);
@@ -152,15 +213,22 @@ function rejectRepository(target, entries) {
 //   이름이 겹치면 번호를 붙이고 numbered가 true다. 이미 있는 이름은 폴더라도 피한다.
 // - stay: 이미 타겟 바로 아래에 있어 그대로 두는 항목의 경로
 // - skipped: 옮기지 않는 항목 ({ path, reason }). 링크와 grant가 거부하는 이름은 조용히 빠지지 않게 사유를 남긴다.
+//   통째로 남기는 폴더(프로그램·프로젝트·숨김 폴더)는 안의 파일마다가 아니라 폴더 하나로 남긴다.
+// - guarded: 통째로 남기는 폴더의 상대경로 Set. 빈 폴더 정리도 이 폴더와 그 위를 남긴다.
 function planFlatten(dir) {
   const access = grant(dir, ['read', 'write']);
   const entries = walk(access.target);
   rejectRepository(access.target, entries);
+  // walk가 폴더로 본 곳을 그대로 넘겨 두 판정이 갈리지 않게 한다. node_modules 같은 폴더 안은 통째로 남기므로 보지 않는다.
+  const folders = [''].concat(entries.filter((entry) => entry.type === 'dir' && !entry.relative.split(path.sep).some((part) => PROGRAM_FOLDER.test(part))).map((entry) => entry.relative));
+  const attributes = hiddenOrSystemEntries(access.target, folders);
+  const guarded = guardedFolders(access.target, entries, attributes);
+  const guardItems = new Map();
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
   const fileCounts = countFiles(entries);
-  const plan = { target: access.target, moves: [], stay: [], skipped: [] };
+  const plan = { target: access.target, moves: [], stay: [], skipped: [], guarded: new Set(guarded.keys()) };
   // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름(번호가 붙었을 수도 있다)이 있다(#73).
   const topFiles = new Map();
   for (const entry of entries) {
@@ -173,18 +241,38 @@ function planFlatten(dir) {
       if (entry.type !== 'dir') plan.stay.push(entry.path);
       continue;
     }
-    if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
-    if (parts.some((part) => LEFTOVER.test(part))) {
+    if (entry.type !== 'dir' && parts.some((part) => LEFTOVER.test(part))) {
       plan.skipped.push({ path: entry.path, reason: '이전 작업의 잔여물이라 옮기지 않습니다.' });
       continue;
     }
-    if (parts.some((part) => SYSTEM_FOLDER.test(part))) {
+    if (entry.type !== 'dir' && parts.some((part) => SYSTEM_FOLDER.test(part))) {
       plan.skipped.push({ path: entry.path, reason: 'Windows 시스템 폴더 안의 파일이라 옮기지 않습니다.' });
       continue;
     }
+    const guard = guardOf(entry.relative, guarded);
+    if (guard !== undefined) {
+      if (entry.type === 'dir') continue;
+      let item = guardItems.get(guard);
+      if (!item) {
+        item = { path: path.join(access.target, guard), label: guarded.get(guard), count: 0 };
+        guardItems.set(guard, item);
+        plan.skipped.push(item);
+      }
+      item.count += 1;
+      continue;
+    }
+    if (entry.type === 'dir') continue;
     if (entry.type === 'link') {
       plan.skipped.push({ path: entry.path, reason: '링크는 옮기지 않습니다.' });
+      continue;
+    }
+    if (isFolderMetadata(entry)) {
+      plan.skipped.push({ path: entry.path, reason: '폴더 설정·미리보기 파일이라 옮기지 않습니다. 폴더가 비면 폴더와 함께 휴지통으로 갑니다.' });
+      continue;
+    }
+    if (attributes.has(entry.relative)) {
+      plan.skipped.push({ path: entry.path, reason: '숨김·시스템 속성 파일이라 옮기지 않습니다.' });
       continue;
     }
     const original = path.basename(entry.path);
@@ -208,6 +296,15 @@ function planFlatten(dir) {
       if (!(err instanceof FcError)) throw err;
       plan.skipped.push({ path: entry.path, reason: err.message });
     }
+  }
+  for (const item of guardItems.values()) {
+    item.reason = `${item.label}라 안의 항목 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
+    delete item.label;
+    delete item.count;
+  }
+  // 파일이 없는 남길 폴더도 지우지 않는다는 것을 알린다. 다른 남길 폴더 안에 든 것은 바깥 폴더로 이미 알렸다.
+  for (const [relative, label] of guarded) {
+    if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `${label}라 폴더째 남깁니다.` });
   }
   return plan;
 }
@@ -356,10 +453,12 @@ function folderChain(entry) {
 // 이번에 옮긴 파일이 있던 폴더 중 비게 된 폴더를 가장 위 폴더만 돌려준다. 그 아래 폴더는 함께 지워진다.
 // 원래 비어 있던 폴더(Inbox/)는 사용자가 만든 구조일 수 있어 건드리지 않는다. 옮긴 파일이 있던 트리 안의 빈 폴더만 함께 간다.
 // 남은 파일과 링크, 잔여물·시스템 폴더와 그 안쪽이 있으면 그 위의 폴더는 모두 남긴다.
-function removableFolders(entries, movedFolders) {
+function removableFolders(entries, movedFolders, guarded = new Set()) {
   const occupied = new Set();
   for (const entry of entries) {
-    const protectedDir = entry.type === 'dir' && entry.relative.split(path.sep).some((part) => LEFTOVER.test(part) || SYSTEM_FOLDER.test(part));
+    // 폴더 설정·미리보기 파일만 남은 폴더는 빈 폴더로 보고 함께 휴지통으로 보낸다(#65).
+    if (isFolderMetadata(entry)) continue;
+    const protectedDir = entry.type === 'dir' && (entry.relative.split(path.sep).some((part) => LEFTOVER.test(part) || SYSTEM_FOLDER.test(part)) || guardOf(entry.relative, guarded) !== undefined);
     if (entry.type !== 'dir' || protectedDir) for (const folder of folderChain(entry)) occupied.add(folder);
   }
   const free = entries.filter((entry) => entry.type === 'dir' && !occupied.has(entry.relative));
@@ -386,7 +485,7 @@ function removeFolders(folders, access, { dryRun }) {
       if (real !== folder) throw new FcError(`검사 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
       if (!dryRun) {
         if (!fs.lstatSync(real).isDirectory()) throw new FcError(`검사 뒤에 폴더가 아니게 됐습니다: ${real}`);
-        const filled = walk(real).find((entry) => entry.type !== 'dir');
+        const filled = walk(real).find((entry) => entry.type !== 'dir' && !isFolderMetadata(entry));
         if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
       }
       remove([real], { dryRun });
@@ -409,7 +508,7 @@ function flatten(dir, { dryRun = false } = {}) {
   if (dryRun) {
     const moving = new Set(plan.moves.map((move) => move.from));
     const after = walk(plan.target).filter((entry) => !moving.has(entry.path));
-    const { removed, kept } = removeFolders(removableFolders(after, foldersOf(plan.moves, plan.target)), access, { dryRun });
+    const { removed, kept } = removeFolders(removableFolders(after, foldersOf(plan.moves, plan.target), plan.guarded), access, { dryRun });
     return { ...result, moved: plan.moves, removedFolders: removed, keptFolders: kept };
   }
   // 앞으로 옮길 파일의 이름을 뺏지 않도록 계획한 이름을 모두 차지한 것으로 본다.
@@ -424,7 +523,7 @@ function flatten(dir, { dryRun = false } = {}) {
   }
   // 계획이 아니라 이동이 끝난 실제 상태로 판단한다. 실패한 파일이나 그사이 생긴 파일이 있는 폴더는 남는다.
   try {
-    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target)), access, { dryRun });
+    const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target), plan.guarded), access, { dryRun });
     result.removedFolders = removed;
     result.keptFolders = kept;
   } catch (err) {
@@ -450,4 +549,4 @@ function formatFlatten(result) {
   return lines.join('\n');
 }
 
-module.exports = { planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir };
+module.exports = { FOLDER_METADATA, PROGRAM_FOLDER, PROJECT_FILE, planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir };
