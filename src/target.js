@@ -17,7 +17,13 @@ function resolveTarget(dir) {
   if (!stat) throw new FcError(`타겟 폴더가 없습니다: ${abs}`);
   if (!stat.isDirectory()) throw new FcError(`타겟이 폴더가 아닙니다: ${abs}`);
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
-  const target = fs.realpathSync.native(abs);
+  // System Volume Information·Recovery처럼 실제 경로를 볼 권한이 없는 폴더는 확인할 수 없어 받지 않는다.
+  let target;
+  try {
+    target = fs.realpathSync.native(abs);
+  } catch (err) {
+    throw new FcError(`타겟 폴더의 실제 경로를 확인할 수 없어 쓸 수 없습니다: ${abs} (${err.code ?? err.message})`);
+  }
   rejectNetworkPath(target);
   rejectTrailingDotOrSpace(target);
   const reason = protectedReason(target);
@@ -54,15 +60,64 @@ function realOrResolved(p) {
 }
 
 // Windows 시스템 폴더. 환경 변수가 없거나 절대경로가 아니면 기본 위치를 쓴다.
+// 32비트 Node에서는 ProgramFiles가 x86 폴더를 가리키므로 64비트 폴더는 ProgramW6432로 따로 본다.
+// C:\Users\All Users는 ProgramData를 가리키는 링크라 실제 경로로 맞추면 ProgramData에 걸린다(#50).
 function systemRoots() {
   if (process.platform !== 'win32') return [];
   const env = process.env;
   const pick = (value, fallback) => (value && path.isAbsolute(value) ? value : fallback);
+  const systemDrive = /^[A-Za-z]:$/.test(env.SystemDrive ?? '') ? env.SystemDrive : 'C:';
   return [
     pick(env.SystemRoot, 'C:\\Windows'),
     pick(env.ProgramFiles, 'C:\\Program Files'),
     pick(env['ProgramFiles(x86)'], 'C:\\Program Files (x86)'),
+    pick(env.ProgramW6432, 'C:\\Program Files'),
+    pick(env.ProgramData || env.ALLUSERSPROFILE, 'C:\\ProgramData'),
+    `${systemDrive}\\Recovery`,
   ].map(realOrResolved);
+}
+
+// 드라이브마다 루트에 있는 시스템 숨김 폴더(휴지통, 복원 지점). 이름은 대소문자가 섞여 나온다(C:\$Recycle.Bin, D:\$RECYCLE.BIN).
+const DRIVE_SYSTEM_FOLDERS = ['$recycle.bin', 'system volume information'];
+
+function driveSystemReason(target) {
+  if (process.platform !== 'win32') return null;
+  const { root } = path.parse(target);
+  const [first] = target.slice(root.length).split(path.sep);
+  if (first && DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `시스템 폴더 ${path.join(root, first)}`;
+  if (!first) {
+    const found = DRIVE_SYSTEM_FOLDERS.map((name) => path.join(root, name)).find((p) => fs.existsSync(p));
+    if (found) return `시스템 폴더 ${found}를 포함`;
+  }
+  return null;
+}
+
+// 프로필 폴더(C:\Users) 아래의 다른 프로필. Public은 일반 공유 폴더라 허용하고,
+// Default는 새 사용자의 원본 프로필이라 통째로 막는다. 다른 사용자는 현재 사용자처럼 프로필 자신과 숨김 설정 폴더를 막는다.
+// 프로필 폴더는 PUBLIC(C:\Users\Public)의 상위로 알아낸다. 사용자 폴더가 그 바로 아래에 있을 때만 이 규칙을 쓴다.
+// 사용자 폴더를 다른 곳으로 옮긴 경우에는 그 형제 폴더를 다른 사용자로 잘못 보지 않기 위해서다.
+function profilesDir() {
+  const env = process.env;
+  const systemDrive = /^[A-Za-z]:$/.test(env.SystemDrive ?? '') ? env.SystemDrive : 'C:';
+  const pub = env.PUBLIC && path.isAbsolute(env.PUBLIC) ? env.PUBLIC : `${systemDrive}\\Users\\Public`;
+  return realOrResolved(path.dirname(pub));
+}
+
+function otherProfileReason(target, home) {
+  if (process.platform !== 'win32') return null;
+  const profiles = profilesDir();
+  // path.relative는 Windows에서 대소문자를 구분하지 않는다.
+  if (profiles === path.parse(profiles).root || path.relative(profiles, path.dirname(home)) !== '' || !isInside(profiles, target)) return null;
+  const rel = path.relative(profiles, target);
+  if (rel === '') return null;
+  const [name, sub] = rel.split(path.sep);
+  const lower = name.toLowerCase();
+  if (lower === 'public') return null;
+  const profile = path.join(profiles, name);
+  if (lower === 'default' || lower === 'default user') return `기본 사용자 프로필 ${profile}`;
+  if (sub === undefined) return `다른 사용자 폴더 ${profile}`;
+  if (isHiddenSettings(sub)) return `다른 사용자의 설정 폴더 ${path.join(profile, sub)}`;
+  return null;
 }
 
 function homeDir() {
@@ -87,13 +142,16 @@ function protectedReason(target) {
     if (isInside(root, target)) return `시스템 폴더 ${root}`;
     if (isInside(target, root)) return `시스템 폴더 ${root}를 포함`;
   }
+  const drive = driveSystemReason(target);
+  if (drive) return drive;
   const home = homeDir();
   if (isInside(target, home)) return `사용자 폴더 ${home}를 포함`;
   if (isInside(home, target)) {
     const [first] = path.relative(home, target).split(path.sep);
     if (isHiddenSettings(first)) return `사용자 설정 폴더 ${path.join(home, first)}`;
+    return null;
   }
-  return null;
+  return otherProfileReason(target, home);
 }
 
 // p(타겟 기준 상대경로 또는 절대경로)가 타겟 자신이거나 그 안이면 true.
@@ -347,4 +405,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason };

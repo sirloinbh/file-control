@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, deviceNamePattern } = require('../src/target');
+const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, deviceNamePattern, protectedReason } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -358,6 +358,78 @@ test('resolveTarget은 Windows 시스템 폴더와 그 안, 그것을 품은 드
   }
   const x86 = process.env['ProgramFiles(x86)'];
   if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /보호된 경로/);
+});
+
+// 테스트 안에서만 환경 변수를 바꾸고, 끝나면 되돌린다.
+function useEnv(t, values) {
+  const saved = Object.fromEntries(Object.keys(values).map((k) => [k, process.env[k]]));
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+  for (const [k, v] of Object.entries(values)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
+
+test('resolveTarget은 ProgramData(All Users), 64비트 Program Files, 복구 폴더를 거부한다 (#50)', { skip: !isWindows }, (t) => {
+  const programData = process.env.ProgramData;
+  assert.throws(() => resolveTarget(programData), /보호된 경로/);
+  const allUsers = path.join(path.dirname(process.env.PUBLIC ?? 'C:\\Users\\Public'), 'All Users');
+  if (fs.existsSync(allUsers)) assert.throws(() => resolveTarget(allUsers), /보호된 경로.*ProgramData/i);
+  const root = tempDir();
+  for (const name of ['pf64', 'pd', 'aup']) fs.mkdirSync(path.join(root, name));
+  // 32비트 Node에서는 ProgramFiles가 x86 폴더라 64비트 폴더는 ProgramW6432로만 알 수 있다.
+  useEnv(t, { ProgramW6432: path.join(root, 'pf64'), ProgramData: path.join(root, 'pd') });
+  assert.throws(() => resolveTarget(path.join(root, 'pf64')), /시스템 폴더/);
+  assert.throws(() => resolveTarget(path.join(root, 'pd')), /시스템 폴더/);
+  useEnv(t, { ProgramData: undefined, ALLUSERSPROFILE: path.join(root, 'aup') });
+  assert.throws(() => resolveTarget(path.join(root, 'aup')), /시스템 폴더/);
+  assert.match(protectedReason('C:\\Recovery\\WindowsRE'), /시스템 폴더 C:\\Recovery/i);
+});
+
+test('resolveTarget은 드라이브마다 있는 휴지통·System Volume Information과 그것을 품은 드라이브 루트를 거부한다 (#50)', { skip: !isWindows }, (t) => {
+  for (const p of ['E:\\$RECYCLE.BIN', 'E:\\$Recycle.Bin\\S-1-5-21', 'e:\\system volume information\\x']) {
+    assert.match(protectedReason(p), /시스템 폴더/, p);
+  }
+  assert.strictEqual(protectedReason('E:\\Recycle.Bin'), null);
+  assert.strictEqual(protectedReason('E:\\data\\$Recycle.Bin'), null);
+  const existsSync = fs.existsSync;
+  t.mock.method(fs, 'existsSync', (p) => p.toLowerCase() === 'z:\\$recycle.bin' || existsSync(p));
+  assert.match(protectedReason('Z:\\'), /시스템 폴더 Z:\\\$recycle\.bin를 포함/i);
+  assert.strictEqual(protectedReason('Y:\\'), null);
+  t.mock.restoreAll();
+  // 실제 경로를 볼 권한이 없는 폴더는 날것 오류 대신 FcError로 거부한다(관리자로 실행하면 보호 경로로 거부된다).
+  for (const p of ['C:\\$Recycle.Bin', 'C:\\System Volume Information']) {
+    if (fs.existsSync(p)) assert.throws(() => resolveTarget(p), (err) => err instanceof FcError, p);
+  }
+});
+
+test('resolveTarget은 다른 사용자의 프로필과 설정 폴더, 기본 프로필을 거부하고 Public은 허용한다 (#50)', { skip: !isWindows }, (t) => {
+  const root = tempDir();
+  const users = path.join(root, 'users');
+  useEnv(t, { PUBLIC: path.join(users, 'Public') });
+  useHome(t, path.join(users, 'kim'));
+  for (const dir of ['kim', 'kim2/.ssh', 'kim2/AppData/Local', 'kim2/Documents/.notes', 'Default/Documents', 'Public/Documents']) {
+    fs.mkdirSync(path.join(users, dir), { recursive: true });
+  }
+  linkDir(path.join(users, 'Default'), path.join(users, 'Default User'));
+  const at = (...parts) => path.join(users, ...parts);
+  assert.throws(() => resolveTarget(at('kim2')), /다른 사용자 폴더/);
+  assert.throws(() => resolveTarget(at('kim2', '.ssh')), /다른 사용자의 설정 폴더/);
+  assert.throws(() => resolveTarget(at('KIM2', 'APPDATA', 'Local')), /다른 사용자의 설정 폴더/);
+  for (const p of [at('Default'), at('Default', 'Documents'), at('Default User')]) {
+    assert.throws(() => resolveTarget(p), /기본 사용자 프로필/, p);
+  }
+  for (const p of [at('kim2', 'Documents'), at('kim2', 'Documents', '.notes'), at('Public'), at('Public', 'Documents')]) {
+    assert.strictEqual(resolveTarget(p), p);
+  }
+  // 사용자 폴더가 프로필 폴더 밖에 있으면 그 형제를 다른 사용자로 보지 않는다.
+  useHome(t, path.join(root, 'elsewhere', 'kim'));
+  assert.strictEqual(resolveTarget(at('kim2', '.ssh')), at('kim2', '.ssh'));
 });
 
 test('resolveTarget은 UNC·네트워크 경로를 존재 여부와 상관없이 거부한다', { skip: !isWindows }, () => {
