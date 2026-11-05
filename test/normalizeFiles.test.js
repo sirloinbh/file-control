@@ -59,25 +59,31 @@ test('대소문자만 바뀌는 이름도 임시 이름을 거쳐 바꾼다', (t
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
   const renameSync = t.mock.method(fs, 'renameSync');
+  const linkSync = t.mock.method(fs, 'linkSync');
   const result = normalizeFiles(dir, { includeLowercase: true });
-  const steps = renameSync.mock.callCount();
+  const steps = [renameSync.mock.callCount(), linkSync.mock.callCount()];
   t.mock.restoreAll();
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(fs.readdirSync(dir), ['ABC-123.mp4']);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), 'abc-123.mp4');
-  assert.strictEqual(steps, 2);
+  // 임시 이름으로는 rename, 새 이름으로는 덮어쓰지 않는 하드링크 이동(#73)을 한 번씩 쓴다.
+  assert.deepStrictEqual(steps, [1, 1]);
 });
+
+// 임시 이름(.fctl-new)의 원래 이름 지우기를 실패시킨다. 잠긴 파일처럼 하드링크는 만들어지고 지우기만 실패한다.
+function lockMiddle(t, times) {
+  const unlinkSync = fs.unlinkSync;
+  let count = 0;
+  t.mock.method(fs, 'unlinkSync', (p) => {
+    if (path.basename(p).startsWith('.fctl-new') && count++ < times) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return unlinkSync(p);
+  });
+}
 
 test('대소문자 변경이 중간에 실패하면 원래 이름으로 되돌린다', (t) => {
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
-  const renameSync = fs.renameSync;
-  let count = 0;
-  t.mock.method(fs, 'renameSync', (from, to) => {
-    count += 1;
-    if (count === 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-    return renameSync(from, to);
-  });
+  lockMiddle(t, 1);
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
   assert.match(result.failed[0].reason, /EBUSY/);
@@ -87,13 +93,7 @@ test('대소문자 변경이 중간에 실패하면 원래 이름으로 되돌�
 test('되돌리지도 못하면 임시 이름을 알린다', (t) => {
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
-  const renameSync = fs.renameSync;
-  let count = 0;
-  t.mock.method(fs, 'renameSync', (from, to) => {
-    count += 1;
-    if (count >= 2) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-    return renameSync(from, to);
-  });
+  lockMiddle(t, Infinity);
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
   assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
@@ -122,6 +122,10 @@ test('대소문자 변경 중 원래 이름에 다른 파일이 생기면 덮어
 test('대소문자 변경 중 자리표시에 내용이 생기면 그 내용을 지우지 않는다', (t) => {
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
+  // 하드링크를 못 만드는 드라이브(FAT32·exFAT 등)에서는 빈 자리표시를 먼저 만드는 방식으로 옮긴다.
+  t.mock.method(fs, 'linkSync', () => {
+    throw Object.assign(new Error('not supported'), { code: 'EPERM' });
+  });
   const renameSync = fs.renameSync;
   let count = 0;
   t.mock.method(fs, 'renameSync', (from, to) => {
@@ -316,10 +320,14 @@ test('normalize 명령은 결과를 보여 주고 실패가 있으면 오류로 
   const dir = tempDir();
   make(dir, ['[ABC-123].mp4', 'abc-456.mp4']);
   assert.match(run(['normalize', dir, '--dry-run']), /\[미리보기\] 이름 변경 1개, 소문자 말 1개/);
-  const mock = t.mock.method(fs, 'renameSync', () => {
-    throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+  // 잠긴 파일처럼 원래 이름을 지우지 못하게 한다. 만든 새 이름은 지워 되돌린다.
+  const unlinkSync = fs.unlinkSync;
+  const mock = t.mock.method(fs, 'unlinkSync', (p) => {
+    if (path.basename(p) === '[ABC-123].mp4') throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return unlinkSync(p);
   });
   assert.throws(() => run(['normalize', dir]), (err) => err instanceof FcError && /실패: .*EBUSY/.test(err.message));
+  assert.deepStrictEqual(tree(dir), ['[ABC-123].mp4', 'abc-456.mp4']);
   mock.mock.restore();
   assert.match(run(['normalize', dir, '--include-lowercase']), /이름 변경 2개, 소문자 말 0개, 겹침 0개, 건너뜀 0개, 실패 0개/);
   assert.deepStrictEqual(tree(dir), ['ABC-123.mp4', 'ABC-456.mp4']);
@@ -334,4 +342,13 @@ test('normalize 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['normalize', dir, '--permanent']), /--permanent/);
   assert.throws(() => run(['normalize', dir, '--remove-archives']), /extract-all에서만/);
   assert.throws(() => run(['flatten', dir, '--include-lowercase']), /normalize에서만/);
+});
+
+test('normalize는 이전 실행이 남긴 같은 파일의 다른 이름을 겹침 사유에 알린다 (1차 리뷰, #73)', () => {
+  const dir = tempDir();
+  make(dir, ['[ABC-123].mp4']);
+  fs.linkSync(path.join(dir, '[ABC-123].mp4'), path.join(dir, 'ABC-123.mp4'));
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(result.renamed, []);
+  assert.match(result.conflicts[0].reason, /같은 이름이 이미 있습니다\. \(원본과 같은 파일의 다른 이름/);
 });

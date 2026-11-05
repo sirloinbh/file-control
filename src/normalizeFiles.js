@@ -5,7 +5,7 @@ const path = require('node:path');
 const { FcError, freshPath } = require('./commands');
 const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
-const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository, looksLikeGitDir } = require('./flatten');
+const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir } = require('./flatten');
 
 // NTFS는 대소문자를 구분하지 않으므로 이름을 대문자로 비교한다. toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만든다.
 const nameKey = (p) => p.toUpperCase();
@@ -70,7 +70,8 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     if (targets.get(key) > 1) {
       conflict('다른 파일도 같은 이름이 됩니다.');
     } else if (key !== nameKey(entry.path) && existing.has(key)) {
-      conflict('같은 이름이 이미 있습니다.');
+      // 이전 실행이 중간에 멈춘 흔적(같은 파일의 다른 이름, 빈 파일)이면 그 사실을 덧붙인다(#73).
+      conflict(`같은 이름이 이미 있습니다.${leftoverNote(entry.path, to)}`);
     } else {
       try {
         const from = access.read(entry.path);
@@ -125,7 +126,7 @@ function applyRename(rename, access) {
     renameCaseOnly(from, rename.to, rename.name);
     return;
   }
-  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}`);
+  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}${leftoverNote(from, rename.to)}`);
   // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
   const to = access.write(rename.to);

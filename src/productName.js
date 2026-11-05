@@ -7,7 +7,7 @@ const { grant, walk, readRange } = require('./target');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
 const { extractProductNumbers, findProductNumber, halfWidth } = require('./product');
-const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
+const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote } = require('./flatten');
 
 // 영상 파일만 다룬다. ABC-123 폴더 안의 자막이나 메모까지 이름을 바꾸지 않는다.
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.m2ts', '.mpg', '.mpeg']);
@@ -87,6 +87,8 @@ function planProductNames(dir) {
       if (name.startsWith('.')) throw new FcError('점으로 시작하는 파일은 번호를 앞에 붙이면 숨김 이름이 아니게 되어 바꾸지 않습니다.');
       const inName = extractProductNumbers(name);
       if (inName.length > 0) {
+        // 예전 방식의 이동이 중간에 멈추면 번호가 든 이름의 빈 파일이 남았다(#73). 이미 바꾼 영상으로 세지 않고 따로 알린다.
+        if (fs.lstatSync(from).size === 0) throw new FcError('빈 파일입니다. 이전 실행이 중간에 멈추며 남긴 자리표시일 수 있으니 확인한 뒤 지우세요.');
         plan.already.push({ path: entry.path, number: inName[0] });
         continue;
       }
@@ -117,7 +119,7 @@ function planProductNames(dir) {
       const desired = `${chosen.number} ${base}${ext}`;
       if (desired.length > MAX_NAME) throw new FcError(`번호를 넣으면 이름이 너무 깁니다: ${desired}`);
       const to = path.join(path.dirname(from), desired);
-      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}`);
+      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}${leftoverNote(from, to)}`);
       plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source });
     } catch (err) {
       if (err instanceof FcError) skip(err.message);
@@ -134,7 +136,7 @@ function applyRename(rename, access) {
   if (from !== rename.from) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.from} -> ${from}`);
   if (!fs.lstatSync(from).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${from}`);
   // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
-  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}`);
+  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}${leftoverNote(from, rename.to)}`);
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
   const to = access.write(rename.to);
   if (to !== rename.to) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.to} -> ${to}`);
