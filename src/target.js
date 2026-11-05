@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { FcError } = require('./commands');
+const { FcError, rejectHardLinkedWrite } = require('./commands');
 const { WINDOWS_DEVICE_NAME, deviceNamePattern } = require('./windowsNames');
 
 // 타겟 디렉토리를 실제 절대경로로 정규화한다. 없거나 폴더가 아니면 오류를 낸다.
@@ -188,6 +188,8 @@ function checkWrite(target, p) {
   if (existing === abs) {
     if (real === target) throw new FcError(`타겟 폴더 자체에는 쓸 수 없습니다: ${abs}`);
     rejectLinksInside(real, abs);
+    // 하드링크는 경로로 타겟 밖 파일과 구분할 수 없다. 읽기·삭제는 그대로 두고, 내용을 바꾸는 쓰기만 거부한다(#48).
+    rejectHardLinkedWrite(real);
     return real;
   }
   if (!fs.statSync(real).isDirectory()) throw new FcError(`파일 아래에는 쓸 수 없습니다: ${abs} (${real})`);
