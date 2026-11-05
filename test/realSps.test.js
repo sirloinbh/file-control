@@ -8,7 +8,10 @@
 // 필드 값은 FFmpeg trace_headers로 확인했다. 실제 출력으로 확인하지 못한 것(합성 SPS 테스트 test/videoSps.test.js만 본다):
 // - H.264 scaling list: x264는 cqm을 PPS에만 적는다. POC 종류 1: x264가 쓰지 않는다.
 // - HEVC SPS 안 장기 참조 목록, PCM, 하위 계층별 profile·level. x265는 참조 집합을 SPS에 적지 않아(0개) hevc_qsv로 본다.
-// - emulation prevention: 이 SPS들은 모두 화소 비율 뒤에 처음 나온다.
+// - HEVC profile_tier_level의 하위 계층 정렬 비트(reserved_zero_2bits) 수: 2비트쯤 틀려도 뒤 Exp-Golomb 필드가 다시 맞아
+//   화소 비율이 같게 나온다. 합성 SPS 테스트가 일부를 본다.
+// - H.264 emulation prevention: 이 H.264 SPS들은 모두 화소 비율 뒤에 처음 나온다.
+//   HEVC는 모두 NAL 앞 8바이트 안(profile_tier_level)에 00 00 03이 있어 실제 데이터로 확인된다.
 // - Apple VideoToolbox: Windows에서 만들 수 없다(#126).
 
 const test = require('node:test');
