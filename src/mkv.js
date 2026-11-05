@@ -24,6 +24,15 @@ const ID = {
   DISPLAY_WIDTH: 0x54b0,
   DISPLAY_HEIGHT: 0x54ba,
   DISPLAY_UNIT: 0x54b2,
+  PIXEL_CROP_BOTTOM: 0x54aa,
+  PIXEL_CROP_TOP: 0x54bb,
+  PIXEL_CROP_LEFT: 0x54cc,
+  PIXEL_CROP_RIGHT: 0x54dd,
+  PROJECTION: 0x7670,
+  PROJECTION_TYPE: 0x7671,
+  PROJECTION_POSE_YAW: 0x7673,
+  PROJECTION_POSE_PITCH: 0x7674,
+  PROJECTION_POSE_ROLL: 0x7675,
   TAGS: 0x1254c367,
   TAG: 0x7373,
   TARGETS: 0x63c0,
@@ -128,16 +137,49 @@ function parseInfo(body, found) {
   if (Number.isFinite(seconds) && seconds > 0) found.duration ??= seconds;
 }
 
-// 보이는 크기. DisplayWidth와 DisplayHeight가 없으면 화소 크기와 같다(규격의 기본값).
-// 단위(DisplayUnit)가 화소(0)면 그 값을 쓰고, cm(1)·인치(2)·화면 비율(3)이면 비율만 뜻이 있어 높이를 화소 높이에 맞춘다.
-// 단위를 모르면(4 등) 화소 크기를 쓴다. 화소 단위에서 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다(규격의 기본값).
-// 화소가 아닌 단위는 기본값이 없으므로 한쪽만 있으면 비율을 알 수 없어 화소 크기를 쓴다.
-function displaySize(width, height, shownWidth, shownHeight, unit) {
-  if (unit === null || unit > 3 || (!shownWidth && !shownHeight)) return [width, height];
-  if (unit !== 0 && (!shownWidth || !shownHeight)) return [width, height];
-  const [w, h] = [shownWidth || width, shownHeight || height];
+// 부호 있는 실수. 빈 요소는 기본값 0이다. 읽을 수 없으면 null이다.
+function readSignedFloat(body) {
+  if (body.length === 0) return 0;
+  let value = null;
+  if (body.length === 4) value = body.readFloatBE(0);
+  if (body.length === 8) value = body.readDoubleBE(0);
+  return Number.isFinite(value) ? value : null;
+}
+
+// 보이는 크기. 잘라 낼 화소(PixelCrop)를 먼저 뺀다. DisplayWidth와 DisplayHeight는 자른 뒤의 크기이고, 없으면 자른 크기와 같다(규격의 기본값, #113).
+// 단위(DisplayUnit)가 화소(0)면 그 값을 쓰고, cm(1)·인치(2)·화면 비율(3)이면 비율만 뜻이 있어 높이를 자른 높이에 맞춘다.
+// 단위를 모르면(4 등) 자른 크기를 쓴다. 화소 단위에서 한쪽만 있으면 다른 쪽은 자른 크기를 쓴다(규격의 기본값).
+// 화소가 아닌 단위는 기본값이 없으므로 한쪽만 있으면 비율을 알 수 없어 자른 크기를 쓴다.
+// 자르고 남는 화소가 없으면 틀린 값이라 자르지 않는다.
+function displaySize(width, height, shownWidth, shownHeight, unit, crop) {
+  const croppedWidth = width - crop.left - crop.right;
+  const croppedHeight = height - crop.top - crop.bottom;
+  const [baseWidth, baseHeight] = croppedWidth > 0 && croppedHeight > 0 ? [croppedWidth, croppedHeight] : [width, height];
+  if (unit === null || unit > 3 || (!shownWidth && !shownHeight)) return [baseWidth, baseHeight];
+  if (unit !== 0 && (!shownWidth || !shownHeight)) return [baseWidth, baseHeight];
+  const [w, h] = [shownWidth || baseWidth, shownHeight || baseHeight];
   if (unit === 0) return [w, h];
-  return [Math.max(1, Math.round((height * w) / h)), height];
+  return [Math.max(1, Math.round((baseHeight * w) / h)), baseHeight];
+}
+
+// Projection의 회전이 90·270도이면 참이다(#113). FFmpeg는 회전 정보를 평면(ProjectionType 0) 투영의 ProjectionPoseRoll로 적는다.
+// 360도 영상(평면이 아닌 투영)이나 위아래로 기운(Pitch) 투영, 좌우를 180도가 아닌 각으로 돌린(Yaw) 투영은 화면 회전이 아니므로 보지 않는다.
+// Roll은 1도 안쪽으로 90의 배수에 가까울 때만 쓴다. 그 밖의 각도는 너비와 높이를 바꾸지 않는 것으로 본다.
+function projectionQuarterTurn(body) {
+  let type = 0;
+  let yaw = 0;
+  let pitch = 0;
+  let roll = 0;
+  for (const child of children(body)) {
+    if (child.id === ID.PROJECTION_TYPE) type = child.body.length === 0 ? 0 : readUint(child.body);
+    if (child.id === ID.PROJECTION_POSE_YAW) yaw = readSignedFloat(child.body);
+    if (child.id === ID.PROJECTION_POSE_PITCH) pitch = readSignedFloat(child.body);
+    if (child.id === ID.PROJECTION_POSE_ROLL) roll = readSignedFloat(child.body);
+  }
+  if (type !== 0 || yaw === null || pitch === null || roll === null) return false;
+  if (pitch !== 0 || (yaw !== 0 && Math.abs(yaw) !== 180)) return false;
+  const turns = roll / 90;
+  return Math.abs(turns - Math.round(turns)) * 90 < 1 && Math.abs(Math.round(turns)) % 2 === 1;
 }
 
 function parseTracks(body, found) {
@@ -155,6 +197,8 @@ function parseTracks(body, found) {
     let shownWidth = null;
     let shownHeight = null;
     let unit = 0;
+    const crop = { top: 0, bottom: 0, left: 0, right: 0 };
+    let quarterTurn = false;
     for (const child of children(video)) {
       if (child.id === ID.PIXEL_WIDTH) width = readUint(child.body);
       if (child.id === ID.PIXEL_HEIGHT) height = readUint(child.body);
@@ -162,12 +206,19 @@ function parseTracks(body, found) {
       if (child.id === ID.DISPLAY_HEIGHT) shownHeight = readUint(child.body);
       // 빈 요소는 기본값(0, 화소)이다.
       if (child.id === ID.DISPLAY_UNIT) unit = child.body.length === 0 ? 0 : readUint(child.body);
+      // 잘라 낼 화소의 기본값은 0이다. 읽을 수 없는 값도 0으로 본다.
+      if (child.id === ID.PIXEL_CROP_TOP) crop.top = readUint(child.body) ?? 0;
+      if (child.id === ID.PIXEL_CROP_BOTTOM) crop.bottom = readUint(child.body) ?? 0;
+      if (child.id === ID.PIXEL_CROP_LEFT) crop.left = readUint(child.body) ?? 0;
+      if (child.id === ID.PIXEL_CROP_RIGHT) crop.right = readUint(child.body) ?? 0;
+      if (child.id === ID.PROJECTION) quarterTurn = projectionQuarterTurn(child.body);
     }
     // 표지 같은 작은 영상 트랙이 앞에 있어도 가장 큰 트랙을 본 영상으로 친다.
     if (width && height && width * height > (found.width ?? 0) * (found.height ?? 0)) {
       found.width = width;
       found.height = height;
-      [found.displayWidth, found.displayHeight] = displaySize(width, height, shownWidth, shownHeight, unit);
+      const [shownW, shownH] = displaySize(width, height, shownWidth, shownHeight, unit, crop);
+      [found.displayWidth, found.displayHeight] = quarterTurn ? [shownH, shownW] : [shownW, shownH];
     }
   }
 }
@@ -246,8 +297,8 @@ function checkHeader(read, p) {
 
 // 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
-// width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 DisplayWidth/Height를 반영한 보이는 크기다(#106).
-// 회전(Projection) 정보와 잘라 낼 화소(PixelCrop)는 보지 않는다.
+// width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 잘라 낼 화소(PixelCrop), DisplayWidth/Height,
+// 평면 투영의 90·270도 회전(ProjectionPoseRoll)을 반영한 보이는 크기다(#106, #113). 영상 데이터(CodecPrivate의 SPS) 안의 화소 비율은 보지 않는다. 규격상 DisplayWidth/Height가 없으면 자른 화소 크기가 보이는 크기다.
 // 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
 // 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
 function readMkvMetadata(dir, p) {

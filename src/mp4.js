@@ -2,6 +2,7 @@
 
 const { FcError } = require('./commands');
 const { grant, readRange, fileSizeInside } = require('./target');
+const { spsAspect } = require('./videoSps');
 
 // 파일 맨 앞에 올 수 있는 박스. ftyp이 없는 옛 QuickTime 파일도 받으려고 여러 개를 둔다.
 const FIRST_BOXES = new Set(['ftyp', 'styp', 'moov', 'mdat', 'free', 'skip', 'wide', 'pnot']);
@@ -119,14 +120,24 @@ function durationValue(buffer, offset, version) {
   return value === 0xffffffff ? null : value;
 }
 
+// 변환 행렬 { a b u / c d v / x y w }에서 a와 d가 0이고 b와 c가 0이 아니면 90도나 270도 회전이다(휴대폰 세로 영상).
+// 0·180도와 그 밖의 행렬(기울임 등)은 너비와 높이를 바꾸지 않는 것으로 본다.
+function isQuarterTurn(body, offset) {
+  const [a, b, c, d] = [0, 4, 12, 16].map((at) => body.readInt32BE(offset + at));
+  return a === 0 && d === 0 && b !== 0 && c !== 0;
+}
+
+// quarterTurn은 영상 전체에 걸리는 mvhd 행렬의 회전이다. 행렬까지 들어 있지 않으면 거짓이다(#113).
 function readMvhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 32 : 20);
   if (!body) return null;
+  const matrix = readPayload(read, box, version === 1 ? 84 : 72);
+  const quarterTurn = matrix ? isQuarterTurn(matrix, version === 1 ? 48 : 36) : false;
   return version === 1
-    ? { timescale: body.readUInt32BE(20), duration: durationValue(body, 24, 1) }
-    : { timescale: body.readUInt32BE(12), duration: durationValue(body, 16, 0) };
+    ? { timescale: body.readUInt32BE(20), duration: durationValue(body, 24, 1), quarterTurn }
+    : { timescale: body.readUInt32BE(12), duration: durationValue(body, 16, 0), quarterTurn };
 }
 
 function readMehd(read, box) {
@@ -136,46 +147,79 @@ function readMehd(read, box) {
   return body ? durationValue(body, 4, version) : null;
 }
 
-// 16.16 고정소수점의 정수 부분이 화면에 보이는 크기다.
-// 변환 행렬 { a b u / c d v / x y w }에서 a와 d가 0이고 b와 c가 0이 아니면 90도나 270도 회전이다(휴대폰 세로 영상). 그러면 quarterTurn이 참이다.
+// 화면 크기(트랙 행렬을 걸기 전)는 16.16 고정소수점이다. width, height는 정수 부분이고 exactWidth, exactHeight는 소수까지 담는다.
+// 트랙 행렬이 90도나 270도 회전이면 quarterTurn이 참이다.
 function readTkhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
   const body = readPayload(read, box, version === 1 ? 96 : 84);
   if (!body) return null;
   const at = version === 1 ? 88 : 76;
-  const matrix = version === 1 ? 52 : 40;
-  const [a, b, c, d] = [0, 4, 12, 16].map((offset) => body.readInt32BE(matrix + offset));
   return {
     enabled: (body.readUInt8(3) & 1) === 1,
     duration: durationValue(body, version === 1 ? 28 : 20, version) ?? 0,
     width: body.readUInt32BE(at) >>> 16,
     height: body.readUInt32BE(at + 4) >>> 16,
-    quarterTurn: a === 0 && d === 0 && b !== 0 && c !== 0,
+    exactWidth: body.readUInt32BE(at) / 65536,
+    exactHeight: body.readUInt32BE(at + 4) / 65536,
+    quarterTurn: isQuarterTurn(body, version === 1 ? 52 : 40),
   };
 }
 
 // 영상 표본 항목의 고정 필드 길이. 그 뒤에 avcC, pasp 같은 자식 박스가 온다.
 const VISUAL_ENTRY = 78;
 
-// 첫 표본 항목의 인코딩 해상도와 화소 비율(pasp)을 읽는다. 항목 앞에 4+4바이트, 항목 안 32바이트 위치에 너비와 높이가 있다.
-// pasp는 { h, v }로 화소 하나의 가로:세로 비율이다. 없거나 0이면 null이다.
+// avcC·hvcC는 SPS와 PPS 몇 개라 보통 수백 바이트다. 더 크면 읽지 않는다.
+const MAX_CODEC_CONFIG = 64 * 1024;
+
+// 첫 표본 항목의 인코딩 해상도와 화소 비율을 읽는다. 항목 앞에 4+4바이트, 항목 안 32바이트 위치에 너비와 높이가 있다.
+// pasp는 { h, v }로 화소 하나의 가로:세로 비율이다. 없거나 0이 든 값이면 null이다. 1:1도 값으로 둔다.
+// spsAspect는 avcC·hvcC 안 SPS의 화소 비율이다(#113). 영상 데이터(mdat)는 읽지 않는다.
 function readStsd(read, p, box) {
   const body = readPayload(read, box, 44);
   if (!body || body.readUInt32BE(4) === 0) return null;
-  const sample = { width: body.readUInt16BE(40), height: body.readUInt16BE(42), pasp: null };
+  const sample = { width: body.readUInt16BE(40), height: body.readUInt16BE(42), pasp: null, spsAspect: null };
   const entry = readBoxHeader(read, box.start + 8, box.end, false);
   if (!entry || entry.end - entry.start <= VISUAL_ENTRY) return sample;
   for (const child of boxes(read, p, entry.start + VISUAL_ENTRY, entry.end, false)) {
-    if (child.type !== 'pasp') continue;
-    const spacing = readPayload(read, child, 8);
-    if (spacing && spacing.readUInt32BE(0) > 0 && spacing.readUInt32BE(4) > 0) sample.pasp = { h: spacing.readUInt32BE(0), v: spacing.readUInt32BE(4) };
-    break;
+    if (child.type === 'pasp' && sample.pasp === null) {
+      const spacing = readPayload(read, child, 8);
+      if (spacing && spacing.readUInt32BE(0) > 0 && spacing.readUInt32BE(4) > 0) sample.pasp = { h: spacing.readUInt32BE(0), v: spacing.readUInt32BE(4) };
+    }
+    if ((child.type === 'avcC' || child.type === 'hvcC') && sample.spsAspect === null && child.end - child.start <= MAX_CODEC_CONFIG) {
+      sample.spsAspect = spsAspect(child.type, read(child.start, child.end - child.start));
+    }
   }
   return sample;
 }
 
-function readTrack(read, p, trak) {
+// 화소 비율을 곱한 너비 (정사각형 화소면 그대로)
+const stretched = (width, aspect) => (Math.abs(aspect - 1) > 1e-9 ? Math.max(1, Math.round(width * aspect)) : width);
+
+// 회전을 걸기 전의 보이는 크기. 화소 비율은 컨테이너 값을 영상 데이터 값보다 먼저 쓴다(FFmpeg가 pasp를 SPS보다 먼저 쓰는 것과 같다).
+// 1. pasp: 화소 비율을 직접 적은 값이다. 1:1이면 정사각형 화소로 본다.
+// 2. tkhd 화면 크기가 인코딩 해상도와 다르면 그 크기. 규격상 표본 그림은 이 크기로 늘여 보여 준다. pasp 없이 tkhd에만 화소 비율을 반영한 파일이 있다.
+//    너비와 높이를 같은 배율로 바꾼 크기는 화소 비율 1로 보고 인코딩 해상도를 쓴다.
+//    회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일(너비와 높이가 바뀐 비율)은 화소 비율이 아니라서 쓰지 않고 다음 단계로 간다.
+//    정수 부분이 0인 크기(16비트 밀지 않고 적은 틀린 값 등)는 쓰지 않는다.
+// 3. SPS의 화소 비율(VUI). pasp가 없고 tkhd에서 화소 비율을 알 수 없을 때 쓴다(ffmpeg로 만든 일부 파일).
+function unrotatedSize(sample, header, turned) {
+  const { width, height } = sample;
+  if (sample.pasp) return [stretched(width, sample.pasp.h / sample.pasp.v), height];
+  if (header && header.width >= 1 && header.height >= 1 && (header.width !== sample.width || header.height !== sample.height)) {
+    const aspect = (header.exactWidth * height) / (header.exactHeight * width);
+    const swapped = (header.exactWidth * width) / (header.exactHeight * height);
+    if (!(turned && Math.abs(swapped - 1) < 0.01)) {
+      if (Math.abs(aspect - 1) < 1e-9) return [width, height];
+      return [Math.round(header.exactWidth), Math.round(header.exactHeight)];
+    }
+  }
+  if (sample.spsAspect) return [stretched(width, sample.spsAspect.h / sample.spsAspect.v), height];
+  return [width, height];
+}
+
+// movieTurn은 mvhd 행렬의 회전이다. 트랙 행렬과 함께 걸리므로 둘 중 하나만 90·270도이면 너비와 높이가 바뀐다.
+function readTrack(read, p, trak, movieTurn) {
   let header = null;
   let handler = null;
   let sample = null;
@@ -201,11 +245,11 @@ function readTrack(read, p, trak) {
   const width = sample?.width || header?.width || 0;
   const height = sample?.height || header?.height || 0;
   if (width === 0 || height === 0) return null;
-  // 보이는 크기. 인코딩 해상도에 화소 비율(pasp)을 너비에 곱하고, 90·270도 회전이면 너비와 높이를 바꾼다.
-  // tkhd 크기를 쓴 경우는 이미 보이는 크기라 pasp를 다시 곱하지 않는다.
-  const pasp = sample?.width && sample.pasp && sample.pasp.h !== sample.pasp.v ? sample.pasp : null;
-  const shownWidth = pasp ? Math.max(1, Math.round((width * pasp.h) / pasp.v)) : width;
-  const [displayWidth, displayHeight] = header?.quarterTurn ? [height, shownWidth] : [shownWidth, height];
+  // 보이는 크기. 화소 비율을 반영하고(unrotatedSize), 90·270도 회전이면 너비와 높이를 바꾼다.
+  // 인코딩 해상도가 0이라 tkhd 크기를 쓴 경우는 이미 보이는 크기라 화소 비율을 다시 곱하지 않는다.
+  const turned = Boolean(header?.quarterTurn) !== Boolean(movieTurn);
+  const [shownWidth, shownHeight] = sample?.width && sample?.height ? unrotatedSize(sample, header, turned) : [width, height];
+  const [displayWidth, displayHeight] = turned ? [shownHeight, shownWidth] : [shownWidth, shownHeight];
   return { width, height, displayWidth, displayHeight, enabled: header?.enabled ?? true, duration: header?.duration ?? 0 };
 }
 
@@ -315,7 +359,8 @@ function firstTag(tags, sources) {
 
 // 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
-// width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율(pasp)과 90·270도 회전을 반영한 보이는 크기다(#106).
+// width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율과 90·270도 회전을 반영한 보이는 크기다(#106, #113).
+// 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(unrotatedSize), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
 // 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
 // 깨진 파일 판별은 checkMp4Structure가 한다. 이 함수는 moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
@@ -336,14 +381,12 @@ function parseMp4(target, real, p) {
 
   let movie = null;
   let fragmentDuration = null;
-  const tracks = [];
+  const traks = [];
   const tags = new Map();
   for (const box of boxes(read, p, moov.start, moov.end, true)) {
     if (box.type === 'mvhd') movie = readMvhd(read, box);
-    if (box.type === 'trak') {
-      const track = readTrack(read, p, box);
-      if (track) tracks.push(track);
-    }
+    // mvhd의 회전을 함께 반영해야 하므로 트랙은 moov를 다 훑은 뒤에 읽는다. mvhd가 트랙 뒤에 오는 파일도 있다.
+    if (box.type === 'trak') traks.push(box);
     if (box.type === 'mvex') {
       for (const part of boxes(read, p, box.start, box.end, true)) {
         if (part.type === 'mehd') fragmentDuration = readMehd(read, part);
@@ -356,6 +399,7 @@ function parseMp4(target, real, p) {
   // mehd는 조각까지 합한 전체 길이이고 mvhd는 moov 안 부분의 길이이므로 mehd를 먼저 쓴다.
   const units = fragmentDuration || movie?.duration;
   const duration = units && movie?.timescale ? units / movie.timescale : null;
+  const tracks = traks.map((box) => readTrack(read, p, box, movie?.quarterTurn)).filter(Boolean);
   const video = mainVideo(tracks);
   return {
     title: firstTag(tags, TITLE_SOURCES),

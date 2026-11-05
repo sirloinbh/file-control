@@ -364,3 +364,64 @@ test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한
   assert.deepStrictEqual(size(shownTrack(720, 480, undefined, 9, 3)), [720, 480, 720, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, 30, undefined, 1)), [720, 480, 720, 480]);
 });
+
+// 화소 크기와 Video 요소 안에 넣을 다른 요소들로 트랙을 만든다(#113).
+const videoWith = (width, height, ...parts) => el(0xae, el(0x83, Buffer.from([1])), el(0xe0, el(0xb0, uint(width)), el(0xba, uint(height)), ...parts));
+const crop = ({ top, bottom, left, right }) =>
+  [
+    [0x54bb, top],
+    [0x54aa, bottom],
+    [0x54cc, left],
+    [0x54dd, right],
+  ]
+    .filter(([, value]) => value !== undefined)
+    .map(([id, value]) => el(id, uint(value)));
+const projection = ({ type, yaw, pitch, roll, double: wide = false } = {}) => {
+  const number = (value) => (wide ? double(value) : float(value));
+  const parts = [];
+  if (type !== undefined) parts.push(el(0x7671, Buffer.from([type])));
+  if (yaw !== undefined) parts.push(el(0x7673, number(yaw)));
+  if (pitch !== undefined) parts.push(el(0x7674, number(pitch)));
+  if (roll !== undefined) parts.push(el(0x7675, roll === '' ? Buffer.alloc(0) : number(roll)));
+  return el(0x7670, ...parts);
+};
+
+function shownMkv(dir, track) {
+  const result = readMkvMetadata(dir, write(dir, 'c.mkv', header(), segment(info(), tracks(track), cluster())));
+  return [result.width, result.height, result.displayWidth, result.displayHeight];
+}
+
+test('보이는 크기: 잘라 낼 화소(PixelCrop)를 빼고 DisplayWidth/Height는 자른 뒤의 크기로 본다 (#113)', () => {
+  const dir = tempDir();
+  const size = (...parts) => shownMkv(dir, videoWith(...parts));
+  // 1920x1088로 부호화하고 아래 8줄을 잘라 1920x1080으로 보여 준다.
+  assert.deepStrictEqual(size(1920, 1088, ...crop({ bottom: 8 })), [1920, 1088, 1920, 1080]);
+  // 4:3 테두리를 잘라 낸 16:9 영상
+  assert.deepStrictEqual(size(1440, 1080, ...crop({ left: 0, right: 0, top: 135, bottom: 135 })), [1440, 1080, 1440, 810]);
+  // DisplayWidth/Height(화소 단위)가 있으면 그 값이 자른 뒤의 보이는 크기다. 한쪽만 있으면 다른 쪽은 자른 크기다.
+  assert.deepStrictEqual(size(720, 480, ...crop({ left: 8, right: 8 }), el(0x54b0, uint(853)), el(0x54ba, uint(480))), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size(720, 480, ...crop({ top: 4, bottom: 4 }), el(0x54b0, uint(853))), [720, 480, 853, 472]);
+  // 화면 비율 단위(16:9)면 자른 높이에 맞춘다.
+  assert.deepStrictEqual(size(720, 576, ...crop({ left: 8, right: 8, top: 0, bottom: 0 }), el(0x54b0, uint(16)), el(0x54ba, uint(9)), el(0x54b2, Buffer.from([3]))), [720, 576, 1024, 576]);
+  assert.deepStrictEqual(size(720, 576, ...crop({ top: 72, bottom: 72 }), el(0x54b0, uint(16)), el(0x54ba, uint(9)), el(0x54b2, Buffer.from([3]))), [720, 576, 768, 432]);
+  // 남는 화소가 없는 틀린 값은 자르지 않는다. 빈 요소는 기본값 0이다.
+  assert.deepStrictEqual(size(720, 480, ...crop({ left: 400, right: 400 })), [720, 480, 720, 480]);
+  assert.deepStrictEqual(size(720, 480, ...crop({ top: 480 })), [720, 480, 720, 480]);
+  assert.deepStrictEqual(size(720, 480, el(0x54bb, Buffer.alloc(0))), [720, 480, 720, 480]);
+});
+
+test('보이는 크기: 평면 투영의 90·270도 회전(ProjectionPoseRoll)이면 너비와 높이를 바꾼다 (#113)', () => {
+  const dir = tempDir();
+  const size = (options, ...rest) => shownMkv(dir, videoWith(1920, 1080, projection(options), ...rest));
+  for (const roll of [90, -90, 270, -270, 89.5, 450]) assert.deepStrictEqual(size({ roll }), [1920, 1080, 1080, 1920], `roll ${roll}`);
+  assert.deepStrictEqual(size({ roll: 90, double: true }), [1920, 1080, 1080, 1920]);
+  assert.deepStrictEqual(size({ type: 0, roll: -90, yaw: 180 }), [1920, 1080, 1080, 1920]);
+  for (const roll of [0, 180, -180, 45, 88, '']) assert.deepStrictEqual(size({ roll }), [1920, 1080, 1920, 1080], `roll ${roll}`);
+  // 360도 영상(평면이 아닌 투영)과 위아래로 기울이거나 좌우로 돌린 투영은 화면 회전이 아니다.
+  assert.deepStrictEqual(size({ type: 1, roll: 90 }), [1920, 1080, 1920, 1080]);
+  assert.deepStrictEqual(size({ type: 0, pitch: 10, roll: 90 }), [1920, 1080, 1920, 1080]);
+  assert.deepStrictEqual(size({ type: 0, yaw: 30, roll: 90 }), [1920, 1080, 1920, 1080]);
+  // 회전은 자르기와 DisplayWidth/Height를 반영한 뒤에 건다.
+  assert.deepStrictEqual(size({ roll: 90 }, ...crop({ bottom: 0 }), el(0x54b0, uint(2560))), [1920, 1080, 1080, 2560]);
+  assert.deepStrictEqual(shownMkv(dir, videoWith(1920, 1088, ...crop({ bottom: 8 }), projection({ roll: 270 }))), [1920, 1088, 1080, 1920]);
+});

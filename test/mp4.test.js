@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
 const { readMp4Metadata } = require('../src/mp4');
+const { avcSps, hevcSps, avcC, hvcC } = require('./spsBuilder');
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
@@ -41,9 +42,11 @@ function largeBox(type, ...parts) {
 
 const ftyp = () => box('ftyp', latin('isom'), u32(512), latin('isommp42'));
 
-function mvhd({ timescale = 1000, duration = 10000, version = 0 } = {}) {
-  if (version === 1) return box('mvhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(duration), Buffer.alloc(80));
-  return box('mvhd', u32(0), u32(0), u32(0), u32(timescale), u32(duration), Buffer.alloc(80));
+// rotate를 주면 영상 전체의 행렬(mvhd)에 회전을 넣는다. 없으면 예전 시험 파일처럼 0으로 채운다.
+function mvhd({ timescale = 1000, duration = 10000, version = 0, rotate } = {}) {
+  const tail = [Buffer.alloc(16), matrix(rotate), Buffer.alloc(28)];
+  if (version === 1) return box('mvhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(duration), ...tail);
+  return box('mvhd', u32(0), u32(0), u32(0), u32(timescale), u32(duration), ...tail);
 }
 
 // 변환 행렬 { a b u / c d v / x y w }. rotate가 없으면 예전 시험 파일처럼 0으로 채운다.
@@ -67,20 +70,22 @@ function hdlr(kind) {
 }
 
 // pasp는 [가로, 세로] 화소 비율이다. 표본 항목의 자식 박스로 avcC 뒤에 붙인다.
-function stsd(width, height, format = 'avc1', pasp) {
+// config를 주면 그 avcC·hvcC 박스를 쓴다(#113). 주지 않으면 pasp가 있을 때만 빈 avcC를 붙인다.
+function stsd(width, height, format = 'avc1', pasp, config) {
   const entry = Buffer.alloc(78);
   entry.writeUInt16BE(width, 24);
   entry.writeUInt16BE(height, 26);
-  const extra = pasp ? [box('avcC', Buffer.alloc(7)), box('pasp', u32(pasp[0]), u32(pasp[1]))] : [];
+  const codec = config ?? (pasp ? box('avcC', Buffer.alloc(7)) : null);
+  const extra = [...(codec ? [codec] : []), ...(pasp ? [box('pasp', u32(pasp[0]), u32(pasp[1]))] : [])];
   return box('stsd', u32(0), u32(1), box(format, entry, ...extra));
 }
 
-function trak({ kind = 'vide', width = 1920, height = 1080, display, duration = 10000, flags = 3, version = 0, rotate, pasp } = {}) {
+function trak({ kind = 'vide', width = 1920, height = 1080, display, duration = 10000, flags = 3, version = 0, rotate, pasp, config, format = 'avc1' } = {}) {
   const shown = display ?? { width, height };
   return box(
     'trak',
     tkhd({ ...shown, duration, flags, version, rotate }),
-    box('mdia', hdlr(kind), box('minf', box('stbl', stsd(kind === 'vide' ? width : 0, kind === 'vide' ? height : 0, 'avc1', pasp)))),
+    box('mdia', hdlr(kind), box('minf', box('stbl', stsd(kind === 'vide' ? width : 0, kind === 'vide' ? height : 0, format, pasp, config)))),
   );
 }
 
@@ -572,4 +577,85 @@ test('보이는 크기: pasp 화소 비율을 너비에 곱하고 회전과 함�
   // 인코딩 해상도가 0이라 tkhd 크기를 쓰면 그 값이 이미 보이는 크기다.
   const shown = trak({ width: 0, height: 0, display: { width: 853, height: 480 }, pasp: [32, 27] });
   assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', shown))), [853, 480, 853, 480]);
+});
+
+const shownSize = (result) => [result.width, result.height, result.displayWidth, result.displayHeight];
+const h264 = (sar) => box('avcC', avcC(avcSps({ width: 720, height: 480, sar })));
+const h265 = (sar) => box('hvcC', hvcC(hevcSps({ width: 720, height: 480, sar })));
+
+test('보이는 크기: pasp가 없으면 avcC·hvcC 안 SPS의 화소 비율을 쓴다 (#113)', () => {
+  const dir = tempDir();
+  const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
+  // DVD 16:9 (화소 비율 32:27 직접 적음)와 표의 40:33
+  assert.deepStrictEqual(size({ config: h264([32, 27]) }), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size({ config: h265(5), format: 'hvc1' }), [720, 480, 873, 480]);
+  assert.deepStrictEqual(size({ config: h265([32, 27]), format: 'hev1', rotate: 90 }), [720, 480, 480, 853]);
+  // 비율이 없거나 1:1이거나 읽을 수 없는 SPS는 정사각형 화소로 본다.
+  for (const config of [h264(undefined), h264(1), box('avcC', Buffer.alloc(7)), box('hvcC', Buffer.alloc(30))]) {
+    assert.deepStrictEqual(size({ config }), [720, 480, 720, 480]);
+  }
+});
+
+test('보이는 크기: tkhd 화면 크기가 인코딩 해상도와 다르면 그 비율을 쓴다 (#113)', () => {
+  const dir = tempDir();
+  const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
+  assert.deepStrictEqual(size({ display: { width: 853, height: 480 } }), [720, 480, 853, 480]);
+  assert.deepStrictEqual(size({ display: { width: 853, height: 480 }, rotate: 270 }), [720, 480, 480, 853]);
+  // 높이를 줄여 늘린 경우도 비율로 본다(720x480을 640x480으로 보여 주면 4:3).
+  assert.deepStrictEqual(size({ display: { width: 640, height: 480 } }), [720, 480, 640, 480]);
+  // 너비와 높이를 같은 배율로 줄이면 화소 비율은 1이다.
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ display: { width: 1280, height: 720 } })))), [1920, 1080, 1920, 1080]);
+  // 부호화 크기(1920x1088)를 적고 tkhd에 보이는 크기(1920x1080)를 적은 파일은 tkhd 크기를 그대로 보인다.
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ width: 1920, height: 1088, display: { width: 1920, height: 1080 } })))), [1920, 1088, 1920, 1080]);
+  // 회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일은 화소 비율로 보지 않는다(예전과 같이 세로로 보인다).
+  for (const rotate of [90, 270]) {
+    assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 }, rotate }), [1920, 1080, 1080, 1920], `${rotate}도`);
+  }
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ display: { width: 1080, height: 1920 } })))), [1920, 1080, 1080, 1920]);
+  // 회전한 뒤의 크기를 적은 tkhd는 건너뛰고 SPS의 화소 비율을 쓴다(4:3 화소의 1440x1080 = 1920x1080).
+  assert.deepStrictEqual(size({ width: 1440, height: 1080, display: { width: 1080, height: 1440 }, rotate: 90, config: h264(14) }), [1440, 1080, 1080, 1920]);
+  // 회전하지 않는 영상의 바뀐 비율은 화소 비율로 본다.
+  assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 } }), [1920, 1080, 1080, 1920]);
+  // tkhd 크기가 0이거나 정수 부분이 0이면(16비트 밀지 않고 적은 값) 쓰지 않는다.
+  const unshifted = box('trak', box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(10000), Buffer.alloc(16), matrix(0), u32(1920), u32(1080)), box('mdia', hdlr('vide'), box('minf', box('stbl', stsd(1920, 1088)))));
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', unshifted))), [1920, 1088, 1920, 1088]);
+  // tkhd 크기가 0이면 쓰지 않는다.
+  assert.deepStrictEqual(size({ display: { width: 0, height: 0 }, config: h264([32, 27]) }), [720, 480, 853, 480]);
+});
+
+test('보이는 크기: 화소 비율은 pasp, tkhd, SPS 순으로 고른다 (#113)', () => {
+  const dir = tempDir();
+  const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
+  const wide = { width: 853, height: 480 };
+  // pasp가 있으면 1:1이어도 그 값을 쓴다.
+  assert.deepStrictEqual(size({ pasp: [1, 1], display: wide, config: h264(5) }), [720, 480, 720, 480]);
+  assert.deepStrictEqual(size({ pasp: [8, 9], display: wide, config: h264(5) }), [720, 480, 640, 480]);
+  // pasp가 없으면 tkhd가 SPS보다 먼저다.
+  assert.deepStrictEqual(size({ display: wide, config: h264(5) }), [720, 480, 853, 480]);
+  // tkhd가 인코딩 해상도와 같으면 SPS를 쓴다.
+  assert.deepStrictEqual(size({ config: h264(5) }), [720, 480, 873, 480]);
+  // 0이 든 pasp는 없는 것으로 보고 다음 값을 쓴다.
+  assert.deepStrictEqual(size({ pasp: [0, 1], config: h264([32, 27]) }), [720, 480, 853, 480]);
+});
+
+test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영한다 (#113)', () => {
+  const dir = tempDir();
+  const size = (movie, track, order = 'mvhd first') => {
+    const parts = [mvhd({ rotate: movie }), trak({ rotate: track })];
+    return shownSize(write(dir, ftyp(), box('moov', ...(order === 'mvhd first' ? parts : parts.reverse()))));
+  };
+  assert.deepStrictEqual(size(90, 0), [1920, 1080, 1080, 1920]);
+  assert.deepStrictEqual(size(270, undefined), [1920, 1080, 1080, 1920]);
+  assert.deepStrictEqual(size(90, 90), [1920, 1080, 1920, 1080]);
+  assert.deepStrictEqual(size(180, 270), [1920, 1080, 1080, 1920]);
+  assert.deepStrictEqual(size(0, 90), [1920, 1080, 1080, 1920]);
+  // mvhd가 트랙 뒤에 있어도 반영한다.
+  assert.deepStrictEqual(size(90, 0, 'trak first'), [1920, 1080, 1080, 1920]);
+  // 버전 1 mvhd
+  const v1 = write(dir, ftyp(), box('moov', mvhd({ version: 1, rotate: 90 }), trak()));
+  assert.deepStrictEqual(shownSize(v1), [1920, 1080, 1080, 1920]);
+  // 행렬까지 들어 있지 않은 짧은 mvhd는 회전이 없는 것으로 보고 길이는 읽는다.
+  const short = box('mvhd', u32(0), u32(0), u32(0), u32(1000), u32(10000), Buffer.alloc(20));
+  const result = write(dir, ftyp(), box('moov', short, trak()));
+  assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
 });

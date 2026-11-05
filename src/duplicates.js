@@ -11,7 +11,8 @@ const { readMkvMetadata } = require('./mkv');
 
 // 길이 기준으로 묶는 조건. 다른 영상을 한 묶음에 넣지 않도록 좁게 잡는다.
 // - 길이 차이가 1초 이내. 같은 영상을 다른 형식으로 옮기면 길이가 1초 안쪽으로 달라진다.
-// - 보이는 화면 비율이 3% 이내. 회전 정보(MP4 tkhd)와 화소 비율(MP4 pasp, MKV DisplayWidth/Height)을 반영한 보이는 크기로 계산한다(#106).
+// - 보이는 화면 비율이 3% 이내. 회전(MP4 tkhd·mvhd 행렬, MKV Projection)과 화소 비율(MP4 pasp·tkhd 크기·SPS, MKV PixelCrop·DisplayWidth/Height)을
+//   반영한 보이는 크기(readMp4Metadata, readMkvMetadata의 displayWidth/displayHeight)로 계산한다(#106, #113).
 //   그래서 회전 정보로 세로를 표시하는 휴대폰 영상(1920x1080 + 90도)은 세로 영상(1080x1920)과 묶이고 가로 영상과는 묶이지 않는다.
 // - 60초 미만 영상은 묶지 않는다. 짧은 클립은 길이가 우연히 같은 경우가 많다.
 // 해상도와 크기는 보지 않는다. 다시 인코딩한 같은 영상은 이 둘이 달라지고, 어느 것을 남길지는 묶은 뒤에 고른다.
