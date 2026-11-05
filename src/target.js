@@ -352,9 +352,17 @@ function fileStamp(stat) {
 // 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
 // 하위 폴더 하나라도 읽지 못하면 전체를 실패시킨다. 일부만 읽은 목록으로 이동·삭제하지 않게 하려는 것이다.
-function walk(dir) {
-  return listEntries(resolveTarget(dir)).sort((a, b) => compareRelative(a.relative, b.relative));
+// 파일마다 따로 하는 작업(product-number)은 unreadable 배열을 넘기면, 읽지 못한 하위 폴더를 { path, relative, reason }으로
+// 담고 나머지를 계속 읽는다(#74). 타겟 자신을 읽지 못하거나 읽는 도중 폴더가 링크로 바뀌면 여전히 전체를 실패시킨다.
+function walk(dir, { unreadable } = {}) {
+  const entries = listEntries(resolveTarget(dir), unreadable).sort((a, b) => compareRelative(a.relative, b.relative));
+  unreadable?.sort((a, b) => compareRelative(a.relative, b.relative));
+  return entries;
 }
+
+// 건너뛰고 계속해도 되는 폴더 읽기 오류. 권한 거부와, 목록을 만든 뒤 폴더가 사라졌거나 파일로 바뀐 경우다.
+// 그 밖의 오류(EMFILE, EIO 등)는 일시적이거나 원인을 알 수 없어 지금처럼 전체를 실패시킨다(1차 리뷰).
+const SKIPPABLE_READ_ERRORS = new Set(['EPERM', 'EACCES', 'ENOENT', 'ENOTDIR']);
 
 // 하위 폴더는 목록에 올린 뒤 나중에 읽으므로, 그 사이에 폴더가 링크·정션으로 바뀌면 다른 곳을 읽게 된다(#46).
 // 읽은 뒤에 실제 경로가 그 자리 그대로인지 보고, 달라졌으면 목록을 내지 않고 오류를 낸다. 읽기 전에 바뀌어 그대로 있거나
@@ -371,7 +379,7 @@ function ensureUnmoved(dir) {
   if (real !== dir) throw new FcError(`읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다. 아무것도 다루지 않았습니다: ${dir} -> ${real}`);
 }
 
-function listEntries(root) {
+function listEntries(root, unreadable) {
   const entries = [];
   const pending = [''];
   while (pending.length > 0) {
@@ -381,6 +389,10 @@ function listEntries(root) {
     try {
       dirents = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
+      if (unreadable && relDir !== '' && SKIPPABLE_READ_ERRORS.has(err.code)) {
+        unreadable.push({ path: dir, relative: relDir, reason: `폴더를 읽을 수 없어 그 안은 보지 않았습니다: ${err.code}` });
+        continue;
+      }
       throw new FcError(`폴더를 읽을 수 없습니다: ${dir} (${err.code})`);
     }
     ensureUnmoved(dir);

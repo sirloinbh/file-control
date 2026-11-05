@@ -901,3 +901,38 @@ test('grant는 파일 심볼릭 링크도 타겟 밖이면 거부하고 링크 �
   assert.throws(() => access.write('file-link'), /링크를 거쳐/);
   assert.throws(() => access.delete('file-link'), /링크는 삭제할 수 없습니다/);
 });
+
+test('walk는 unreadable을 넘기면 읽지 못한 하위 폴더를 담고 계속 읽고, 넘기지 않으면 실패한다 (#74)', (t) => {
+  const root = tempDir();
+  for (const dir of ['a', 'locked/inner', 'z']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  fs.writeFileSync(path.join(root, 'z', 'f.txt'), 'f');
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (p === path.join(root, 'locked')) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    return readdirSync(p, ...rest);
+  });
+  assert.throws(() => walk(root), /폴더를 읽을 수 없습니다: .*locked \(EACCES\)/);
+  const unreadable = [];
+  const entries = walk(root, { unreadable });
+  assert.deepStrictEqual(entries.map((entry) => entry.relative), ['a', 'locked', 'z', path.join('z', 'f.txt')]);
+  assert.deepStrictEqual(unreadable, [{ path: path.join(root, 'locked'), relative: 'locked', reason: '폴더를 읽을 수 없어 그 안은 보지 않았습니다: EACCES' }]);
+});
+
+test('walk는 목록을 만든 뒤 사라지거나 파일로 바뀐 하위 폴더도 건너뛰고, 다른 읽기 오류는 실패한다 (2차 리뷰, #74)', (t) => {
+  const root = tempDir();
+  for (const dir of ['gone', 'keep']) fs.mkdirSync(path.join(root, dir));
+  const readdirSync = fs.readdirSync;
+  let code;
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (p === path.join(root, 'gone')) throw Object.assign(new Error('read failed'), { code });
+    return readdirSync(p, ...rest);
+  });
+  for (code of ['ENOENT', 'ENOTDIR']) {
+    const unreadable = [];
+    walk(root, { unreadable });
+    assert.deepStrictEqual(unreadable.map((item) => item.reason), [`폴더를 읽을 수 없어 그 안은 보지 않았습니다: ${code}`], code);
+  }
+  for (code of ['EIO', 'EMFILE', undefined]) {
+    assert.throws(() => walk(root, { unreadable: [] }), /폴더를 읽을 수 없습니다/, String(code));
+  }
+});

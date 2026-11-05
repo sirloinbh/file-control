@@ -60,10 +60,14 @@ function chooseNumber(found) {
 // - notFound: 번호를 찾지 못한 파일 ({ path, note }). note는 메타데이터를 읽지 못한 사유이고 없으면 null이다.
 // - conflicts: 찾은 번호가 엇갈려 고르지 않은 파일 ({ path, numbers })
 // - skipped: 다루지 않는 항목 ({ path, reason })
+//   읽지 못한 하위 폴더도 여기에 넣고 나머지 파일은 계속 본다. 파일마다 따로 바꾸므로 일부 폴더를 못 봐도 다른 파일에 영향이 없다(#74).
 function planProductNames(dir) {
   const access = grant(dir, ['read', 'write']);
   const plan = { target: access.target, renames: [], already: [], notFound: [], conflicts: [], skipped: [] };
-  for (const entry of walk(access.target)) {
+  const unreadable = [];
+  const entries = walk(access.target, { unreadable });
+  for (const folder of unreadable) plan.skipped.push({ path: folder.path, reason: folder.reason });
+  for (const entry of entries) {
     if (entry.type === 'dir') continue;
     const skip = (reason) => plan.skipped.push({ path: entry.path, reason });
     // 폴더를 가리키는 링크는 확장자가 없어도 그 안을 보지 않았음을 알린다.
