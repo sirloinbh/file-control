@@ -166,6 +166,66 @@ test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 �
   assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
 });
 
+// 순회 중 폴더를 정션으로 바꾸는 경쟁(#46). readdirSync가 when 폴더를 처음 읽은 직후에 swap을 부른다.
+function walkWithSwap(t, when, swap) {
+  const readdir = fs.readdirSync;
+  let swapped = false;
+  t.mock.method(fs, 'readdirSync', (p, opts) => {
+    const result = readdir(p, opts);
+    if (!swapped && p === when) {
+      swapped = true;
+      swap();
+    }
+    return result;
+  });
+}
+
+function swapFixture() {
+  const { root, outside, target } = accessFixture();
+  const target2 = fs.realpathSync.native(target);
+  fs.mkdirSync(path.join(target2, 's'));
+  fs.writeFileSync(path.join(target2, 's', 'mine.txt'), 'm');
+  fs.mkdirSync(path.join(target2, 'other'));
+  fs.writeFileSync(path.join(target2, 'other', 'o.txt'), 'o');
+  const toJunction = (to) => () => {
+    fs.rmSync(path.join(target2, 's'), { recursive: true });
+    linkDir(to, path.join(target2, 's'));
+  };
+  return { root, outside: fs.realpathSync.native(outside), target: target2, toJunction };
+}
+
+test('walk는 목록에 올린 하위 폴더가 읽기 전에 타겟 밖 정션으로 바뀌면 그 안을 목록에 넣지 않고 오류를 낸다 (#46)', (t) => {
+  const { outside, target, toJunction } = swapFixture();
+  walkWithSwap(t, target, toJunction(outside));
+  assert.throws(() => walk(target), (err) => err instanceof FcError && /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/.test(err.message) && err.message.includes(`${path.join(target, 's')} -> ${outside}`));
+  // 바꾼 뒤의 상태는 정션으로만 보인다.
+  t.mock.restoreAll();
+  assert.ok(walk(target).some((e) => e.relative === 's' && e.type === 'link'));
+  assert.ok(!walk(target).some((e) => e.relative.endsWith('secret.txt')));
+});
+
+test('walk는 하위 폴더가 타겟 안의 다른 폴더를 가리키는 정션으로 바뀌어도 오류를 낸다 (#46)', (t) => {
+  const { target, toJunction } = swapFixture();
+  walkWithSwap(t, target, toJunction(path.join(target, 'other')));
+  assert.throws(() => walk(target), (err) => err.message.includes(`${path.join(target, 's')} -> ${path.join(target, 'other')}`));
+});
+
+test('walk는 하위 폴더를 읽는 동안 정션으로 바뀌어도 읽은 목록을 내지 않는다 (#46)', (t) => {
+  const { outside, target, toJunction } = swapFixture();
+  // s를 읽은 직후에 바꾸면 읽은 뒤 확인이 잡는다.
+  walkWithSwap(t, path.join(target, 's'), toJunction(outside));
+  assert.throws(() => walk(target), /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/);
+});
+
+test('grant는 링크 검사로 훑는 폴더 자신이 그 사이 정션으로 바뀌어도 내주지 않는다 (#46)', (t) => {
+  const { outside, target, toJunction } = swapFixture();
+  const access = grant(target, ['read']);
+  // read(s)는 s의 실제 경로를 구한 뒤 s 안의 링크를 훑는다(rejectLinksInside). 그 목록을 읽은 직후 s를 바꾼다.
+  walkWithSwap(t, path.join(target, 's'), toJunction(outside));
+  assert.throws(() => access.read('s'), /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/);
+});
+
+
 test('readInside는 타겟 안 파일의 내용 전체를 Buffer로 읽는다', () => {
   const target = resolveTarget(tempDir());
   fs.mkdirSync(path.join(target, 'sub'));
