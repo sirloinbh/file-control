@@ -536,7 +536,7 @@ const FOLDER_STATUS_REASON = {
   notdir: '검사 뒤에 폴더가 아니게 됐습니다.',
   filled: '폴더에 파일이 생겨 지우지 않았습니다.',
   gone: '폴더가 이미 없습니다.',
-  timeout: '시간 제한에 걸려 처리하지 못했습니다(오류 대화상자가 떴을 수 있습니다). 남아 있으면 다시 실행하세요.',
+  timeout: '시간 제한에 걸려 처리하지 못했습니다(오류 대화상자가 떴을 수 있습니다). 탐색기로 지워 보며 원인을 확인하세요.',
 };
 
 // 지우기 전에 Node에서 하는 검사. 통과하면 실제 경로를, 아니면 FcError를 낸다.
@@ -567,24 +567,32 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     onFolder(folder, reason);
   };
   if (folders.length === 0) return report;
-  if (dryRun) {
-    for (const folder of folders) {
-      try {
-        remove([checkFolder(folder, access, { dryRun })], { dryRun });
-        done(folder);
-      } catch (err) {
-        done(folder, err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
-      }
-    }
-    return report;
-  }
+  // 미리보기도 실제 실행과 같은 사유로 남기도록 드라이브와 세션을 먼저 본다(1차 리뷰).
   const state = recycleBinState(access.target);
   let blocked;
   if (state.interactive === false) blocked = '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.';
   else if (state.driveType !== 'Fixed') blocked = `휴지통이 없어 영구 삭제될 수 있는 드라이브(${state.driveType ?? '종류를 알 수 없음'})라 빈 폴더를 지우지 않았습니다.`;
-  for (let i = 0; i < folders.length; i += FOLDER_BATCH) {
+  const failure = (err) => (err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
+  if (dryRun) {
+    for (const folder of folders) {
+      if (blocked) {
+        done(folder, blocked);
+        continue;
+      }
+      try {
+        remove([checkFolder(folder, access, { dryRun })], { dryRun });
+        done(folder);
+      } catch (err) {
+        done(folder, failure(err));
+      }
+    }
+    return report;
+  }
+  // 시간 제한에 걸린 묶음에서 손대지 않은 폴더(pending)는 다시 줄 세운다. 매번 하나 이상 끝나므로 언젠가 멈춘다.
+  const queue = [...folders];
+  while (queue.length > 0) {
     const batch = [];
-    for (const folder of folders.slice(i, i + FOLDER_BATCH)) {
+    for (const folder of queue.splice(0, FOLDER_BATCH)) {
       if (blocked) {
         done(folder, blocked);
         continue;
@@ -592,7 +600,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       try {
         batch.push(checkFolder(folder, access, { dryRun }));
       } catch (err) {
-        done(folder, err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
+        done(folder, failure(err));
       }
     }
     if (batch.length === 0) continue;
@@ -602,18 +610,22 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     } catch (err) {
       // 휴지통 호출의 실패 메시지에는 스크립트 전문이 들어가므로 쓰지 않는다.
       const reason = err instanceof FcError ? err.message : `휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+      // 비대화형 세션, 잠금 환경처럼 묶음마다 똑같이 실패할 사유면 나머지도 보내지 않는다.
       if (err instanceof FcError) blocked = reason;
       for (const folder of batch) done(folder, reason);
       continue;
     }
+    const pending = [];
     for (const { path: folder, status } of results) {
-      if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
+      if (status === 'pending') pending.push(folder);
+      else if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
       else if (status === 'error') {
         // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135).
         const inside = bareDeviceInside(folder);
         done(folder, inside === undefined ? '휴지통으로 보내지 못했습니다.' : `휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
       } else done(folder, FOLDER_STATUS_REASON[status]);
     }
+    queue.unshift(...pending);
   }
   return report;
 }

@@ -518,15 +518,15 @@ function moveToRecycleBin(target) {
 //   OneDrive 폴더처럼 ReparsePoint 속성이 있어도 링크가 아니면 실제 경로가 그대로라 지운다.
 // - 아직 폴더인지, 안에 allowedNames(폴더 설정 파일, 소문자) 말고 파일이 없는지, 하위 폴더가 링크로 바뀌지 않았는지
 // 경로는 Node가 realpath로 얻은 실제 경로를 넘긴다. 결과는 넘긴 순서대로 { path, status } 목록이다.
-// status: ok(휴지통으로 보냄), moved, notdir, filled, gone, error, timeout(시간 제한에 걸려 처리하지 못함)
+// status: ok(휴지통으로 보냄), moved, notdir, filled, gone, error, timeout(시간 제한에 걸릴 때 처리 중이던 폴더), pending(그 뒤라 손대지 않은 폴더)
+// 시간 제한에 걸린 묶음의 뒤 폴더를 pending으로 따로 알려, 부른 쪽이 다시 보낼 수 있게 한다. 같은 폴더가 매번 묶음 전체를 막지 않는다(1차 리뷰).
+// script는 테스트에서 DeleteDirectory를 바꿔 실제 PowerShell로 검사 부분을 돌릴 때만 넘긴다.
 const FOLDER_BATCH_STATUS = new Set(['ok', 'moved', 'notdir', 'filled', 'gone', 'error']);
 
-function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000 + folders.length * 1000 } = {}) {
-  if (folders.length === 0) return [];
-  const script = String.raw`$ErrorActionPreference = 'Stop'
+const RECYCLE_FOLDERS_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 if (-not [Environment]::UserInteractive) { exit 75 }
 Add-Type -AssemblyName Microsoft.VisualBasic
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
 public static class FcFinalPath {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder b, uint l, uint f);
@@ -537,12 +537,12 @@ public static class FcFinalPath {
       return GetFinalPathNameByHandleW(h, b, (uint)b.Capacity, 0) == 0 ? null : b.ToString();
     }
   }
-}'
+}' } catch { exit 76 }
 $u = [Text.Encoding]::Unicode
 $allowed = @(($env:FC_ALLOWED -split '\|') | Where-Object { $_ })
 function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
 function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
-function Same([string]$p) { $f = [FcFinalPath]::Get((Long $p)); return ($f -ne $null) -and ((Plain $f) -ieq $p) }
+function Same([string]$p) { $f = [FcFinalPath]::Get((Long $p)); return ($f -ne $null) -and [string]::Equals((Plain $f), $p, [StringComparison]::OrdinalIgnoreCase) }
 function Check([string]$p) {
   $stack = [Collections.Stack]::new(); $stack.Push($p)
   while ($stack.Count -gt 0) {
@@ -573,6 +573,9 @@ foreach ($line in $input) {
   [Console]::Out.WriteLine($status + ' ' + $line)
   [Console]::Out.Flush()
 }`;
+
+function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000 + folders.length * 1000, script = RECYCLE_FOLDERS_SCRIPT } = {}) {
+  if (folders.length === 0) return [];
   const input = folders.map((folder) => Buffer.from(folder, 'utf16le').toString('base64')).join('\n') + '\n';
   let output;
   let timedOut = false;
@@ -587,6 +590,8 @@ foreach ($line in $input) {
     });
   } catch (err) {
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    // 잠금 환경(Constrained Language Mode, AppLocker)에서는 C# 형식을 만들 수 없다(1차 리뷰).
+    if (err.status === 76) throw new FcError('PowerShell에서 경로 확인용 형식을 만들 수 없어(잠금 환경 등) 빈 폴더를 휴지통으로 보내지 못했습니다.');
     // 시간 제한(오류 대화상자에서 멈춘 경우 등)이나 도중 실패여도 이미 보고한 폴더의 결과는 쓴다.
     timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM';
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
@@ -597,7 +602,14 @@ foreach ($line in $input) {
     const match = /^(\w+) ([A-Za-z0-9+/=]+)$/.exec(line.trim());
     if (match && FOLDER_BATCH_STATUS.has(match[1])) done.set(Buffer.from(match[2], 'base64').toString('utf16le'), match[1]);
   }
-  return folders.map((folder) => ({ path: folder, status: done.get(folder) ?? (timedOut ? 'timeout' : 'error') }));
+  let first = true;
+  return folders.map((folder) => {
+    if (done.has(folder)) return { path: folder, status: done.get(folder) };
+    if (!timedOut) return { path: folder, status: 'error' };
+    const status = first ? 'timeout' : 'pending';
+    first = false;
+    return { path: folder, status };
+  });
 }
 
 function bareDeviceInside(dir) {
@@ -825,6 +837,7 @@ module.exports = {
   recycleBinState,
   hiddenOrSystemEntries,
   recycleEmptyFolders,
+  RECYCLE_FOLDERS_SCRIPT,
   bareDeviceInside,
   MAX_RECYCLE_PATH,
   unzip,
