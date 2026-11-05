@@ -1871,6 +1871,41 @@ test('flatten은 일괄 이동이 시간 제한에 걸리면 처리 중이던 �
   assert.ok(fs.existsSync(path.join(dir, 'b')));
 });
 
+test('flatten은 멈추는 폴더가 여럿이어도 순서대로 다시 보내고 진행 줄을 한 번씩만 낸다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/1.txt', 'b/2.txt', 'c/3.txt', 'd/4.txt', 'e/5.txt']);
+  batchOverride = fakeBatch(['b', 'd']);
+  t.after(() => {
+    batchOverride = null;
+  });
+  const lines = [];
+  const result = flatten(dir, { onProgress: (line) => lines.push(line) });
+  assert.deepStrictEqual(result.removedFolders, ['a', 'c', 'e'].map((name) => path.join(dir, name)));
+  assert.deepStrictEqual(result.keptFolders.map((item) => path.basename(item.path)), ['b', 'd']);
+  const folderLines = lines.filter((line) => !line.startsWith('이동: '));
+  assert.deepStrictEqual(folderLines.map((line) => line.split(' (')[0]), ['빈 폴더를 휴지통으로: a', '폴더 남김: b', '빈 폴더를 휴지통으로: c', '폴더 남김: d', '빈 폴더를 휴지통으로: e']);
+});
+
+test('flatten은 묶음의 첫 폴더에서 시간 제한이 연속되면 나머지를 보내지 않는다', (t) => {
+  const dir = tempDir();
+  const names = Array.from({ length: 6 }, (_, i) => `d${i}`);
+  make(dir, names.map((name) => `${name}/f.txt`));
+  let calls = 0;
+  const hang = fakeBatch(names);
+  batchOverride = (options) => {
+    calls += 1;
+    return hang(options);
+  };
+  t.after(() => {
+    batchOverride = null;
+  });
+  const result = flatten(dir);
+  assert.strictEqual(calls, 2);
+  assert.deepStrictEqual(result.removedFolders, []);
+  assert.strictEqual(result.keptFolders.length, 6);
+  assert.match(result.keptFolders.at(-1).reason, /2번 연속 걸려/);
+});
+
 test('flatten은 시간 제한이 아닌 실패로 일부만 보고되면 나머지를 실패로 남기고 장치 이름 항목을 알린다', { skip: !isWindows }, (t) => {
   const dir = tempDir();
   make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt']);

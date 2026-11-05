@@ -525,7 +525,7 @@ const FOLDER_BATCH_STATUS = new Set(['ok', 'moved', 'notdir', 'filled', 'gone', 
 
 const RECYCLE_FOLDERS_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 if (-not [Environment]::UserInteractive) { exit 75 }
-Add-Type -AssemblyName Microsoft.VisualBasic
+try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { exit 76 }
 try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
 public static class FcFinalPath {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);

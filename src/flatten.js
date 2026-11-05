@@ -589,6 +589,9 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     return report;
   }
   // 시간 제한에 걸린 묶음에서 손대지 않은 폴더(pending)는 다시 줄 세운다. 매번 하나 이상 끝나므로 언젠가 멈춘다.
+  // 묶음의 첫 폴더에서 바로 시간 제한에 걸리는 일이 연속되면(폴더마다 대화상자가 뜨는 등) 폴더 하나씩만 끝나 몇 시간이 걸리므로 멈춘다(2차 리뷰).
+  const MAX_STALLS = 2;
+  let stalls = 0;
   const queue = [...folders];
   while (queue.length > 0) {
     const batch = [];
@@ -626,6 +629,9 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       } else done(folder, FOLDER_STATUS_REASON[status]);
     }
     queue.unshift(...pending);
+    if (results[0]?.status === 'timeout') stalls += 1;
+    else stalls = 0;
+    if (stalls >= MAX_STALLS) blocked = `묶음의 첫 폴더에서 시간 제한에 ${MAX_STALLS}번 연속 걸려 나머지 빈 폴더를 지우지 않았습니다(오류 대화상자가 떴을 수 있습니다). 원인을 확인한 뒤 다시 실행하세요.`;
   }
   return report;
 }
