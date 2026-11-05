@@ -202,9 +202,31 @@ function planFlatten(dir) {
   return plan;
 }
 
-// 빈 파일로 자리를 먼저 확보한 뒤 그 위로 옮긴다. 이미 있으면(8.3 짧은 이름, 대소문자 포함) 아무것도 바꾸지 않고 false를 돌려준다.
-// renameSync는 대상을 덮어쓰고, linkSync 뒤 unlinkSync는 원본이 잠겨 있으면 두 이름으로 남는다.
+// 덮어쓰지 않고 옮긴다. 이미 있으면(8.3 짧은 이름, 대소문자 포함) 아무것도 바꾸지 않고 false를 돌려준다.
+// renameSync는 대상을 덮어쓰므로(폴더도 같은 이름의 파일을 덮어쓴다, 빌드 26200에서 확인) 그대로 쓰지 않는다.
+// 파일은 새 이름으로 하드링크를 만든 뒤 원래 이름을 지운다(#73). linkSync는 이름이 있으면 EEXIST로 실패하므로 끼어든 파일을 덮어쓰지 않고,
+// 중간에 꺼져도 같은 내용의 두 이름이 남을 뿐 빈 파일이 남지 않는다. 원본이 잠겨 원래 이름을 못 지우면 새 이름을 지워 되돌린다.
+// 하드링크를 못 만드는 경우(FAT32·exFAT, 클라우드 전용 파일 등)와 폴더는 빈 자리표시 파일을 먼저 만든 뒤 그 위로 옮긴다.
 function moveWithoutOverwrite(from, to) {
+  if (fs.lstatSync(from).isFile()) {
+    try {
+      fs.linkSync(from, to);
+    } catch (err) {
+      if (err.code === 'EEXIST') return false;
+      return moveOverPlaceholder(from, to);
+    }
+    try {
+      fs.unlinkSync(from);
+    } catch (err) {
+      removeNewName(from, to, err);
+      throw err;
+    }
+    return true;
+  }
+  return moveOverPlaceholder(from, to);
+}
+
+function moveOverPlaceholder(from, to) {
   try {
     fs.closeSync(fs.openSync(to, 'wx'));
   } catch (err) {
@@ -218,6 +240,46 @@ function moveWithoutOverwrite(from, to) {
     throw err;
   }
   return true;
+}
+
+// 같은 파일인지 파일 번호로 본다. Windows 파일 번호는 64비트라 bigint로 읽는다.
+function sameFile(a, b) {
+  const sa = fs.lstatSync(a, { bigint: true, throwIfNoEntry: false });
+  const sb = fs.lstatSync(b, { bigint: true, throwIfNoEntry: false });
+  return Boolean(sa && sb && sa.ino === sb.ino && sa.dev === sb.dev);
+}
+
+// 원래 이름을 지우지 못했으면 만든 하드링크를 지워 되돌린다. 그사이 새 이름이 다른 파일로 바뀌었으면 지우지 않는다.
+function removeNewName(from, to, cause) {
+  let ours;
+  try {
+    ours = sameFile(from, to);
+  } catch (err) {
+    throw new FcError(`옮기지 못했고 새 이름도 확인하지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+  }
+  if (!ours) {
+    if (!fs.lstatSync(to, { throwIfNoEntry: false })) return;
+    throw new FcError(`옮기지 못했고 새 이름이 그사이 다른 파일로 바뀌어 지우지 않았습니다: ${to} (${cause.code})`);
+  }
+  try {
+    fs.unlinkSync(to);
+  } catch (err) {
+    throw new FcError(`옮기지 못했고 새 이름도 지우지 못해 같은 파일이 두 이름으로 남았습니다: ${from}, ${to} (${cause.code}, ${err.code})`);
+  }
+}
+
+// 대상 이름이 이미 있을 때, 이전 실행이 중간에 멈춰 남긴 것으로 보이면 그 사실을 알리는 문구를 돌려준다(#73).
+function leftoverNote(from, to) {
+  try {
+    if (sameFile(from, to)) return ' (원본과 같은 파일의 다른 이름(하드링크)입니다. 이전 실행이 중간에 멈춘 흔적일 수 있어 한쪽 이름을 지우면 됩니다)';
+    const target = fs.lstatSync(to, { throwIfNoEntry: false });
+    if (target?.isFile() && target.size === 0 && fs.lstatSync(from).size > 0) {
+      return ' (그 이름은 빈 파일입니다. 이전 실행이 중간에 멈추며 남긴 자리표시일 수 있으니 확인한 뒤 지우고 다시 실행하세요)';
+    }
+  } catch {
+    // 알림 문구만 빠진다.
+  }
+  return '';
 }
 
 // 그사이 다른 프로그램이 내용을 썼다면 내 자리표시가 아니므로 지우지 않는다.
@@ -366,4 +428,4 @@ function formatFlatten(result) {
   return lines.join('\n');
 }
 
-module.exports = { planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, rejectRepository, looksLikeGitDir };
+module.exports = { planFlatten, detailedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir };

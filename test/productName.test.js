@@ -237,6 +237,10 @@ test('계획 뒤에 부모가 타겟 안의 정션으로 바뀌면 다른 파일
 test('이름 변경이 실패했을 때 자리표시에 다른 내용이 생겼으면 지우지 않는다', (t) => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4']);
+  // 하드링크를 못 만드는 드라이브(FAT32·exFAT 등)에서는 빈 자리표시를 먼저 만드는 방식으로 옮긴다.
+  t.mock.method(fs, 'linkSync', () => {
+    throw Object.assign(new Error('not supported'), { code: 'EPERM' });
+  });
   t.mock.method(fs, 'renameSync', (from, to) => {
     fs.writeFileSync(to, '새 내용');
     throw Object.assign(new Error('busy'), { code: 'EBUSY' });
@@ -340,10 +344,11 @@ test('같은 이름이 있으면 덮어쓰지 않고 건너뛴다', () => {
 test('계획 뒤에 이름이 차면 덮어쓰지 않고 실패로 보고한다', (t) => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
-  const openSync = fs.openSync;
-  t.mock.method(fs, 'openSync', (file, flags, ...rest) => {
-    if (flags === 'wx' && String(file).endsWith('ABC-123 a.mp4')) fs.writeFileSync(file, '새 내용');
-    return openSync(file, flags, ...rest);
+  // 덮어쓰지 않는 이동(하드링크, #73) 직전에 다른 프로그램이 같은 이름을 만든다.
+  const linkSync = fs.linkSync;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    if (String(to).endsWith('ABC-123 a.mp4')) fs.writeFileSync(to, '새 내용');
+    return linkSync(from, to);
   });
   const result = addProductNumbers(dir);
   t.mock.restoreAll();
@@ -353,14 +358,19 @@ test('계획 뒤에 이름이 차면 덮어쓰지 않고 실패로 보고한다'
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123', 'a.mp4'), 'utf8'), 'ABC-123/a.mp4');
 });
 
-test('이름 변경이 실패하면 자리표시를 지우고 나머지를 계속한다', (t) => {
+// 잠긴 파일처럼 원래 이름을 지우지 못하게 한다. 잠긴 파일도 하드링크는 만들어지고 지우기만 EBUSY로 실패한다.
+function lockSource(t, locked) {
+  const unlinkSync = fs.unlinkSync;
+  return t.mock.method(fs, 'unlinkSync', (p) => {
+    if (p === locked) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+    return unlinkSync(p);
+  });
+}
+
+test('이름 변경이 실패하면 만든 새 이름을 지우고 나머지를 계속한다', (t) => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
-  const renameSync = fs.renameSync;
-  t.mock.method(fs, 'renameSync', (from, to) => {
-    if (String(from).endsWith('a.mp4')) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-    return renameSync(from, to);
-  });
+  lockSource(t, path.join(dir, 'ABC-123', 'a.mp4'));
   const result = addProductNumbers(dir);
   t.mock.restoreAll();
   assert.match(result.failed[0].reason, /EBUSY/);
@@ -450,11 +460,9 @@ test('product-number 명령은 결과를 보여 주고 실패가 있으면 오�
   make(dir, ['ABC-123/a.mp4', 'b.avi']);
   assert.match(run(['product-number', dir, '--dry-run']), /\[미리보기\] 이름 변경 1개, 이미 있음 0개, 못 찾음 1개/);
   assert.deepStrictEqual(tree(dir), ['ABC-123/a.mp4', 'b.avi']);
-  const renameSync = t.mock.method(fs, 'renameSync', () => {
-    throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-  });
+  const locked = lockSource(t, path.join(dir, 'ABC-123', 'a.mp4'));
   assert.throws(() => run(['product-number', dir]), (err) => err instanceof FcError && /실패: .*EBUSY/.test(err.message));
-  renameSync.mock.restore();
+  locked.mock.restore();
   assert.match(run(['product-number', dir]), /못 찾음: b\.avi\n이름 변경 1개/);
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b.avi']);
 });
@@ -466,4 +474,22 @@ test('product-number 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['product-number', 'C:']), /드라이브 문자/);
   assert.throws(() => run(['product-number', dir, '--force']), /--force/);
   assert.throws(() => run(['product-number', dir, '--permanent']), /--permanent/);
+});
+
+test('product-number는 이전 실행이 중간에 멈춰 남긴 빈 파일과 같은 파일의 다른 이름을 사유를 구분해 알린다 (#73)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
+  // 예전 방식(빈 자리표시)으로 옮기다 멈춘 흔적
+  fs.writeFileSync(path.join(dir, 'ABC-123', 'ABC-123 a.mp4'), '');
+  // 지금 방식(하드링크)으로 옮기다 멈춘 흔적
+  fs.linkSync(path.join(dir, 'ABC-123', 'b.mp4'), path.join(dir, 'ABC-123', 'ABC-123 b.mp4'));
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.renamed, []);
+  const reason = (name) => result.skipped.find((item) => path.basename(item.path) === name)?.reason;
+  assert.match(reason('ABC-123 a.mp4'), /빈 파일입니다/);
+  assert.match(reason('a.mp4'), /같은 이름이 이미 있어 바꾸지 않습니다: ABC-123 a\.mp4 \(그 이름은 빈 파일입니다/);
+  assert.match(reason('b.mp4'), /같은 이름이 이미 있어 바꾸지 않습니다: ABC-123 b\.mp4 \(원본과 같은 파일의 다른 이름/);
+  // 하드링크로 남은 이름은 내용이 온전한 영상이라 이미 번호가 있는 것으로 센다.
+  assert.deepStrictEqual(result.already.map((item) => path.basename(item.path)), ['ABC-123 b.mp4']);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'ABC-123/ABC-123 b.mp4', 'ABC-123/a.mp4', 'ABC-123/b.mp4']);
 });
