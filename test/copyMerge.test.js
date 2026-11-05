@@ -141,3 +141,13 @@ test('cp --force의 합치기 검사는 원본 안의 정션 안으로 들어가
   junction(src, path.join(src, 'loop'));
   assert.match(fc.copy([src], dst, { force: true, dryRun: true })[0], /^\[미리보기\] 복사: /);
 });
+
+test('cp --force는 같은 원본을 두 번 줘도 자기 자신과 비교해 거부하지 않는다 (2차 리뷰, #140)', () => {
+  const { root, src, dst } = fixture();
+  fs.mkdirSync(path.join(root, 'elsewhere'));
+  junction(path.join(root, 'elsewhere'), path.join(src, 'j'));
+  fs.rmSync(path.join(dst, 'src'), { recursive: true });
+  fc.copy([src, src], dst, { force: true });
+  assert.ok(fs.existsSync(path.join(dst, 'src', 'j')));
+  assert.strictEqual(fs.readFileSync(path.join(dst, 'src', 'a.txt'), 'utf8'), 'A');
+});

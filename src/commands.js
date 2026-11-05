@@ -420,7 +420,9 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       const target = resolveDest(src, dest);
       checkOverwrite(src, target);
       const key = pathKey(target);
-      for (const before of earlier.get(key) ?? []) checkOverwrite(src, before, { hardLinks: false });
+      for (const before of earlier.get(key) ?? []) {
+        if (pathKey(before) !== pathKey(src)) checkOverwrite(src, before, { hardLinks: false });
+      }
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
