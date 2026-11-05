@@ -446,30 +446,41 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   });
 }
 
-// 폴더 아래에서 숨김이나 시스템 속성이 있는 항목을 폴더 기준 상대경로 Set으로 돌려준다(#65). Node는 파일 속성을 읽지 못해 PowerShell로 한 번에 읽는다.
-// 숨김·시스템 폴더 안쪽과 링크·정션은 따라 들어가지 않는다. 이름은 코드페이지에 상관없이 받도록 UTF-16을 base64로 받는다.
-// 경로가 260자를 넘어도 읽도록 \\?\ 경로로 넘긴다. 읽지 못하면 일부만 보고 진행하지 않게 오류를 낸다. Windows가 아니면 빈 Set이다.
-function hiddenOrSystemEntries(dir) {
-  if (!isWindows) return new Set();
-  const full = path.resolve(dir);
+// 타겟 아래 주어진 폴더들의 바로 안 항목 중 숨김(2)이나 시스템(4) 속성이 있는 것을 { 타겟 기준 상대경로 -> 속성 비트 } Map으로 돌려준다(#65).
+// Node는 파일 속성을 읽지 못해 PowerShell을 한 번 부른다. 어느 폴더를 볼지는 walk가 정한 폴더 목록(상대경로, 타겟 자신은 '')을 받는다.
+// PowerShell이 따로 재귀하면 OneDrive 폴더처럼 ReparsePoint 속성이 있지만 링크가 아닌 폴더에서 판단이 갈린다(1차 리뷰).
+// 이름은 코드페이지에 상관없이 주고받도록 UTF-16을 base64로 바꿔 stdin과 stdout으로 넘긴다. 260자를 넘어도 읽도록 \\?\ 경로를 쓴다.
+// 폴더 하나라도 읽지 못하면 일부만 보고 진행하지 않게 오류를 낸다. Windows가 아니면 빈 Map이다.
+// 드라이브 루트(Q:\)처럼 끝에 구분자가 남는 경로도 상대경로가 잘리지 않게 끝 구분자를 뗀다(1차 리뷰).
+function hiddenOrSystemEntries(dir, folders = ['']) {
+  if (!isWindows) return new Map();
+  const full = path.resolve(dir).replace(/[\\/]+$/, '');
   const root = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
   const script =
-    "$ErrorActionPreference = 'Stop'; try { $root = $env:FC_ROOT; $stack = [Collections.Stack]::new(); $stack.Push($root); " +
-    'while ($stack.Count -gt 0) { foreach ($e in [IO.DirectoryInfo]::new($stack.Pop()).EnumerateFileSystemInfos()) { $a = [int]$e.Attributes; ' +
-    'if ($a -band 6) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($e.FullName.Substring($root.Length + 1))) } ' +
-    'elseif (($a -band 16) -and -not ($a -band 1024)) { $stack.Push($e.FullName) } } } } catch { exit 3 }';
+    "$ErrorActionPreference = 'Stop'; try { $root = $env:FC_ROOT; $u = [Text.Encoding]::Unicode; " +
+    'foreach ($line in $input) { if (-not $line) { continue }; $rel = $u.GetString([Convert]::FromBase64String($line)); if ($rel -eq ".") { $rel = "" }; ' +
+    'foreach ($e in [IO.DirectoryInfo]::new($root + "\\" + $rel).EnumerateFileSystemInfos()) { $a = [int]$e.Attributes -band 6; ' +
+    'if ($a) { $name = if ($rel) { $rel + "\\" + $e.Name } else { $e.Name }; "$a " + [Convert]::ToBase64String($u.GetBytes($name)) } } } } catch { exit 3 }';
+  // 빈 상대경로는 빈 줄이 되므로 타겟 자신은 '.'으로 넘긴다. 실제 폴더 이름은 '.'일 수 없다.
+  const input = folders.map((folder) => Buffer.from(folder === '' ? '.' : folder, 'utf16le').toString('base64')).join('\n') + '\n';
   let output;
   try {
     output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_ROOT: root },
+      input,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['pipe', 'pipe', 'ignore'],
       maxBuffer: 256 * 1024 * 1024,
     });
   } catch (err) {
     throw new FcError(`숨김·시스템 속성을 확인할 수 없습니다: ${full} (${err.code ?? err.status})`);
   }
-  return new Set(output.split(/\s+/).filter(Boolean).map((line) => Buffer.from(line, 'base64').toString('utf16le')));
+  const found = new Map();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^([246]) ([A-Za-z0-9+/=]+)$/.exec(line.trim());
+    if (match) found.set(Buffer.from(match[2], 'base64').toString('utf16le'), Number(match[1]));
+  }
+  return found;
 }
 
 // 휴지통 이동(Microsoft.VisualBasic DeleteFile)이 받는 경로 길이의 한도. MAX_PATH(260, 끝의 NUL 포함)를 넘으면

@@ -109,9 +109,11 @@ const PROGRAM_FOLDER = /^(?:node_modules|bower_components|__pycache__|site-packa
 const PROJECT_FILE = /^(?:package\.json|pyvenv\.cfg|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|CMakeLists\.txt|composer\.json|Gemfile|.+\.(?:sln|csproj|vcxproj|fsproj|vbproj))$/i;
 
 // 옮기지 않고 통째로 남길 폴더를 { 상대경로 -> 사유 }로 돌려준다(#65). 프로그램 폴더, 프로젝트 폴더, 실행 파일과 DLL이 함께 든 폴더,
-// 숨김·시스템 속성 폴더다. 안쪽만 남기고 옆 파일을 꺼내도 프로그램이 깨지므로 그 폴더 아래 전체를 남긴다.
+// 숨김 속성 폴더다. 안쪽만 남기고 옆 파일을 꺼내도 프로그램이 깨지므로 그 폴더 아래 전체를 남긴다.
+// 시스템 속성만 있는 폴더는 폴더 아이콘을 꾸밀 때 흔히 붙으므로(desktop.ini와 함께) 일반 폴더로 다룬다(1차 리뷰).
+// attributes는 hiddenOrSystemEntries가 돌려준 { 상대경로 -> 속성 비트(숨김 2, 시스템 4) }다.
 // 타겟 자신이 이런 폴더이거나 프로그램 폴더 안이면 모든 하위 폴더가 프로그램의 일부라 거부한다.
-function guardedFolders(target, entries, hidden) {
+function guardedFolders(target, entries, attributes) {
   for (let dir = target; ; dir = path.dirname(dir)) {
     if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
     if (dir === path.dirname(dir)) break;
@@ -126,7 +128,7 @@ function guardedFolders(target, entries, hidden) {
     const parent = path.dirname(entry.relative);
     if (entry.type === 'dir') {
       if (PROGRAM_FOLDER.test(name)) add(entry.relative, `프로그램 폴더(${name})`);
-      else if (hidden.has(entry.relative)) add(entry.relative, '숨김·시스템 속성 폴더');
+      else if ((attributes.get(entry.relative) ?? 0) & 2) add(entry.relative, '숨김 속성 폴더');
       continue;
     }
     if (entry.type !== 'file') continue;
@@ -217,8 +219,10 @@ function planFlatten(dir) {
   const access = grant(dir, ['read', 'write']);
   const entries = walk(access.target);
   rejectRepository(access.target, entries);
-  const hidden = hiddenOrSystemEntries(access.target);
-  const guarded = guardedFolders(access.target, entries, hidden);
+  // walk가 폴더로 본 곳을 그대로 넘겨 두 판정이 갈리지 않게 한다. node_modules 같은 폴더 안은 통째로 남기므로 보지 않는다.
+  const folders = [''].concat(entries.filter((entry) => entry.type === 'dir' && !entry.relative.split(path.sep).some((part) => PROGRAM_FOLDER.test(part))).map((entry) => entry.relative));
+  const attributes = hiddenOrSystemEntries(access.target, folders);
+  const guarded = guardedFolders(access.target, entries, attributes);
   const guardItems = new Map();
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
@@ -267,7 +271,7 @@ function planFlatten(dir) {
       plan.skipped.push({ path: entry.path, reason: '폴더 설정·미리보기 파일이라 옮기지 않습니다. 폴더가 비면 폴더와 함께 휴지통으로 갑니다.' });
       continue;
     }
-    if (hidden.has(entry.relative)) {
+    if (attributes.has(entry.relative)) {
       plan.skipped.push({ path: entry.path, reason: '숨김·시스템 속성 파일이라 옮기지 않습니다.' });
       continue;
     }
@@ -297,6 +301,10 @@ function planFlatten(dir) {
     item.reason = `${item.label}라 안의 파일 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
     delete item.label;
     delete item.count;
+  }
+  // 파일이 없는 남길 폴더도 지우지 않는다는 것을 알린다. 다른 남길 폴더 안에 든 것은 바깥 폴더로 이미 알렸다.
+  for (const [relative, label] of guarded) {
+    if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `${label}라 폴더째 남깁니다.` });
   }
   return plan;
 }

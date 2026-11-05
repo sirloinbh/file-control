@@ -13,7 +13,13 @@ const recycled = [];
 // 휴지통 호출 때 끼어들 동작. 테스트마다 정한다.
 let onRecycle = () => {};
 const execFileSync = childProcess.execFileSync;
+// 숨김·시스템 속성 읽기(FC_ROOT)에 끼어들 동작. 값을 돌려주면 PowerShell 대신 그 값을 쓴다.
+let onAttributes = null;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_ROOT !== undefined && onAttributes) {
+    const result = onAttributes(options);
+    if (result !== undefined) return result;
+  }
   if (options?.env?.FC_TARGET === undefined) {
     if (String(args?.at(-1)).includes('SendToRecycleBin')) throw new Error('휴지통 호출이 가짜를 빠져나감');
     return execFileSync(file, args, options);
@@ -1584,9 +1590,10 @@ test('flatten은 숨김·시스템 속성 파일을 옮기지 않고, 그런 폴
   assert.deepStrictEqual(moves(plan), [['a/plain.txt', 'plain.txt'], ['b/v.mp4', 'v.mp4'], ['c/f.txt', 'f.txt']]);
   assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
     [path.join('a', 'secret.txt'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
-    [path.join('b', '.cache'), '숨김·시스템 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('b', '.cache'), '숨김 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
     [path.join('b', 's.sys'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
-    ['숨김😀', '숨김·시스템 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    ['숨김😀', '숨김 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('c', '.empty'), '숨김 속성 폴더라 폴더째 남깁니다.'],
   ]);
   const result = flatten(dir);
   assert.deepStrictEqual(result.removedFolders, []);
@@ -1605,4 +1612,56 @@ test('flatten은 경로가 260자를 넘는 숨김 파일도 알아본다', { sk
   const plan = planFlatten(dir);
   assert.deepStrictEqual(plan.moves.map((move) => move.name), ['plain.txt']);
   assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)), [path.join(deep, 'long.txt')]);
+});
+
+test('flatten은 시스템 속성만 있는 폴더(아이콘을 꾸민 폴더)를 일반 폴더로 다룬다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/abc_123.mp4', 'ABC-123 제목/desktop.ini']);
+  execFileSync('attrib', ['+s', path.join(dir, 'ABC-123 제목')]);
+  execFileSync('attrib', ['+h', '+s', path.join(dir, 'ABC-123 제목', 'desktop.ini')]);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['ABC-123 제목/abc_123.mp4', 'ABC-123 제목.mp4']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)), [path.join('ABC-123 제목', 'desktop.ini')]);
+  assert.match(plan.skipped[0].reason, /폴더 설정·미리보기 파일/);
+});
+
+// 1차 리뷰: OneDrive 폴더는 ReparsePoint 속성이 있어도 walk가 폴더로 본다. 속성 읽기가 따로 재귀하지 않고 walk가 본 폴더를 모두 받는지 확인한다.
+test('flatten은 walk가 폴더로 본 곳을 모두 속성 읽기에 넘기고, 프로그램 폴더 안은 넘기지 않는다', { skip: !isWindows && 'Windows 파일 속성' }, (t) => {
+  const dir = tempDir();
+  make(dir, ['a/b/c/x.txt', 'd/y.txt', 'p/node_modules/m/i.js']);
+  let asked;
+  onAttributes = (options) => {
+    asked = options.input.trim().split('\n').map((line) => Buffer.from(line, 'base64').toString('utf16le'));
+    return '2 ' + Buffer.from(path.join('a', 'b', 'c', 'x.txt'), 'utf16le').toString('base64') + '\r\n';
+  };
+  t.after(() => {
+    onAttributes = null;
+  });
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(asked, ['.', 'a', path.join('a', 'b'), path.join('a', 'b', 'c'), 'd', 'p']);
+  assert.deepStrictEqual(moves(plan), [['d/y.txt', 'y.txt']]);
+  assert.match(plan.skipped.find((item) => item.path.endsWith('x.txt')).reason, /숨김·시스템 속성 파일/);
+});
+
+test('flatten은 숨김·시스템 속성을 읽지 못하면 아무것도 옮기지 않고 오류를 낸다', { skip: !isWindows && 'Windows 파일 속성' }, (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt']);
+  onAttributes = () => {
+    throw Object.assign(new Error('실패'), { status: 3 });
+  };
+  t.after(() => {
+    onAttributes = null;
+  });
+  for (const dryRun of [true, false]) assert.throws(() => flatten(dir, { dryRun }), /숨김·시스템 속성을 확인할 수 없습니다: .* \(3\)/);
+  assert.deepStrictEqual(contents(dir), { 'a/x.txt': 'a/x.txt', 'b/y.txt': 'b/y.txt' });
+});
+
+test('flatten은 파일이 없는 프로그램 폴더도 남긴다고 알린다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  fs.mkdirSync(path.join(dir, 'a', 'node_modules', 'empty'), { recursive: true });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.skipped, [{ path: path.join(dir, 'a', 'node_modules'), reason: '프로그램 폴더(node_modules)라 폴더째 남깁니다.' }]);
+  assert.deepStrictEqual(result.removedFolders, []);
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'node_modules', 'empty')));
 });
