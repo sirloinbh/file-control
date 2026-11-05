@@ -291,17 +291,36 @@ function walk(dir) {
   return listEntries(resolveTarget(dir)).sort((a, b) => compareRelative(a.relative, b.relative));
 }
 
+// 하위 폴더는 목록에 올린 뒤 나중에 읽으므로, 그 사이에 폴더가 링크·정션으로 바뀌면 다른 곳을 읽게 된다(#46).
+// 읽기 전과 읽은 뒤에 실제 경로가 그 자리 그대로인지 보고, 달라졌으면 목록을 내지 않고 오류를 낸다.
+// root는 resolveTarget이나 realInside가 돌려준 실제 경로라서, 바뀌지 않은 하위 폴더의 실제 경로는 root 아래 그 이름 그대로다.
+function ensureUnmoved(root, dir) {
+  let real;
+  try {
+    real = fs.realpathSync.native(dir);
+  } catch (err) {
+    throw new FcError(`폴더를 읽을 수 없습니다: ${dir} (${err.code})`);
+  }
+  if (real !== dir) {
+    const where = isInside(root, real) ? '타겟 안의 다른 곳' : '타겟 밖';
+    throw new FcError(`읽는 도중 폴더가 링크로 바뀌어 ${where}을 가리킵니다. 아무것도 다루지 않았습니다: ${dir} -> ${real}`);
+  }
+}
+
 function listEntries(root) {
   const entries = [];
   const pending = [''];
   while (pending.length > 0) {
     const relDir = pending.pop();
+    const dir = path.join(root, relDir);
+    if (relDir !== '') ensureUnmoved(root, dir);
     let dirents;
     try {
-      dirents = fs.readdirSync(path.join(root, relDir), { withFileTypes: true });
+      dirents = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
-      throw new FcError(`폴더를 읽을 수 없습니다: ${path.join(root, relDir)} (${err.code})`);
+      throw new FcError(`폴더를 읽을 수 없습니다: ${dir} (${err.code})`);
     }
+    if (relDir !== '') ensureUnmoved(root, dir);
     for (const dirent of dirents) {
       const relative = path.join(relDir, dirent.name);
       const type = dirent.isSymbolicLink() ? 'link' : dirent.isDirectory() ? 'dir' : 'file';
