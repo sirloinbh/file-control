@@ -60,7 +60,7 @@ function writeVui(w, sar) {
 function avcSps({ profile = 100, width = 1920, height = 1088, crop = null, pocType = 0, frameMbsOnly = 1, chroma = 1, scaling = null, sar } = {}) {
   const w = bitWriter();
   w.u(8, profile).u(8, 0).u(8, 40).ue(0);
-  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profile)) {
+  if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144].includes(profile)) {
     w.ue(chroma);
     if (chroma === 3) w.u(1, 0);
     w.ue(0).ue(0).u(1, 0);

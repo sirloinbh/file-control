@@ -18,7 +18,7 @@ test('H.264 SPS: 표의 화소 비율과 직접 적은 비율을 읽는다 (#113
 });
 
 test('H.264 SPS: 프로필, scaling list, POC 종류, 필드 부호화, 자르기에 따라 달라지는 앞부분을 건너뛴다 (#113)', () => {
-  for (const profile of [66, 77, 100, 110, 122, 244]) assert.deepStrictEqual(avc({ profile, sar: 14 }), { h: 4, v: 3 }, `profile ${profile}`);
+  for (const profile of [66, 77, 100, 110, 122, 244, 144]) assert.deepStrictEqual(avc({ profile, sar: 14 }), { h: 4, v: 3 }, `profile ${profile}`);
   for (const pocType of [0, 1, 2]) assert.deepStrictEqual(avc({ pocType, sar: 14 }), { h: 4, v: 3 }, `poc ${pocType}`);
   assert.deepStrictEqual(avc({ frameMbsOnly: 0, sar: 14 }), { h: 4, v: 3 });
   assert.deepStrictEqual(avc({ crop: [0, 0, 0, 4], sar: 14 }), { h: 4, v: 3 });
@@ -80,6 +80,10 @@ test('잘리거나 틀린 SPS와 설정 상자는 null이고 예외를 내지 �
   assert.strictEqual(spsAspect('avcC', Buffer.from([...config.subarray(0, 5), 0xe0])), null);
   assert.strictEqual(spsAspect('avcC', avcC(Buffer.from([0x68, ...sps.subarray(1)]))), null);
   assert.strictEqual(spsAspect('hvcC', hvcC(Buffer.from([0x40, ...hevcNal.subarray(1)]))), null);
+  // hvcC 버전 0(초안 시절 먹서)은 받고, 2 이상은 받지 않는다.
+  const hevcConfig = hvcC(hevcNal);
+  assert.deepStrictEqual(spsAspect('hvcC', Buffer.from([0, ...hevcConfig.subarray(1)])), { h: 32, v: 27 });
+  assert.strictEqual(spsAspect('hvcC', Buffer.from([2, ...hevcConfig.subarray(1)])), null);
   // 여러 계층 SPS(nuh_layer_id > 0)는 구조가 달라 읽지 않는다.
   assert.strictEqual(hevc({ layer: 1, sar: [32, 27] }), null);
   assert.strictEqual(spsAspect('esds', config), null);

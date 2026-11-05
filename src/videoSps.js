@@ -95,8 +95,8 @@ function skipAvcScalingList(r, size) {
   }
 }
 
-// chroma_format_idc 등이 있는 높은 프로필
-const AVC_HIGH_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]);
+// chroma_format_idc 등이 있는 높은 프로필. 144는 2007년에 빠진 옛 High 4:4:4이지만 같은 구조라 FFmpeg처럼 받는다.
+const AVC_HIGH_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
 // H.264 SPS (7.3.2.1.1). nal은 NAL 머리 1바이트를 포함한다.
 function avcAspect(nal) {
@@ -257,8 +257,9 @@ function firstAvcSps(config) {
 }
 
 // hvcC: 22바이트 머리, 배열 개수 1바이트, 배열마다 [종류 1바이트, NAL 개수 2바이트, [길이 2바이트, NAL]...].
+// 초안 시절 먹서가 configurationVersion을 0으로 적은 파일이 있어 0도 받는다(FFmpeg와 같다).
 function firstHevcSps(config) {
-  if (config.length < 23 || config[0] !== 1) return null;
+  if (config.length < 23 || config[0] > 1) return null;
   let offset = 23;
   for (let array = 0; array < config[22]; array += 1) {
     if (offset + 3 > config.length) return null;

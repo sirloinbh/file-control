@@ -193,17 +193,27 @@ function readStsd(read, p, box) {
   return sample;
 }
 
-// 화소 하나의 가로:세로 비율을 고른다. 컨테이너 값을 영상 데이터 값보다 먼저 쓴다(FFmpeg가 pasp를 SPS보다 먼저 쓰는 것과 같다).
+// 화소 비율을 곱한 너비 (정사각형 화소면 그대로)
+const stretched = (width, aspect) => (Math.abs(aspect - 1) > 1e-9 ? Math.max(1, Math.round(width * aspect)) : width);
+
+// 회전을 걸기 전의 보이는 크기. 화소 비율은 컨테이너 값을 영상 데이터 값보다 먼저 쓴다(FFmpeg가 pasp를 SPS보다 먼저 쓰는 것과 같다).
 // 1. pasp: 화소 비율을 직접 적은 값이다. 1:1이면 정사각형 화소로 본다.
-// 2. tkhd 화면 크기가 인코딩 해상도와 다르면 그 비율. 규격상 표본 그림은 이 크기로 늘여 보여 준다. pasp 없이 tkhd에만 화소 비율을 반영한 파일이 있다.
+// 2. tkhd 화면 크기가 인코딩 해상도와 다르면 그 크기. 규격상 표본 그림은 이 크기로 늘여 보여 준다. pasp 없이 tkhd에만 화소 비율을 반영한 파일이 있다.
+//    너비와 높이를 같은 배율로 바꾼 크기는 화소 비율 1로 보고 인코딩 해상도를 쓴다.
+//    회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일(너비와 높이가 바뀐 비율)은 화소 비율이 아니라서 쓰지 않는다.
 // 3. SPS의 화소 비율(VUI). pasp도 없고 tkhd도 인코딩 해상도와 같을 때 쓴다(ffmpeg로 만든 일부 파일).
-function pixelAspect(sample, header) {
-  if (sample.pasp) return sample.pasp.h / sample.pasp.v;
+function unrotatedSize(sample, header, turned) {
+  const { width, height } = sample;
+  if (sample.pasp) return [stretched(width, sample.pasp.h / sample.pasp.v), height];
   if (header && header.exactWidth > 0 && header.exactHeight > 0 && (header.width !== sample.width || header.height !== sample.height)) {
-    return (header.exactWidth * sample.height) / (header.exactHeight * sample.width);
+    const aspect = (header.exactWidth * height) / (header.exactHeight * width);
+    const swapped = (header.exactWidth * width) / (header.exactHeight * height);
+    if (turned && Math.abs(swapped - 1) < 0.01) return [width, height];
+    if (Math.abs(aspect - 1) < 1e-9) return [width, height];
+    return [Math.max(1, Math.round(header.exactWidth)), Math.max(1, Math.round(header.exactHeight))];
   }
-  if (sample.spsAspect) return sample.spsAspect.h / sample.spsAspect.v;
-  return 1;
+  if (sample.spsAspect) return [stretched(width, sample.spsAspect.h / sample.spsAspect.v), height];
+  return [width, height];
 }
 
 // movieTurn은 mvhd 행렬의 회전이다. 트랙 행렬과 함께 걸리므로 둘 중 하나만 90·270도이면 너비와 높이가 바뀐다.
@@ -233,12 +243,11 @@ function readTrack(read, p, trak, movieTurn) {
   const width = sample?.width || header?.width || 0;
   const height = sample?.height || header?.height || 0;
   if (width === 0 || height === 0) return null;
-  // 보이는 크기. 인코딩 해상도의 너비에 화소 비율을 곱하고, 90·270도 회전이면 너비와 높이를 바꾼다.
-  // tkhd 크기를 쓴 경우는 이미 보이는 크기라 화소 비율을 다시 곱하지 않는다.
-  const aspect = sample?.width ? pixelAspect(sample, header) : 1;
-  const shownWidth = Math.abs(aspect - 1) > 1e-9 ? Math.max(1, Math.round(width * aspect)) : width;
+  // 보이는 크기. 화소 비율을 반영하고(unrotatedSize), 90·270도 회전이면 너비와 높이를 바꾼다.
+  // 인코딩 해상도가 0이라 tkhd 크기를 쓴 경우는 이미 보이는 크기라 화소 비율을 다시 곱하지 않는다.
   const turned = Boolean(header?.quarterTurn) !== Boolean(movieTurn);
-  const [displayWidth, displayHeight] = turned ? [height, shownWidth] : [shownWidth, height];
+  const [shownWidth, shownHeight] = sample?.width && sample?.height ? unrotatedSize(sample, header, turned) : [width, height];
+  const [displayWidth, displayHeight] = turned ? [shownHeight, shownWidth] : [shownWidth, shownHeight];
   return { width, height, displayWidth, displayHeight, enabled: header?.enabled ?? true, duration: header?.duration ?? 0 };
 }
 

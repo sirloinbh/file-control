@@ -605,6 +605,15 @@ test('보이는 크기: tkhd 화면 크기가 인코딩 해상도와 다르면 �
   assert.deepStrictEqual(size({ display: { width: 640, height: 480 } }), [720, 480, 640, 480]);
   // 너비와 높이를 같은 배율로 줄이면 화소 비율은 1이다.
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ display: { width: 1280, height: 720 } })))), [1920, 1080, 1920, 1080]);
+  // 부호화 크기(1920x1088)를 적고 tkhd에 보이는 크기(1920x1080)를 적은 파일은 tkhd 크기를 그대로 보인다.
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ width: 1920, height: 1088, display: { width: 1920, height: 1080 } })))), [1920, 1088, 1920, 1080]);
+  // 회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일은 화소 비율로 보지 않는다(예전과 같이 세로로 보인다).
+  for (const rotate of [90, 270]) {
+    assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 }, rotate }), [1920, 1080, 1080, 1920], `${rotate}도`);
+  }
+  assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ display: { width: 1080, height: 1920 } })))), [1920, 1080, 1080, 1920]);
+  // 회전하지 않는 영상의 바뀐 비율은 화소 비율로 본다.
+  assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 } }), [1920, 1080, 1080, 1920]);
   // tkhd 크기가 0이면 쓰지 않는다.
   assert.deepStrictEqual(size({ display: { width: 0, height: 0 }, config: h264([32, 27]) }), [720, 480, 853, 480]);
 });
