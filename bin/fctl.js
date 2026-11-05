@@ -99,7 +99,8 @@ function readStdin() {
   return require('node:fs').readFileSync(0, 'utf8');
 }
 
-function run(argv) {
+// progress(line)를 주면 오래 걸리는 명령(flatten)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67).
+function run(argv, { progress } = {}) {
   const { command, args, flags, unchecked, confirm } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
@@ -152,7 +153,7 @@ function run(argv) {
       return fc.zip(args[0], args.slice(1), { force, dryRun });
     case 'flatten': {
       checkWholeTarget(command, args, flags);
-      const result = flatten(args[0], { dryRun });
+      const result = flatten(args[0], { dryRun, onProgress: progress });
       const report = formatFlatten(result);
       // 일부가 실패하면 옮긴 내용까지 보여 주고 실패로 끝낸다.
       if (result.failed.length > 0 || result.keptFolders.length > 0) throw new fc.FcError(report);
@@ -219,7 +220,8 @@ function run(argv) {
 
 if (require.main === module) {
   try {
-    const output = run(process.argv.slice(2));
+    // 진행 줄은 표준 오류로 낸다. 표준 출력의 마지막 보고는 그대로 두고, 중간에 끊겨도 이미 한 일이 화면에 남는다.
+    const output = run(process.argv.slice(2), { progress: (line) => process.stderr.write(`진행: ${line}\n`) });
     if (output) console.log(output);
   } catch (err) {
     if (err.output) console.log(err.output);

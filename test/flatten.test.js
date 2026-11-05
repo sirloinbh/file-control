@@ -15,10 +15,46 @@ let onRecycle = () => {};
 const execFileSync = childProcess.execFileSync;
 // 숨김·시스템 속성 읽기(FC_ROOT)에 끼어들 동작. 값을 돌려주면 PowerShell 대신 그 값을 쓴다.
 let onAttributes = null;
+let volumeState = 'True|Fixed\r\n';
+// 일괄 이동 한 번에 넘긴 폴더 수
+const batchCalls = [];
+// 일괄 이동 호출을 통째로 바꿀 때 쓴다(시간 초과 흉내 등).
+let batchOverride = null;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_ROOT !== undefined && onAttributes) {
     const result = onAttributes(options);
     if (result !== undefined) return result;
+  }
+  // 휴지통 상태 확인은 기다리지 않게 고정 디스크로 답한다. volumeState를 바꿔 다른 드라이브를 흉내 낸다.
+  if (options?.env?.FC_VOLUME !== undefined) return volumeState;
+  // 빈 폴더 일괄 이동(#67). PowerShell이 지우기 직전에 하는 검사(실제 경로, 폴더 여부, 안의 파일·링크)를 흉내 낸다.
+  if (options?.env?.FC_BATCH !== undefined && batchOverride) return batchOverride(options, file, args);
+  if (options?.env?.FC_BATCH !== undefined) {
+    assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
+    batchCalls.push(options.input.trim().split('\n').length);
+    const lines = [];
+    for (const line of options.input.split('\n').filter(Boolean)) {
+      const folder = Buffer.from(line, 'base64').toString('utf16le');
+      let status;
+      try {
+        onRecycle(folder);
+        const stat = fs.lstatSync(folder, { throwIfNoEntry: false });
+        if (!stat) status = 'gone';
+        else if (!stat.isDirectory() && !stat.isSymbolicLink()) status = 'notdir';
+        else if (fs.realpathSync.native(folder) !== folder) status = 'moved';
+        else if (fs.readdirSync(folder, { recursive: true, withFileTypes: true }).some((entry) => entry.isSymbolicLink() || (!entry.isDirectory() && !/^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i.test(entry.name)))) status = 'filled';
+        else {
+          recycled.push(folder);
+          fs.rmSync(folder, { recursive: true });
+          status = 'ok';
+        }
+      } catch (err) {
+        if (err.status === 75) throw err;
+        status = 'error';
+      }
+      lines.push(`${status} ${line}`);
+    }
+    return lines.join('\r\n') + '\r\n';
   }
   if (options?.env?.FC_TARGET === undefined) {
     if (String(args?.at(-1)).includes('SendToRecycleBin')) throw new Error('휴지통 호출이 가짜를 빠져나감');
@@ -34,7 +70,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   return undefined;
 });
 
-const { FcError, hiddenOrSystemEntries } = require('../src/commands');
+const { FcError, hiddenOrSystemEntries, recycleEmptyFolders, RECYCLE_FOLDERS_SCRIPT } = require('../src/commands');
 const { planFlatten, detailedName, prefixedName, flatten, formatFlatten, moveWithoutOverwrite, leftoverNote } = require('../src/flatten');
 const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
@@ -1775,4 +1811,192 @@ test('flatten은 자막 폴더 이름을 붙이지 않고, 접두어도 바깥 �
   const dir = tempDir();
   make(dir, ['Show/video.mp4', 'Show/Subs/video.en.srt', 'ABC-123/Extras/video.mp4', 'ABC-123/Extras/sample.mp4']);
   assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 sample.mp4', 'ABC-123 video.mp4', 'Show video.en.srt', 'Show video.mp4']);
+});
+
+// #67: 빈 폴더를 묶어서 휴지통으로, 진행 보고, 휴지통 없는 드라이브, 시간 제한
+test('flatten은 빈 폴더를 100개씩 묶어 PowerShell 한 번에 휴지통으로 보낸다', () => {
+  const dir = tempDir();
+  make(dir, Array.from({ length: 250 }, (_, i) => `d${String(i).padStart(3, '0')}/f${i}.txt`));
+  batchCalls.length = 0;
+  recycled.length = 0;
+  const result = flatten(dir);
+  assert.deepStrictEqual(batchCalls, [100, 100, 50]);
+  assert.strictEqual(result.removedFolders.length, 250);
+  assert.strictEqual(recycled.length, 250);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((name) => fs.statSync(path.join(dir, name)).isDirectory()), []);
+});
+
+test('flatten은 고정 디스크가 아니거나 종류를 모르는 드라이브에서는 빈 폴더를 지우지 않는다', (t) => {
+  t.after(() => {
+    volumeState = 'True|Fixed\r\n';
+  });
+  for (const [state, pattern] of [['True|Removable\r\n', /드라이브\(Removable\)/], ['', /종류를 알 수 없음/], ['False|Fixed\r\n', /대화형 세션이 아니면/]]) {
+    const dir = tempDir();
+    make(dir, ['a/x.txt', 'b/y.txt']);
+    volumeState = state;
+    batchCalls.length = 0;
+    const result = flatten(dir);
+    assert.deepStrictEqual(batchCalls, []);
+    assert.deepStrictEqual(result.removedFolders, []);
+    assert.ok(result.keptFolders.length > 0 && result.keptFolders.every((item) => pattern.test(item.reason)), state);
+    assert.ok(fs.existsSync(path.join(dir, 'a')));
+  }
+});
+
+// 묶음 호출을 흉내 낸다. hang에 든 이름의 폴더에서 멈춘 것처럼 시간 제한 오류를 낸다. 그 앞 폴더는 지우고 보고한다.
+function fakeBatch(hang) {
+  return (options) => {
+    const lines = [];
+    for (const line of options.input.split('\n').filter(Boolean)) {
+      const folder = Buffer.from(line, 'base64').toString('utf16le');
+      if (hang.includes(path.basename(folder))) throw Object.assign(new Error('spawnSync powershell ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM', stdout: lines.join('\r\n') + '\r\n' });
+      fs.rmSync(folder, { recursive: true });
+      lines.push('ok ' + line);
+    }
+    return lines.join('\r\n') + '\r\n';
+  };
+}
+
+test('flatten은 일괄 이동이 시간 제한에 걸리면 처리 중이던 폴더만 남기고 뒤의 폴더는 다시 보낸다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt', 'd/w.txt']);
+  batchOverride = fakeBatch(['b']);
+  t.after(() => {
+    batchOverride = null;
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, ['a', 'c', 'd'].map((name) => path.join(dir, name)));
+  assert.deepStrictEqual(result.keptFolders.map((item) => path.basename(item.path)), ['b']);
+  assert.match(result.keptFolders[0].reason, /시간 제한에 걸려/);
+  assert.ok(fs.existsSync(path.join(dir, 'b')));
+});
+
+test('flatten은 멈추는 폴더가 여럿이어도 순서대로 다시 보내고 진행 줄을 한 번씩만 낸다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/1.txt', 'b/2.txt', 'c/3.txt', 'd/4.txt', 'e/5.txt']);
+  batchOverride = fakeBatch(['b', 'd']);
+  t.after(() => {
+    batchOverride = null;
+  });
+  const lines = [];
+  const result = flatten(dir, { onProgress: (line) => lines.push(line) });
+  assert.deepStrictEqual(result.removedFolders, ['a', 'c', 'e'].map((name) => path.join(dir, name)));
+  assert.deepStrictEqual(result.keptFolders.map((item) => path.basename(item.path)), ['b', 'd']);
+  const folderLines = lines.filter((line) => !line.startsWith('이동: '));
+  assert.deepStrictEqual(folderLines.map((line) => line.split(' (')[0]), ['빈 폴더를 휴지통으로: a', '폴더 남김: b', '빈 폴더를 휴지통으로: c', '폴더 남김: d', '빈 폴더를 휴지통으로: e']);
+});
+
+test('flatten은 묶음의 첫 폴더에서 시간 제한이 연속되면 나머지를 보내지 않는다', (t) => {
+  const dir = tempDir();
+  const names = Array.from({ length: 6 }, (_, i) => `d${i}`);
+  make(dir, names.map((name) => `${name}/f.txt`));
+  let calls = 0;
+  const hang = fakeBatch(names);
+  batchOverride = (options) => {
+    calls += 1;
+    return hang(options);
+  };
+  t.after(() => {
+    batchOverride = null;
+  });
+  const result = flatten(dir);
+  assert.strictEqual(calls, 2);
+  assert.deepStrictEqual(result.removedFolders, []);
+  assert.strictEqual(result.keptFolders.length, 6);
+  assert.match(result.keptFolders.at(-1).reason, /2번 연속 걸려/);
+});
+
+test('flatten은 시간 제한이 아닌 실패로 일부만 보고되면 나머지를 실패로 남기고 장치 이름 항목을 알린다', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt']);
+  batchOverride = (options) => {
+    const [first] = options.input.split('\n');
+    fs.rmSync(Buffer.from(first, 'base64').toString('utf16le'), { recursive: true });
+    // 휴지통 이동이 실패한 폴더 안에 장치 이름 그대로인 빈 폴더가 생긴 것처럼 만든다.
+    fs.mkdirSync('\\\\?\\' + path.join(dir, 'b', 'NUL'));
+    throw Object.assign(new Error('Command failed'), { status: 1, stdout: 'ok ' + first + '\r\n' });
+  };
+  t.after(() => {
+    batchOverride = null;
+    fs.rmSync('\\\\?\\' + path.join(dir, 'b', 'NUL'), { recursive: true, force: true });
+  });
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a')]);
+  assert.deepStrictEqual(result.keptFolders.map((item) => [path.basename(item.path), /장치 이름 항목\(NUL\)/.test(item.reason)]), [['b', true], ['c', false]]);
+  assert.ok(result.keptFolders.every((item) => /휴지통으로 보내지 못했습니다/.test(item.reason)));
+});
+
+test('flatten은 묶음 호출이 비대화형·잠금 환경으로 실패하면 뒤의 묶음도 보내지 않는다', (t) => {
+  for (const [status, pattern] of [[75, /대화형 세션이 아니면/], [76, /경로 확인용 형식을 만들 수 없어/]]) {
+    const dir = tempDir();
+    make(dir, Array.from({ length: 150 }, (_, i) => 'd' + String(i).padStart(3, '0') + '/f.txt'));
+    let calls = 0;
+    batchOverride = () => {
+      calls += 1;
+      throw Object.assign(new Error('Command failed'), { status, stdout: '' });
+    };
+    const result = flatten(dir);
+    batchOverride = null;
+    assert.strictEqual(calls, 1, String(status));
+    assert.strictEqual(result.keptFolders.length, 150);
+    assert.ok(result.keptFolders.every((item) => pattern.test(item.reason)), String(status));
+  }
+  t.after(() => {
+    batchOverride = null;
+  });
+});
+
+test('flatten은 미리보기에서도 고정 디스크가 아닌 드라이브면 빈 폴더를 남긴다고 보여 준다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt']);
+  volumeState = 'True|Network\r\n';
+  t.after(() => {
+    volumeState = 'True|Fixed\r\n';
+  });
+  const preview = flatten(dir, { dryRun: true });
+  assert.deepStrictEqual(preview.removedFolders, []);
+  assert.match(preview.keptFolders[0].reason, /드라이브\(Network\)/);
+});
+
+test('flatten은 휴지통으로 보낼 수 없는 긴 경로의 폴더를 묶음에 넣지 않는다', () => {
+  const dir = tempDir();
+  const long = 'x'.repeat(Math.max(1, 262 - dir.length));
+  make(dir, [path.join(long, 'f.txt')]);
+  batchCalls.length = 0;
+  const result = flatten(dir);
+  assert.deepStrictEqual(batchCalls, []);
+  assert.match(result.keptFolders[0].reason, /휴지통으로 보낼 수 없습니다\(259자까지\)/);
+});
+
+// 1차 리뷰: 테스트가 묶음 호출을 흉내만 내면 스크립트의 오타나 판정 오류를 놓친다. 휴지통 이동만 출력으로 바꿔 실제 PowerShell로 돌린다.
+test('recycleEmptyFolders의 PowerShell 스크립트는 지우기 직전 검사를 실제로 한다', { skip: !isWindows && 'PowerShell' }, (t) => {
+  const dir = tempDir();
+  const p = (...xs) => path.join(dir, ...xs);
+  fs.mkdirSync(p('empty', 'deep'), { recursive: true });
+  make(dir, ['meta/desktop.ini', 'filled/keep.txt', 'notdir', 'other/b/z.txt']);
+  fs.mkdirSync(p('hasjunction'));
+  linkDir(p('other'), p('hasjunction', 'j'));
+  linkDir(p('other'), p('swapped'));
+  fs.mkdirSync(p('한글 이모지😀'));
+  const script = RECYCLE_FOLDERS_SCRIPT.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '$null = $p');
+  assert.notStrictEqual(script, RECYCLE_FOLDERS_SCRIPT, '휴지통 이동 호출을 찾아 바꿔야 한다');
+  batchOverride = (options, file, args) => execFileSync(file, args, options);
+  t.after(() => {
+    batchOverride = null;
+  });
+  const folders = ['empty', 'meta', 'filled', 'notdir', 'gone', 'hasjunction', path.join('swapped', 'b'), '한글 이모지😀'].map((name) => p(name));
+  const result = recycleEmptyFolders(folders, { allowedNames: ['desktop.ini'], script });
+  assert.deepStrictEqual(result.map((item) => item.status), ['ok', 'ok', 'filled', 'notdir', 'gone', 'filled', 'moved', 'ok']);
+  // 휴지통 이동을 바꿨으므로 아무것도 지워지지 않았다.
+  assert.ok(fs.existsSync(p('empty', 'deep')) && fs.existsSync(p('other', 'b', 'z.txt')));
+});
+
+test('flatten은 실제 실행에서 파일과 폴더가 끝날 때마다 진행 줄을 넘기고, 미리보기에서는 넘기지 않는다', () => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'c/y.txt']);
+  const lines = [];
+  run(['flatten', dir, '--dry-run'], { progress: (line) => lines.push(line) });
+  assert.deepStrictEqual(lines, []);
+  run(['flatten', dir], { progress: (line) => lines.push(line) });
+  assert.deepStrictEqual(lines, [`이동: ${path.join('a', 'x.txt')} -> x.txt`, `이동: ${path.join('c', 'y.txt')} -> y.txt`, '빈 폴더를 휴지통으로: a', '빈 폴더를 휴지통으로: c']);
 });

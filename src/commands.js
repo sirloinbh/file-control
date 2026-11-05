@@ -512,6 +512,106 @@ function moveToRecycleBin(target) {
   }
 }
 
+// 빈 폴더 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#67). 폴더마다 PowerShell을 띄우면 한 번에 1~2초씩 걸려 폴더가 많으면 몇 시간이 된다.
+// 부른 쪽이 지우기 전에 검사를 마쳤어도, 묶어 보내면 검사와 삭제 사이가 길어지므로 PowerShell이 폴더마다 지우기 직전에 다시 본다.
+// - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다.
+//   OneDrive 폴더처럼 ReparsePoint 속성이 있어도 링크가 아니면 실제 경로가 그대로라 지운다.
+// - 아직 폴더인지, 안에 allowedNames(폴더 설정 파일, 소문자) 말고 파일이 없는지, 하위 폴더가 링크로 바뀌지 않았는지
+// 경로는 Node가 realpath로 얻은 실제 경로를 넘긴다. 결과는 넘긴 순서대로 { path, status } 목록이다.
+// status: ok(휴지통으로 보냄), moved, notdir, filled, gone, error, timeout(시간 제한에 걸릴 때 처리 중이던 폴더), pending(그 뒤라 손대지 않은 폴더)
+// 시간 제한에 걸린 묶음의 뒤 폴더를 pending으로 따로 알려, 부른 쪽이 다시 보낼 수 있게 한다. 같은 폴더가 매번 묶음 전체를 막지 않는다(1차 리뷰).
+// script는 테스트에서 DeleteDirectory를 바꿔 실제 PowerShell로 검사 부분을 돌릴 때만 넘긴다.
+const FOLDER_BATCH_STATUS = new Set(['ok', 'moved', 'notdir', 'filled', 'gone', 'error']);
+
+const RECYCLE_FOLDERS_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
+if (-not [Environment]::UserInteractive) { exit 75 }
+try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { exit 76 }
+try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+public static class FcFinalPath {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder b, uint l, uint f);
+  public static string Get(string p) {
+    using (SafeFileHandle h = CreateFileW(p, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      if (h.IsInvalid) return null;
+      StringBuilder b = new StringBuilder(32768);
+      return GetFinalPathNameByHandleW(h, b, (uint)b.Capacity, 0) == 0 ? null : b.ToString();
+    }
+  }
+}' } catch { exit 76 }
+$u = [Text.Encoding]::Unicode
+$allowed = @(($env:FC_ALLOWED -split '\|') | Where-Object { $_ })
+function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
+function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
+function Same([string]$p) { $f = [FcFinalPath]::Get((Long $p)); return ($f -ne $null) -and [string]::Equals((Plain $f), $p, [StringComparison]::OrdinalIgnoreCase) }
+function Check([string]$p) {
+  $stack = [Collections.Stack]::new(); $stack.Push($p)
+  while ($stack.Count -gt 0) {
+    $d = $stack.Pop()
+    foreach ($e in [IO.DirectoryInfo]::new((Long $d)).EnumerateFileSystemInfos()) {
+      $child = $d + '\' + $e.Name
+      if (-not ([int]$e.Attributes -band 16)) { if ($allowed -notcontains $e.Name.ToLowerInvariant()) { return 'filled' }; continue }
+      if (-not (Same $child)) { return 'filled' }
+      $stack.Push($child)
+    }
+  }
+  return $null
+}
+foreach ($line in $input) {
+  if (-not $line) { continue }
+  $p = $u.GetString([Convert]::FromBase64String($line))
+  $status = 'error'
+  try {
+    $long = Long $p
+    if (-not [IO.Directory]::Exists($long)) { if ([IO.File]::Exists($long)) { $status = 'notdir' } else { $status = 'gone' } }
+    elseif (-not (Same $p)) { $status = 'moved' }
+    else {
+      $found = Check $p
+      if ($found) { $status = $found }
+      else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin'); $status = 'ok' }
+    }
+  } catch { $status = 'error' }
+  [Console]::Out.WriteLine($status + ' ' + $line)
+  [Console]::Out.Flush()
+}`;
+
+function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000 + folders.length * 1000, script = RECYCLE_FOLDERS_SCRIPT } = {}) {
+  if (folders.length === 0) return [];
+  const input = folders.map((folder) => Buffer.from(folder, 'utf16le').toString('base64')).join('\n') + '\n';
+  let output;
+  let timedOut = false;
+  try {
+    output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_BATCH: '1', FC_ALLOWED: allowedNames.join('|') },
+      input,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    // 잠금 환경(Constrained Language Mode, AppLocker)에서는 C# 형식을 만들 수 없다(1차 리뷰).
+    if (err.status === 76) throw new FcError('PowerShell에서 경로 확인용 형식을 만들 수 없어(잠금 환경 등) 빈 폴더를 휴지통으로 보내지 못했습니다.');
+    // 시간 제한(오류 대화상자에서 멈춘 경우 등)이나 도중 실패여도 이미 보고한 폴더의 결과는 쓴다.
+    timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM';
+    output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
+    if (!timedOut && output === '') throw err;
+  }
+  const done = new Map();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^(\w+) ([A-Za-z0-9+/=]+)$/.exec(line.trim());
+    if (match && FOLDER_BATCH_STATUS.has(match[1])) done.set(Buffer.from(match[2], 'base64').toString('utf16le'), match[1]);
+  }
+  let first = true;
+  return folders.map((folder) => {
+    if (done.has(folder)) return { path: folder, status: done.get(folder) };
+    if (!timedOut) return { path: folder, status: 'error' };
+    const status = first ? 'timeout' : 'pending';
+    first = false;
+    return { path: folder, status };
+  });
+}
+
 function bareDeviceInside(dir) {
   try {
     if (!fs.lstatSync(dir).isDirectory()) return undefined;
@@ -736,6 +836,9 @@ module.exports = {
   remove,
   recycleBinState,
   hiddenOrSystemEntries,
+  recycleEmptyFolders,
+  RECYCLE_FOLDERS_SCRIPT,
+  bareDeviceInside,
   MAX_RECYCLE_PATH,
   unzip,
   archiveEntries,
