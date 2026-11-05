@@ -446,6 +446,32 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   });
 }
 
+// 폴더 아래에서 숨김이나 시스템 속성이 있는 항목을 폴더 기준 상대경로 Set으로 돌려준다(#65). Node는 파일 속성을 읽지 못해 PowerShell로 한 번에 읽는다.
+// 숨김·시스템 폴더 안쪽과 링크·정션은 따라 들어가지 않는다. 이름은 코드페이지에 상관없이 받도록 UTF-16을 base64로 받는다.
+// 경로가 260자를 넘어도 읽도록 \\?\ 경로로 넘긴다. 읽지 못하면 일부만 보고 진행하지 않게 오류를 낸다. Windows가 아니면 빈 Set이다.
+function hiddenOrSystemEntries(dir) {
+  if (!isWindows) return new Set();
+  const full = path.resolve(dir);
+  const root = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
+  const script =
+    "$ErrorActionPreference = 'Stop'; try { $root = $env:FC_ROOT; $stack = [Collections.Stack]::new(); $stack.Push($root); " +
+    'while ($stack.Count -gt 0) { foreach ($e in [IO.DirectoryInfo]::new($stack.Pop()).EnumerateFileSystemInfos()) { $a = [int]$e.Attributes; ' +
+    'if ($a -band 6) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($e.FullName.Substring($root.Length + 1))) } ' +
+    'elseif (($a -band 16) -and -not ($a -band 1024)) { $stack.Push($e.FullName) } } } } catch { exit 3 }';
+  let output;
+  try {
+    output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_ROOT: root },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 256 * 1024 * 1024,
+    });
+  } catch (err) {
+    throw new FcError(`숨김·시스템 속성을 확인할 수 없습니다: ${full} (${err.code ?? err.status})`);
+  }
+  return new Set(output.split(/\s+/).filter(Boolean).map((line) => Buffer.from(line, 'base64').toString('utf16le')));
+}
+
 // 휴지통 이동(Microsoft.VisualBasic DeleteFile)이 받는 경로 길이의 한도. MAX_PATH(260, 끝의 NUL 포함)를 넘으면
 // 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
 const MAX_RECYCLE_PATH = 259;
@@ -698,6 +724,7 @@ module.exports = {
   copy,
   remove,
   recycleBinState,
+  hiddenOrSystemEntries,
   MAX_RECYCLE_PATH,
   unzip,
   archiveEntries,

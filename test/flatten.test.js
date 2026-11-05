@@ -21,7 +21,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
-  const filled = fs.readdirSync(options.env.FC_TARGET, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
+  // 폴더 설정·미리보기 파일(desktop.ini 등)만 남은 폴더는 함께 지운다(#65).
+  const filled = fs.readdirSync(options.env.FC_TARGET, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory() && !/^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i.test(entry.name));
   if (filled) throw new Error(`비어 있지 않은 폴더를 휴지통으로 보내려 함: ${filled.name}`);
   fs.rmSync(options.env.FC_TARGET, { recursive: true });
   return undefined;
@@ -1357,7 +1358,7 @@ test('flatten은 보호 경로를 타겟으로 받지 않는다', (t) => {
 test('planFlatten은 파일이 없는 타겟에서 빈 계획을 돌려준다', () => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'a', 'b'), { recursive: true });
-  assert.deepStrictEqual(planFlatten(dir), { target: dir, moves: [], stay: [], skipped: [] });
+  assert.deepStrictEqual(planFlatten(dir), { target: dir, moves: [], stay: [], skipped: [], guarded: new Set() });
 });
 
 // #73: 파일은 빈 자리표시 없이 하드링크를 만든 뒤 원래 이름을 지워 옮긴다.
@@ -1499,4 +1500,109 @@ test('flatten은 읽을 수 없는 하위 폴더가 하나라도 있으면 아�
   }
   t.mock.restoreAll();
   assert.deepStrictEqual(contents(dir), { 'a/x.txt': 'a/x.txt', 'locked/y.txt': 'locked/y.txt' });
+});
+
+// #65: 폴더 설정·미리보기 파일, 프로그램·프로젝트 폴더, 숨김·시스템 속성 항목
+test('flatten은 desktop.ini·Thumbs.db를 옮기지 않고 파일 수에서 빼며, 그것만 남은 폴더는 함께 휴지통으로 보낸다', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/abc_123.mp4', 'ABC-123 제목/desktop.ini', 'docs/Thumbs.db', 'docs/memo.txt', 'pics/.DS_Store', 'pics/sub/ehthumbs.db']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['ABC-123 제목/abc_123.mp4', 'ABC-123 제목.mp4'], ['docs/memo.txt', 'memo.txt']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)).sort(), [path.join('ABC-123 제목', 'desktop.ini'), path.join('docs', 'Thumbs.db'), path.join('pics', '.DS_Store'), path.join('pics', 'sub', 'ehthumbs.db')].sort());
+  assert.ok(plan.skipped.every((item) => /폴더 설정·미리보기 파일/.test(item.reason)));
+  recycled.length = 0;
+  const preview = flatten(dir, { dryRun: true });
+  assert.deepStrictEqual(preview.removedFolders, [path.join(dir, 'ABC-123 제목'), path.join(dir, 'docs')]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'ABC-123 제목'), path.join(dir, 'docs')]);
+  assert.deepStrictEqual(recycled, [path.join(dir, 'ABC-123 제목'), path.join(dir, 'docs')]);
+  // 옮긴 파일이 없던 폴더는 설정 파일만 있어도 건드리지 않는다.
+  assert.deepStrictEqual(contents(dir), { 'ABC-123 제목.mp4': 'ABC-123 제목/abc_123.mp4', 'memo.txt': 'docs/memo.txt', 'pics/.DS_Store': 'pics/.DS_Store', 'pics/sub/ehthumbs.db': 'pics/sub/ehthumbs.db' });
+});
+
+test('flatten은 node_modules 같은 프로그램 폴더를 통째로 남기고 폴더 하나로 알린다', () => {
+  const dir = tempDir();
+  make(dir, ['p/node_modules/x/index.js', 'p/node_modules/y/index.js', 'p/node_modules/y/lib/a.js', 'q/__pycache__/m.pyc', 'other/v.mp4']);
+  fs.mkdirSync(path.join(dir, 'p', 'node_modules', 'empty'));
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['other/v.mp4', 'v.mp4']]);
+  assert.deepStrictEqual(plan.skipped, [
+    { path: path.join(dir, 'p', 'node_modules'), reason: '프로그램 폴더(node_modules)라 안의 파일 3개를 옮기지 않고 폴더째 남깁니다.' },
+    { path: path.join(dir, 'q', '__pycache__'), reason: '프로그램 폴더(__pycache__)라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.' },
+  ]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'other')]);
+  assert.ok(fs.existsSync(path.join(dir, 'p', 'node_modules', 'empty')));
+  assert.ok(formatFlatten(result).includes(`건너뜀: ${path.join('p', 'node_modules')} (프로그램 폴더(node_modules)라 안의 파일 3개를`));
+});
+
+test('flatten은 프로젝트 표시 파일이 있는 하위 폴더를 통째로 남긴다', () => {
+  const dir = tempDir();
+  make(dir, ['lib-1.0/package.json', 'lib-1.0/src/a.js', 'tool/pyvenv.cfg', 'tool/Scripts/python.exe', 'cs/App.sln', 'cs/App/Program.cs', 'cs2/sub/App.CSPROJ', 'cs2/sub/x.cs', 'cs2/readme.txt', 'packages/package.json.bak']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['cs2/readme.txt', 'readme.txt'], ['packages/package.json.bak', 'package.json.bak']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
+    ['cs', '프로젝트 폴더(App.sln 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('cs2', 'sub'), '프로젝트 폴더(App.CSPROJ 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
+    ['lib-1.0', '프로젝트 폴더(package.json 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
+    ['tool', '프로젝트 폴더(pyvenv.cfg 있음)라 안의 파일 2개를 옮기지 않고 폴더째 남깁니다.'],
+  ]);
+});
+
+test('flatten은 실행 파일과 DLL이 함께 든 폴더를 프로그램 폴더로 남기고, 실행 파일만 있으면 옮긴다', () => {
+  const dir = tempDir();
+  make(dir, ['app/App.EXE', 'app/core.dll', 'app/res/icon.png', 'setup/setup.exe', 'libs/only.dll']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['libs/only.dll', 'only.dll'], ['setup/setup.exe', 'setup.exe']]);
+  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'app'), reason: '실행 파일과 DLL이 함께 든 프로그램 폴더라 안의 파일 3개를 옮기지 않고 폴더째 남깁니다.' }]);
+});
+
+test('flatten은 타겟이 프로젝트·프로그램 폴더이거나 프로그램 폴더 안이면 아무것도 옮기지 않고 거부한다', () => {
+  const project = tempDir();
+  make(project, ['package.json', 'src/a.js']);
+  assert.throws(() => flatten(project), /타겟이 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다/);
+  const program = tempDir();
+  make(program, ['app.exe', 'core.dll', 'res/icon.png']);
+  assert.throws(() => flatten(program, { dryRun: true }), /타겟에 실행 파일과 DLL이 함께 있어/);
+  const inside = tempDir();
+  make(inside, ['node_modules/pkg/lib/a.js']);
+  assert.throws(() => flatten(path.join(inside, 'node_modules', 'pkg')), /프로그램 폴더 안이라 다루지 않습니다: .*node_modules$/);
+  assert.throws(() => flatten(path.join(inside, 'node_modules')), /프로그램 폴더 안이라/);
+  assert.deepStrictEqual(contents(project), { 'package.json': 'package.json', 'src/a.js': 'src/a.js' });
+  assert.deepStrictEqual(contents(program), { 'app.exe': 'app.exe', 'core.dll': 'core.dll', 'res/icon.png': 'res/icon.png' });
+  assert.deepStrictEqual(contents(inside), { 'node_modules/pkg/lib/a.js': 'node_modules/pkg/lib/a.js' });
+});
+
+test('flatten은 숨김·시스템 속성 파일을 옮기지 않고, 그런 폴더는 빈 폴더라도 통째로 남긴다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['a/secret.txt', 'a/plain.txt', 'b/.cache/c.bin', 'b/s.sys', 'b/v.mp4', '숨김😀/x.txt', 'c/f.txt']);
+  fs.mkdirSync(path.join(dir, 'c', '.empty'));
+  for (const [flag, name] of [['+h', 'a/secret.txt'], ['+h', 'b/.cache'], ['+s', 'b/s.sys'], ['+h', '숨김😀'], ['+h', 'c/.empty']]) {
+    execFileSync('attrib', [flag, path.join(dir, name)]);
+  }
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['a/plain.txt', 'plain.txt'], ['b/v.mp4', 'v.mp4'], ['c/f.txt', 'f.txt']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
+    [path.join('a', 'secret.txt'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
+    [path.join('b', '.cache'), '숨김·시스템 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+    [path.join('b', 's.sys'), '숨김·시스템 속성 파일이라 옮기지 않습니다.'],
+    ['숨김😀', '숨김·시스템 속성 폴더라 안의 파일 1개를 옮기지 않고 폴더째 남깁니다.'],
+  ]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, []);
+  assert.ok(fs.existsSync(path.join(dir, 'c', '.empty')));
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'secret.txt')));
+});
+
+test('flatten은 경로가 260자를 넘는 숨김 파일도 알아본다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
+  const dir = tempDir();
+  const deep = path.join('a', 'x'.repeat(120), 'y'.repeat(120));
+  make(dir, [path.join(deep, 'long.txt'), path.join(deep, 'plain.txt')]);
+  // attrib는 긴 경로의 속성을 바꾸지 못하고 성공으로 끝나므로 PowerShell로 바꾼다.
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-Item -LiteralPath $env:FC_FILE -Force).Attributes = "Hidden"'], {
+    env: { ...process.env, FC_FILE: `\\\\?\\${path.join(dir, deep, 'long.txt')}` },
+  });
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(plan.moves.map((move) => move.name), ['plain.txt']);
+  assert.deepStrictEqual(plan.skipped.map((item) => path.relative(dir, item.path)), [path.join(deep, 'long.txt')]);
 });
