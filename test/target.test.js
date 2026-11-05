@@ -901,3 +901,19 @@ test('grant는 파일 심볼릭 링크도 타겟 밖이면 거부하고 링크 �
   assert.throws(() => access.write('file-link'), /링크를 거쳐/);
   assert.throws(() => access.delete('file-link'), /링크는 삭제할 수 없습니다/);
 });
+
+test('walk는 unreadable을 넘기면 읽지 못한 하위 폴더를 담고 계속 읽고, 넘기지 않으면 실패한다 (#74)', (t) => {
+  const root = tempDir();
+  for (const dir of ['a', 'locked/inner', 'z']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  fs.writeFileSync(path.join(root, 'z', 'f.txt'), 'f');
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (p === path.join(root, 'locked')) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    return readdirSync(p, ...rest);
+  });
+  assert.throws(() => walk(root), /폴더를 읽을 수 없습니다: .*locked \(EACCES\)/);
+  const unreadable = [];
+  const entries = walk(root, { unreadable });
+  assert.deepStrictEqual(entries.map((entry) => entry.relative), ['a', 'locked', 'z', path.join('z', 'f.txt')]);
+  assert.deepStrictEqual(unreadable, [{ path: path.join(root, 'locked'), relative: 'locked', reason: '폴더를 읽을 수 없어 그 안은 보지 않았습니다: EACCES' }]);
+});

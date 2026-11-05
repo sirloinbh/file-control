@@ -1485,3 +1485,18 @@ test('leftoverNote는 파일 번호를 0으로 알리는 파일 시스템에서 
   });
   assert.strictEqual(leftoverNote(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt')), '');
 });
+
+test('flatten은 읽을 수 없는 하위 폴더가 하나라도 있으면 아무것도 옮기지 않고 실패한다 (#74)', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'locked/y.txt']);
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (p === path.join(dir, 'locked')) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    return readdirSync(p, ...rest);
+  });
+  for (const dryRun of [true, false]) {
+    assert.throws(() => flatten(dir, { dryRun }), /폴더를 읽을 수 없습니다: .*locked \(EPERM\)/, `dryRun=${dryRun}`);
+  }
+  t.mock.restoreAll();
+  assert.deepStrictEqual(contents(dir), { 'a/x.txt': 'a/x.txt', 'locked/y.txt': 'locked/y.txt' });
+});

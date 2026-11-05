@@ -493,3 +493,36 @@ test('product-number는 이전 실행이 중간에 멈춰 남긴 빈 파일과 �
   assert.deepStrictEqual(result.already.map((item) => path.basename(item.path)), ['ABC-123 b.mp4']);
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'ABC-123/ABC-123 b.mp4', 'ABC-123/a.mp4', 'ABC-123/b.mp4']);
 });
+
+// 하위 폴더 하나를 읽기 거부(EPERM)로 만든다. 실제 ACL 대신 readdirSync만 실패시킨다.
+function denyFolder(t, denied) {
+  const readdirSync = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, ...rest) => {
+    if (p === denied) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    return readdirSync(p, ...rest);
+  });
+}
+
+test('product-number는 읽을 수 없는 하위 폴더를 건너뜀으로 알리고 나머지 파일은 바꾼다 (#74)', (t) => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4', 'locked/XYZ-001/b.mp4', 'ok/DEF-456/c.mp4']);
+  denyFolder(t, path.join(dir, 'locked'));
+  const preview = addProductNumbers(dir, { dryRun: true });
+  assert.deepStrictEqual(preview.renamed.map((item) => item.name).sort(), ['ABC-123 a.mp4', 'DEF-456 c.mp4']);
+  assert.deepStrictEqual(preview.skipped, [{ path: path.join(dir, 'locked'), reason: '폴더를 읽을 수 없어 그 안은 보지 않았습니다: EPERM' }]);
+  assert.match(formatProductNumbers(preview), /건너뜀: locked \(폴더를 읽을 수 없어 그 안은 보지 않았습니다: EPERM\)/);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.strictEqual(result.skipped.length, 1);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'locked/XYZ-001/b.mp4', 'ok/DEF-456/DEF-456 c.mp4']);
+});
+
+test('product-number는 타겟 자신을 읽을 수 없으면 아무것도 바꾸지 않고 실패한다 (#74)', (t) => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/a.mp4']);
+  denyFolder(t, dir);
+  assert.throws(() => addProductNumbers(dir), /폴더를 읽을 수 없습니다/);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(tree(dir), ['ABC-123/a.mp4']);
+});
