@@ -53,24 +53,33 @@ function rejectHardLinkedWrite(p) {
 }
 
 // cp --force가 덮어쓸 파일 중 하드링크가 있으면 아무것도 복사하기 전에 거부한다. 폴더는 합쳐지므로 안쪽 파일까지 본다.
-// 폴더를 합칠 때 fs.cpSync는 안쪽에서 종류가 어긋나면 Node를 오류 없이 끝내거나(폴더 위에 파일 자리) 일부를 복사한 뒤 실패하고(파일 위에
-// 폴더 자리), 대상 안의 정션을 따라 그 밖에 쓴다(#140, 빌드 26200·Node 24.21에서 확인). 그래서 복사 전에 모두 찾아 거부한다.
-function checkOverwrite(src, target) {
-  if (!exists(target)) return;
-  const srcIsDir = fs.statSync(src).isDirectory();
-  if (srcIsDir !== fs.statSync(target).isDirectory()) throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
-  if (!srcIsDir) return rejectHardLinkedWrite(target);
-  // 항목 종류는 따라가지 않고 본다. 원본 안의 끊어진 링크에서 stat이 실패하지 않게 하고, 링크는 덮어쓸 내용이 아니다.
-  for (const entry of fs.readdirSync(src, { recursive: true, withFileTypes: true })) {
-    const rel = path.relative(src, path.join(entry.parentPath, entry.name));
-    const there = path.join(target, rel);
-    const stat = fs.lstatSync(there, { throwIfNoEntry: false });
+// 폴더를 합칠 때 fs.cpSync는 안쪽에서 종류가 어긋나면 Node를 오류 없이 끝내거나(폴더 위에 파일 자리, 정션 위에 파일 자리) 일부를 복사한 뒤
+// 실패하고(파일 위에 폴더 자리), 대상 안의 정션을 따라 그 밖에 쓴다(#140, 빌드 26200·Node 24.21에서 확인). 그래서 복사 전에 모두 찾아 거부한다.
+// 원본과 대상을 함께 내려가며 보되 링크 안으로는 들어가지 않는다. cpSync는 원본의 링크를 링크로 복사한다.
+// hardLinks가 false면 하드링크 검사를 하지 않는다. 같은 이름의 앞 원본을 대상으로 볼 때 쓴다(그 파일은 새로 복사되므로).
+function checkOverwrite(src, target, { hardLinks = true } = {}) {
+  const there = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (!there) return;
+  const here = fs.lstatSync(src);
+  if (there.isSymbolicLink()) throw new FcError(`덮어쓸 대상이 링크라 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${target}`);
+  if (here.isSymbolicLink()) throw new FcError(`원본의 링크를 이미 있는 항목 위에 복사할 수 없습니다. 아무것도 복사하지 않았습니다: ${src} -> ${target}`);
+  if (here.isDirectory() !== there.isDirectory()) throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
+  if (!here.isDirectory()) {
+    if (hardLinks) rejectHardLinkedWrite(target);
+    return;
+  }
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(target, entry.name);
+    const stat = fs.lstatSync(to, { throwIfNoEntry: false });
     if (!stat) continue;
-    if (stat.isSymbolicLink()) throw new FcError(`합칠 대상 안에 링크가 있어 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${there}`);
+    if (stat.isSymbolicLink()) throw new FcError(`합칠 대상 안에 링크가 있어 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${to}`);
+    if (entry.isSymbolicLink()) throw new FcError(`합칠 폴더 안에서 원본의 링크가 이미 있는 항목 자리에 있어 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${from} -> ${to}`);
     if (entry.isDirectory() !== stat.isDirectory()) {
-      throw new FcError(`합칠 폴더 안에서 파일과 폴더가 어긋나 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${path.join(src, rel)} -> ${there}`);
+      throw new FcError(`합칠 폴더 안에서 파일과 폴더가 어긋나 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${from} -> ${to}`);
     }
-    if (entry.isFile()) rejectHardLinkedWrite(there);
+    if (entry.isDirectory()) checkOverwrite(from, to, { hardLinks });
+    else if (hardLinks) rejectHardLinkedWrite(to);
   }
 }
 
@@ -403,10 +412,16 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     throw new FcError(`여러 개를 복사하려면 대상이 있는 폴더여야 합니다: ${dest}`);
   }
   // 덮어쓰기·합치기(--force일 때만 일어난다)는 여러 원본 중 하나에만 문제가 있어도 아무것도 복사하지 않도록 먼저 모두 본다(#48, #140).
+  // 같은 대상으로 모이는 원본은 앞 원본이 복사된 뒤의 대상과도 합쳐지므로, 앞 원본을 대상으로 보고도 확인한다.
   if (force) {
+    const earlier = new Map();
     for (const src of sources) {
       ensureExists(src);
-      checkOverwrite(src, resolveDest(src, dest));
+      const target = resolveDest(src, dest);
+      checkOverwrite(src, target);
+      const key = pathKey(target);
+      for (const before of earlier.get(key) ?? []) checkOverwrite(src, before, { hardLinks: false });
+      earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
   const planned = new Set();
