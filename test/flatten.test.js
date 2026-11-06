@@ -1656,6 +1656,25 @@ test('planFlatten은 이름 배정에 실패한 파일도 건너뜀 목록의 �
   ]);
 });
 
+test('planFlatten은 같은 접두어를 받는 자막 짝을 원래 이름 파일보다 먼저 배정해 짝을 유지한다 (#63 1차 리뷰)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/video.mp4', 'ABC-123/video.en.srt', 'z/ABC-123 video.mp4']);
+  assert.deepStrictEqual(moves(planFlatten(dir)), [['ABC-123/video.en.srt', 'ABC-123 video.en.srt'], ['ABC-123/video.mp4', 'ABC-123 video.mp4'], ['z/ABC-123 video.mp4', 'ABC-123 video (2).mp4']]);
+  const subs = tempDir();
+  make(subs, ['ABC-123/video.mp4', 'ABC-123/video.en.srt', 'z/ABC-123 video.en.srt']);
+  assert.deepStrictEqual(moves(planFlatten(subs)), [['ABC-123/video.en.srt', 'ABC-123 video.en.srt'], ['ABC-123/video.mp4', 'ABC-123 video.mp4'], ['z/ABC-123 video.en.srt', 'ABC-123 video.en (2).srt']]);
+});
+
+test('planFlatten은 폴더명에 번호를 붙여 한도를 넘으면 원래 이름으로 돌아가고, 그 이름이 이미 배정됐으면 번호를 붙인다 (#63 1차 리뷰)', () => {
+  const dir = tempDir();
+  const folder = `ABC-123 ${'T'.repeat(243)}`;
+  make(dir, [`${folder}/abc_123.mp4`, 'z/abc_123.mp4', 'z/other.mp4']);
+  fs.writeFileSync(path.join(dir, `${folder}.mp4`), 'top');
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [[`${folder}/abc_123.mp4`, 'abc_123 (2).mp4'], ['z/abc_123.mp4', 'abc_123.mp4'], ['z/other.mp4', 'other.mp4']]);
+  assert.deepStrictEqual(plan.moves.map((move) => [move.desired, move.fromFolder, move.numbered]), [['abc_123.mp4', false, true], ['abc_123.mp4', false, false], ['other.mp4', false, false]]);
+});
+
 test('planFlatten은 자기 바깥 폴더와 같은 이름에는 번호를 붙인다(풀지 않음, #63)', () => {
   const dir = tempDir();
   make(dir, ['ABC-123 제목.mp4/x.mp4']);

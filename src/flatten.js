@@ -408,7 +408,16 @@ function planFlatten(dir) {
   }
   // 원래 이름을 그대로 쓰는 파일에 먼저 이름을 배정한다(#63). 폴더명 후보(ABC-123 제목/x.mp4 → ABC-123 제목.mp4)가
   // 원래 그 이름인 파일(z/ABC-123 제목.mp4)의 이름을 먼저 차지해 번호를 붙이게 하지 않는다. 옮기는 순서는 항목 순서 그대로다.
-  const order = [...candidates.filter((c) => c.desired === c.original), ...candidates.filter((c) => c.desired !== c.original)];
+  // 같은 폴더에서 같은 접두어를 받은 짝(ABC-123/video.mp4, video.en.srt → ABC-123 video.*)은 그보다도 먼저 배정해,
+  // 원래 이름 파일(z/ABC-123 video.mp4)과 겹쳐도 짝 중 하나에만 번호가 붙어 짝이 깨지지 않게 한다(1차 리뷰).
+  const pairKey = (c) => `${path.dirname(c.from)}${path.sep}${nameKey(c.desired.split('.')[0])}`;
+  const pairSizes = new Map();
+  for (const c of candidates) if (c.desired !== c.original) pairSizes.set(pairKey(c), (pairSizes.get(pairKey(c)) ?? 0) + 1);
+  const rank = (c) => {
+    if (c.desired === c.original) return 1;
+    return pairSizes.get(pairKey(c)) > 1 ? 0 : 2;
+  };
+  const order = [0, 1, 2].flatMap((r) => candidates.filter((c) => rank(c) === r));
   for (const candidate of order) {
     const { from, original } = candidate;
     try {
@@ -427,7 +436,8 @@ function planFlatten(dir) {
     }
   }
   plan.moves = candidates.filter((c) => c.move).map((c) => c.move);
-  plan.skipped = plan.skipped.filter((item) => item.reason !== null);
+  const slots = new Set(candidates.map((c) => c.slot));
+  plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
   for (const item of guardItems.values()) {
     item.reason = `${item.label}라 안의 항목 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
     delete item.label;
