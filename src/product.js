@@ -81,4 +81,18 @@ function findProductNumber(input) {
   return { number: list[0].number, source: list[0].source, candidates: list };
 }
 
-module.exports = { extractProductNumbers, findProductNumberRanges, findProductNumber, halfWidth };
+// 앞뒤에 글자·숫자가 붙어 제품번호 규칙이 번호로 보지 않는 대문자 번호(1ABC-123, ABC-123A, ABC-123-01)를 찾아 앞부분 번호만 돌려준다.
+// 이름에 다른 번호가 이미 들어 있을 수 있다는 신호로만 쓴다(#75). 앞에 라틴 문자가 붙은 말(Pokémon-12, XABC-123)은 단어 중간이라 보지 않는다.
+// 날짜 꼴(ZZZ-2024-05-01처럼 숫자 묶음이 둘 이상 더 이어짐)과 제품번호가 아닌 말(PIC, CVE, TEL 등)도 보지 않는다.
+const ATTACHED = /(?<!\p{Script=Latin}\p{M}*)(?<!\p{Script=Latin}\p{M}*-)([A-Z]{2,6})-(\d{2,5})(?!\d)(?!-\d+-\d)/gu;
+
+function findAttachedProductNumbers(text) {
+  if (typeof text !== 'string') return [];
+  const numbers = [];
+  for (const { 1: letters, 2: digits } of halfWidth(text).matchAll(ATTACHED)) {
+    if (!NOT_PRODUCT.has(letters)) numbers.push(`${letters}-${digits}`);
+  }
+  return [...new Set(numbers)];
+}
+
+module.exports = { extractProductNumbers, findProductNumberRanges, findProductNumber, findAttachedProductNumbers, halfWidth };
