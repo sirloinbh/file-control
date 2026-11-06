@@ -198,3 +198,9 @@ test('비ASCII 라틴 문자가 붙은 단어 중간은 번호로 보지 않고,
   }
   assert.strictEqual(normalizeName('ガイドABC-123.mp4'.normalize('NFD')).number, 'ABC-123');
 });
+
+test('~로 시작하는 이름은 임시 파일로 보고 바꾸지 않는다 (#94)', () => {
+  for (const input of ['~abc-123.mp4', '~ABC-123.mp4', '~WRL0001 ABC-123.tmp']) {
+    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: '숨김이나 임시 파일 이름은 바꾸지 않습니다.' }, input);
+  }
+});

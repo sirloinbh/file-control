@@ -678,3 +678,112 @@ test('보이는 크기: 화소가 정사각형이 아닌 영상을 회전하고 
   assert.deepStrictEqual(size({ display: { width: 1920, height: 1080 }, config: h264(14) }), [1440, 1080, 1920, 1080]);
   assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, config: h264(14) }), [1440, 1080, 1080, 1920]);
 });
+
+test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로 읽는다 (#69)', () => {
+  const dir = tempDir();
+  const classic = (type, bytes, language) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(bytes.length, 0);
+    head.writeUInt16BE(language, 2);
+    return box(type, head, bytes);
+  };
+  const title = (bytes, language) => write(dir, ftyp(), box('moov', box('udta', classic('©nam', Buffer.from(bytes), language)))).title;
+  // Mac 언어 코드: 영어(0) MacRoman, 프랑스어(1) MacRoman, 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 러시아어(32) Mac Cyrillic, 간체 중국어(33) GBK
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0), 'café');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 1), 'café');
+  assert.strictEqual(title([0x93, 0xfa, 0x96, 0x7b], 11), '日本');
+  assert.strictEqual(title([0xa4, 0xa4, 0xa4, 0xe5], 19), '中文');
+  assert.strictEqual(title([0xc7, 0xd1, 0xb1, 0xdb], 23), '한글');
+  assert.strictEqual(title([0x8c, 0xe8, 0xf0], 32), 'Мир');
+  assert.strictEqual(title([0xd6, 0xd0, 0xce, 0xc4], 33), '中文');
+  // 0x7FFF(지정 안 함)도 Mac 인코딩이고, 표에 없는 Mac 언어 코드는 MacRoman이다.
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x7fff), 'café');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 25), 'café');
+  // ISO 639-2/T 언어 코드(0x400 이상)는 UTF-8이다. 0x15c7은 kor, 0x55c4는 und다.
+  assert.strictEqual(title(Buffer.from('한글 ABC-123'), 0x15c7), '한글 ABC-123');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x55c4), 'caf\ufffd');
+  // Mac 언어 코드라도 내용이 올바른 UTF-8이면 UTF-8로 읽는다.
+  assert.strictEqual(title(Buffer.from('日本 ABC-123'), 0), '日本 ABC-123');
+  assert.strictEqual(title(Buffer.from('ABC-123'), 11), 'ABC-123');
+  // 코멘트도 같다.
+  const comment = write(dir, ftyp(), box('moov', box('udta', classic('©cmt', Buffer.from([0x93, 0xfa, 0x96, 0x7b]), 11)))).comment;
+  assert.strictEqual(comment, '日本');
+});
+
+test('한중일 언어 코드는 우연히 UTF-8 규칙에 맞는 두 바이트 글자를 그 언어 인코딩으로 읽고, 키릴 언어 코드를 모두 본다 (1차 리뷰, #69)', () => {
+  const dir = tempDir();
+  const title = (bytes, language) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(bytes.length, 0);
+    head.writeUInt16BE(language, 2);
+    return write(dir, ftyp(), box('moov', box('udta', box('©nam', head, Buffer.from(bytes))))).title;
+  };
+  assert.strictEqual(title([0xc4, 0xa1, 0xc5, 0xb2], 23), '치킨');
+  assert.strictEqual(title([0xc9, 0xbd, 0xcb, 0xae], 33), '山水');
+  assert.strictEqual(title([0xc3, 0xbd], 11), 'ﾃｽ');
+  // UTF-8로 쓴 한중일 글자는 그대로 UTF-8로 읽는다.
+  assert.strictEqual(title(Buffer.from('치킨 ABC-123'), 23), '치킨 ABC-123');
+  assert.strictEqual(title(Buffer.from('山水'), 33), '山水');
+  for (const language of [45, 46, 48, 58]) assert.strictEqual(title([0x8c, 0xe8, 0xf0], language), 'Мир', String(language));
+});
+
+test('MP4 메타데이터와 구조 확인은 파일을 한 번만 열어 읽는다 (#90)', (t) => {
+  const { checkMp4Structure } = require('../src/mp4');
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), trak(), box('udta', box('©nam', u32(0), Buffer.from('ABC-123'))))]));
+  const open = t.mock.method(fs, 'openSync');
+  assert.strictEqual(readMp4Metadata(dir, 'v.mp4').width, 1920);
+  assert.strictEqual(open.mock.callCount(), 1);
+  checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4');
+  assert.strictEqual(open.mock.callCount(), 2);
+});
+
+test('연 파일이 확인한 경로의 파일과 다르면 읽지 않는다 (#90)', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  fs.writeFileSync(path.join(dir, 'other.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  const original = fs.openSync;
+  // 확인과 열기 사이에 다른 파일로 바뀐 것처럼 다른 파일을 연다.
+  t.mock.method(fs, 'openSync', (p, flags) => original(String(p).endsWith('v.mp4') ? path.join(dir, 'other.mp4') : p, flags));
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+});
+
+test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟 밖을 가리키는 링크로 바뀌면 읽지 않는다 (1차 리뷰, #90)', (t) => {
+  const parent = tempDir();
+  const dir = path.join(parent, 't');
+  fs.mkdirSync(dir);
+  const file = path.join(dir, 'v.mp4');
+  const content = Buffer.concat([ftyp(), box('moov', mvhd())]);
+  fs.writeFileSync(path.join(parent, 'secret.mp4'), content);
+  const original = fs.openSync;
+  const swapTo = (replace) => {
+    fs.writeFileSync(file, content);
+    let swapped = false;
+    const open = t.mock.method(fs, 'openSync', (p, flags) => {
+      // writeFileSync도 openSync를 부르므로 한 번만 바꾼다.
+      if (!swapped && String(p) === file) {
+        swapped = true;
+        fs.rmSync(file);
+        replace();
+      }
+      return original(p, flags);
+    });
+    try {
+      assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+    } finally {
+      open.mock.restore();
+    }
+  };
+  // 같은 내용의 새 파일로 바꾼다.
+  swapTo(() => fs.writeFileSync(file, content));
+  // 타겟 밖 파일을 가리키는 링크로 바꾼다. 링크를 만들 권한이 없으면 이 경우는 건너뛴다.
+  try {
+    fs.symlinkSync(path.join(parent, 'secret.mp4'), path.join(parent, 'probe.mp4'));
+  } catch (err) {
+    if (err.code === 'EPERM') return;
+    throw err;
+  }
+  fs.rmSync(path.join(parent, 'probe.mp4'));
+  if (fs.existsSync(file)) fs.rmSync(file);
+  swapTo(() => fs.symlinkSync(path.join(parent, 'secret.mp4'), file));
+});

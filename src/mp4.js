@@ -1,7 +1,8 @@
 'use strict';
 
 const { FcError } = require('./commands');
-const { grant, readRange, fileSizeInside } = require('./target');
+const { grant } = require('./target');
+const { withOpenFile } = require('./openedFile');
 const { spsAspect } = require('./videoSps');
 
 // 파일 맨 앞에 올 수 있는 박스. ftyp이 없는 옛 QuickTime 파일도 받으려고 여러 개를 둔다.
@@ -26,13 +27,13 @@ const COMMENT_SOURCES = [
 
 const fourcc = (buffer, offset = 0) => buffer.toString('latin1', offset, offset + 4);
 
-// offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다.
-function makeReader(target, real, p) {
+// offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다. file은 withOpenFile이 연 파일이다.
+function makeReader(file, p) {
   let reads = 0;
   return (offset, length) => {
     reads += 1;
     if (reads > MAX_READS) throw new FcError(`MP4 박스가 너무 많아 읽기를 멈췄습니다: ${p}`);
-    const buffer = readRange(target, real, { offset, length });
+    const buffer = file.read(offset, length);
     if (buffer.length < length) throw new FcError(`MP4 파일을 끝까지 읽지 못했습니다: ${p}`);
     return buffer;
   };
@@ -265,12 +266,12 @@ function mainVideo(tracks) {
   }, null);
 }
 
-// UTF-16은 BOM이 있으면 따르고, 없으면 big endian으로 읽는다. 잘못된 글자는 U+FFFD로 바뀐다.
-function decodeText(buffer, encoding = 'utf-8') {
+// UTF-16은 BOM이 있으면 따르고, 없으면 big endian으로 읽는다. 잘못된 글자는 U+FFFD로 바뀐다. fatal이면 대신 예외를 낸다.
+function decodeText(buffer, encoding = 'utf-8', { fatal = false } = {}) {
   let text;
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) text = new TextDecoder('utf-16le').decode(buffer);
   else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) text = new TextDecoder('utf-16be').decode(buffer);
-  else text = new TextDecoder(encoding).decode(buffer);
+  else text = new TextDecoder(encoding, { fatal }).decode(buffer);
   return text.replace(/\0+[^]*$/, '').trim();
 }
 
@@ -328,6 +329,46 @@ function readMeta(read, p, meta, tags) {
   }
 }
 
+// 옛 QuickTime 항목의 언어 코드가 0x400 미만(Macintosh 언어 코드)이거나 0x7FFF(지정 안 함)이면 글자는 Mac 인코딩이다(#69).
+// FFmpeg(libavformat/mov.c)도 이때 Mac 인코딩으로 읽는다. FFmpeg는 언어와 관계없이 MacRoman을 쓰지만, 여기서는 언어 코드에 맞는
+// Mac 인코딩 가운데 Node가 읽을 수 있는 것을 고른다. 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 간체 중국어(33) GBK,
+// 키릴 문자 언어(러시아어 32, 세르비아어 42, 마케도니아어 43, 불가리아어 44, 우크라이나어 45, 벨라루스어 46, 우즈베크어 47, 카자흐어 48,
+// 아제르바이잔어 키릴 49, 몰도바어 53, 키르기스어 54, 타지크어 55, 투르크멘어 56, 몽골어 키릴 58) Mac Cyrillic이고,
+// 나머지는 MacRoman이다(그리스어·히브리어·아랍어 등 Node에 없는 Mac 인코딩은 FFmpeg처럼 MacRoman으로 읽혀 글자가 틀릴 수 있다).
+// 0x400 이상(ISO 639-2/T 언어 코드)이면 UTF-8이다.
+const MAC_ENCODINGS = new Map([
+  [11, 'shift_jis'],
+  [19, 'big5'],
+  [23, 'euc-kr'],
+  [33, 'gbk'],
+  ...[32, 42, 43, 44, 45, 46, 47, 48, 49, 53, 54, 55, 56, 58].map((code) => [code, 'x-mac-cyrillic']),
+]);
+
+function classicEncoding(language) {
+  if (language >= 0x400 && language !== 0x7fff) return 'utf-8';
+  return MAC_ENCODINGS.get(language) ?? 'macintosh';
+}
+
+// 한중일 인코딩. 두 바이트 글자가 우연히 U+0080~U+07FF의 UTF-8 글자가 되는 일이 흔하다(EUC-KR 치킨 C4 A1 C5 B2 = ġŲ).
+const CJK_ENCODINGS = new Set(['shift_jis', 'big5', 'euc-kr', 'gbk']);
+
+// Mac 언어 코드인데 내용이 올바른 UTF-8이면 UTF-8로 쓴 것으로 본다. 언어 코드를 0으로 두고 UTF-8로 쓰는 도구가 있어서다.
+// MacRoman·Mac Cyrillic의 ASCII 밖 글자는 UTF-8 규칙에 거의 맞지 않는다(café의 é = 0x8E).
+// 한중일 언어 코드는 UTF-8로 읽은 글자에 U+0800 이상(한중일 글자가 있는 범위)이 있고 그 아래의 ASCII 밖 글자가 없을 때만 UTF-8로 본다(1차 리뷰).
+function decodeClassic(buffer, language) {
+  const encoding = classicEncoding(language);
+  if (encoding !== 'utf-8') {
+    let text = null;
+    try {
+      text = decodeText(buffer, 'utf-8', { fatal: true });
+    } catch {
+      // UTF-8이 아니면 언어 코드의 인코딩으로 읽는다.
+    }
+    if (text !== null && (!CJK_ENCODINGS.has(encoding) || !/[\u0080-\u07ff]/.test(text))) return text;
+  }
+  return decodeText(buffer, encoding);
+}
+
 // 옛 QuickTime 항목은 길이 2바이트, 언어 2바이트, 글자 순으로 여러 언어가 이어진다. 첫 값을 쓴다.
 function readClassicText(read, box) {
   const length = box.end - box.start;
@@ -335,7 +376,7 @@ function readClassicText(read, box) {
   const body = read(box.start, length);
   const size = body.readUInt16BE(0);
   if (size === 0 || size > length - 4) return null;
-  return decodeText(body.subarray(4, 4 + size));
+  return decodeClassic(body.subarray(4, 4 + size), body.readUInt16BE(2));
 }
 
 // 3GPP 항목은 버전·플래그 4바이트, 언어 2바이트, 글자 순이다.
@@ -378,8 +419,12 @@ function readMp4Metadata(dir, p) {
 }
 
 function parseMp4(target, real, p) {
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p);
+  return withOpenFile(target, real, (file) => parseOpenedMp4(file, p));
+}
+
+function parseOpenedMp4(file, p) {
+  const { size } = file;
+  const read = makeReader(file, p);
   const moov = findMoov(read, p, size);
 
   let movie = null;
@@ -470,9 +515,13 @@ const CONTENT_BOXES = new Set(['moov', 'mdat', 'moof']);
 // 최상위 박스, moov 안의 mvhd와 trak, 트랙의 데이터 위치표까지 본다. 영상 데이터 자체는 읽지 않으므로 mdat 안의 손상은 찾지 못한다.
 // 재생에 필요한 구조가 온전하면 그 뒤의 패딩이나 덧붙은 데이터는 손상으로 보지 않는다. 압축된 moov(cmov)와 참조 무비(rmra)는 판단하지 않는다.
 function checkMp4Structure(target, real, p) {
+  return withOpenFile(target, real, (file) => checkOpenedMp4(file, p));
+}
+
+function checkOpenedMp4(file, p) {
   const broken = (reason) => ({ status: 'broken', reason });
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p);
+  const { size } = file;
+  const read = makeReader(file, p);
   let moov = null;
   let fragment = false;
   let trailing = false;
