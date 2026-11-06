@@ -1665,6 +1665,15 @@ test('planFlatten은 같은 접두어를 받는 자막 짝을 원래 이름 파�
   assert.deepStrictEqual(moves(planFlatten(subs)), [['ABC-123/video.en.srt', 'ABC-123 video.en.srt'], ['ABC-123/video.mp4', 'ABC-123 video.mp4'], ['z/ABC-123 video.en.srt', 'ABC-123 video.en (2).srt']]);
 });
 
+test('planFlatten은 점이 든 접두어 폴더를 짝으로 잘못 묶지 않고, 하위 폴더에 나뉜 자막 짝은 묶는다 (#63 2차 리뷰)', () => {
+  const dotted = tempDir();
+  make(dotted, ['ABC-123 v1.5/video.mp4', 'ABC-123 v1.5/sample.mp4', 'z/ABC-123 v1.5 sample.mp4']);
+  assert.deepStrictEqual(moves(planFlatten(dotted)), [['ABC-123 v1.5/sample.mp4', 'ABC-123 v1.5 sample (2).mp4'], ['ABC-123 v1.5/video.mp4', 'ABC-123 v1.5 video.mp4'], ['z/ABC-123 v1.5 sample.mp4', 'ABC-123 v1.5 sample.mp4']]);
+  const split = tempDir();
+  make(split, ['ABC-123/video.mp4', 'ABC-123/Subs/video.en.srt', 'z/ABC-123 video.mp4']);
+  assert.deepStrictEqual(moves(planFlatten(split)), [['ABC-123/Subs/video.en.srt', 'ABC-123 video.en.srt'], ['ABC-123/video.mp4', 'ABC-123 video.mp4'], ['z/ABC-123 video.mp4', 'ABC-123 video (2).mp4']]);
+});
+
 test('planFlatten은 폴더명에 번호를 붙여 한도를 넘으면 원래 이름으로 돌아가고, 그 이름이 이미 배정됐으면 번호를 붙인다 (#63 1차 리뷰)', () => {
   const dir = tempDir();
   const folder = `ABC-123 ${'T'.repeat(243)}`;

@@ -410,7 +410,12 @@ function planFlatten(dir) {
   // 원래 그 이름인 파일(z/ABC-123 제목.mp4)의 이름을 먼저 차지해 번호를 붙이게 하지 않는다. 옮기는 순서는 항목 순서 그대로다.
   // 같은 폴더에서 같은 접두어를 받은 짝(ABC-123/video.mp4, video.en.srt → ABC-123 video.*)은 그보다도 먼저 배정해,
   // 원래 이름 파일(z/ABC-123 video.mp4)과 겹쳐도 짝 중 하나에만 번호가 붙어 짝이 깨지지 않게 한다(1차 리뷰).
-  const pairKey = (c) => `${path.dirname(c.from)}${path.sep}${nameKey(c.desired.split('.')[0])}`;
+  // 키는 붙인 접두어 + 원래 이름의 첫 점 앞부분이다. 접두어 폴더 이름의 점(ABC-123 v1.5)에서 자르지 않고,
+  // 하위 폴더에 나뉜 짝(ABC-123/video.mp4, ABC-123/Subs/video.en.srt)도 묶는다(2차 리뷰).
+  const pairKey = (c) => {
+    if (!c.desired.endsWith(c.original)) return nameKey(c.desired);
+    return nameKey(c.desired.slice(0, c.desired.length - c.original.length) + c.original.split('.')[0]);
+  };
   const pairSizes = new Map();
   for (const c of candidates) if (c.desired !== c.original) pairSizes.set(pairKey(c), (pairSizes.get(pairKey(c)) ?? 0) + 1);
   const rank = (c) => {
