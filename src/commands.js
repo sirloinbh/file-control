@@ -778,7 +778,7 @@ function archiveInsideSources(archive, sources) {
   });
 }
 
-// 기존 압축 파일을 치워 두고 새 압축 파일을 제자리로 옮긴다. 옮기지 못하면 기존 압축 파일을 되돌린다.
+// 치워 둔 기존 압축 파일을 원래 이름으로 되돌리고 원래 오류를 던진다. 되돌리지 못하면 치운 위치를 알려 준다.
 function restoreAside(archive, aside, err) {
   try {
     fs.renameSync(aside, archive);

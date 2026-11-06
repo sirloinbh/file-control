@@ -486,7 +486,7 @@ function loadWithTar(t, fake) {
 
 const isTarCreate = (args) => args[0] === '-a' && args[1] === '-cf';
 
-test('zip --force는 tar가 실패하면 기존 압축 파일을 되돌리고 임시 파일을 남기지 않는다', (t) => {
+test('zip --force는 tar가 실패하면 기존 압축 파일을 그대로 두고 임시 파일을 남기지 않는다', (t) => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('a.txt'), 'A');
@@ -506,7 +506,7 @@ test('zip --force는 압축 파일이 원본 밖이면 tar가 도는 동안 기�
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('src', 'a.txt'), 'A');
-  fc.writeFile(p('b.txt'), 'B');
+  fc.writeFile(p('other', 'b.txt'), 'B');
   fc.zip(p('b.zip'), [p('src')]);
   const before = fs.readFileSync(p('b.zip'));
   const seen = [];
@@ -516,12 +516,47 @@ test('zip --force는 압축 파일이 원본 밖이면 tar가 도는 동안 기�
     assert.ok(!args.some((arg) => String(arg).startsWith('.fctl-old')), '치운 이름을 뺄 필요가 없다');
     return real(file, args, options);
   });
-  mocked.zip(p('b.zip'), [p('b.txt')], { force: true });
+  // 링크 없는 폴더를 밖의 압축 파일로 묶는 흔한 경우다.
+  mocked.zip(p('b.zip'), [p('other')], { force: true });
   assert.deepStrictEqual(seen, [true]);
   t.mock.restoreAll();
-  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['b.txt', 'b.zip', 'src']);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['b.zip', 'other', 'src']);
   fc.unzip(p('b.zip'), p('out'));
-  assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
+  assert.strictEqual(fc.readFile(p('out', 'other', 'b.txt')), 'B');
+});
+
+test('zip --force는 압축 파일이 원본 폴더 안일 때 tar가 실패하면 치워 둔 기존 압축 파일을 되돌린다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.zip(p('d', 'in.zip'), [p('d')]);
+  const before = fs.readFileSync(p('d', 'in.zip'));
+  const mocked = loadWithTar(t, (file, args) => {
+    assert.ok(!fs.existsSync(p('d', 'in.zip')), 'tar 전에 치워 둬야 한다');
+    fs.writeFileSync(args[2], 'partial');
+    throw Object.assign(new Error('tar failed'), { status: 1 });
+  });
+  assert.throws(() => mocked.zip(p('d', 'in.zip'), [p('d')], { force: true }), /tar failed/);
+  assert.deepStrictEqual(fs.readFileSync(p('d', 'in.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(p('d')).sort(), ['f.txt', 'in.zip']);
+});
+
+test('zip --force는 tar가 성공한 뒤 기존 압축 파일을 치우지 못하면 기존 압축 파일을 그대로 두고 새 파일을 지운다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.writeFile(p('b.txt'), 'B');
+  fc.zip(p('c.zip'), [p('a.txt')]);
+  const before = fs.readFileSync(p('c.zip'));
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(to).startsWith('.fctl-old')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.throws(() => fc.zip(p('c.zip'), [p('b.txt')], { force: true }), /locked/);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(fs.readFileSync(p('c.zip')), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'b.txt', 'c.zip']);
 });
 
 test('zip --force는 압축 파일이 원본 폴더 안이거나 원본에 링크가 있으면 tar 실행 전에 치우고 빼서 묶는다', (t) => {
