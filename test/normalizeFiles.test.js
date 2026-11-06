@@ -474,3 +474,14 @@ test('바뀔 파일이 없으면 숨김 속성을 확인하려고 PowerShell을 
   assert.strictEqual(normalizeFiles(dir).renamed.length, 1);
   assert.strictEqual(hidden.mock.callCount(), 1);
 });
+
+test('숨김 속성 폴더 안의 보고할 파일은 다른 파일의 순서와 관계없이 폴더로만 알린다 (2차 리뷰, #94)', { skip: process.platform !== 'win32' }, () => {
+  const { execFileSync } = require('node:child_process');
+  for (const other of ['a/영상 CDE-345.mp4', 'z/영상 CDE-345.mp4', null]) {
+    const dir = tempDir();
+    make(dir, ['h/영상 ABC-123 BCD-234.mp4', ...(other ? [other] : [])]);
+    execFileSync('attrib', ['+h', path.join(dir, 'h')]);
+    const result = normalizeFiles(dir, { dryRun: true });
+    assert.deepStrictEqual(result.skipped.map((item) => path.relative(dir, item.path)), [], String(other));
+  }
+});

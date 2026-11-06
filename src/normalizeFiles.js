@@ -135,8 +135,10 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     const result = normalizeName(path.basename(entry.path));
     const changes = result.reason === null && result.name !== path.basename(entry.path);
+    // 바뀌거나 보고할 파일(번호가 여럿 등)이 처음 나오면 숨김 속성 폴더를 확인한다. 순서에 따라 보고가 달라지지 않게 한다(2차 리뷰).
+    const reported = result.reason !== null && (result.number !== null || /번호가 여럿/.test(result.reason));
     let guard = guardOf(entry.relative, guarded);
-    if (guard === null && changes && !hiddenChecked) {
+    if (guard === null && (changes || reported) && !hiddenChecked) {
       hiddenChecked = true;
       addHiddenFolders(access.target, guards);
       guard = guardOf(entry.relative, guarded);
@@ -160,7 +162,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     if (result.reason !== null) {
       // 숨김, 임시, 끝이 점이나 공백인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
-      if (result.number !== null || /번호가 여럿/.test(result.reason)) plan.skipped.push({ path: entry.path, reason: result.reason });
+      if (reported) plan.skipped.push({ path: entry.path, reason: result.reason });
       continue;
     }
     if (result.name === path.basename(entry.path)) continue;
