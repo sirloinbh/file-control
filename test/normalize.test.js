@@ -191,3 +191,10 @@ test('extractProductNumbers의 결과는 그대로다', () => {
   assert.deepStrictEqual(extractProductNumbers('ABC-123 XYZ-999 ABC-123 abc-456'), ['ABC-123', 'XYZ-999']);
   assert.deepStrictEqual(extractProductNumbers('abc-456', { lowercase: true }), ['ABC-456']);
 });
+
+test('비ASCII 라틴 문자가 붙은 단어 중간은 번호로 보지 않고, 가나 결합 부호 뒤 번호는 찾는다 (#92)', () => {
+  for (const input of ['Pokémon-12.mp4', 'POKÉMON-12.mp4', 'Résumer-12.pdf', 'naïve-12.txt']) {
+    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: null }, input);
+  }
+  assert.strictEqual(normalizeName('ガイドABC-123.mp4'.normalize('NFD')).number, 'ABC-123');
+});
