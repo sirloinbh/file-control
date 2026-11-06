@@ -190,3 +190,25 @@ test('extractProductNumbers는 라틴 문자가 아닌 글자의 결합 부호�
   assert.deepStrictEqual(extractProductNumbers('ダウンロード-ABC-123'.normalize('NFD')), ['ABC-123']);
   assert.deepStrictEqual(extractProductNumbers('café-trip-20'.normalize('NFD'), { lowercase: true }), []);
 });
+
+test('findAttachedProductNumbers는 글자·숫자가 붙은 대문자 번호의 앞부분을 찾는다 (#75)', () => {
+  const { findAttachedProductNumbers } = require('../src/product');
+  for (const [text, expected] of [
+    ['ABC-123-01.mp4', ['ABC-123']],
+    ['ABC-123A.mp4', ['ABC-123']],
+    ['1ABC-123.mp4', ['ABC-123']],
+    ['ＡＢＣ－１２３Ａ.mp4', ['ABC-123']],
+    ['ABC-123.mp4', ['ABC-123']],
+    // 날짜 꼴, 제품번호가 아닌 말, 단어 중간, 소문자, 하이픈 없는 말은 보지 않는다.
+    ['ZZZ-2024-05-01.mp4', []],
+    ['PIC-2024-05-01.mp4', []],
+    ['CVE-2024-1234', []],
+    ['QWERTYABC-123.mp4', []],
+    ['POKÉMON-12A.mp4', []],
+    ['abc-123a.mp4', []],
+    ['ABC123.mp4', []],
+    ['H264 clip.mp4', []],
+  ]) {
+    assert.deepStrictEqual(findAttachedProductNumbers(text), expected, text);
+  }
+});
