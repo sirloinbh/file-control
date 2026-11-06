@@ -1630,6 +1630,41 @@ function withHome(home, fn) {
   }
 }
 
+test('planFlatten은 원래 이름을 쓰는 파일에 먼저 이름을 배정하고, 옮기는 순서는 항목 순서를 유지한다 (#63)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목/x.mp4', 'z/ABC-123 제목.mp4', 'z/other.mp4']);
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['ABC-123 제목/x.mp4', 'ABC-123 제목 (2).mp4'], ['z/ABC-123 제목.mp4', 'ABC-123 제목.mp4'], ['z/other.mp4', 'other.mp4']]);
+  assert.deepStrictEqual(plan.moves.map((move) => [move.fromFolder, move.numbered]), [[true, true], [false, false], [false, false]]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(contents(dir), { 'ABC-123 제목 (2).mp4': 'ABC-123 제목/x.mp4', 'ABC-123 제목.mp4': 'z/ABC-123 제목.mp4', 'other.mp4': 'z/other.mp4' });
+});
+
+test('planFlatten은 이름 배정에 실패한 파일도 건너뜀 목록의 원래 자리에 둔다 (#63)', () => {
+  const dir = tempDir();
+  const long = `${'긴'.repeat(251)}.txt`;
+  make(dir, ['a/a.txt', `b/${long}`, 'c/c.txt']);
+  fs.writeFileSync(path.join(dir, long), 'top');
+  fs.mkdirSync(path.join(dir, 'd'));
+  fs.writeFileSync(path.join(dir, 'd', 'Thumbs.db'), '');
+  const plan = planFlatten(dir);
+  assert.deepStrictEqual(moves(plan), [['a/a.txt', 'a.txt'], ['c/c.txt', 'c.txt']]);
+  assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]), [
+    [path.join('b', long), `번호를 붙이면 이름이 너무 깁니다: ${'긴'.repeat(251)} (2).txt`],
+    [path.join('d', 'Thumbs.db'), '폴더 설정·미리보기 파일이라 옮기지 않습니다. 폴더가 비면 폴더와 함께 휴지통으로 갑니다.'],
+  ]);
+});
+
+test('planFlatten은 자기 바깥 폴더와 같은 이름에는 번호를 붙인다(풀지 않음, #63)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123 제목.mp4/x.mp4']);
+  assert.deepStrictEqual(moves(planFlatten(dir)), [['ABC-123 제목.mp4/x.mp4', 'ABC-123 제목 (2).mp4']]);
+  const result = flatten(dir);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'ABC-123 제목.mp4')]);
+  assert.deepStrictEqual(contents(dir), { 'ABC-123 제목 (2).mp4': 'ABC-123 제목.mp4/x.mp4' });
+});
+
 test('flatten은 타겟의 위 폴더가 프로젝트·프로그램 폴더면 아무것도 옮기지 않고 거부한다 (#148)', () => {
   const project = tempDir();
   make(project, ['myproj/package.json', 'myproj/src/lib/a.js', 'myproj/src/b.js']);

@@ -342,6 +342,8 @@ function planFlatten(dir) {
   const plan = { target: access.target, moves: [], stay: [], skipped: [], guarded: new Set(guarded.keys()) };
   // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름(번호가 붙었을 수도 있다)이 있다(#73).
   const topFiles = new Map();
+  // 이름을 배정할 파일 ({ from, original, desired, slot, move })
+  const candidates = [];
   for (const entry of entries) {
     if (!isTop(entry) || entry.type !== 'file') continue;
     const key = fileKey(entry.path);
@@ -395,20 +397,37 @@ function planFlatten(dir) {
       // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
       const twin = topFiles.get(fileKey(from));
       if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);
-      let desired = detailed.length > MAX_NAME ? original : detailed;
+      // 이름은 아래에서 한꺼번에 배정한다. 실패하면 이 자리에 사유를 채워 건너뜀 순서를 유지한다.
+      const slot = { path: entry.path, reason: null };
+      plan.skipped.push(slot);
+      candidates.push({ from, original, desired: detailed.length > MAX_NAME ? original : detailed, slot });
+    } catch (err) {
+      if (!(err instanceof FcError)) throw err;
+      plan.skipped.push({ path: entry.path, reason: err.message });
+    }
+  }
+  // 원래 이름을 그대로 쓰는 파일에 먼저 이름을 배정한다(#63). 폴더명 후보(ABC-123 제목/x.mp4 → ABC-123 제목.mp4)가
+  // 원래 그 이름인 파일(z/ABC-123 제목.mp4)의 이름을 먼저 차지해 번호를 붙이게 하지 않는다. 옮기는 순서는 항목 순서 그대로다.
+  const order = [...candidates.filter((c) => c.desired === c.original), ...candidates.filter((c) => c.desired !== c.original)];
+  for (const candidate of order) {
+    const { from, original } = candidate;
+    try {
+      let desired = candidate.desired;
       let name = freeName(desired, access.target, taken, nextNumber);
       if (name.length > MAX_NAME && desired !== original) {
         desired = original;
         name = freeName(desired, access.target, taken, nextNumber);
       }
       if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
-      plan.moves.push({ from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired });
+      candidate.move = { from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired };
       taken.add(nameKey(name));
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
-      plan.skipped.push({ path: entry.path, reason: err.message });
+      candidate.slot.reason = err.message;
     }
   }
+  plan.moves = candidates.filter((c) => c.move).map((c) => c.move);
+  plan.skipped = plan.skipped.filter((item) => item.reason !== null);
   for (const item of guardItems.values()) {
     item.reason = `${item.label}라 안의 항목 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
     delete item.label;
