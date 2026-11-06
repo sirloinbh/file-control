@@ -1918,8 +1918,11 @@ test('flatten은 바깥 폴더의 제품번호·제목과 가까운 폴더 이�
 
 test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 이름, 담는 폴더 이름, 길이 한도를 지킨다 (#150)', () => {
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['ABC-123']), 'ABC-123 CD1.mp4');
-  // 바깥 제품번호 폴더를 먼저 고른다.
-  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Extras', 'ABC-123']), 'ABC-123 CD1.mp4');
+  // 바깥 제품번호 폴더를 먼저 고르고, 그 사이 폴더도 붙인다(1차 리뷰).
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Extras', 'ABC-123']), 'ABC-123 Extras CD1.mp4');
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Subs', 'ABC-123']), 'ABC-123 CD1.mp4');
+  // 파일과 같은 확장자가 붙은 바깥 폴더는 확장자를 떼고 쓴다(1차 리뷰).
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['ABC-123.mp4']), 'ABC-123 CD1.mp4');
   // 받은 이름에 이미 제품번호가 있거나 바깥 이름이 들어 있으면 붙이지 않는다.
   assert.strictEqual(withOuterFolder('video.mp4', 'XYZ-999.mp4', ['ABC-123']), 'XYZ-999.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'Show CD1.mp4', ['Show']), 'Show CD1.mp4');
@@ -1933,6 +1936,18 @@ test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 �
   assert.strictEqual(prefixedName('video.en.srt', ['Subs', '1080p', 'Show']), 'Show 1080p video.en.srt');
   assert.strictEqual(prefixedName('video.mp4', ['Videos', 'WEB-DL', 'ABC-123']), 'ABC-123 WEB-DL video.mp4');
   assert.strictEqual(prefixedName('video.mp4', [long, 'ABC-123']), 'ABC-123 video.mp4');
+  // 자막 폴더와 그 아래 폴더, 자막 말이 든 폴더는 붙이지 않는다(1차 리뷰).
+  assert.strictEqual(prefixedName('video.en.srt', ['English', 'Subs', 'ABC-123']), 'ABC-123 video.en.srt');
+  assert.strictEqual(prefixedName('video.en.srt', ['English Subs', 'ABC-123']), 'ABC-123 video.en.srt');
+  assert.strictEqual(prefixedName('video.ko.srt', ['한국어', '자막', '1080p', 'ABC-123']), 'ABC-123 1080p video.ko.srt');
+});
+
+test('flatten은 바깥 폴더와 받은 폴더 이름 사이의 화질 폴더도 남긴다 (#150 1차 리뷰)', () => {
+  const dir = tempDir();
+  make(dir, ['Show/1080p/CD1/video.mp4', 'Show/1080p/CD2/video.mp4', 'Show/720p/CD1/video.mp4', 'Show/720p/CD2/video.mp4', 'ABC-123.mp4/CD1/video.mp4', 'ABC-123.mp4/CD2/video.mp4']);
+  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), [
+    'ABC-123 CD1.mp4', 'ABC-123 CD2.mp4', 'Show 1080p CD1.mp4', 'Show 1080p CD2.mp4', 'Show 720p CD1.mp4', 'Show 720p CD2.mp4',
+  ]);
 });
 
 test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름으로 옮긴다', () => {
