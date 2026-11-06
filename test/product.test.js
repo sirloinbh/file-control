@@ -160,7 +160,7 @@ test('findProductNumber는 찾지 못하거나 입력이 없으면 null이다', 
 });
 
 test('extractProductNumbers는 영상 출처·코덱·음성·언어 이름을 번호로 보지 않는다 (#89)', () => {
-  for (const text of ['REMUX-2160', 'BLURAY-1080', 'WEBRIP-720', 'WEB-1080', 'HDTV-720', 'DTS-51', 'FLAC-24', 'DDP-51', 'VP-09', 'AV-01', 'MKV-2021', 'KOR-2023', 'SUB-01', 'ENG-01', 'YUV-420']) {
+  for (const text of ['REMUX-2160', 'BLURAY-1080', 'WEBRIP-720', 'WEB-1080', 'HDTV-720', 'DTS-51', 'FLAC-24', 'DDP-51', 'VP-09', 'AV-01', 'MKV-2021', 'KOR-2023', 'SUB-01', 'ENG-01', 'YUV-420', 'BT-2020', 'SDR-1080', 'HLG-10', 'DOVI-2160', 'DSNP-1080', 'HMAX-2160', 'ATVP-2160', 'HULU-720', 'CH-51', 'KOREAN-2023', 'ENGSUB-01']) {
     assert.deepStrictEqual(extractProductNumbers(text), [], text);
     assert.deepStrictEqual(extractProductNumbers(text.toLowerCase(), { lowercase: true }), [], text.toLowerCase());
   }
