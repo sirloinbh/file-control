@@ -71,7 +71,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 });
 
 const { FcError, hiddenOrSystemEntries, recycleEmptyFolders, RECYCLE_FOLDERS_SCRIPT } = require('../src/commands');
-const { planFlatten, detailedName, prefixedName, flatten, formatFlatten, moveWithoutOverwrite, leftoverNote } = require('../src/flatten');
+const { planFlatten, withOuterFolder, detailedName, prefixedName, flatten, formatFlatten, moveWithoutOverwrite, leftoverNote } = require('../src/flatten');
 const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
 const { spawnSync } = require('node:child_process');
@@ -1886,7 +1886,7 @@ test('flatten은 정보 없는 파일명의 폴더 이름을 결과 이름에 �
 test('prefixedName은 video.en.srt 같은 자막에도 같은 접두어를 붙이고, 정보 없는 가까운 폴더를 건너 위로 올라간다', () => {
   assert.strictEqual(prefixedName('video.en.srt', ['ABC-123']), 'ABC-123 video.en.srt');
   assert.strictEqual(prefixedName('video.ko.srt', ['PART-01']), 'PART-01 video.ko.srt');
-  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Show']), 'Show video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Show']), 'Show 1080p video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['x', '새 폴더', 'ABC-123']), 'ABC-123 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Videos']), 'video.mp4');
   assert.strictEqual(prefixedName('trailer.en.srt', ['ABC-123']), 'trailer.en.srt');
@@ -1900,11 +1900,39 @@ test('detailedName은 번호·복사본이 붙은 흔한 폴더, 전각 흔한 �
   assert.strictEqual(detailedName('video.mp4', ['Summer Trip (2)']), 'Summer Trip (2).mp4');
 });
 
-test('flatten은 자막 짝을 유지하고 화질 폴더 위의 폴더 이름을 붙인다', () => {
+test('flatten은 자막 짝을 유지하고 화질 폴더 위의 폴더 이름과 화질 폴더 이름을 함께 붙인다 (#150)', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/video.mp4', 'ABC-123/video.en.srt', 'Show/1080p/video.mp4', 'Show/720p/video.mp4']);
   flatten(dir);
-  assert.deepStrictEqual(Object.keys(contents(dir)).sort(), ['ABC-123 video.en.srt', 'ABC-123 video.mp4', 'Show video (2).mp4', 'Show video.mp4']);
+  assert.deepStrictEqual(Object.keys(contents(dir)).sort(), ['ABC-123 video.en.srt', 'ABC-123 video.mp4', 'Show 1080p video.mp4', 'Show 720p video.mp4']);
+});
+
+test('flatten은 바깥 폴더의 제품번호·제목과 가까운 폴더 이름을 함께 남긴다 (#150)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/CD1/video.mp4', 'ABC-123/CD2/video.mp4', 'Show/CD1/movie.mkv', 'Show/CD2/movie.mkv', 'Show/1080p/Subs/video.en.srt', 'Show/1080p/video.mp4', 'Show/720p/video.mp4']);
+  flatten(dir);
+  assert.deepStrictEqual(Object.keys(contents(dir)).sort(), [
+    'ABC-123 CD1.mp4', 'ABC-123 CD2.mp4', 'Show 1080p video.en.srt', 'Show 1080p video.mp4', 'Show 720p video.mp4', 'Show CD1.mkv', 'Show CD2.mkv',
+  ]);
+});
+
+test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 이름, 담는 폴더 이름, 길이 한도를 지킨다 (#150)', () => {
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['ABC-123']), 'ABC-123 CD1.mp4');
+  // 바깥 제품번호 폴더를 먼저 고른다.
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Extras', 'ABC-123']), 'ABC-123 CD1.mp4');
+  // 받은 이름에 이미 제품번호가 있거나 바깥 이름이 들어 있으면 붙이지 않는다.
+  assert.strictEqual(withOuterFolder('video.mp4', 'XYZ-999.mp4', ['ABC-123']), 'XYZ-999.mp4');
+  assert.strictEqual(withOuterFolder('video.mp4', 'Show CD1.mp4', ['Show']), 'Show CD1.mp4');
+  // 정보 있는 파일명, 쓸 만한 바깥 폴더가 없을 때
+  assert.strictEqual(withOuterFolder('trailer.mp4', 'CD1.mp4', ['ABC-123']), 'CD1.mp4');
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Videos', '새 폴더']), 'CD1.mp4');
+  const long = 'T'.repeat(240);
+  assert.strictEqual(withOuterFolder('video.mp4', `${long}.mp4`, ['ABC-123 제목입니다']), `${long}.mp4`);
+  // 사이 폴더: 같은 이름은 한 번만, Subs·Videos는 빼고, 길면 고른 폴더만
+  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Show 1080p']), 'Show 1080p video.mp4');
+  assert.strictEqual(prefixedName('video.en.srt', ['Subs', '1080p', 'Show']), 'Show 1080p video.en.srt');
+  assert.strictEqual(prefixedName('video.mp4', ['Videos', 'WEB-DL', 'ABC-123']), 'ABC-123 WEB-DL video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', [long, 'ABC-123']), 'ABC-123 video.mp4');
 });
 
 test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름으로 옮긴다', () => {
@@ -1920,11 +1948,11 @@ test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름�
 test('flatten은 자막 폴더 이름을 붙이지 않고, 접두어도 바깥 제품번호 폴더를 먼저 쓴다', () => {
   assert.strictEqual(prefixedName('video.en.srt', ['Subs', 'Show']), 'Show video.en.srt');
   for (const folder of ['Sub', 'Subtitles', '자막']) assert.strictEqual(prefixedName('video.en.srt', [folder, 'Show']), 'Show video.en.srt', folder);
-  assert.strictEqual(prefixedName('video.mp4', ['Extras', 'ABC-123']), 'ABC-123 video.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['Extras', 'ABC-123']), 'ABC-123 Extras video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['Extras', 'Show']), 'Extras video.mp4');
   const dir = tempDir();
   make(dir, ['Show/video.mp4', 'Show/Subs/video.en.srt', 'ABC-123/Extras/video.mp4', 'ABC-123/Extras/sample.mp4']);
-  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 sample.mp4', 'ABC-123 video.mp4', 'Show video.en.srt', 'Show video.mp4']);
+  assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 Extras sample.mp4', 'ABC-123 Extras video.mp4', 'Show video.en.srt', 'Show video.mp4']);
 });
 
 // #67: 빈 폴더를 묶어서 휴지통으로, 진행 보고, 휴지통 없는 드라이브, 시간 제한
