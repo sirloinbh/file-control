@@ -662,15 +662,21 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
 
 // tar.exe는 인자를 시스템 코드페이지로 받아서, 그 코드페이지에 없는 문자를 비슷한 글자로 바꾸거나(é -> e) 비정상 종료한다.
 // 그대로 넘기면 다른 파일을 묶거나 다른 폴더에 쓸 수 있으므로, 바뀌는 문자가 있으면 실행하기 전에 거부한다.
-function unsupportedChars(text) {
+// 인자는 ANSI 코드페이지로 받지만 zip 항목 이름은 OEM 코드페이지로 적는다. 영어 Windows(ANSI 1252, OEM 437)에서
+// COM¹.tar.gz를 묶고 풀면 오류 없이 COM1.tar.gz가 됐다(#136). 그래서 ANSI와 OEM 어느 쪽에서든 바뀌는 문자를 거부한다.
+// codePages를 주면 시스템 코드페이지 대신 그것으로 본다(테스트용).
+function unsupportedChars(text, codePages = null) {
   if (!isWindows) return [];
   const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
   if (chars.length === 0) return [];
   const script =
-    '$e = [Text.Encoding]::Default; foreach ($c in ($env:FC_CHARS -split "`n")) ' +
-    '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0) } }';
+    '$cps = if ($env:FC_CODEPAGES) { $env:FC_CODEPAGES -split "," } else { ' +
+    "@([Text.Encoding]::Default.CodePage, (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP) }; " +
+    '$encs = @($cps | ForEach-Object { [Text.Encoding]::GetEncoding([int]$_) }); ' +
+    'foreach ($c in ($env:FC_CHARS -split "`n")) { foreach ($e in $encs) ' +
+    '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0); break } } }';
   const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...process.env, FC_CHARS: chars.join('\n') },
+    env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '' },
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
   });
@@ -895,6 +901,7 @@ module.exports = {
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
+  unsupportedChars,
   freshPath,
   zip,
 };
