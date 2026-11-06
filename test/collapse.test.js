@@ -537,3 +537,17 @@ test('collapse는 맨 아래 폴더 안쪽의 숨김 항목으로는 막지 않�
     assert.match(out.slice(0, out.indexOf(full)), /H/, name);
   }
 });
+
+test('collapse는 타겟 바로 아래가 아닌 숨김 맨 위 폴더도 부모를 읽어 알아보고 접지 않는다 (#85 2차 리뷰)', { skip: !isWindows && 'Windows 폴더 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['x/y.txt', 'x/z/w/f.txt']);
+  childProcess.execFileSync('attrib', ['+h', path.join(dir, 'x', 'z')]);
+  let listed;
+  onAttributes = (options) => {
+    listed = options.input.trim().split('\n').map((line) => Buffer.from(line, 'base64').toString('utf16le')).sort();
+  };
+  const plan = planCollapse(dir);
+  assert.deepStrictEqual(listed, ['x', path.join('x', 'z')]);
+  assert.deepStrictEqual(plan.collapses, []);
+  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'x', 'z'), reason: `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('x', 'z')}` }]);
+});
