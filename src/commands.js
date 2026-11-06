@@ -850,8 +850,8 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   const seen = new Map();
   for (const src of sources) {
     const name = path.basename(path.resolve(src));
-    // toLowerCase만 쓰면 NTFS에서 같은 이름인 ΑΣ와 ασ가 갈리고, toUpperCase만 쓰면 켈빈 기호 K와 k가 갈린다.
-    const key = isWindows ? name.toLowerCase().toUpperCase() : name;
+    // toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만들므로 대문자로 비교한다(flatten.js와 같다).
+    const key = isWindows ? name.toUpperCase() : name;
     if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
