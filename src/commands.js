@@ -762,9 +762,12 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
 
 // -a는 확장자로 형식을 정하므로 임시 파일에도 같은 확장자를 붙인다. (.tar.gz 같은 겹 확장자 포함)
 // 임시 이름은 --exclude의 패턴으로도 쓰이므로, 패턴 문자가 없는 영숫자 확장자만 받는다.
+// tar.exe는 확장자를 대소문자 구분해서 보아 X.ZIP·x.TAR.GZ를 압축 없는 tar로 만든다. 그래서 임시 파일에는 소문자 확장자를 붙인다.
+// 다만 .Z(compress)는 대문자만 알아보고 .z는 압축 없는 tar가 되므로 Z는 그대로 둔다.
 function archiveExt(archive) {
   const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
-  return match ? match[0] : '';
+  if (!match) return '';
+  return match[0].split('.').map((part) => (part === 'Z' ? part : part.toLowerCase())).join('.');
 }
 
 // 압축 파일이 묶을 폴더 안에 있으면 tar가 기존 압축 파일까지 묶으므로 미리 치워야 한다.
