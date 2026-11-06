@@ -158,3 +158,27 @@ test('findProductNumber는 찾지 못하거나 입력이 없으면 null이다', 
   assert.strictEqual(findProductNumber({ folders: null }), null);
   assert.strictEqual(findProductNumber({ fileName: 'video.mp4', title: null, comment: null, folders: ['새 폴더'] }), null);
 });
+
+test('extractProductNumbers는 비ASCII 라틴 문자가 붙은 단어 중간을 번호로 잡지 않는다 (#92)', () => {
+  const decomposed = 'Pokémon-12.mp4';
+  for (const options of [{}, { lowercase: true }]) {
+    for (const text of ['Pokémon-12.mp4', 'POKÉMON-12.mp4', 'Résumer-12.pdf', 'RÉSUMER-12.pdf', 'naïve-12.txt', 'NAÏVE-12.txt', decomposed, decomposed.toUpperCase(), 'ABC-12é', 'ABC-123-01é', 'café-trip-20', 'CAFÉ-TRIP-20', 'ŁÓDŹ-ABC-123']) {
+      assert.deepStrictEqual(extractProductNumbers(text, options), [], `${text} ${JSON.stringify(options)}`);
+    }
+  }
+});
+
+test('extractProductNumbers는 한글·한자·가나가 붙은 번호는 찾는다 (#92)', () => {
+  assert.deepStrictEqual(extractProductNumbers('영상abc-123', { lowercase: true }), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('영상ABC-123제목'), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('動画ABC-123です'), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('café ABC-123'), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('ABC-123-1080p'), ['ABC-123']);
+});
+
+test('extractProductNumbers는 라틴 문자가 아닌 글자의 결합 부호를 경계로 보지 않는다 (1차 리뷰, #92)', () => {
+  assert.deepStrictEqual(extractProductNumbers('ガイドABC-123'.normalize('NFD')), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('ガイドabc-123'.normalize('NFD'), { lowercase: true }), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('ダウンロード-ABC-123'.normalize('NFD')), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('café-trip-20'.normalize('NFD'), { lowercase: true }), []);
+});
