@@ -675,7 +675,7 @@ test('zip은 대문자 확장자도 같은 형식으로 묶고, 대소문자로 
     ['l1.zip', PK], ['U1.ZIP', PK], ['M1.Zip', PK],
     ['l2.tar.gz', GZIP], ['U2.TAR.GZ', GZIP], ['M2.tar.GZ', GZIP], ['U3.TGZ', GZIP],
     ['U4.TAR.BZ2', [0x42, 0x5a, 0x68]], ['U5.TAR.XZ', [0xfd, 0x37, 0x7a]], ['U6.7Z', [0x37, 0x7a, 0xbc]],
-    ['l7.tar.Z', [0x1f, 0x9d, 0x90]], ['U7.TAR.Z', [0x1f, 0x9d, 0x90]], ['l8.tar.z', TAR], ['l9.tar', TAR], ['U9.TAR', TAR],
+    ['l7.tar.Z', [0x1f, 0x9d, 0x90]], ['U7.TAR.Z', [0x1f, 0x9d, 0x90]], ['l10.taZ', [0x1f, 0x9d, 0x90]], ['l11.tZ', [0x1f, 0x9d, 0x90]], ['l12.taz', GZIP], ['l8.tar.z', TAR], ['l9.tar', TAR], ['U9.TAR', TAR],
   ];
   for (const [name, magic] of cases) {
     fc.zip(p(name), [p('a.txt')]);
