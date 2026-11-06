@@ -621,3 +621,14 @@ test('연-월이나 붙여 쓴 날짜는 글자가 붙은 번호로 보아 엇�
   const result = addProductNumbers(dir);
   assert.deepStrictEqual(result.conflicts.map((item) => item.numbers).sort(), [['MEET-2024', 'XYZ-999'], ['TRIP-2024', 'XYZ-999']]);
 });
+
+test('글자가 붙은 번호 뒤에 숫자 묶음이나 화질 꼬리가 더 있어도 엇갈림으로 보고, 연-월-일만 날짜로 뺀다 (2차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/ABC-123-01-1080p.mp4', 'XYZ-999/ABC-123-01-02.mp4', 'XYZ-999/ZZZ-1999-12-31.mp4']);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.conflicts.map((item) => [path.basename(item.path), item.numbers]).sort(), [
+    ['ABC-123-01-02.mp4', ['ABC-123', 'XYZ-999']],
+    ['ABC-123-01-1080p.mp4', ['ABC-123', 'XYZ-999']],
+  ]);
+  assert.deepStrictEqual(result.renamed.map((item) => item.name).sort(), ['XYZ-999 ZZZ-1999-12-31.mp4']);
+});

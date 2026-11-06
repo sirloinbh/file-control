@@ -83,13 +83,18 @@ function findProductNumber(input) {
 
 // 앞뒤에 글자·숫자가 붙어 제품번호 규칙이 번호로 보지 않는 대문자 번호(1ABC-123, ABC-123A, ABC-123-01)를 찾아 앞부분 번호만 돌려준다.
 // 이름에 다른 번호가 이미 들어 있을 수 있다는 신호로만 쓴다(#75). 앞에 라틴 문자가 붙은 말(Pokémon-12, XABC-123)은 단어 중간이라 보지 않는다.
-// 날짜 꼴(ZZZ-2024-05-01처럼 숫자 묶음이 둘 이상 더 이어짐)과 제품번호가 아닌 말(PIC, CVE, TEL 등)도 보지 않는다.
-const ATTACHED = /(?<!\p{Script=Latin}\p{M}*)(?<!\p{Script=Latin}\p{M}*-)([A-Z]{2,6})-(\d{2,5})(?!\d)(?!-\d+-\d)/gu;
+// 연-월-일 날짜 꼴(ZZZ-2024-05-01: 19xx·20xx 연도 뒤에 1~2자리 숫자 묶음 둘)과 제품번호가 아닌 말(PIC, CVE, TEL 등)도 보지 않는다.
+// ABC-123-01-1080p, ABC-123-01-02처럼 연도가 아닌 번호 뒤의 숫자 묶음은 글자가 붙은 번호로 본다(2차 리뷰).
+const ATTACHED = /(?<!\p{Script=Latin}\p{M}*)(?<!\p{Script=Latin}\p{M}*-)([A-Z]{2,6})-(\d{2,5})(?!\d)/gu;
+const YEAR = /^(?:19|20)\d\d$/;
+const MONTH_DAY = /^-\d{1,2}-\d{1,2}(?!\d)/;
 
 function findAttachedProductNumbers(text) {
   if (typeof text !== 'string') return [];
   const numbers = [];
-  for (const { 1: letters, 2: digits } of halfWidth(text).matchAll(ATTACHED)) {
+  const half = halfWidth(text);
+  for (const { 0: match, 1: letters, 2: digits, index } of half.matchAll(ATTACHED)) {
+    if (YEAR.test(digits) && MONTH_DAY.test(half.slice(index + match.length))) continue;
     if (!NOT_PRODUCT.has(letters)) numbers.push(`${letters}-${digits}`);
   }
   return [...new Set(numbers)];
