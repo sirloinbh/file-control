@@ -696,22 +696,27 @@ test('코드페이지 검사는 ANSI와 OEM 중 어느 한쪽에서라도 바뀌
   // 한국어 Windows: ANSI·OEM이 모두 949라 ¹과 한글은 있고 é와 이모지는 없다.
   assert.deepStrictEqual(codes(fc.unsupportedChars('¹가é😀', [949, 949])), ['e9', '1f600']);
   assert.deepStrictEqual(fc.unsupportedChars('plain ascii', [437]), []);
+  // 코드페이지를 확인하지 못하면 검사 없이 통과하지 않고 실행을 거부한다.
+  assert.throws(() => fc.unsupportedChars('é', [99999]), (err) => err instanceof fc.FcError && /코드페이지를 확인하지 못해/.test(err.message));
+  assert.throws(() => fc.unsupportedChars('é', [949, 0]), fc.FcError);
 });
 
 // 이 PC의 ANSI에는 있고 OEM에는 없는 문자로 실제 zip·unzip이 실행 전에 거부하는지 본다. CI의 영어 Windows에서 실행된다.
 test('zip·unzip은 ANSI에는 있지만 OEM 코드페이지에서 바뀌는 문자를 실행 전에 거부한다 (#136)', { skip: !isWindows }, (t) => {
   const acp = Number(childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim());
-  const char = ['¹', '²', '³', '½', '€', 'é', 'ñ'].find((c) => fc.unsupportedChars(c, [acp]).length === 0 && fc.unsupportedChars(c).length === 1);
+  const candidates = ['¹', '²', '³', '½', '€', 'é', 'ñ'].join('');
+  const inAnsi = new Set(fc.unsupportedChars(candidates, [acp]));
+  const char = fc.unsupportedChars(candidates).find((c) => !inAnsi.has(c));
   if (char === undefined) return t.skip('ANSI와 OEM 코드페이지의 차이로 바뀌는 문자가 없는 환경이다');
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
-  fc.writeFile(p(`COM${char}.tar.gz`), 'S');
+  fc.writeFile(p(`s${char}.tar.gz`), 'S');
   fc.writeFile(p('tree', `a${char}.txt`), 'T');
   fc.writeFile(p('a.txt'), 'A');
   fc.zip(p('ok.zip'), [p('a.txt')]);
   const before = fs.readdirSync(dir).sort();
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('o.zip'), [p(`COM${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('o.zip'), [p(`s${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/);
     assert.throws(() => fc.zip(p('o.zip'), [p('tree')], { dryRun }), /처리할 수 없는 문자/);
     assert.throws(() => fc.unzip(p('ok.zip'), p(`out${char}`), { dryRun }), /처리할 수 없는 문자/);
   }

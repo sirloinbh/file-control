@@ -669,17 +669,25 @@ function unsupportedChars(text, codePages = null) {
   if (!isWindows) return [];
   const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
   if (chars.length === 0) return [];
+  // 코드페이지를 하나라도 확인하지 못하면 검사가 약해진 채 통과하지 않도록 멈추고 실행을 거부한다.
+  // OEMCP가 비면 [int]가 0이 되어 GetEncoding(0)이 ANSI를 돌려주므로 따로 막는다.
   const script =
+    "$ErrorActionPreference = 'Stop'; " +
     '$cps = if ($env:FC_CODEPAGES) { $env:FC_CODEPAGES -split "," } else { ' +
     "@([Text.Encoding]::Default.CodePage, (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP) }; " +
-    '$encs = @($cps | ForEach-Object { [Text.Encoding]::GetEncoding([int]$_) }); ' +
+    '$encs = @($cps | ForEach-Object { if ([int]$_ -le 0) { throw "code page $_" }; [Text.Encoding]::GetEncoding([int]$_) }); ' +
     'foreach ($c in ($env:FC_CHARS -split "`n")) { foreach ($e in $encs) ' +
     '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0); break } } }';
-  const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    encoding: 'utf8',
-  });
+  let output;
+  try {
+    output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    });
+  } catch (err) {
+    throw new FcError(`시스템 코드페이지를 확인하지 못해 tar.exe를 실행하지 않았습니다. (${err.status ?? err.code})`);
+  }
   return output.split(/\s+/).filter(Boolean).map((code) => String.fromCodePoint(Number(code)));
 }
 
