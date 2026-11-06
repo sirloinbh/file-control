@@ -606,3 +606,18 @@ test('날짜 꼴, 제외 단어, 하이픈 없는 다른 번호, 단어 중간 �
     'XYZ-999/XYZ-999 ZZZ-2024-05-01.mp4',
   ]);
 });
+
+test('앞에 라틴 문자가 붙은 하이픈 없는 말은 같은 번호로 보지 않고 번호를 넣는다 (1차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/XABC123.mp4', 'ABC-123/ABC1234.mp4']);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.conflicts.length, 0);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 ABC1234.mp4', 'ABC-123/ABC-123 XABC123.mp4']);
+});
+
+test('연-월이나 붙여 쓴 날짜는 글자가 붙은 번호로 보아 엇갈림이 된다 (1차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/MEET-2024-05.mp4', 'XYZ-999/TRIP-2024-0501.mp4']);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.numbers).sort(), [['MEET-2024', 'XYZ-999'], ['TRIP-2024', 'XYZ-999']]);
+});
