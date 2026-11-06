@@ -262,12 +262,12 @@ function mainVideo(tracks) {
   }, null);
 }
 
-// UTF-16은 BOM이 있으면 따르고, 없으면 big endian으로 읽는다. 잘못된 글자는 U+FFFD로 바뀐다.
-function decodeText(buffer, encoding = 'utf-8') {
+// UTF-16은 BOM이 있으면 따르고, 없으면 big endian으로 읽는다. 잘못된 글자는 U+FFFD로 바뀐다. fatal이면 대신 예외를 낸다.
+function decodeText(buffer, encoding = 'utf-8', { fatal = false } = {}) {
   let text;
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) text = new TextDecoder('utf-16le').decode(buffer);
   else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) text = new TextDecoder('utf-16be').decode(buffer);
-  else text = new TextDecoder(encoding).decode(buffer);
+  else text = new TextDecoder(encoding, { fatal }).decode(buffer);
   return text.replace(/\0+[^]*$/, '').trim();
 }
 
@@ -325,6 +325,39 @@ function readMeta(read, p, meta, tags) {
   }
 }
 
+// 옛 QuickTime 항목의 언어 코드가 0x400 미만(Macintosh 언어 코드)이거나 0x7FFF(지정 안 함)이면 글자는 Mac 인코딩이다(#69).
+// FFmpeg(libavformat/mov.c)도 이때 Mac 인코딩으로 읽는다. FFmpeg는 언어와 관계없이 MacRoman을 쓰지만, 여기서는 언어 코드에 맞는
+// Mac 인코딩 가운데 Node가 읽을 수 있는 것을 고른다. 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 간체 중국어(33) GBK,
+// 키릴 문자 언어(러시아어 32, 세르비아어 42, 마케도니아어 43, 불가리아어 44, 우크라이나어 45, 벨라루스어 46) Mac Cyrillic이고,
+// 나머지는 MacRoman이다(그리스어·히브리어·아랍어 등 Node에 없는 Mac 인코딩은 FFmpeg처럼 MacRoman으로 읽혀 글자가 틀릴 수 있다).
+// 0x400 이상(ISO 639-2/T 언어 코드)이면 UTF-8이다.
+const MAC_ENCODINGS = new Map([
+  [11, 'shift_jis'],
+  [19, 'big5'],
+  [23, 'euc-kr'],
+  [33, 'gbk'],
+  ...[32, 42, 43, 44, 45, 46].map((code) => [code, 'x-mac-cyrillic']),
+]);
+
+function classicEncoding(language) {
+  if (language >= 0x400 && language !== 0x7fff) return 'utf-8';
+  return MAC_ENCODINGS.get(language) ?? 'macintosh';
+}
+
+// Mac 언어 코드인데 내용이 올바른 UTF-8이면 UTF-8로 쓴 것으로 본다. 언어 코드를 0으로 두고 UTF-8로 쓰는 도구가 있어서다.
+// Mac 인코딩의 ASCII 밖 글자는 UTF-8 규칙에 거의 맞지 않으므로(café의 é = 0x8E, 日本 = 93 FA 96 7B) 잘못 고를 일이 적다.
+function decodeClassic(buffer, language) {
+  const encoding = classicEncoding(language);
+  if (encoding !== 'utf-8') {
+    try {
+      return decodeText(buffer, 'utf-8', { fatal: true });
+    } catch {
+      // UTF-8이 아니면 언어 코드의 인코딩으로 읽는다.
+    }
+  }
+  return decodeText(buffer, encoding);
+}
+
 // 옛 QuickTime 항목은 길이 2바이트, 언어 2바이트, 글자 순으로 여러 언어가 이어진다. 첫 값을 쓴다.
 function readClassicText(read, box) {
   const length = box.end - box.start;
@@ -332,7 +365,7 @@ function readClassicText(read, box) {
   const body = read(box.start, length);
   const size = body.readUInt16BE(0);
   if (size === 0 || size > length - 4) return null;
-  return decodeText(body.subarray(4, 4 + size));
+  return decodeClassic(body.subarray(4, 4 + size), body.readUInt16BE(2));
 }
 
 // 3GPP 항목은 버전·플래그 4바이트, 언어 2바이트, 글자 순이다.

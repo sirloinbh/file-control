@@ -659,3 +659,34 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
   const result = write(dir, ftyp(), box('moov', short, trak()));
   assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
 });
+
+test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로 읽는다 (#69)', () => {
+  const dir = tempDir();
+  const classic = (type, bytes, language) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(bytes.length, 0);
+    head.writeUInt16BE(language, 2);
+    return box(type, head, bytes);
+  };
+  const title = (bytes, language) => write(dir, ftyp(), box('moov', box('udta', classic('©nam', Buffer.from(bytes), language)))).title;
+  // Mac 언어 코드: 영어(0) MacRoman, 프랑스어(1) MacRoman, 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 러시아어(32) Mac Cyrillic, 간체 중국어(33) GBK
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0), 'café');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 1), 'café');
+  assert.strictEqual(title([0x93, 0xfa, 0x96, 0x7b], 11), '日本');
+  assert.strictEqual(title([0xa4, 0xa4, 0xa4, 0xe5], 19), '中文');
+  assert.strictEqual(title([0xc7, 0xd1, 0xb1, 0xdb], 23), '한글');
+  assert.strictEqual(title([0x8c, 0xe8, 0xf0], 32), 'Мир');
+  assert.strictEqual(title([0xd6, 0xd0, 0xce, 0xc4], 33), '中文');
+  // 0x7FFF(지정 안 함)도 Mac 인코딩이고, 표에 없는 Mac 언어 코드는 MacRoman이다.
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x7fff), 'café');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 25), 'café');
+  // ISO 639-2/T 언어 코드(0x400 이상)는 UTF-8이다. 0x15c7은 kor, 0x55c4는 und다.
+  assert.strictEqual(title(Buffer.from('한글 ABC-123'), 0x15c7), '한글 ABC-123');
+  assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x55c4), 'caf\ufffd');
+  // Mac 언어 코드라도 내용이 올바른 UTF-8이면 UTF-8로 읽는다.
+  assert.strictEqual(title(Buffer.from('日本 ABC-123'), 0), '日本 ABC-123');
+  assert.strictEqual(title(Buffer.from('ABC-123'), 11), 'ABC-123');
+  // 코멘트도 같다.
+  const comment = write(dir, ftyp(), box('moov', box('udta', classic('©cmt', Buffer.from([0x93, 0xfa, 0x96, 0x7b]), 11)))).comment;
+  assert.strictEqual(comment, '日本');
+});
