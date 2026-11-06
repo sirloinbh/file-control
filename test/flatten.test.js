@@ -1939,6 +1939,10 @@ test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 �
   // 자막 폴더와 그 아래 폴더, 자막 말이 든 폴더는 붙이지 않는다(1차 리뷰).
   assert.strictEqual(prefixedName('video.en.srt', ['English', 'Subs', 'ABC-123']), 'ABC-123 video.en.srt');
   assert.strictEqual(prefixedName('video.en.srt', ['English Subs', 'ABC-123']), 'ABC-123 video.en.srt');
+  // 언어 이름만 있는 폴더도 자막 폴더처럼 붙이지 않는다(2차 리뷰).
+  for (const folder of ['English', '한국어', 'KOR']) assert.strictEqual(prefixedName('video.ko.srt', [folder, 'ABC-123']), 'ABC-123 video.ko.srt', folder);
+  // 사이 폴더까지 붙이면 길이 한도를 넘을 때는 고른 바깥 폴더만 붙인다(2차 리뷰).
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['T'.repeat(240), 'ABC-123']), 'ABC-123 CD1.mp4');
   assert.strictEqual(prefixedName('video.ko.srt', ['한국어', '자막', '1080p', 'ABC-123']), 'ABC-123 1080p video.ko.srt');
 });
 

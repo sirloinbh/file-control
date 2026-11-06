@@ -110,13 +110,16 @@ function folderStems(folders, ext) {
 // 자막 폴더 이름에 들어가는 말. English Subs/처럼 다른 말과 함께 있어도 자막 폴더로 본다.
 const SUBTITLE_WORD = /^(?:SUBS?|SUBTITLES?|자막)$/;
 
+// 언어 이름. 이 말만 있는 폴더(English/, 한국어/)는 자막을 언어별로 나눠 담는 폴더로 보고 자막 폴더처럼 다룬다(2차 리뷰).
+const LANGUAGE_WORD = /^(?:ENGLISH|ENG|EN|KOREAN|KOR|KO|JAPANESE|JPN|JA|CHINESE|CHS|CHT|CHI|ZH|SPANISH|SPA|ES|FRENCH|FRE|FRA|FR|GERMAN|GER|DEU|DE|한국어|한글|영어|일본어|중국어)$/;
+
 // chosen 뒤에 사이 폴더(between, 가까운 쪽부터) 중 붙일 이름을 바깥부터 붙인다(#150). 이미 들어 있는 이름(also 포함)은 다시 붙이지 않는다.
-// 자막 폴더와 그 아래 폴더(Subs/English/)는 붙이지 않는다. 붙이면 ABC-123/Subs/English/video.en.srt가 영상과 접두어가 달라진다(1차 리뷰).
+// 자막 폴더, 언어 이름만 있는 폴더와 그 아래 폴더(Subs/English/)는 붙이지 않는다. 붙이면 ABC-123/Subs/English/video.en.srt가 영상과 접두어가 달라진다(1차 리뷰).
 function joinBetween(chosen, between, also = '') {
   let prefix = chosen.normalize('NFC');
   for (const stem of [...between].reverse()) {
     const stemWords = words(stem);
-    if (stemWords.some((word) => SUBTITLE_WORD.test(word))) break;
+    if (stemWords.some((word) => SUBTITLE_WORD.test(word)) || stemWords.every((word) => LANGUAGE_WORD.test(word))) break;
     if (!distinguishingFolder(stem) || containsWords(words(`${prefix} ${also}`), stemWords.join(''))) continue;
     prefix = `${prefix} ${stem.normalize('NFC')}`;
   }
