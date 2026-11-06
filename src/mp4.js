@@ -328,7 +328,8 @@ function readMeta(read, p, meta, tags) {
 // 옛 QuickTime 항목의 언어 코드가 0x400 미만(Macintosh 언어 코드)이거나 0x7FFF(지정 안 함)이면 글자는 Mac 인코딩이다(#69).
 // FFmpeg(libavformat/mov.c)도 이때 Mac 인코딩으로 읽는다. FFmpeg는 언어와 관계없이 MacRoman을 쓰지만, 여기서는 언어 코드에 맞는
 // Mac 인코딩 가운데 Node가 읽을 수 있는 것을 고른다. 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 간체 중국어(33) GBK,
-// 키릴 문자 언어(러시아어 32, 세르비아어 42, 마케도니아어 43, 불가리아어 44, 우크라이나어 45, 벨라루스어 46) Mac Cyrillic이고,
+// 키릴 문자 언어(러시아어 32, 세르비아어 42, 마케도니아어 43, 불가리아어 44, 우크라이나어 45, 벨라루스어 46, 우즈베크어 47, 카자흐어 48,
+// 아제르바이잔어 키릴 49, 몰도바어 53, 키르기스어 54, 타지크어 55, 투르크멘어 56, 몽골어 키릴 58) Mac Cyrillic이고,
 // 나머지는 MacRoman이다(그리스어·히브리어·아랍어 등 Node에 없는 Mac 인코딩은 FFmpeg처럼 MacRoman으로 읽혀 글자가 틀릴 수 있다).
 // 0x400 이상(ISO 639-2/T 언어 코드)이면 UTF-8이다.
 const MAC_ENCODINGS = new Map([
@@ -336,7 +337,7 @@ const MAC_ENCODINGS = new Map([
   [19, 'big5'],
   [23, 'euc-kr'],
   [33, 'gbk'],
-  ...[32, 42, 43, 44, 45, 46].map((code) => [code, 'x-mac-cyrillic']),
+  ...[32, 42, 43, 44, 45, 46, 47, 48, 49, 53, 54, 55, 56, 58].map((code) => [code, 'x-mac-cyrillic']),
 ]);
 
 function classicEncoding(language) {
@@ -344,16 +345,22 @@ function classicEncoding(language) {
   return MAC_ENCODINGS.get(language) ?? 'macintosh';
 }
 
+// 한중일 인코딩. 두 바이트 글자가 우연히 U+0080~U+07FF의 UTF-8 글자가 되는 일이 흔하다(EUC-KR 치킨 C4 A1 C5 B2 = ġŲ).
+const CJK_ENCODINGS = new Set(['shift_jis', 'big5', 'euc-kr', 'gbk']);
+
 // Mac 언어 코드인데 내용이 올바른 UTF-8이면 UTF-8로 쓴 것으로 본다. 언어 코드를 0으로 두고 UTF-8로 쓰는 도구가 있어서다.
-// Mac 인코딩의 ASCII 밖 글자는 UTF-8 규칙에 거의 맞지 않으므로(café의 é = 0x8E, 日本 = 93 FA 96 7B) 잘못 고를 일이 적다.
+// MacRoman·Mac Cyrillic의 ASCII 밖 글자는 UTF-8 규칙에 거의 맞지 않는다(café의 é = 0x8E).
+// 한중일 언어 코드는 UTF-8로 읽은 글자에 U+0800 이상(한중일 글자가 있는 범위)이 있고 그 아래의 ASCII 밖 글자가 없을 때만 UTF-8로 본다(1차 리뷰).
 function decodeClassic(buffer, language) {
   const encoding = classicEncoding(language);
   if (encoding !== 'utf-8') {
+    let text = null;
     try {
-      return decodeText(buffer, 'utf-8', { fatal: true });
+      text = decodeText(buffer, 'utf-8', { fatal: true });
     } catch {
       // UTF-8이 아니면 언어 코드의 인코딩으로 읽는다.
     }
+    if (text !== null && (!CJK_ENCODINGS.has(encoding) || !/[\u0080-\u07ff]/.test(text))) return text;
   }
   return decodeText(buffer, encoding);
 }

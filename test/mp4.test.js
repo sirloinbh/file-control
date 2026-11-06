@@ -690,3 +690,20 @@ test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로
   const comment = write(dir, ftyp(), box('moov', box('udta', classic('©cmt', Buffer.from([0x93, 0xfa, 0x96, 0x7b]), 11)))).comment;
   assert.strictEqual(comment, '日本');
 });
+
+test('한중일 언어 코드는 우연히 UTF-8 규칙에 맞는 두 바이트 글자를 그 언어 인코딩으로 읽고, 키릴 언어 코드를 모두 본다 (1차 리뷰, #69)', () => {
+  const dir = tempDir();
+  const title = (bytes, language) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(bytes.length, 0);
+    head.writeUInt16BE(language, 2);
+    return write(dir, ftyp(), box('moov', box('udta', box('©nam', head, Buffer.from(bytes))))).title;
+  };
+  assert.strictEqual(title([0xc4, 0xa1, 0xc5, 0xb2], 23), '치킨');
+  assert.strictEqual(title([0xc9, 0xbd, 0xcb, 0xae], 33), '山水');
+  assert.strictEqual(title([0xc3, 0xbd], 11), 'ﾃｽ');
+  // UTF-8로 쓴 한중일 글자는 그대로 UTF-8로 읽는다.
+  assert.strictEqual(title(Buffer.from('치킨 ABC-123'), 23), '치킨 ABC-123');
+  assert.strictEqual(title(Buffer.from('山水'), 33), '山水');
+  for (const language of [45, 46, 48, 58]) assert.strictEqual(title([0x8c, 0xe8, 0xf0], language), 'Мир', String(language));
+});
