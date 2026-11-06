@@ -14,7 +14,10 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
+// 폴더 속성 읽기(FC_ROOT)에 끼어들 동작(#85). commands.js가 불러올 때의 함수를 쓰므로 테스트 안에서 다시 가짜로 바꿀 수 없다.
+let onAttributes = null;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_ROOT !== undefined && onAttributes) onAttributes(options);
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -26,11 +29,14 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 test.beforeEach(() => {
   recycled.length = 0;
   onRecycle = () => {};
+  onAttributes = null;
 });
 
 const { FcError } = require('../src/commands');
 const { planCollapse, applyCollapse, collapse, formatCollapse } = require('../src/collapse');
 const { run } = require('../bin/fctl');
+
+const isWindows = process.platform === 'win32';
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-collapse-'));
@@ -463,4 +469,50 @@ test('collapse 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['collapse', dir, '--force']), /--force/);
   assert.throws(() => run(['collapse', dir, '--permanent']), /--permanent/);
   assert.throws(() => run(['collapse', dir, '--remove-archives']), /extract-all에서만/);
+});
+
+// #85: 접으면 폴더 속성이 맨 아래 폴더의 것이 되므로 숨김 폴더가 든 구간은 접지 않는다.
+test('collapse는 맨 위·가운데·맨 아래 중 숨김 폴더가 있는 구간을 접지 않고, 시스템 속성만 있으면 접는다 (#85)', { skip: !isWindows && 'Windows 폴더 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['top/mid/leaf/a.txt', 'vis/hidleaf/b.txt', 'hidtop/x/c.txt', 'p/hidmid/q/d.txt', 'sys/inner/e.txt', 'plain/inner/f.txt']);
+  for (const [flag, name] of [['+h', 'vis/hidleaf'], ['+h', 'hidtop'], ['+h', 'p/hidmid'], ['+s', 'sys/inner']]) {
+    childProcess.execFileSync('attrib', [flag, path.join(dir, name)]);
+  }
+  const plan = planCollapse(dir);
+  assert.deepStrictEqual(plan.collapses.map((item) => path.relative(dir, item.top)).sort(), ['plain', 'sys', 'top']);
+  assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]).sort(), [
+    ['hidtop', '숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): hidtop'],
+    ['p', `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('p', 'hidmid')}`],
+    ['vis', `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('vis', 'hidleaf')}`],
+  ]);
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(tree(dir), ['hidtop/x/c.txt', 'p/hidmid/q/d.txt', 'plain/f.txt', 'sys/e.txt', 'top/a.txt', 'vis/hidleaf/b.txt']);
+  // 시스템 속성은 맨 아래 폴더와 함께 맨 위 이름으로 옮겨 간다.
+  assert.match(childProcess.execFileSync('attrib', [path.join(dir, 'sys')], { encoding: 'utf8' }), /^\s*S\s/);
+});
+
+test('collapse는 폴더 속성을 읽지 못하면 아무것도 접지 않고 오류를 낸다 (#85)', { skip: !isWindows && 'Windows 폴더 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['top/leaf/a.txt']);
+  onAttributes = () => {
+    throw Object.assign(new Error('blocked'), { status: 3 });
+  };
+  assert.throws(() => collapse(dir), /숨김·시스템 속성을 확인할 수 없습니다/);
+  assert.deepStrictEqual(tree(dir), ['top/leaf/a.txt']);
+});
+
+test('collapse는 접을 구간이 없으면 폴더 속성을 읽지 않고, 있으면 한 번만 읽는다 (#85)', () => {
+  const dir = tempDir();
+  make(dir, ['a/1.txt', 'a/2.txt', 'b.txt']);
+  let reads = 0;
+  onAttributes = () => {
+    reads += 1;
+  };
+  assert.deepStrictEqual(planCollapse(dir).collapses, []);
+  assert.strictEqual(reads, 0);
+  // 접을 구간이 여럿이어도 한 번만 읽는다.
+  make(dir, ['c/d/e.txt', 'f/g/h.txt']);
+  assert.strictEqual(planCollapse(dir).collapses.length, 2);
+  assert.strictEqual(reads, isWindows ? 1 : 0);
 });
