@@ -659,3 +659,24 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
   const result = write(dir, ftyp(), box('moov', short, trak()));
   assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
 });
+
+test('MP4 메타데이터와 구조 확인은 파일을 한 번만 열어 읽는다 (#90)', (t) => {
+  const { checkMp4Structure } = require('../src/mp4');
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), trak(), box('udta', box('©nam', u32(0), Buffer.from('ABC-123'))))]));
+  const open = t.mock.method(fs, 'openSync');
+  assert.strictEqual(readMp4Metadata(dir, 'v.mp4').width, 1920);
+  assert.strictEqual(open.mock.callCount(), 1);
+  checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4');
+  assert.strictEqual(open.mock.callCount(), 2);
+});
+
+test('연 파일이 확인한 경로의 파일과 다르면 읽지 않는다 (#90)', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  fs.writeFileSync(path.join(dir, 'other.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  const original = fs.openSync;
+  // 확인과 열기 사이에 다른 파일로 바뀐 것처럼 다른 파일을 연다.
+  t.mock.method(fs, 'openSync', (p, flags) => original(String(p).endsWith('v.mp4') ? path.join(dir, 'other.mp4') : p, flags));
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+});

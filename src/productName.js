@@ -54,11 +54,12 @@ function chooseNumber(found) {
 }
 
 // 타겟 아래 영상 파일의 이름에 제품번호를 넣는 계획을 만든다. 파일은 건드리지 않는다.
-// - renames: 바꿀 파일 ({ from, to, name, number, source })
+// - renames: 바꿀 파일 ({ from, to, name, number, source, note })
 // - already: 이름에 이미 번호가 있어 그대로 두는 파일 ({ path, number })
 //   파일명의 소문자 말(abc-123, trip-2023)은 번호인지 확실하지 않다. 다른 곳에 번호가 없거나 같을 때만 번호로 보고, 다르면 conflicts에 넣는다.
 // - notFound: 번호를 찾지 못한 파일 ({ path, note }). note는 메타데이터를 읽지 못한 사유이고 없으면 null이다.
-// - conflicts: 찾은 번호가 엇갈려 고르지 않은 파일 ({ path, numbers })
+// - conflicts: 찾은 번호가 엇갈려 고르지 않은 파일 ({ path, numbers, note })
+//   renames와 conflicts의 note도 메타데이터를 읽지 못한 사유다. 폴더 번호로 바꿔도 제목에 다른 번호가 있었는지 모르므로 알린다(#90).
 // - skipped: 다루지 않는 항목 ({ path, reason })
 //   읽지 못한 하위 폴더도 여기에 넣고 나머지 파일은 계속 본다. 파일마다 따로 바꾸므로 일부 폴더를 못 봐도 다른 파일에 영향이 없다(#74).
 function planProductNames(dir) {
@@ -108,7 +109,7 @@ function planProductNames(dir) {
       const chosen = chooseNumber(found);
       const numbers = found.candidates.map((candidate) => candidate.number);
       if (!chosen) {
-        plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...numbers])] });
+        plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...numbers])], note: metadataError ?? null });
         continue;
       }
       if (containsNumber(name, chosen.number)) {
@@ -116,7 +117,7 @@ function planProductNames(dir) {
         continue;
       }
       if (lowerInName.length > 0) {
-        plan.conflicts.push({ path: entry.path, numbers: [...lowerInName, chosen.number] });
+        plan.conflicts.push({ path: entry.path, numbers: [...lowerInName, chosen.number], note: metadataError ?? null });
         continue;
       }
       // 파일 안의 글은 쓰지 않고 형식을 통과한 번호만 이름에 넣으므로 제목의 경로·제어 문자가 이름에 들어오지 않는다.
@@ -124,7 +125,7 @@ function planProductNames(dir) {
       if (desired.length > MAX_NAME) throw new FcError(`번호를 넣으면 이름이 너무 깁니다: ${desired}`);
       const to = path.join(path.dirname(from), desired);
       if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}${leftoverNote(from, to)}`);
-      plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source });
+      plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source, note: metadataError ?? null });
     } catch (err) {
       if (err instanceof FcError) skip(err.message);
       else if (err.syscall) skip(`파일을 확인할 수 없습니다. (${err.code})`);
@@ -175,10 +176,10 @@ function formatProductNumbers(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[미리보기] ' : '';
   const lines = [];
-  for (const item of result.renamed) lines.push(`${prefix}이름 변경: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]})`);
+  for (const item of result.renamed) lines.push(`${prefix}이름 변경: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]}${item.note ? `, 메타데이터를 읽지 못함: ${item.note}` : ''})`);
   for (const item of result.already) lines.push(`${prefix}이미 있음: ${relative(item.path)} (${item.number})`);
   for (const item of result.notFound) lines.push(`${prefix}못 찾음: ${relative(item.path)}${item.note ? ` (${item.note})` : ''}`);
-  for (const item of result.conflicts) lines.push(`${prefix}번호가 엇갈림: ${relative(item.path)} (${item.numbers.join(', ')})`);
+  for (const item of result.conflicts) lines.push(`${prefix}번호가 엇갈림: ${relative(item.path)} (${item.numbers.join(', ')}${item.note ? `, 메타데이터를 읽지 못함: ${item.note}` : ''})`);
   for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
   lines.push(

@@ -1,7 +1,8 @@
 'use strict';
 
 const { FcError } = require('./commands');
-const { grant, readRange, fileSizeInside } = require('./target');
+const { grant } = require('./target');
+const { withOpenFile } = require('./openedFile');
 const { spsAspect } = require('./videoSps');
 
 // 파일 맨 앞에 올 수 있는 박스. ftyp이 없는 옛 QuickTime 파일도 받으려고 여러 개를 둔다.
@@ -26,13 +27,13 @@ const COMMENT_SOURCES = [
 
 const fourcc = (buffer, offset = 0) => buffer.toString('latin1', offset, offset + 4);
 
-// offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다.
-function makeReader(target, real, p) {
+// offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다. file은 withOpenFile이 연 파일이다.
+function makeReader(file, p) {
   let reads = 0;
   return (offset, length) => {
     reads += 1;
     if (reads > MAX_READS) throw new FcError(`MP4 박스가 너무 많아 읽기를 멈췄습니다: ${p}`);
-    const buffer = readRange(target, real, { offset, length });
+    const buffer = file.read(offset, length);
     if (buffer.length < length) throw new FcError(`MP4 파일을 끝까지 읽지 못했습니다: ${p}`);
     return buffer;
   };
@@ -375,8 +376,12 @@ function readMp4Metadata(dir, p) {
 }
 
 function parseMp4(target, real, p) {
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p);
+  return withOpenFile(target, real, (file) => parseOpenedMp4(file, p));
+}
+
+function parseOpenedMp4(file, p) {
+  const { size } = file;
+  const read = makeReader(file, p);
   const moov = findMoov(read, p, size);
 
   let movie = null;
@@ -467,9 +472,13 @@ const CONTENT_BOXES = new Set(['moov', 'mdat', 'moof']);
 // 최상위 박스, moov 안의 mvhd와 trak, 트랙의 데이터 위치표까지 본다. 영상 데이터 자체는 읽지 않으므로 mdat 안의 손상은 찾지 못한다.
 // 재생에 필요한 구조가 온전하면 그 뒤의 패딩이나 덧붙은 데이터는 손상으로 보지 않는다. 압축된 moov(cmov)와 참조 무비(rmra)는 판단하지 않는다.
 function checkMp4Structure(target, real, p) {
+  return withOpenFile(target, real, (file) => checkOpenedMp4(file, p));
+}
+
+function checkOpenedMp4(file, p) {
   const broken = (reason) => ({ status: 'broken', reason });
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p);
+  const { size } = file;
+  const read = makeReader(file, p);
   let moov = null;
   let fragment = false;
   let trailing = false;

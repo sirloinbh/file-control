@@ -425,3 +425,45 @@ test('보이는 크기: 평면 투영의 90·270도 회전(ProjectionPoseRoll)�
   assert.deepStrictEqual(size({ roll: 90 }, ...crop({ bottom: 0 }), el(0x54b0, uint(2560))), [1920, 1080, 1080, 2560]);
   assert.deepStrictEqual(shownMkv(dir, videoWith(1920, 1088, ...crop({ bottom: 8 }), projection({ roll: 270 }))), [1920, 1088, 1080, 1920]);
 });
+
+test('읽기 한도에 닿는 MKV도 파일을 한 번만 열고 빨리 끝낸다 (#90)', (t) => {
+  const dir = tempDir();
+  // 크기 0인 Void(EC 80)를 40KB 채운 Segment. 요소마다 다시 열면 한도에 닿기까지 수십 초가 걸렸다.
+  const voids = Buffer.alloc(40 * 1024);
+  for (let at = 0; at < voids.length; at += 2) voids.set([0xec, 0x80], at);
+  const file = write(dir, 'void.mkv', header(), segment(voids));
+  const open = t.mock.method(fs, 'openSync');
+  const started = Date.now();
+  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /너무 많아/.test(err.message));
+  assert.strictEqual(open.mock.callCount(), 1);
+  assert.ok(Date.now() - started < 5000, `${Date.now() - started}ms`);
+});
+
+test('MKV 메타데이터는 파일을 한 번만 열어 읽는다 (#90)', (t) => {
+  const dir = tempDir();
+  const file = write(dir, 'a.mkv', header(), segment(info({ title: 'ABC-123' }), tracks(videoTrack(1920, 1080)), cluster()));
+  const open = t.mock.method(fs, 'openSync');
+  assert.strictEqual(readMkvMetadata(dir, file).title, 'ABC-123');
+  assert.strictEqual(open.mock.callCount(), 1);
+});
+
+test('폴더 번호를 찾아도 메타데이터를 읽지 못한 사유를 보고에 남긴다 (#90)', () => {
+  const { formatProductNumbers } = require('../src/productName');
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'ABC-123'));
+  const voids = Buffer.alloc(40 * 1024);
+  for (let at = 0; at < voids.length; at += 2) voids.set([0xec, 0x80], at);
+  write(path.join(dir, 'ABC-123'), 'over.mkv', header(), segment(voids));
+  write(path.join(dir, 'ABC-123'), 'ok.mkv', header(), segment(info({ title: '제목' })));
+  fs.mkdirSync(path.join(dir, 'AAA-111 BBB-222'));
+  fs.writeFileSync(path.join(dir, 'AAA-111 BBB-222', 'bad.mkv'), 'not mkv');
+  const result = addProductNumbers(dir, { dryRun: true });
+  const notes = Object.fromEntries(result.renamed.map((item) => [path.basename(item.from), item.note]));
+  assert.match(notes['over.mkv'], /MKV 요소가 너무 많아/);
+  assert.strictEqual(notes['ok.mkv'], null);
+  assert.match(result.conflicts[0].note, /MKV\/WebM 형식이 아닙니다/);
+  const report = formatProductNumbers(result);
+  assert.match(report, /이름 변경: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(폴더명, 메타데이터를 읽지 못함: MKV 요소가 너무 많아/);
+  assert.match(report, /이름 변경: ABC-123[\\/]ok\.mkv -> ABC-123 ok\.mkv \(폴더명\)\n/);
+  assert.match(report, /번호가 엇갈림: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, 메타데이터를 읽지 못함: MKV\/WebM 형식이 아닙니다/);
+});
