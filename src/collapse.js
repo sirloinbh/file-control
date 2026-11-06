@@ -75,12 +75,8 @@ function planCollapse(dir) {
   rejectRepository(access.target, entries);
   const children = childrenOf(entries);
   const plan = { target: access.target, collapses: [], skipped: [] };
-  // 속성은 접을 구간이 있을 때만 PowerShell 한 번으로 읽는다. 잔여물 안은 접지 않으므로 보지 않는다.
-  let attributes;
-  const attributesOf = () => {
-    attributes ??= hiddenOrSystemEntries(access.target, [''].concat(entries.filter((entry) => entry.type === 'dir' && !hasPart(entry, LEFTOVER)).map((entry) => entry.relative)));
-    return attributes;
-  };
+  // 속성을 볼 구간. 건너뜀 순서를 지키도록 그 자리에 빈 사유를 두고 나중에 채운다.
+  const pending = [];
   for (const entry of entries) {
     if (entry.type !== 'dir') continue;
     // 잔여물은 맨 위 하나만 알리고 안쪽은 보지 않는다. 되돌리지 못한 파일이 여기에 있을 수 있다.
@@ -95,11 +91,27 @@ function planCollapse(dir) {
     const chain = [entry];
     for (let next = soleFolder(children, entry.relative); next; next = soleFolder(children, next.relative)) chain.push(next);
     if (!children.has(chain.at(-1).relative)) continue;
-    const reason = skipReason(chain, entries) ?? hiddenReason(chain, attributesOf());
+    const reason = skipReason(chain, entries);
     if (reason !== null) {
       plan.skipped.push({ path: entry.path, reason });
       continue;
     }
+    const slot = { path: entry.path, reason: null };
+    plan.skipped.push(slot);
+    pending.push({ chain, slot });
+  }
+  // 속성은 접을 구간이 있을 때만 PowerShell 한 번으로 읽는다. 구간 폴더의 속성을 알려면 그 부모를 열거하면 되므로
+  // 맨 위 폴더의 부모와 맨 아래를 뺀 구간 폴더만 넘긴다. 구간과 상관없는 폴더가 많아도 느려지지 않는다(1차 리뷰).
+  const listed = new Set();
+  for (const { chain } of pending) {
+    const parent = path.dirname(chain[0].relative);
+    listed.add(parent === '.' ? '' : parent);
+    for (const item of chain.slice(0, -1)) listed.add(item.relative);
+  }
+  const attributes = pending.length > 0 ? hiddenOrSystemEntries(access.target, [...listed]) : new Map();
+  for (const { chain, slot } of pending) {
+    slot.reason = hiddenReason(chain, attributes);
+    if (slot.reason !== null) continue;
     try {
       const folders = chain.map((item) => item.path);
       // 링크가 든 폴더나 끝이 점인 이름처럼 다룰 수 없는 구간은 계획에서 알린다. 실행과 미리보기의 결과가 같아진다.
@@ -109,9 +121,11 @@ function planCollapse(dir) {
       plan.collapses.push({ top: folders[0], leaf: folders.at(-1), folders });
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
-      plan.skipped.push({ path: entry.path, reason: err.message });
+      slot.reason = err.message;
     }
   }
+  const slots = new Set(pending.map(({ slot }) => slot));
+  plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
   plan.collapses.sort((a, b) => b.leaf.split(path.sep).length - a.leaf.split(path.sep).length);
   return plan;
 }

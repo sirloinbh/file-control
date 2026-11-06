@@ -516,3 +516,24 @@ test('collapse는 접을 구간이 없으면 폴더 속성을 읽지 않고, 있
   assert.strictEqual(planCollapse(dir).collapses.length, 2);
   assert.strictEqual(reads, isWindows ? 1 : 0);
 });
+
+test('collapse는 맨 아래 폴더 안쪽의 숨김 항목으로는 막지 않고, 숨김이 그대로 따라간다 (#85 1차 리뷰)', { skip: !isWindows && 'Windows 폴더 속성' }, () => {
+  const dir = tempDir();
+  make(dir, ['ok/leaf/a.txt', 'ok/leaf/.hid/b.txt', 'ok/leaf/secret.txt']);
+  for (const name of ['ok/leaf/.hid', 'ok/leaf/secret.txt']) childProcess.execFileSync('attrib', ['+h', path.join(dir, name)]);
+  let listed;
+  onAttributes = (options) => {
+    listed = options.input.trim().split('\n').map((line) => Buffer.from(line, 'base64').toString('utf16le')).sort();
+  };
+  const result = collapse(dir);
+  assert.deepStrictEqual(result.collapsed.map((item) => path.relative(dir, item.dest)), ['ok']);
+  // 맨 위 폴더의 부모(타겟 자신)와 맨 아래를 뺀 구간 폴더만 읽는다.
+  assert.deepStrictEqual(listed, ['.', 'ok']);
+  assert.deepStrictEqual(tree(dir), ['ok/.hid/b.txt', 'ok/a.txt', 'ok/secret.txt']);
+  for (const name of ['ok/.hid', 'ok/secret.txt']) {
+    const full = path.join(dir, name);
+    const out = childProcess.execFileSync('attrib', [full], { encoding: 'utf8' });
+    // attrib는 경로 앞에 속성 글자(A, H 등)를 찍는다.
+    assert.match(out.slice(0, out.indexOf(full)), /H/, name);
+  }
+});
