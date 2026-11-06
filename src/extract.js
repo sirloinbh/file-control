@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath } = require('./commands');
+const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
@@ -75,11 +75,13 @@ function planExtractions(dir) {
 
 // 항목 수와 파일 수를 돌려준다. 끝까지 받지 못한 파일은 오류 없이 항목 0개로 읽히므로 실패로 본다.
 // 링크와 장치 항목은 풀기 전에 거부한다. 링크를 따라 쓰는 것을 tar.exe에만 맡기지 않는다.
-function inspectArchive(archive) {
+// 풀린 크기가 남은 공간에 들어가는지도 본다(#77). dest는 풀 폴더이고, 임시 폴더도 같은 폴더 안에 만든다.
+function inspectArchive(archive, dest) {
   const entries = archiveEntries(archive);
   if (entries.length === 0) throw new FcError('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.');
   const special = entries.find((entry) => !'-hd'.includes(entry[0]));
   if (special !== undefined) throw new FcError(`압축 파일에 링크나 장치 같은 항목이 들어 있습니다. (종류 ${JSON.stringify(special[0])})`);
+  ensureRoomToExtract(dest, entries);
   // 끝이 /인 항목은 데이터가 있어도 폴더로 풀린다.
   const files = entries.filter((entry) => entry[0] !== 'd' && !entry.trimEnd().endsWith('/')).length;
   return { entries: entries.length, files };
@@ -114,10 +116,10 @@ function extractOne(item, access) {
   if (fs.lstatSync(item.dest, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 풀지 않습니다: ${item.name}`);
   const dest = access.write(item.dest);
   if (dest !== item.dest) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${item.dest} -> ${dest}`);
-  const { entries, files } = inspectArchive(archive);
+  const { entries, files } = inspectArchive(archive, path.dirname(item.dest));
   const temp = freshPath(archive, '.fctl-new');
   try {
-    unzip(archive, temp);
+    unzip(archive, temp, { checkSpace: false });
     checkExtracted(temp, files);
     // renameSync는 대상이 파일이면 덮어쓴다. 푸는 동안 같은 이름이 생겼을 수 있으므로 덮어쓰지 않는 이동을 쓴다.
     if (!moveWithoutOverwrite(temp, dest)) throw new FcError(`같은 이름이 이미 있어 풀지 않습니다: ${item.name}`);
@@ -244,7 +246,7 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
     try {
       // ReFS의 파일 번호는 2^53을 넘어 숫자로 받으면 정밀도를 잃으므로 bigint로 받는다.
       before = fileStamp(fs.lstatSync(item.archive, { bigint: true }));
-      entries = dryRun ? inspectArchive(item.archive).entries : extractOne(item, access);
+      entries = dryRun ? inspectArchive(item.archive, path.dirname(item.dest)).entries : extractOne(item, access);
       result.extracted.push({ ...item, entries });
     } catch (err) {
       result.failed.push({ archive: item.archive, reason: failureReason(err) });

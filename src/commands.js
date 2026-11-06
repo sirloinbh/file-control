@@ -766,15 +766,63 @@ function probeArchive(archive, { maxBuffer, timeout }) {
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
 
-function unzip(archive, destDir, { dryRun = false } = {}) {
+// tar -tv 줄의 크기 칸. bsdtar는 종류와 권한, 링크 수, 소유자, 그룹, 크기 순으로 적는다.
+// 소유자 이름에 공백이 있거나 장치 항목(주,부 번호)이면 읽지 못하므로 그때는 풀지 않는다.
+const LISTED_SIZE = /^\S{10}\s+\d+\s+\S+\s+\S+\s+(\d+)\s/;
+// 파일은 블록 단위로 자리를 차지하므로 크기를 블록 단위로 올려 더한다.
+const DISK_BLOCK = 4096n;
+// 풀고 나서도 이만큼은 남아야 한다. 같은 디스크를 쓰는 다른 프로그램과 OneDrive 동기화가 쓸 자리다.
+const SPACE_RESERVE = 1024n ** 3n;
+
+// 목록에 적힌 크기의 합(블록 단위로 올림). 압축 파일이 적은 값이라 실제와 다를 수 있다.
+// mtree 글처럼 size= 값만으로 큰 빈 파일을 만드는 경우도 목록에 그 크기로 나온다.
+function listedSize(entries) {
+  let total = 0n;
+  for (const line of entries) {
+    const match = LISTED_SIZE.exec(line);
+    if (!match) throw new FcError(`압축 파일 목록에서 크기를 읽지 못해 풀지 않았습니다: ${JSON.stringify(line.slice(0, 80))}`);
+    total += ((BigInt(match[1]) + DISK_BLOCK - 1n) / DISK_BLOCK) * DISK_BLOCK;
+  }
+  return total;
+}
+
+// dir이 들어갈 볼륨의 남은 공간. 아직 없는 폴더면 있는 상위 폴더로 본다.
+function freeSpace(dir) {
+  let current = path.resolve(dir);
+  while (!exists(current) && path.dirname(current) !== current) current = path.dirname(current);
+  const stat = fs.statfsSync(current, { bigint: true });
+  return stat.bavail * stat.bsize;
+}
+
+// 풀린 크기가 남은 공간에서 SPACE_RESERVE를 뺀 것보다 크면 풀기 전에 거부한다(#77). 확인할 수 없어도 풀지 않는다.
+// 돌려주는 값은 목록 크기의 합(바이트, BigInt)이다.
+function ensureRoomToExtract(dest, entries) {
+  const need = listedSize(entries);
+  let free;
+  try {
+    free = freeSpace(dest);
+  } catch (err) {
+    throw new FcError(`남은 디스크 공간을 확인하지 못해 풀지 않았습니다: ${dest} (${err.code ?? err.message})`);
+  }
+  if (need + SPACE_RESERVE > free) {
+    throw new FcError(`풀면 약 ${formatSize(Number(need))}가 되어 디스크에 ${formatSize(Number(SPACE_RESERVE))}보다 적게 남으므로 풀지 않았습니다. (남은 공간 ${formatSize(Number(free))})`);
+  }
+  return need;
+}
+
+// checkSpace를 끄는 것은 이미 같은 확인을 한 extract-all뿐이다.
+function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
   rejectNewDeviceName(dest);
   ensureTarArgs([path.resolve(archive), path.resolve(dest)]);
   let note = '';
-  if (dryRun) {
-    ensureCanMakeDir(dest);
-    note = ` (항목 ${archiveEntries(archive).length}개${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
+  if (dryRun) ensureCanMakeDir(dest);
+  if (dryRun || checkSpace) {
+    const entries = archiveEntries(archive);
+    const size = checkSpace ? ensureRoomToExtract(dest, entries) : null;
+    const sizeNote = size === null ? '' : `, 풀린 크기 약 ${formatSize(Number(size))}`;
+    if (dryRun) note = ` (항목 ${entries.length}개${sizeNote}${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
   }
   return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
@@ -910,6 +958,7 @@ module.exports = {
   archiveEntries,
   archiveNames, probeArchive,
   unsupportedChars,
+  ensureRoomToExtract,
   freshPath,
   zip,
 };
