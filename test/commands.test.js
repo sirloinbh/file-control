@@ -502,6 +502,52 @@ test('zip --force는 tar가 실패하면 기존 압축 파일을 되돌리고 �
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'b.zip']);
 });
 
+test('zip --force는 압축 파일이 원본 밖이면 tar가 도는 동안 기존 압축 파일을 원래 이름으로 둔다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'a.txt'), 'A');
+  fc.writeFile(p('b.txt'), 'B');
+  fc.zip(p('b.zip'), [p('src')]);
+  const before = fs.readFileSync(p('b.zip'));
+  const seen = [];
+  const real = childProcess.execFileSync;
+  const mocked = loadWithTar(t, (file, args, options) => {
+    seen.push(fs.existsSync(p('b.zip')) && fs.readFileSync(p('b.zip')).equals(before));
+    assert.ok(!args.some((arg) => String(arg).startsWith('.fctl-old')), '치운 이름을 뺄 필요가 없다');
+    return real(file, args, options);
+  });
+  mocked.zip(p('b.zip'), [p('b.txt')], { force: true });
+  assert.deepStrictEqual(seen, [true]);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['b.txt', 'b.zip', 'src']);
+  fc.unzip(p('b.zip'), p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
+});
+
+test('zip --force는 압축 파일이 원본 폴더 안이거나 원본에 링크가 있으면 tar 실행 전에 치우고 빼서 묶는다', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('d', 'f.txt'), 'f');
+  fc.writeFile(p('e', 'g.txt'), 'g');
+  linkDir(p('d'), p('e', 'inner'));
+  const cases = [[p('d', 'in.zip'), p('d')], [p('d', 'via.zip'), p('e')]];
+  for (const [archive, src] of cases) fc.zip(archive, [src]);
+  const states = [];
+  const real = childProcess.execFileSync;
+  const mocked = loadWithTar(t, (file, args, options) => {
+    states.push(cases.map(([archive]) => fs.existsSync(archive)));
+    assert.ok(args.some((arg) => String(arg).startsWith('.fctl-old')), '치운 기존 압축 파일을 빼야 한다');
+    return real(file, args, options);
+  });
+  mocked.zip(cases[0][0], [cases[0][1]], { force: true });
+  mocked.zip(cases[1][0], [cases[1][1]], { force: true });
+  assert.deepStrictEqual(states, [[false, true], [true, false]]);
+  t.mock.restoreAll();
+  assert.deepStrictEqual(fs.readdirSync(p('d')).sort(), ['f.txt', 'in.zip', 'via.zip']);
+  fc.unzip(cases[1][0], p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'e')).sort(), ['g.txt', 'inner']);
+});
+
 test('zip은 새 압축 파일을 만들다 tar가 실패해도 빈 압축 파일을 남기지 않는다', (t) => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);

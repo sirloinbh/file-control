@@ -767,11 +767,33 @@ function archiveExt(archive) {
   return match ? match[0] : '';
 }
 
-// 먼저 임시 이름으로 묶고, 성공한 뒤에 기존 압축 파일과 바꾼다. 실패하면 기존 압축 파일을 되돌린다.
-// 압축 파일이 원본 폴더 안에 있어도 임시 파일과 기존 압축 파일이 함께 묶이지 않게 이름으로 뺀다.
+// 압축 파일이 묶을 폴더 안에 있으면 tar가 기존 압축 파일까지 묶으므로 미리 치워야 한다.
+// 폴더 안의 링크를 거쳐 닿을 수도 있어, 링크가 든 폴더도 안에 있는 것으로 본다. UNC 별칭은 파일 번호로 잡는다.
+function archiveInsideSources(archive, sources) {
+  const dir = realKey(path.dirname(path.resolve(archive)));
+  return sources.some((src) => {
+    if (!fs.statSync(src).isDirectory()) return false;
+    if (isSameOrUnder(realKey(src), dir) || hasAncestorSameAs(src, archive)) return true;
+    return fs.readdirSync(src, { recursive: true, withFileTypes: true }).some((entry) => entry.isSymbolicLink());
+  });
+}
+
+// 기존 압축 파일을 치워 두고 새 압축 파일을 제자리로 옮긴다. 옮기지 못하면 기존 압축 파일을 되돌린다.
+function restoreAside(archive, aside, err) {
+  try {
+    fs.renameSync(aside, archive);
+  } catch (restoreErr) {
+    throw new FcError(`압축하지 못했고 기존 압축 파일도 되돌리지 못했습니다: ${archive} (${restoreErr.code}). 기존 압축 파일은 ${aside}에 있습니다.`);
+  }
+  throw err;
+}
+
+// 먼저 임시 이름으로 묶고, 성공한 뒤에 기존 압축 파일과 바꾼다. 실패하면 기존 압축 파일을 그대로 둔다.
+// 압축 파일이 묶을 폴더 안에 있을 때만 tar 실행 전에 기존 압축 파일을 치워 이름으로 뺀다. 그 밖에는 tar가 도는 동안 원래 이름으로 남는다.
 function writeArchive(archive, sources) {
   const fresh = freshPath(archive, '.fctl-new', archiveExt(archive));
-  const aside = exists(archive) ? asidePath(archive) : null;
+  const early = exists(archive) && archiveInsideSources(archive, sources);
+  let aside = early ? asidePath(archive) : null;
   const args = ['-a', '-cf', fresh, '--exclude', path.basename(fresh)];
   if (aside) args.push('--exclude', path.basename(aside));
   for (const src of sources) {
@@ -783,16 +805,25 @@ function writeArchive(archive, sources) {
   if (aside) fs.renameSync(archive, aside);
   try {
     runTar(args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (err) {
+    fs.rmSync(fresh, { force: true });
+    if (aside) restoreAside(archive, aside, err);
+    throw err;
+  }
+  if (!aside && exists(archive)) {
+    aside = asidePath(archive);
+    try {
+      fs.renameSync(archive, aside);
+    } catch (err) {
+      fs.rmSync(fresh, { force: true });
+      throw err;
+    }
+  }
+  try {
     fs.renameSync(fresh, archive);
   } catch (err) {
     fs.rmSync(fresh, { force: true });
-    if (aside) {
-      try {
-        fs.renameSync(aside, archive);
-      } catch (restoreErr) {
-        throw new FcError(`압축하지 못했고 기존 압축 파일도 되돌리지 못했습니다: ${archive} (${restoreErr.code}). 기존 압축 파일은 ${aside}에 있습니다.`);
-      }
-    }
+    if (aside) restoreAside(archive, aside, err);
     throw err;
   }
   if (aside) {
