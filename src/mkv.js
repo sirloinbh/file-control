@@ -1,7 +1,8 @@
 'use strict';
 
 const { FcError } = require('./commands');
-const { grant, readRange, fileSizeInside } = require('./target');
+const { grant } = require('./target');
+const { withOpenFile } = require('./openedFile');
 
 const ID = {
   EBML: 0x1a45dfa3,
@@ -266,7 +267,9 @@ function parseSeekHead(body, positions) {
   }
 }
 
-function makeReader(target, real, p, size) {
+// file은 withOpenFile이 연 파일이다. 읽기 횟수와 읽은 양을 센다.
+function makeReader(file, p) {
+  const { size } = file;
   let reads = 0;
   let total = 0;
   return (offset, length) => {
@@ -274,7 +277,7 @@ function makeReader(target, real, p, size) {
     const wanted = Math.min(length, Math.max(0, size - offset));
     total += wanted;
     if (reads > MAX_READS || total > MAX_TOTAL) throw new FcError(`MKV 요소가 너무 많아 읽기를 멈췄습니다: ${p}`);
-    return readRange(target, real, { offset, length: wanted });
+    return file.read(offset, wanted);
   };
 }
 
@@ -313,8 +316,12 @@ function readMkvMetadata(dir, p) {
 }
 
 function parseMkv(target, real, p) {
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p, size);
+  return withOpenFile(target, real, (file) => parseOpenedMkv(file, p));
+}
+
+function parseOpenedMkv(file, p) {
+  const { size } = file;
+  const read = makeReader(file, p);
   const segment = headerAt(read, checkHeader(read, p));
   if (!segment || segment.id !== ID.SEGMENT) throw new FcError(`MKV/WebM 형식이 아닙니다: ${p}`);
   const segmentEnd = segment.size === null ? size : Math.min(size, segment.start + segment.size);
@@ -372,9 +379,13 @@ function parseMkv(target, real, p) {
 // Segment 바로 아래 요소의 머리글을 차례로 건너뛰며 파일 끝을 넘는 요소와 Tracks를 본다. 영상 데이터는 읽지 않으므로 Cluster 안의 손상은 찾지 못한다.
 // 크기를 모르는 요소(실시간 녹화)를 만나면 끝을 알 수 없으므로 거기서 판단을 멈춘다.
 function checkMkvStructure(target, real, p) {
+  return withOpenFile(target, real, (file) => checkOpenedMkv(file, p));
+}
+
+function checkOpenedMkv(file, p) {
   const broken = (reason) => ({ status: 'broken', reason });
-  const size = fileSizeInside(target, real);
-  const read = makeReader(target, real, p, size);
+  const { size } = file;
+  const read = makeReader(file, p);
   const ebml = headerAt(read, 0);
   if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('EBML 머리글이 손상됐습니다.');
   if (ebml.start + ebml.size > size) return broken('EBML 머리글이 잘렸습니다.');
