@@ -707,10 +707,18 @@ function namesInside(src) {
   return fs.readdirSync(src, { recursive: true });
 }
 
+// tar.exe는 TAR_READER_OPTIONS·TAR_WRITER_OPTIONS 환경 변수를 --options처럼 읽는다.
+// mtree:checkfs가 들어 있으면 mtree 글의 contents= 경로에 있는 로컬 파일을 풀린 폴더로 복사하므로 물려주지 않는다(#87).
+// Windows의 환경 변수 이름은 대소문자를 가리지 않는다.
+const TAR_OPTION_ENV = new Set(['TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS']);
+function tarEnv() {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !TAR_OPTION_ENV.has(isWindows ? name.toUpperCase() : name)));
+}
+
 // 0xC0000005: tar.exe가 처리하지 못하는 이름을 만나면 오류 내용 없이 이렇게 끝난다.
 function runTar(args, options) {
   try {
-    return execFileSync(TAR, args, options);
+    return execFileSync(TAR, args, { ...options, env: tarEnv() });
   } catch (err) {
     if (err.status === 0xc0000005) throw new FcError(`tar.exe가 비정상 종료했습니다. 처리할 수 없는 이름이 있을 수 있습니다. (${err.status})`);
     throw err;
@@ -740,7 +748,7 @@ function archiveNames(archive) {
 // 손상 문구는 종료 코드 0으로도 나오므로(Damaged tar archive) 판단은 stderr로 한다. error는 실행 실패나 한도 초과(ENOBUFS, ETIMEDOUT)다.
 function probeArchive(archive, { maxBuffer, timeout }) {
   ensureTarArgs([path.resolve(archive)]);
-  const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout });
+  const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv() });
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
 
