@@ -545,3 +545,11 @@ test('fctl product-number는 읽을 수 없는 폴더만 건너뛰었으면 0으
   t.mock.restoreAll();
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b-locked/c.mp4', 'z-locked/b.mp4']);
 });
+
+test('containsNumber는 비ASCII 라틴 문자가 붙은 단어 중간을 같은 번호로 보지 않는다 (#92)', () => {
+  const { containsNumber } = require('../src/productName');
+  assert.strictEqual(containsNumber('POKÉMON-12.mp4', 'MON-12'), false);
+  assert.strictEqual(containsNumber('Pokémon-12.mp4', 'MON-12'), false);
+  assert.strictEqual(containsNumber('영상mon-12.mp4', 'MON-12'), true);
+  assert.strictEqual(containsNumber('[ABC-123] 제목.mp4', 'ABC-123'), true);
+});
