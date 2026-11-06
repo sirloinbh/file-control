@@ -450,3 +450,27 @@ test('숨김 속성 폴더 안의 파일은 바꾸지 않는다 (#94)', { skip: 
   assert.deepStrictEqual(tree(dir), ['보임/BCD-234 영상.mp4', '숨김/영상 ABC-123.mp4']);
   assert.match(result.skipped[0].reason, /숨김 속성 폴더라/);
 });
+
+test('웹 페이지와 _files 폴더는 대소문자가 달라도 짝으로 보고, .htm도 같다 (1차 리뷰, #94)', () => {
+  const dir = tempDir();
+  make(dir, ['Page ABC-123.HTML', 'page ABC-123_files/a.png', '옛 BCD-234.htm', '옛 BCD-234_files/b.png']);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['Page ABC-123.HTML', 'page ABC-123_files/a.png', '옛 BCD-234.htm', '옛 BCD-234_files/b.png'].sort());
+  const reasons = result.skipped.map((item) => `${path.basename(item.path)}: ${item.reason}`).sort();
+  assert.deepStrictEqual(reasons, [
+    'Page ABC-123.HTML: 자료 폴더(page ABC-123_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
+    '옛 BCD-234.htm: 자료 폴더(옛 BCD-234_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
+  ]);
+});
+
+test('바뀔 파일이 없으면 숨김 속성을 확인하려고 PowerShell을 부르지 않는다 (1차 리뷰, #94)', (t) => {
+  const commands = require('../src/commands');
+  const dir = tempDir();
+  make(dir, ['ABC-123 영상.mp4', 'sub/그냥.txt']);
+  const hidden = t.mock.method(commands, 'hiddenOrSystemEntries');
+  assert.strictEqual(normalizeFiles(dir).renamed.length, 0);
+  assert.strictEqual(hidden.mock.callCount(), 0);
+  make(dir, ['sub/영상 BCD-234.mp4']);
+  assert.strictEqual(normalizeFiles(dir).renamed.length, 1);
+  assert.strictEqual(hidden.mock.callCount(), 1);
+});
