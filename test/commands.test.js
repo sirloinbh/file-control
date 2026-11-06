@@ -687,6 +687,42 @@ test('zip은 대문자 확장자도 같은 형식으로 묶고, 대소문자로 
   assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
 });
 
+test('코드페이지 검사는 ANSI와 OEM 중 어느 한쪽에서라도 바뀌는 문자를 돌려준다 (#136)', { skip: !isWindows }, () => {
+  const codes = (chars) => chars.map((char) => char.codePointAt(0).toString(16));
+  // 영어 Windows: ANSI 1252에는 ¹이 있지만 OEM 437은 1로 바꾼다. é는 둘 다 있다.
+  assert.deepStrictEqual(codes(fc.unsupportedChars('a¹é', [1252])), []);
+  assert.deepStrictEqual(codes(fc.unsupportedChars('a¹é', [1252, 437])), ['b9']);
+  assert.deepStrictEqual(codes(fc.unsupportedChars('a¹é', [437, 1252])), ['b9']);
+  // 한국어 Windows: ANSI·OEM이 모두 949라 ¹과 한글은 있고 é와 이모지는 없다.
+  assert.deepStrictEqual(codes(fc.unsupportedChars('¹가é😀', [949, 949])), ['e9', '1f600']);
+  assert.deepStrictEqual(fc.unsupportedChars('plain ascii', [437]), []);
+  // 코드페이지를 확인하지 못하면 검사 없이 통과하지 않고 실행을 거부한다.
+  assert.throws(() => fc.unsupportedChars('é', [99999]), (err) => err instanceof fc.FcError && /코드페이지를 확인하지 못해/.test(err.message));
+  assert.throws(() => fc.unsupportedChars('é', [949, 0]), fc.FcError);
+});
+
+// 이 PC의 ANSI에는 있고 OEM에는 없는 문자로 실제 zip·unzip이 실행 전에 거부하는지 본다. CI의 영어 Windows에서 실행된다.
+test('zip·unzip은 ANSI에는 있지만 OEM 코드페이지에서 바뀌는 문자를 실행 전에 거부한다 (#136)', { skip: !isWindows }, (t) => {
+  const acp = Number(childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim());
+  const candidates = ['¹', '²', '³', '½', '€', 'é', 'ñ'].join('');
+  const inAnsi = new Set(fc.unsupportedChars(candidates, [acp]));
+  const char = fc.unsupportedChars(candidates).find((c) => !inAnsi.has(c));
+  if (char === undefined) return t.skip('ANSI와 OEM 코드페이지의 차이로 바뀌는 문자가 없는 환경이다');
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p(`s${char}.tar.gz`), 'S');
+  fc.writeFile(p('tree', `a${char}.txt`), 'T');
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('ok.zip'), [p('a.txt')]);
+  const before = fs.readdirSync(dir).sort();
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p('o.zip'), [p(`s${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('o.zip'), [p('tree')], { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.unzip(p('ok.zip'), p(`out${char}`), { dryRun }), /처리할 수 없는 문자/);
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), before);
+});
+
 test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전에 거부하고 기존 파일을 건드리지 않는다', { skip: !isWindows }, () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
@@ -898,7 +934,7 @@ const narrowDeviceRule = isWindows && deviceNamePattern() === deviceNamePattern(
 
 test('zip·unzip은 좁은 규칙에서 허용하는 장치 이름 비슷한 이름을 같은 파일로 묶고 푼다 (#53)', { skip: !narrowDeviceRule }, () => {
   const dir = tempDir();
-  // 위첨자(COM¹)는 영어 Windows에서 tar.exe가 OEM 코드페이지로 적어 1로 바뀌므로(#136) 여기서는 ASCII 이름만 본다.
+  // 위첨자(COM¹)는 영어 Windows에서 tar.exe가 OEM 코드페이지로 적어 1로 바뀌어 실행 전에 거부되므로(#136) 여기서는 ASCII 이름만 본다.
   const names = ['Con.Air.1997.mkv', 'nul.tar.gz', 'Aux.2018.mp4', 'Nul .mp4', 'NUL..mp4', 'Com0.txt', 'Lpt0.txt', 'CONIN$.txt'];
   names.forEach((name, i) => fc.writeFile(path.join(dir, 'src', name), `content-${i}`));
   const archive = path.join(dir, 'bundle.zip');
