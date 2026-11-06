@@ -16,6 +16,12 @@ const NOT_PRODUCT = new Set([
   'IMG', 'DSC', 'DSCF', 'DSCN', 'VID', 'MOV', 'MVI', 'PXL', 'GOPR', 'DJI', 'DCIM',
   // 화질·코덱·기술·등급 이름
   'HD', 'SD', 'FHD', 'QHD', 'UHD', 'HDR', 'MP', 'MPEG', 'AVC', 'HEVC', 'AAC', 'UTF', 'CP', 'ISO', 'SHA', 'AES', 'MD', 'RFC', 'CVE', 'HTTP', 'WIN', 'OS', 'IOS', 'MACOS', 'OFFICE', 'RTX', 'GTX', 'PG', 'TV', 'TEL',
+  // 영상 출처·컨테이너·음성·코덱 이름 (REMUX-2160, BLURAY-1080, DTS-51, VP-09처럼 영상 제목에 붙는 말)
+  'REMUX', 'BLURAY', 'BLU', 'BDRIP', 'BRRIP', 'BDREMUX', 'WEB', 'WEBDL', 'WEBRIP', 'HDRIP', 'DVDRIP', 'HDTV', 'UHDTV', 'AMZN', 'NF',
+  'MKV', 'AVI', 'WMV', 'FLV', 'WEBM', 'TS', 'DTS', 'DD', 'DDP', 'EAC', 'AC', 'FLAC', 'OPUS', 'PCM', 'LPCM', 'ATMOS', 'TRUEHD',
+  'VP', 'AV', 'XVID', 'DIVX', 'VC', 'YUV', 'RGB', 'BIT', 'BITS', 'FPS', 'HZ', 'KHZ', 'KBPS', 'MBPS',
+  // 언어·자막
+  'KOR', 'KR', 'ENG', 'EN', 'JPN', 'JP', 'JAP', 'CHN', 'CHS', 'CHT', 'SUB', 'SUBS', 'DUB', 'MULTI',
   // 날짜·연도 앞에 오는 말과 흔한 이름
   'JAN', 'FEB', 'MAR', 'MARCH', 'APR', 'APRIL', 'MAY', 'JUN', 'JUNE', 'JUL', 'JULY', 'AUG', 'AUGUST', 'SEP', 'SEPT', 'OCT', 'NOV', 'DEC', 'FY', 'COVID',
 ]);

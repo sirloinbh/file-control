@@ -158,3 +158,11 @@ test('findProductNumber는 찾지 못하거나 입력이 없으면 null이다', 
   assert.strictEqual(findProductNumber({ folders: null }), null);
   assert.strictEqual(findProductNumber({ fileName: 'video.mp4', title: null, comment: null, folders: ['새 폴더'] }), null);
 });
+
+test('extractProductNumbers는 영상 출처·코덱·음성·언어 이름을 번호로 보지 않는다 (#89)', () => {
+  for (const text of ['REMUX-2160', 'BLURAY-1080', 'WEBRIP-720', 'WEB-1080', 'HDTV-720', 'DTS-51', 'FLAC-24', 'DDP-51', 'VP-09', 'AV-01', 'MKV-2021', 'KOR-2023', 'SUB-01', 'ENG-01', 'YUV-420']) {
+    assert.deepStrictEqual(extractProductNumbers(text), [], text);
+    assert.deepStrictEqual(extractProductNumbers(text.toLowerCase(), { lowercase: true }), [], text.toLowerCase());
+  }
+  assert.deepStrictEqual(extractProductNumbers('ABC-123 REMUX-2160 DTS-51'), ['ABC-123']);
+});

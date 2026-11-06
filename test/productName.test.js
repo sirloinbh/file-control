@@ -545,3 +545,12 @@ test('fctl product-number는 읽을 수 없는 폴더만 건너뛰었으면 0으
   t.mock.restoreAll();
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'b-locked/c.mp4', 'z-locked/b.mp4']);
 });
+
+test('제목이 영상 기술 용어(REMUX-2160 등)면 엇갈림으로 보지 않고 폴더 번호를 넣는다 (#89)', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'ABC-123'));
+  fs.writeFileSync(path.join(dir, 'ABC-123', 'x.mp4'), mp4({ title: 'REMUX-2160 BLURAY-1080 DTS-51' }));
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.conflicts.length, 0);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 x.mp4']);
+});
