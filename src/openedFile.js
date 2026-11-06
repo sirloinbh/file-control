@@ -9,14 +9,15 @@ const MAX_READ = 2 ** 31 - 1;
 
 // 타겟 안의 파일을 한 번만 열고 그 핸들로 여러 번 읽는다(#90). 요소마다 경로를 확인하고 다시 열면 작은 요소가 많은 파일에서
 // 읽기 한도에 닿기까지 수십 초가 걸린다. real은 grant의 read로 확인한 실제 경로다.
-// 열기 전에 경로를 확인하고(타겟 안, 링크가 아닌 파일), 연 뒤 핸들의 파일이 그 경로의 파일과 같은지 본다.
+// 경로의 파일 번호(dev, ino)를 먼저 적어 두고, 경로를 확인한 뒤(타겟 안, 링크가 아닌 파일) 연다. 연 핸들의 파일 번호가 적어 둔 것과
+// 다르면 확인과 열기 사이에 파일이 바뀌었거나 링크·정션으로 바뀐 것이라 읽지 않는다(1차 리뷰).
 // 연 뒤에 경로가 바뀌어도 핸들은 처음 확인한 파일을 계속 읽는다. fn이 끝나면 닫는다.
 function withOpenFile(target, real, fn) {
+  const named = fs.statSync(real, { bigint: true });
   fileSizeInside(target, real);
   const fd = fs.openSync(real, 'r');
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
-    const named = fs.statSync(real, { bigint: true });
     if (!opened.isFile() || opened.ino !== named.ino || opened.dev !== named.dev) throw new FcError(`읽는 사이에 파일이 바뀌었습니다: ${real}`);
     const size = Number(opened.size);
     return fn({ size, read: (offset, length) => readAt(fd, size, offset, length) });
