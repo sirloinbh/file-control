@@ -660,6 +660,25 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
   assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
 });
 
+test('보이는 크기: 화소가 정사각형이 아닌 영상을 회전하고 tkhd에 회전한 뒤의 보이는 크기를 적어도 세로로 본다 (#124)', () => {
+  const dir = tempDir();
+  const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 1440, height: 1080, ...options }))));
+  // 인코딩 1440x1080, 화소 비율 4:3(보이는 크기 1920x1080), 90·270도 회전, tkhd 1080x1920
+  for (const rotate of [90, 270]) {
+    assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, config: h264(14) }), [1440, 1080, 1080, 1920], `H.264 ${rotate}도`);
+    assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, config: h265(14), format: 'hvc1' }), [1440, 1080, 1080, 1920], `HEVC ${rotate}도`);
+    assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, pasp: [4, 3] }), [1440, 1080, 1080, 1920], `pasp ${rotate}도`);
+  }
+  // mvhd 쪽 회전도 같다.
+  assert.deepStrictEqual(
+    shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ width: 1440, height: 1080, display: { width: 1080, height: 1920 }, config: h264(14) })))),
+    [1440, 1080, 1080, 1920],
+  );
+  // 회전하지 않으면 tkhd 1920x1080은 화소 비율로 쓰고, 회전하지 않는 1080x1920은 지금처럼 화소 비율로 본다.
+  assert.deepStrictEqual(size({ display: { width: 1920, height: 1080 }, config: h264(14) }), [1440, 1080, 1920, 1080]);
+  assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, config: h264(14) }), [1440, 1080, 1080, 1920]);
+});
+
 test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로 읽는다 (#69)', () => {
   const dir = tempDir();
   const classic = (type, bytes, language) => {
