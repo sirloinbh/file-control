@@ -793,7 +793,9 @@ test('zip은 맨 위 이름이 같은 원본을 미리보기와 실제 모두 �
   const cases = [[p('p', 'f.txt'), p('q', 'f.txt')], [p('p', 'f.txt'), p('r', 'f.txt')]];
   if (isWindows) {
     fc.writeFile(p('s', 'F.TXT'), 'S');
-    cases.push([p('p', 'f.txt'), p('s', 'F.TXT')]);
+    fc.writeFile(p('g1', 'ΑΣ'), 'UPPER');
+    fc.writeFile(p('g2', 'ασ'), 'lower');
+    cases.push([p('p', 'f.txt'), p('s', 'F.TXT')], [p('g1', 'ΑΣ'), p('g2', 'ασ')]);
   }
   for (const dryRun of [true, false]) {
     for (const sources of cases) {
