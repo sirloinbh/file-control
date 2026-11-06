@@ -949,3 +949,49 @@ test('formatSize는 사람이 읽기 쉬운 단위로 바꾼다', () => {
   assert.strictEqual(fc.formatSize(1536), '1.5KB');
   assert.strictEqual(fc.formatSize(5 * 1024 ** 3), '5.0GB');
 });
+
+// 풀린 크기 확인(#77). mtree 글은 size= 값대로 빈 파일을 만들어, 작은 파일로 디스크를 채울 수 있다.
+test('unzip은 목록 크기가 남은 공간보다 크면 미리보기와 실제 모두 풀기 전에 거부한다 (#77)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.writeFileSync(p('huge.zip'), '#mtree\nbig type=file size=99999999999999\n');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.unzip(p('huge.zip'), p('out'), { dryRun }), (err) => err instanceof fc.FcError && /풀면 약 90\.9TB가 되어/.test(err.message));
+  }
+  assert.ok(!fs.existsSync(p('out')));
+});
+
+test('unzip은 풀고 나서 1GB보다 적게 남으면 거부하고, 남은 공간을 확인하지 못해도 풀지 않는다 (#77)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('a.zip'), [p('a.txt')]);
+  const statfs = fs.statfsSync;
+  let free = 1024n ** 3n + 4096n;
+  t.mock.method(fs, 'statfsSync', (target, options) => {
+    if (free === null) throw Object.assign(new Error('no'), { code: 'ENOSYS' });
+    return { ...statfs(target, options), bavail: free / 512n, bsize: 512n };
+  });
+  // 파일 하나(4KB로 셈)와 1GB 여유가 꼭 맞으면 푼다.
+  fc.unzip(p('a.zip'), p('ok'));
+  assert.strictEqual(fc.readFile(p('ok', 'a.txt')), 'A');
+  free -= 512n;
+  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /1\.0GB보다 적게 남으므로 풀지 않았습니다/);
+  free = null;
+  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /남은 디스크 공간을 확인하지 못해 풀지 않았습니다.*ENOSYS/);
+  assert.ok(!fs.existsSync(p('no')));
+});
+
+test('unzip은 목록에서 크기를 읽지 못하면 풀지 않는다 (#77)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.writeFileSync(p('a.zip'), 'x');
+  const calls = [];
+  const mocked = loadWithTar(t, (file, args) => {
+    calls.push(args[0]);
+    return Buffer.from('-rw-r--r--  0 some user  group 5 Jan  1  2020 a.txt\n');
+  });
+  assert.throws(() => mocked.unzip(p('a.zip'), p('out')), /크기를 읽지 못해 풀지 않았습니다/);
+  assert.deepStrictEqual(calls, ['-tvf']);
+  assert.ok(!fs.existsSync(p('out')));
+});
