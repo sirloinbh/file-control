@@ -1652,6 +1652,8 @@ test('flatten은 표시 파일이 우연히 놓이는 사용자 폴더·다운�
     'OneDrive - 회사/문서/go.mod', 'OneDrive - 회사/문서/work/c/z.txt',
     'Downloads/proj/package.json', 'Downloads/proj/src/d/w.js',
     'data/lib/package.json', 'data/other/e/v.mp4',
+    'myproj/package.json', 'myproj/src/f/u.js',
+    'OneDrive/app/package.json', 'OneDrive/app/src/g/t.js',
   ]);
   withHome(home, () => {
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'Downloads', 'videos'))), [['a/x.mp4', 'x.mp4']]);
@@ -1661,6 +1663,9 @@ test('flatten은 표시 파일이 우연히 놓이는 사용자 폴더·다운�
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'data', 'other'))), [['e/v.mp4', 'v.mp4']]);
     // 다운로드 아래의 프로젝트 폴더부터는 막는다.
     assert.throws(() => planFlatten(path.join(home, 'Downloads', 'proj', 'src')), /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\)/);
+    // 사용자 폴더나 OneDrive 바로 아래라도 기본 폴더가 아닌 곳(직접 만든 프로젝트)은 본다(1차 리뷰).
+    assert.throws(() => planFlatten(path.join(home, 'myproj', 'src')), /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다: .*myproj$/);
+    assert.throws(() => planFlatten(path.join(home, 'OneDrive', 'app', 'src')), /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다: .*app$/);
   });
 });
 

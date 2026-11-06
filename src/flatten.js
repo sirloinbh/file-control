@@ -203,14 +203,22 @@ function guardedFolders(target, entries, attributes) {
 // 프로젝트 표시 파일이나 실행 파일·DLL이 우연히 놓이기 쉬운 곳인지 본다(#148). 드라이브 루트, 사용자 폴더와 그 위,
 // 사용자 폴더 바로 아래(다운로드, 바탕화면, 문서 등), OneDrive 폴더 바로 아래(OneDrive\Desktop 등)는 내려받은 package.json이나
 // 설치 파일이 놓여도 프로젝트로 보지 않는다. 그 아래 폴더(다운로드\myproj)부터는 본다.
+// 사용자가 만든 폴더(사용자 폴더\myproj)는 터미널 기본 위치라 프로젝트가 흔히 생기므로 정해진 이름만 건너뛴다(1차 리뷰).
 function isCommonPlace(dir, home) {
   if (dir === path.dirname(dir)) return true;
   if (!home) return false;
   if (isInside(dir, home)) return true;
+  const name = path.basename(dir);
   const parent = path.dirname(dir);
-  if (path.relative(home, parent) === '') return true;
-  return path.relative(home, path.dirname(parent)) === '' && /^OneDrive(?:$|[ -])/i.test(path.basename(parent));
+  if (path.relative(home, parent) === '') return HOME_FOLDER.test(name) || ONEDRIVE.test(name);
+  return path.relative(home, path.dirname(parent)) === '' && ONEDRIVE.test(path.basename(parent)) && ONEDRIVE_FOLDER.test(name);
 }
+
+// 사용자 폴더 바로 아래의 기본 폴더. 디스크의 이름은 한국어 Windows에서도 영어다.
+const HOME_FOLDER = /^(?:Downloads|Desktop|Documents|Pictures|Videos|Music|Favorites|Links|Saved Games|Searches|Contacts|3D Objects)$/i;
+// OneDrive 폴더(OneDrive, OneDrive - 회사)와 그 바로 아래에서 동기화하는 기본 폴더. OneDrive 쪽은 표시 언어 이름으로 만들어진다.
+const ONEDRIVE = /^OneDrive(?:$| - )/i;
+const ONEDRIVE_FOLDER = /^(?:Desktop|Documents|Pictures|Videos|Music|Attachments|바탕 화면|문서|사진|동영상|음악|첨부 파일)$/i;
 
 // 사용자 폴더의 실제 경로. 알 수 없으면 빈 문자열을 돌려주고, 그때는 드라이브 루트만 건너뛴다(더 많이 막는 쪽).
 function realHome() {
