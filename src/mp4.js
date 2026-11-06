@@ -208,8 +208,11 @@ function unrotatedSize(sample, header, turned) {
   if (sample.pasp) return [stretched(width, sample.pasp.h / sample.pasp.v), height];
   if (header && header.width >= 1 && header.height >= 1 && (header.width !== sample.width || header.height !== sample.height)) {
     const aspect = (header.exactWidth * height) / (header.exactHeight * width);
-    const swapped = (header.exactWidth * width) / (header.exactHeight * height);
-    if (!(turned && Math.abs(swapped - 1) < 0.01)) {
+    // 바뀐 꼴인지는 인코딩 해상도와, SPS 화소 비율을 반영한 보이는 너비 둘 다로 본다. 화소가 정사각형이 아닌 영상(1440x1080, 4:3)을
+    // 회전하고 tkhd에 회전한 뒤의 크기(1080x1920)를 적으면 인코딩 해상도와는 바뀐 꼴이 아니기 때문이다(#124).
+    const visibleWidth = sample.spsAspect ? (width * sample.spsAspect.h) / sample.spsAspect.v : width;
+    const swappedWith = (shown) => Math.abs((header.exactWidth * shown) / (header.exactHeight * height) - 1) < 0.01;
+    if (!(turned && (swappedWith(width) || swappedWith(visibleWidth)))) {
       if (Math.abs(aspect - 1) < 1e-9) return [width, height];
       return [Math.round(header.exactWidth), Math.round(header.exactHeight)];
     }
