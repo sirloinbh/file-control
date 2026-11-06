@@ -846,6 +846,15 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
   if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
+  // 원본은 맨 위 이름으로 묶이므로, 이름이 같은 원본은 압축 안에서 겹쳐 풀 때 하나만 남는다. Windows는 대소문자를 가리지 않는다.
+  const seen = new Map();
+  for (const src of sources) {
+    const name = path.basename(path.resolve(src));
+    // toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만들므로 대문자로 비교한다(flatten.js와 같다).
+    const key = isWindows ? name.toUpperCase() : name;
+    if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
+    seen.set(key, src);
+  }
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], sources.flatMap(namesInside));
