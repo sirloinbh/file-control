@@ -1,10 +1,11 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { FcError, remove, hiddenOrSystemEntries, recycleEmptyFolders, recycleBinState, bareDeviceInside, MAX_RECYCLE_PATH } = require('./commands');
 const { extractProductNumbers } = require('./product');
-const { grant, walk } = require('./target');
+const { grant, walk, isInside } = require('./target');
 
 // NTFS 파일 이름 한도 (UTF-16 글자 수)
 const MAX_NAME = 255;
@@ -169,6 +170,7 @@ function guardedFolders(target, entries, attributes) {
     if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
+  rejectProjectAncestor(target);
   const guarded = new Map();
   const add = (relative, reason) => {
     if (!guarded.has(relative)) guarded.set(relative, reason);
@@ -196,6 +198,56 @@ function guardedFolders(target, entries, attributes) {
     add(parent, '실행 파일과 DLL이 함께 든 프로그램 폴더');
   }
   return guarded;
+}
+
+// 프로젝트 표시 파일이나 실행 파일·DLL이 우연히 놓이기 쉬운 곳인지 본다(#148). 드라이브 루트, 사용자 폴더와 그 위,
+// 사용자 폴더 바로 아래(다운로드, 바탕화면, 문서 등), OneDrive 폴더 바로 아래(OneDrive\Desktop 등)는 내려받은 package.json이나
+// 설치 파일이 놓여도 프로젝트로 보지 않는다. 그 아래 폴더(다운로드\myproj)부터는 본다.
+function isCommonPlace(dir, home) {
+  if (dir === path.dirname(dir)) return true;
+  if (!home) return false;
+  if (isInside(dir, home)) return true;
+  const parent = path.dirname(dir);
+  if (path.relative(home, parent) === '') return true;
+  return path.relative(home, path.dirname(parent)) === '' && /^OneDrive(?:$|[ -])/i.test(path.basename(parent));
+}
+
+// 사용자 폴더의 실제 경로. 알 수 없으면 빈 문자열을 돌려주고, 그때는 드라이브 루트만 건너뛴다(더 많이 막는 쪽).
+function realHome() {
+  let home;
+  try {
+    home = os.homedir();
+  } catch {
+    return '';
+  }
+  if (!home || !path.isAbsolute(home)) return '';
+  try {
+    return fs.realpathSync.native(home);
+  } catch {
+    return path.resolve(home);
+  }
+}
+
+// 타겟의 위 폴더가 프로젝트 폴더(표시 파일이 바로 안에 있음)나 프로그램 폴더(실행 파일과 DLL이 함께 있음)면 거부한다(#148).
+// myproj/package.json이 있을 때 myproj/src를 흩으면 프로젝트가 깨지고, 저장소가 없으면 되돌릴 수 없다.
+// 위 폴더를 모두 보되 isCommonPlace인 곳은 건너뛴다. 단계 수로 자르지 않는다(myproj/src/a/b도 막는다).
+function rejectProjectAncestor(target) {
+  const home = realHome();
+  for (let dir = path.dirname(target); ; dir = path.dirname(dir)) {
+    if (!isCommonPlace(dir, home)) {
+      let names;
+      try {
+        names = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name);
+      } catch (err) {
+        throw new FcError(`위 폴더가 프로젝트 폴더인지 확인할 수 없습니다: ${dir} (${err.code})`);
+      }
+      const marker = names.find((name) => PROJECT_FILE.test(name));
+      if (marker) throw new FcError(`위 폴더가 프로젝트 폴더로 보여(${marker} 있음) 다루지 않습니다: ${dir}`);
+      const exts = new Set(names.map((name) => path.extname(name).toLowerCase()));
+      if (exts.has('.exe') && exts.has('.dll')) throw new FcError(`위 폴더에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다: ${dir}`);
+    }
+    if (dir === path.dirname(dir)) break;
+  }
 }
 
 // 경로가 남길 폴더 아래면 가장 바깥의 그 폴더 상대경로를, 아니면 undefined를 돌려준다.

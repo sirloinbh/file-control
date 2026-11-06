@@ -79,7 +79,9 @@ const { spawnSync } = require('node:child_process');
 const isWindows = process.platform === 'win32';
 
 // 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로, 사용자 폴더를 임시 폴더 밖으로 바꿔 둔다.
-test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
+// withHome으로 테스트 안에서만 다른 사용자 폴더를 쓸 수 있다(#148).
+let fakeHome = null;
+test.mock.method(os, 'homedir', () => fakeHome ?? path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-flatten-'));
@@ -1616,6 +1618,50 @@ test('flatten은 타겟이 프로젝트·프로그램 폴더이거나 프로그�
   assert.deepStrictEqual(contents(project), { 'package.json': 'package.json', 'src/a.js': 'src/a.js' });
   assert.deepStrictEqual(contents(program), { 'app.exe': 'app.exe', 'core.dll': 'core.dll', 'res/icon.png': 'res/icon.png' });
   assert.deepStrictEqual(contents(inside), { 'node_modules/pkg/lib/a.js': 'node_modules/pkg/lib/a.js' });
+});
+
+// 사용자 폴더를 home으로 바꿔 fn을 실행한다.
+function withHome(home, fn) {
+  fakeHome = home;
+  try {
+    return fn();
+  } finally {
+    fakeHome = null;
+  }
+}
+
+test('flatten은 타겟의 위 폴더가 프로젝트·프로그램 폴더면 아무것도 옮기지 않고 거부한다 (#148)', () => {
+  const project = tempDir();
+  make(project, ['myproj/package.json', 'myproj/src/lib/a.js', 'myproj/src/b.js']);
+  assert.throws(() => flatten(path.join(project, 'myproj', 'src')), /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다: .*myproj$/);
+  // 몇 단계 위든 막는다.
+  assert.throws(() => flatten(path.join(project, 'myproj', 'src', 'lib'), { dryRun: true }), /위 폴더가 프로젝트 폴더로 보여/);
+  assert.deepStrictEqual(contents(project), { 'myproj/package.json': 'myproj/package.json', 'myproj/src/b.js': 'myproj/src/b.js', 'myproj/src/lib/a.js': 'myproj/src/lib/a.js' });
+  const program = tempDir();
+  make(program, ['app/App.exe', 'app/core.DLL', 'app/data/maps/m1.bin', 'app/data/m2.bin']);
+  assert.throws(() => flatten(path.join(program, 'app', 'data')), /위 폴더에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다: .*app$/);
+  assert.deepStrictEqual(Object.keys(contents(program)).sort(), ['app/App.exe', 'app/core.DLL', 'app/data/m2.bin', 'app/data/maps/m1.bin']);
+});
+
+test('flatten은 표시 파일이 우연히 놓이는 사용자 폴더·다운로드·OneDrive 바탕화면과 옆 폴더의 표시 파일로는 막지 않는다 (#148)', () => {
+  const home = tempDir();
+  make(home, [
+    'package.json',
+    'Downloads/package.json', 'Downloads/setup.exe', 'Downloads/helper.dll', 'Downloads/videos/a/x.mp4',
+    'OneDrive/Desktop/Gemfile', 'OneDrive/Desktop/pics/b/y.jpg',
+    'OneDrive - 회사/문서/go.mod', 'OneDrive - 회사/문서/work/c/z.txt',
+    'Downloads/proj/package.json', 'Downloads/proj/src/d/w.js',
+    'data/lib/package.json', 'data/other/e/v.mp4',
+  ]);
+  withHome(home, () => {
+    assert.deepStrictEqual(moves(planFlatten(path.join(home, 'Downloads', 'videos'))), [['a/x.mp4', 'x.mp4']]);
+    assert.deepStrictEqual(moves(planFlatten(path.join(home, 'OneDrive', 'Desktop', 'pics'))), [['b/y.jpg', 'y.jpg']]);
+    assert.deepStrictEqual(moves(planFlatten(path.join(home, 'OneDrive - 회사', '문서', 'work'))), [['c/z.txt', 'z.txt']]);
+    // 옆 폴더(data/lib)의 표시 파일은 위 폴더가 아니다.
+    assert.deepStrictEqual(moves(planFlatten(path.join(home, 'data', 'other'))), [['e/v.mp4', 'v.mp4']]);
+    // 다운로드 아래의 프로젝트 폴더부터는 막는다.
+    assert.throws(() => planFlatten(path.join(home, 'Downloads', 'proj', 'src')), /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\)/);
+  });
 });
 
 test('flatten은 숨김·시스템 속성 파일을 옮기지 않고, 그런 폴더는 빈 폴더라도 통째로 남긴다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
