@@ -663,6 +663,30 @@ test('zip은 임시 파일을 거쳐도 확장자에 맞는 형식으로 묶는�
   assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
 });
 
+test('zip은 대문자 확장자도 같은 형식으로 묶고, 대소문자로 갈리는 .Z와 .z는 그대로 둔다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const head = (name) => [...fs.readFileSync(p(name)).subarray(0, 3)];
+  const PK = [0x50, 0x4b, 0x03];
+  const GZIP = [0x1f, 0x8b, 0x08];
+  const TAR = [0x61, 0x2e, 0x74]; // 압축 없는 tar는 첫 항목 이름(a.txt)으로 시작한다.
+  const cases = [
+    ['l1.zip', PK], ['U1.ZIP', PK], ['M1.Zip', PK],
+    ['l2.tar.gz', GZIP], ['U2.TAR.GZ', GZIP], ['M2.tar.GZ', GZIP], ['U3.TGZ', GZIP],
+    ['U4.TAR.BZ2', [0x42, 0x5a, 0x68]], ['U5.TAR.XZ', [0xfd, 0x37, 0x7a]], ['U6.7Z', [0x37, 0x7a, 0xbc]],
+    ['l7.tar.Z', [0x1f, 0x9d, 0x90]], ['U7.TAR.Z', [0x1f, 0x9d, 0x90]], ['l10.taZ', [0x1f, 0x9d, 0x90]], ['l11.tZ', [0x1f, 0x9d, 0x90]], ['l12.taz', GZIP], ['l8.tar.z', TAR], ['l9.tar', TAR], ['U9.TAR', TAR],
+  ];
+  for (const [name, magic] of cases) {
+    fc.zip(p(name), [p('a.txt')]);
+    assert.deepStrictEqual(head(name), magic, name);
+  }
+  // 압축 파일 이름은 받은 그대로 남는다.
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', ...cases.map(([name]) => name)].sort());
+  fc.unzip(p('U2.TAR.GZ'), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
+});
+
 test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전에 거부하고 기존 파일을 건드리지 않는다', { skip: !isWindows }, () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
@@ -781,6 +805,33 @@ test('zip --force는 기존 압축 파일을 지우지 못하면 위치를 알�
   t.mock.restoreAll();
   fc.unzip(p('c.zip'), p('out'));
   assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
+});
+
+test('zip은 맨 위 이름이 같은 원본을 미리보기와 실제 모두 거부하고 압축 파일을 만들지 않는다', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('p', 'f.txt'), 'P');
+  fc.writeFile(p('q', 'f.txt'), 'Q');
+  fc.writeFile(p('q', 'F.TXT2'), 'x');
+  fc.writeFile(p('r', 'f.txt', 'in.txt'), 'dir');
+  const cases = [[p('p', 'f.txt'), p('q', 'f.txt')], [p('p', 'f.txt'), p('r', 'f.txt')]];
+  if (isWindows) {
+    fc.writeFile(p('s', 'F.TXT'), 'S');
+    fc.writeFile(p('g1', 'ΑΣ'), 'UPPER');
+    fc.writeFile(p('g2', 'ασ'), 'lower');
+    cases.push([p('p', 'f.txt'), p('s', 'F.TXT')], [p('g1', 'ΑΣ'), p('g2', 'ασ')]);
+  }
+  for (const dryRun of [true, false]) {
+    for (const sources of cases) {
+      assert.throws(() => fc.zip(p('o.zip'), sources, { dryRun }), /이름이 같은 원본/, sources.join(' '));
+    }
+  }
+  assert.ok(!fs.existsSync(p('o.zip')));
+  // 이름이 다르면 지금처럼 묶인다.
+  fc.zip(p('o.zip'), [p('p', 'f.txt'), p('q', 'F.TXT2')]);
+  fc.unzip(p('o.zip'), p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out')).sort(), ['F.TXT2', 'f.txt']);
+  assert.strictEqual(fc.readFile(p('out', 'f.txt')), 'P');
 });
 
 test('zip은 드라이브 루트를 훑기 전에 거부한다', (t) => {

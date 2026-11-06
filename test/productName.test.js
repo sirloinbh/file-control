@@ -135,11 +135,13 @@ test('엇갈린 번호 목록은 파일명의 말을 함께 적고 중복을 뺀
   ]);
 });
 
-test('번호의 일부만 겹치는 이름에는 번호를 넣는다', () => {
+test('번호의 일부만 겹치는 이름에는 번호를 넣고, 글자가 붙은 다른 번호는 엇갈림으로 보고한다', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/ABC-1234x.mp4', 'ABC-123/QWERTYABC-123.mp4']);
-  addProductNumbers(dir);
-  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 ABC-1234x.mp4', 'ABC-123/ABC-123 QWERTYABC-123.mp4']);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 QWERTYABC-123.mp4', 'ABC-123/ABC-1234x.mp4']);
+  // ABC-1234x는 글자가 붙은 다른 번호 ABC-1234로 본다(#75).
+  assert.deepStrictEqual(result.conflicts.map((item) => item.numbers), [['ABC-1234', 'ABC-123']]);
 });
 
 test('.ts와 .mts는 전송 스트림일 때만 영상으로 본다', () => {
@@ -566,4 +568,67 @@ test('containsNumber는 비ASCII 라틴 문자가 붙은 단어 중간을 같은
 test('containsNumber는 가나 결합 부호 뒤의 번호를 같은 번호로 본다 (1차 리뷰, #92)', () => {
   const { containsNumber } = require('../src/productName');
   assert.strictEqual(containsNumber('ガイドABC-123.mp4'.normalize('NFD'), 'ABC-123'), true);
+});
+
+test('글자가 붙은 다른 번호가 이름에 있으면 번호를 넣지 않고 엇갈림으로 보고한다 (#75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/ABC-123-01.mp4', 'XYZ-999/ABC-123A.mp4', 'XYZ-999/1ABC-123.mp4']);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.renamed.length, 0);
+  assert.deepStrictEqual(result.conflicts.map((item) => [path.basename(item.path), item.numbers]).sort(), [
+    ['1ABC-123.mp4', ['ABC-123', 'XYZ-999']],
+    ['ABC-123-01.mp4', ['ABC-123', 'XYZ-999']],
+    ['ABC-123A.mp4', ['ABC-123', 'XYZ-999']],
+  ]);
+  assert.deepStrictEqual(tree(dir), ['XYZ-999/1ABC-123.mp4', 'XYZ-999/ABC-123-01.mp4', 'XYZ-999/ABC-123A.mp4']);
+});
+
+test('글자가 붙은 같은 번호와 하이픈 없이 적은 같은 번호는 이미 있음으로 둔다 (#75)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/ABC123.mp4', 'ABC-123/ABC_123 b.mp4', 'ABC-123/ABC 123 c.mp4', 'ABC-123/abc123 d.mp4', 'ABC-123/ABC-123-01.mp4', 'ABC-123/1ABC-123.mp4']);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.renamed.length, 0);
+  assert.strictEqual(result.conflicts.length, 0);
+  assert.deepStrictEqual(result.already.map((item) => item.number), Array(6).fill('ABC-123'));
+});
+
+test('날짜 꼴, 제외 단어, 하이픈 없는 다른 번호, 단어 중간 말은 엇갈림이 아니라 번호를 넣는다 (#75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/ZZZ-2024-05-01.mp4', 'XYZ-999/PIC-2024-05-01.mp4', 'XYZ-999/ABC123.mp4', 'XYZ-999/H264 clip.mp4', 'XYZ-999/QWERTYABC-123.mp4', 'XYZ-999/ABC1234.mp4']);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.conflicts.length, 0);
+  assert.deepStrictEqual(tree(dir), [
+    'XYZ-999/XYZ-999 ABC123.mp4',
+    'XYZ-999/XYZ-999 ABC1234.mp4',
+    'XYZ-999/XYZ-999 H264 clip.mp4',
+    'XYZ-999/XYZ-999 PIC-2024-05-01.mp4',
+    'XYZ-999/XYZ-999 QWERTYABC-123.mp4',
+    'XYZ-999/XYZ-999 ZZZ-2024-05-01.mp4',
+  ]);
+});
+
+test('앞에 라틴 문자가 붙은 하이픈 없는 말은 같은 번호로 보지 않고 번호를 넣는다 (1차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['ABC-123/XABC123.mp4', 'ABC-123/ABC1234.mp4']);
+  const result = addProductNumbers(dir);
+  assert.strictEqual(result.conflicts.length, 0);
+  assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 ABC1234.mp4', 'ABC-123/ABC-123 XABC123.mp4']);
+});
+
+test('연-월이나 붙여 쓴 날짜는 글자가 붙은 번호로 보아 엇갈림이 된다 (1차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/MEET-2024-05.mp4', 'XYZ-999/TRIP-2024-0501.mp4']);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.numbers).sort(), [['MEET-2024', 'XYZ-999'], ['TRIP-2024', 'XYZ-999']]);
+});
+
+test('글자가 붙은 번호 뒤에 숫자 묶음이나 화질 꼬리가 더 있어도 엇갈림으로 보고, 연-월-일만 날짜로 뺀다 (2차 리뷰, #75)', () => {
+  const dir = tempDir();
+  make(dir, ['XYZ-999/ABC-123-01-1080p.mp4', 'XYZ-999/ABC-123-01-02.mp4', 'XYZ-999/ZZZ-1999-12-31.mp4']);
+  const result = addProductNumbers(dir);
+  assert.deepStrictEqual(result.conflicts.map((item) => [path.basename(item.path), item.numbers]).sort(), [
+    ['ABC-123-01-02.mp4', ['ABC-123', 'XYZ-999']],
+    ['ABC-123-01-1080p.mp4', ['ABC-123', 'XYZ-999']],
+  ]);
+  assert.deepStrictEqual(result.renamed.map((item) => item.name).sort(), ['XYZ-999 ZZZ-1999-12-31.mp4']);
 });

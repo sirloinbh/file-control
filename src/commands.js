@@ -762,9 +762,13 @@ function unzip(archive, destDir, { dryRun = false } = {}) {
 
 // -a는 확장자로 형식을 정하므로 임시 파일에도 같은 확장자를 붙인다. (.tar.gz 같은 겹 확장자 포함)
 // 임시 이름은 --exclude의 패턴으로도 쓰이므로, 패턴 문자가 없는 영숫자 확장자만 받는다.
+// tar.exe는 확장자를 대소문자 구분해서 보아 X.ZIP·x.TAR.GZ를 압축 없는 tar로 만든다. 그래서 임시 파일에는 소문자 확장자를 붙인다.
+// 다만 compress 형식인 .Z, .taZ, .tZ는 대소문자로 갈리므로(.z는 압축 없는 tar, .taz는 gzip, .tz는 압축 없는 tar) 그대로 둔다.
+const KEEP_CASE_EXT = new Set(['Z', 'taZ', 'tZ']);
 function archiveExt(archive) {
   const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
-  return match ? match[0] : '';
+  if (!match) return '';
+  return match[0].split('.').map((part) => (KEEP_CASE_EXT.has(part) ? part : part.toLowerCase())).join('.');
 }
 
 // 압축 파일이 묶을 폴더 안에 있으면 tar가 기존 압축 파일까지 묶으므로 미리 치워야 한다.
@@ -846,6 +850,15 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
   if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
+  // 원본은 맨 위 이름으로 묶이므로, 이름이 같은 원본은 압축 안에서 겹쳐 풀 때 하나만 남는다. Windows는 대소문자를 가리지 않는다.
+  const seen = new Map();
+  for (const src of sources) {
+    const name = path.basename(path.resolve(src));
+    // toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만들므로 대문자로 비교한다(flatten.js와 같다).
+    const key = isWindows ? name.toUpperCase() : name;
+    if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
+    seen.set(key, src);
+  }
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], sources.flatMap(namesInside));

@@ -6,7 +6,7 @@ const { FcError } = require('./commands');
 const { grant, walk, readRange } = require('./target');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
-const { extractProductNumbers, findProductNumber, halfWidth } = require('./product');
+const { extractProductNumbers, findProductNumber, findAttachedProductNumbers, halfWidth } = require('./product');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote } = require('./flatten');
 
 // 영상 파일만 다룬다. ABC-123 폴더 안의 자막이나 메모까지 이름을 바꾸지 않는다.
@@ -44,6 +44,12 @@ function readTags(target, entry, ext) {
 function containsNumber(name, number) {
   // number는 영문 대문자, 하이픈, 숫자뿐이라 그대로 정규식에 넣어도 된다.
   return new RegExp(`(?<!\\p{Script=Latin}\\p{M}*)${number}(?!\\d)`, 'u').test(halfWidth(name).toUpperCase());
+}
+
+// 이름에 번호를 하이픈 없이 적었는지 본다(ABC123, ABC_123, ABC 123, abc123). 앞에 라틴 문자가 붙거나 뒤에 숫자가 이어지면 다른 말이다.
+function containsUnhyphenatedNumber(name, number) {
+  const [letters, digits] = number.split('-');
+  return new RegExp(`(?<!\\p{Script=Latin}\\p{M}*)${letters}[_ ]?${digits}(?!\\d)`, 'u').test(halfWidth(name).toUpperCase());
 }
 
 // 제목과 폴더의 번호가 엇갈리면 어느 쪽이 맞는지 알 수 없다. 코멘트는 다른 글을 담을 수 있어 제목이나 폴더에 번호가 있으면 판단에 넣지 않는다.
@@ -111,12 +117,15 @@ function planProductNames(dir) {
         plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...numbers])] });
         continue;
       }
-      if (containsNumber(name, chosen.number)) {
+      // 하이픈 없이 적은 같은 번호(ABC123, ABC_123, ABC 123)도 이미 있는 것으로 본다(#75).
+      if (containsNumber(name, chosen.number) || containsUnhyphenatedNumber(name, chosen.number)) {
         plan.already.push({ path: entry.path, number: chosen.number });
         continue;
       }
-      if (lowerInName.length > 0) {
-        plan.conflicts.push({ path: entry.path, numbers: [...lowerInName, chosen.number] });
+      // 글자가 붙어 번호 규칙에 걸리지 않은 다른 번호(ABC-123-01, ABC-123A, 1ABC-123)가 있으면 앞에 번호를 더 넣지 않고 엇갈림으로 알린다(#75).
+      const attached = findAttachedProductNumbers(name).filter((number) => number !== chosen.number);
+      if (lowerInName.length > 0 || attached.length > 0) {
+        plan.conflicts.push({ path: entry.path, numbers: [...new Set([...lowerInName, ...attached, chosen.number])] });
         continue;
       }
       // 파일 안의 글은 쓰지 않고 형식을 통과한 번호만 이름에 넣으므로 제목의 경로·제어 문자가 이름에 들어오지 않는다.
