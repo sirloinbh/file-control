@@ -54,6 +54,9 @@ const GENERIC_WORD = /^(?:VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UN
 // 폴더 이름에 이것들만 있으면 정보가 없다고 본다. 영상 종류·화질·코덱 같은 말과 흔한 폴더 이름이다.
 const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOTOS?|AUDIO|SAMPLES?|UNTITLED|영상|동영상|파일|DOWNLOADS?|SUBS?|SUBTITLES?|자막|NEW|FOLDER|TEMP|TMP|새|폴더|[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
 
+// PLAIN_FOLDER_WORD 중 화질·코덱만 나타내는 말. 혼자서는 이름이 되지 못하지만 같은 영상의 판을 구분한다(#150).
+const QUALITY_WORD = /^(?:[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
+
 // Windows가 새 폴더에 붙이는 이름. 번호가 붙어도 정보가 없다.
 const DEFAULT_FOLDER = /^(?:새 폴더|New folder)(?: \(\d+\))?$/i;
 
@@ -67,6 +70,60 @@ function informativeFolder(folder) {
   const folderWords = words(plain);
   if (folderWords.join('').length < 2) return false;
   return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
+}
+
+// 접두어 사이에 함께 붙일 가까운 폴더인지 본다(#150). 쓸 만한 이름이거나 화질·코덱만 있는 이름(1080p, WEB-DL)이면 된다.
+// Subs·자막·Videos·새 폴더 같은 담는 폴더 이름은 붙이지 않는다. 붙이면 ABC-123/Subs/video.en.srt가 ABC-123/video.mp4와 짝을 잃는다.
+function distinguishingFolder(folder) {
+  if (informativeFolder(folder)) return true;
+  const folderWords = words(folder.normalize('NFKC'));
+  return folderWords.length > 0 && folderWords.every((word) => QUALITY_WORD.test(word));
+}
+
+// 정보 없는 파일명이 가까운 폴더 이름(CD1)을 받았을 때, 유일한 파일이 아닌 바깥 폴더의 제품번호나 제목을 앞에 붙인다(#150).
+// ABC-123/CD1/video.mp4, ABC-123/CD2/video.mp4는 ABC-123 CD1.mp4, ABC-123 CD2.mp4가 된다. 받은 이름에 제품번호가 있거나,
+// 바깥 이름이 이미 들어 있거나, 붙이면 길이 한도를 넘으면 받은 이름을 그대로 돌려준다.
+// outer는 유일한 파일이 아닌 바깥 폴더들(가까운 쪽부터)이다.
+function withOuterFolder(fileName, detailed, outer) {
+  const { name: base, ext } = path.parse(fileName);
+  if (!GENERIC_WORD.test(words(base).join(''))) return detailed;
+  const chosen = detailed.slice(0, detailed.length - ext.length);
+  if (extractProductNumbers(chosen).length > 0) return detailed;
+  // 확장자가 붙은 바깥 폴더(ABC-123.mp4/)도 그 확장자를 떼고 쓴다(1차 리뷰).
+  const stems = folderStems(outer, ext);
+  const pick = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? stems.find(informativeFolder);
+  if (pick === undefined || containsWords(words(chosen), words(pick).join(''))) return detailed;
+  // 바깥 폴더와 받은 이름 사이의 화질 폴더 등도 접두어처럼 붙인다(1차 리뷰). Show/1080p/CD1/video.mp4 → Show 1080p CD1.mp4
+  const full = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)} ${detailed}`;
+  if (full.length <= MAX_NAME) return full;
+  const short = `${pick.normalize('NFC')} ${detailed}`;
+  return short.length <= MAX_NAME ? short : detailed;
+}
+
+// 파일과 같은 확장자로 끝나는 폴더 이름은 그 확장자를 떼고, 비었거나 점 폴더이거나 다른 확장자처럼 보이는 이름은 뺀다.
+function folderStems(folders, ext) {
+  return folders
+    .map((folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder))
+    .filter((stem) => stem.trim() !== '' && !stem.startsWith('.') && !EXTENSION_LIKE.test(stem));
+}
+
+// 자막 폴더 이름에 들어가는 말. English Subs/처럼 다른 말과 함께 있어도 자막 폴더로 본다.
+const SUBTITLE_WORD = /^(?:SUBS?|SUBTITLES?|자막)$/;
+
+// 언어 이름. 이 말만 있는 폴더(English/, 한국어/)는 자막을 언어별로 나눠 담는 폴더로 보고 자막 폴더처럼 다룬다(2차 리뷰).
+const LANGUAGE_WORD = /^(?:ENGLISH|ENG|EN|KOREAN|KOR|KO|JAPANESE|JPN|JA|CHINESE|CHS|CHT|CHI|ZH|SPANISH|SPA|ES|FRENCH|FRE|FRA|FR|GERMAN|GER|DEU|DE|한국어|한글|영어|일본어|중국어)$/;
+
+// chosen 뒤에 사이 폴더(between, 가까운 쪽부터) 중 붙일 이름을 바깥부터 붙인다(#150). 이미 들어 있는 이름(also 포함)은 다시 붙이지 않는다.
+// 자막 폴더, 언어 이름만 있는 폴더와 그 아래 폴더(Subs/English/)는 붙이지 않는다. 붙이면 ABC-123/Subs/English/video.en.srt가 영상과 접두어가 달라진다(1차 리뷰).
+function joinBetween(chosen, between, also = '') {
+  let prefix = chosen.normalize('NFC');
+  for (const stem of [...between].reverse()) {
+    const stemWords = words(stem);
+    if (stemWords.some((word) => SUBTITLE_WORD.test(word)) || stemWords.every((word) => LANGUAGE_WORD.test(word))) break;
+    if (!distinguishingFolder(stem) || containsWords(words(`${prefix} ${also}`), stemWords.join(''))) continue;
+    prefix = `${prefix} ${stem.normalize('NFC')}`;
+  }
+  return prefix;
 }
 
 // 공백·기호·대소문자 차이를 빼고 단어로 나눈다.
@@ -131,14 +188,14 @@ function prefixedName(fileName, folders) {
   const b = words(base.split('.')[0]).join('');
   if (!GENERIC_NAME.test(b)) return fileName;
   // 폴더 하나(문자열)나 없는 값도 받는다.
-  const stems = [folders]
-    .flat()
-    .filter((folder) => folder !== undefined)
-    .map((folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder))
-    .filter((stem) => stem.trim() !== '' && !stem.startsWith('.') && !EXTENSION_LIKE.test(stem));
+  const stems = folderStems([folders].flat().filter((folder) => folder !== undefined), ext);
   // detailedName처럼 제품번호 폴더를 먼저 찾아, ABC-123/Extras/video.mp4가 Extras 대신 ABC-123을 붙이게 한다(2차 리뷰).
   const chosen = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? (GENERIC_WORD.test(b) ? stems.find(informativeFolder) : undefined);
-  return chosen === undefined ? fileName : `${chosen.normalize('NFC')} ${fileName}`;
+  if (chosen === undefined) return fileName;
+  // 고른 폴더와 파일 사이의 가까운 폴더 이름(1080p, CD1)도 바깥부터 함께 붙인다(#150). Show/1080p/video.mp4와 Show/720p/video.mp4가
+  // Show video.mp4, Show video (2).mp4가 되어 화질 구분을 잃지 않게 한다. 이미 들어 있는 이름은 다시 붙이지 않는다.
+  const combined = `${joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)))} ${fileName}`;
+  return combined.length > MAX_NAME ? `${chosen.normalize('NFC')} ${fileName}` : combined;
 }
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
@@ -392,8 +449,11 @@ function planFlatten(dir) {
     try {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
-      let detailed = detailedName(original, soleFolders(entry, fileCounts));
-      if (detailed === original) detailed = prefixedName(original, parts.slice(0, -1).reverse());
+      const sole = soleFolders(entry, fileCounts);
+      const ancestors = parts.slice(0, -1).reverse();
+      let detailed = detailedName(original, sole);
+      if (detailed === original) detailed = prefixedName(original, ancestors);
+      else detailed = withOuterFolder(original, detailed, ancestors.slice(sole.length));
       // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
       const twin = topFiles.get(fileKey(from));
       if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);
@@ -790,4 +850,4 @@ function formatFlatten(result) {
   return lines.join('\n');
 }
 
-module.exports = { FOLDER_METADATA, PROGRAM_FOLDER, PROJECT_FILE, planFlatten, detailedName, prefixedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir };
+module.exports = { withOuterFolder, FOLDER_METADATA, PROGRAM_FOLDER, PROJECT_FILE, planFlatten, detailedName, prefixedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir };

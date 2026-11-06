@@ -68,3 +68,47 @@ for (const [label, make] of [
     }
   });
 }
+
+// 환경 변수로 tar.exe 옵션을 켤 수 있다. fctl은 이 변수를 tar.exe에 물려주지 않는다(#87).
+function withEnv(t, name, value) {
+  const saved = process.env[name];
+  process.env[name] = value;
+  t.after(() => {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  });
+}
+
+test('TAR_READER_OPTIONS=mtree:checkfs가 설정돼도 contents= 파일의 내용이 복사되지 않는다', (t) => {
+  const outside = tempDir();
+  const secret = path.join(outside, 'secret.txt');
+  fs.writeFileSync(secret, SECRET);
+  const dir = tempDir();
+  const archive = path.join(dir, 'x.zip');
+  fs.writeFileSync(archive, mtree(secret));
+  // 소문자 이름도 Windows에서는 같은 변수다.
+  withEnv(t, process.platform === 'win32' ? 'tar_reader_options' : 'TAR_READER_OPTIONS', 'mtree:checkfs');
+  // 이 tar.exe가 변수를 정말 읽는지 먼저 본다. 읽지 않으면 아래 시험은 아무것도 증명하지 못한다.
+  const probe = tempDir();
+  spawnSync(TAR, ['-xf', archive, '-C', probe], { stdio: 'ignore' });
+  const probed = path.join(probe, 'leak.txt');
+  if (!(fs.existsSync(probed) && fs.readFileSync(probed, 'utf8') === SECRET)) return t.skip('이 tar.exe는 TAR_READER_OPTIONS로 복사하지 않아 시험할 수 없다');
+  fc.unzip(archive, path.join(dir, 'out'));
+  assertLeakHasNoSecret(path.join(dir, 'out', 'leak.txt'));
+  fs.rmSync(path.join(dir, 'out'), { recursive: true });
+  const result = extractArchives(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assertLeakHasNoSecret(path.join(result.extracted[0].dest, 'leak.txt'));
+});
+
+test('TAR_WRITER_OPTIONS가 설정돼도 zip은 기본 옵션으로 묶는다', (t) => {
+  const dir = tempDir();
+  const src = path.join(dir, 'a.txt');
+  fs.writeFileSync(src, 'A'.repeat(100000));
+  withEnv(t, 'TAR_WRITER_OPTIONS', 'zip:compression=store');
+  const probe = path.join(dir, 'probe.zip');
+  spawnSync(TAR, ['-a', '-cf', probe, '-C', dir, 'a.txt'], { stdio: 'ignore' });
+  if (!(fs.existsSync(probe) && fs.statSync(probe).size > 100000)) return t.skip('이 tar.exe는 TAR_WRITER_OPTIONS를 읽지 않아 시험할 수 없다');
+  fc.zip(path.join(dir, 'o.zip'), [src]);
+  assert.ok(fs.statSync(path.join(dir, 'o.zip')).size < 10000, '기본 압축(deflate)으로 묶여야 한다');
+});

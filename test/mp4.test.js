@@ -659,3 +659,64 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
   const result = write(dir, ftyp(), box('moov', short, trak()));
   assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
 });
+
+test('MP4 메타데이터와 구조 확인은 파일을 한 번만 열어 읽는다 (#90)', (t) => {
+  const { checkMp4Structure } = require('../src/mp4');
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), trak(), box('udta', box('©nam', u32(0), Buffer.from('ABC-123'))))]));
+  const open = t.mock.method(fs, 'openSync');
+  assert.strictEqual(readMp4Metadata(dir, 'v.mp4').width, 1920);
+  assert.strictEqual(open.mock.callCount(), 1);
+  checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4');
+  assert.strictEqual(open.mock.callCount(), 2);
+});
+
+test('연 파일이 확인한 경로의 파일과 다르면 읽지 않는다 (#90)', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  fs.writeFileSync(path.join(dir, 'other.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
+  const original = fs.openSync;
+  // 확인과 열기 사이에 다른 파일로 바뀐 것처럼 다른 파일을 연다.
+  t.mock.method(fs, 'openSync', (p, flags) => original(String(p).endsWith('v.mp4') ? path.join(dir, 'other.mp4') : p, flags));
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+});
+
+test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟 밖을 가리키는 링크로 바뀌면 읽지 않는다 (1차 리뷰, #90)', (t) => {
+  const parent = tempDir();
+  const dir = path.join(parent, 't');
+  fs.mkdirSync(dir);
+  const file = path.join(dir, 'v.mp4');
+  const content = Buffer.concat([ftyp(), box('moov', mvhd())]);
+  fs.writeFileSync(path.join(parent, 'secret.mp4'), content);
+  const original = fs.openSync;
+  const swapTo = (replace) => {
+    fs.writeFileSync(file, content);
+    let swapped = false;
+    const open = t.mock.method(fs, 'openSync', (p, flags) => {
+      // writeFileSync도 openSync를 부르므로 한 번만 바꾼다.
+      if (!swapped && String(p) === file) {
+        swapped = true;
+        fs.rmSync(file);
+        replace();
+      }
+      return original(p, flags);
+    });
+    try {
+      assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+    } finally {
+      open.mock.restore();
+    }
+  };
+  // 같은 내용의 새 파일로 바꾼다.
+  swapTo(() => fs.writeFileSync(file, content));
+  // 타겟 밖 파일을 가리키는 링크로 바꾼다. 링크를 만들 권한이 없으면 이 경우는 건너뛴다.
+  try {
+    fs.symlinkSync(path.join(parent, 'secret.mp4'), path.join(parent, 'probe.mp4'));
+  } catch (err) {
+    if (err.code === 'EPERM') return;
+    throw err;
+  }
+  fs.rmSync(path.join(parent, 'probe.mp4'));
+  if (fs.existsSync(file)) fs.rmSync(file);
+  swapTo(() => fs.symlinkSync(path.join(parent, 'secret.mp4'), file));
+});

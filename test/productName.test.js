@@ -441,7 +441,7 @@ test('미리보기는 아무것도 바꾸지 않고 같은 계획을 보여 준�
   const result = addProductNumbers(dir, { dryRun: true });
   assert.deepStrictEqual(tree(dir), ['ABC-123/video.mp4']);
   assert.strictEqual(result.renamed[0].name, 'ABC-123 video.mp4');
-  assert.match(formatProductNumbers(result), /\[미리보기\] 이름 변경: ABC-123[\\/]video\.mp4 -> ABC-123 video\.mp4 \(폴더명\)/);
+  assert.match(formatProductNumbers(result), /\[미리보기\] 이름 변경: ABC-123[\\/]video\.mp4 -> ABC-123 video\.mp4 \(폴더명, 메타데이터를 읽지 못함: MP4\/MOV 형식이 아닙니다/);
   assert.strictEqual(fs.lstatSync(path.join(dir, 'ABC-123')).isDirectory(), true);
 });
 
