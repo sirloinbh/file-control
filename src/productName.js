@@ -43,7 +43,7 @@ function readTags(target, entry, ext) {
 // 번호에 글자가 붙어 있어도(ABC-123-01, ABC-123A, 1ABC-123) 이미 든 것으로 본다. ABC-1234는 ABC-123이 아니다.
 function containsNumber(name, number) {
   // number는 영문 대문자, 하이픈, 숫자뿐이라 그대로 정규식에 넣어도 된다.
-  return new RegExp(`(?<![\\p{Script=Latin}\\p{M}])${number}(?!\\d)`, 'u').test(halfWidth(name).toUpperCase());
+  return new RegExp(`(?<!\\p{Script=Latin}\\p{M}*)${number}(?!\\d)`, 'u').test(halfWidth(name).toUpperCase());
 }
 
 // 제목과 폴더의 번호가 엇갈리면 어느 쪽이 맞는지 알 수 없다. 코멘트는 다른 글을 담을 수 있어 제목이나 폴더에 번호가 있으면 판단에 넣지 않는다.

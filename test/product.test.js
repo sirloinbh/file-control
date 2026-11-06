@@ -175,3 +175,10 @@ test('extractProductNumbers는 한글·한자·가나가 붙은 번호는 찾는
   assert.deepStrictEqual(extractProductNumbers('café ABC-123'), ['ABC-123']);
   assert.deepStrictEqual(extractProductNumbers('ABC-123-1080p'), ['ABC-123']);
 });
+
+test('extractProductNumbers는 라틴 문자가 아닌 글자의 결합 부호를 경계로 보지 않는다 (1차 리뷰, #92)', () => {
+  assert.deepStrictEqual(extractProductNumbers('ガイドABC-123'.normalize('NFD')), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('ガイドabc-123'.normalize('NFD'), { lowercase: true }), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('ダウンロード-ABC-123'.normalize('NFD')), ['ABC-123']);
+  assert.deepStrictEqual(extractProductNumbers('café-trip-20'.normalize('NFD'), { lowercase: true }), []);
+});

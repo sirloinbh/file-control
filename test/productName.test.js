@@ -553,3 +553,8 @@ test('containsNumber는 비ASCII 라틴 문자가 붙은 단어 중간을 같은
   assert.strictEqual(containsNumber('영상mon-12.mp4', 'MON-12'), true);
   assert.strictEqual(containsNumber('[ABC-123] 제목.mp4', 'ABC-123'), true);
 });
+
+test('containsNumber는 가나 결합 부호 뒤의 번호를 같은 번호로 본다 (1차 리뷰, #92)', () => {
+  const { containsNumber } = require('../src/productName');
+  assert.strictEqual(containsNumber('ガイドABC-123.mp4'.normalize('NFD'), 'ABC-123'), true);
+});
