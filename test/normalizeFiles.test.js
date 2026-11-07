@@ -352,3 +352,136 @@ test('normalize는 이전 실행이 남긴 같은 파일의 다른 이름을 겹
   assert.deepStrictEqual(result.renamed, []);
   assert.match(result.conflicts[0].reason, /같은 이름이 이미 있습니다\. \(원본과 같은 파일의 다른 이름/);
 });
+
+test('받는 중인 파일과 그 표시 파일이 옆에 있는 파일은 바꾸지 않고 알린다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, [
+    '영상 ABC-123.mp4.crdownload',
+    '영상 BCD-234.mp4.part',
+    '영상 CDE-345.mp4',
+    '영상 CDE-345.mp4.aria2',
+    'x.mp4.download/영상 DEF-456.mp4',
+    '받음 EFG-567.mp4',
+  ]);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['EFG-567 받음.mp4', 'x.mp4.download/DEF-456 영상.mp4', '영상 ABC-123.mp4.crdownload', '영상 BCD-234.mp4.part', '영상 CDE-345.mp4', '영상 CDE-345.mp4.aria2'].sort());
+  const reasons = Object.fromEntries(result.skipped.map((item) => [path.relative(dir, item.path).replaceAll(path.sep, '/'), item.reason]));
+  assert.match(reasons['영상 ABC-123.mp4.crdownload'], /받는 중인 파일의 이름\(\.crdownload\)/);
+  assert.match(reasons['영상 BCD-234.mp4.part'], /받는 중인 파일의 이름/);
+  assert.match(reasons['영상 CDE-345.mp4'], /표시 파일\(영상 CDE-345\.mp4\.aria2\)/);
+  assert.match(reasons['영상 CDE-345.mp4.aria2'], /받는 중인 파일의 이름/);
+  // Safari 표시 폴더 안이라도 폴더 이름(x.mp4.download)과 파일 이름이 다르면 표시로 보지 않는다. 안의 x.mp4만 받는 중이다.
+  assert.strictEqual(result.renamed.length, 2);
+});
+
+test('Safari 표시 폴더 안에서 받는 중인 파일은 바꾸지 않는다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, ['영상 ABC-123.mp4.download/영상 ABC-123.mp4']);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['영상 ABC-123.mp4.download/영상 ABC-123.mp4']);
+  assert.match(result.skipped[0].reason, /표시 폴더\(영상 ABC-123\.mp4\.download\)/);
+});
+
+test('~로 시작하는 임시 파일은 알리지 않고 그대로 둔다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, ['~abc-123.mp4', '~BCD-234 영상.mp4', '~$문서 ABC-123.docx']);
+  const result = normalizeFiles(dir, { includeLowercase: true });
+  assert.deepStrictEqual(tree(dir), ['~$문서 ABC-123.docx', '~BCD-234 영상.mp4', '~abc-123.mp4'].sort());
+  assert.strictEqual(result.renamed.length + result.skipped.length + result.inferred.length, 0);
+});
+
+test('프로그램·프로젝트·실행 파일 폴더 안의 파일은 바꾸지 않고 폴더마다 한 번 알린다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, [
+    'node_modules/pkg/README ABC-123.md',
+    'node_modules/pkg/lib/foo-12.js',
+    'proj/package.json',
+    'proj/src/python-39.js',
+    'App/setup ABC-123.exe',
+    'App/core.dll',
+    'App/sub/note BCD-234.txt',
+    'tools/run CDE-345.exe',
+    '그냥 DEF-456.txt',
+  ]);
+  const result = normalizeFiles(dir, { includeLowercase: true });
+  assert.deepStrictEqual(tree(dir), [
+    'App/core.dll',
+    'App/setup ABC-123.exe',
+    'App/sub/note BCD-234.txt',
+    'tools/CDE-345 run.exe',
+    'DEF-456 그냥.txt',
+    'node_modules/pkg/README ABC-123.md',
+    'node_modules/pkg/lib/foo-12.js',
+    'proj/package.json',
+    'proj/src/python-39.js',
+  ].sort());
+  const skipped = result.skipped.map((item) => [path.relative(dir, item.path), item.reason]).sort();
+  assert.deepStrictEqual(skipped.map(([relative]) => relative), ['App', 'node_modules', 'proj']);
+  assert.match(skipped[0][1], /실행 파일과 DLL이 함께 든 프로그램 폴더라 안의 파일 이름을 바꾸지 않습니다/);
+  assert.match(skipped[1][1], /프로그램 폴더\(node_modules\)라/);
+  assert.match(skipped[2][1], /프로젝트 폴더\(package\.json 있음\)라/);
+});
+
+test('타겟이 프로그램 폴더 안이거나 프로젝트 폴더면 거부한다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, ['node_modules/pkg/README ABC-123.md', 'proj/package.json', 'proj/영상 ABC-123.mp4']);
+  assert.throws(() => normalizeFiles(path.join(dir, 'node_modules', 'pkg')), (err) => err instanceof FcError && /프로그램 폴더 안이라/.test(err.message));
+  assert.throws(() => normalizeFiles(path.join(dir, 'proj')), (err) => err instanceof FcError && /프로젝트 폴더로 보여/.test(err.message));
+  assert.deepStrictEqual(tree(dir), ['node_modules/pkg/README ABC-123.md', 'proj/package.json', 'proj/영상 ABC-123.mp4']);
+});
+
+test('저장한 웹 페이지와 그 _files 폴더는 바꾸지 않는다 (#94)', () => {
+  const dir = tempDir();
+  make(dir, ['페이지 ABC-123.html', '페이지 ABC-123_files/그림 BCD-234.png', '다른 CDE-345.html']);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['CDE-345 다른.html', '페이지 ABC-123.html', '페이지 ABC-123_files/그림 BCD-234.png'].sort());
+  const reasons = result.skipped.map((item) => `${path.relative(dir, item.path)}: ${item.reason}`).sort();
+  assert.strictEqual(reasons.length, 2);
+  assert.match(reasons[0], /^페이지 ABC-123\.html: 자료 폴더\(페이지 ABC-123_files\)와 이름으로 이어진 웹 페이지라/);
+  assert.match(reasons[1], /^페이지 ABC-123_files: 웹 페이지\(페이지 ABC-123\.html\)의 자료 폴더라/);
+});
+
+test('숨김 속성 폴더 안의 파일은 바꾸지 않는다 (#94)', { skip: process.platform !== 'win32' }, () => {
+  const { execFileSync } = require('node:child_process');
+  const dir = tempDir();
+  make(dir, ['숨김/영상 ABC-123.mp4', '보임/영상 BCD-234.mp4']);
+  execFileSync('attrib', ['+h', path.join(dir, '숨김')]);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['보임/BCD-234 영상.mp4', '숨김/영상 ABC-123.mp4']);
+  assert.match(result.skipped[0].reason, /숨김 속성 폴더라/);
+});
+
+test('웹 페이지와 _files 폴더는 대소문자가 달라도 짝으로 보고, .htm도 같다 (1차 리뷰, #94)', () => {
+  const dir = tempDir();
+  make(dir, ['Page ABC-123.HTML', 'page ABC-123_files/a.png', '옛 BCD-234.htm', '옛 BCD-234_files/b.png']);
+  const result = normalizeFiles(dir);
+  assert.deepStrictEqual(tree(dir), ['Page ABC-123.HTML', 'page ABC-123_files/a.png', '옛 BCD-234.htm', '옛 BCD-234_files/b.png'].sort());
+  const reasons = result.skipped.map((item) => `${path.basename(item.path)}: ${item.reason}`).sort();
+  assert.deepStrictEqual(reasons, [
+    'Page ABC-123.HTML: 자료 폴더(page ABC-123_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
+    '옛 BCD-234.htm: 자료 폴더(옛 BCD-234_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
+  ]);
+});
+
+test('바뀔 파일이 없으면 숨김 속성을 확인하려고 PowerShell을 부르지 않는다 (1차 리뷰, #94)', (t) => {
+  const commands = require('../src/commands');
+  const dir = tempDir();
+  make(dir, ['ABC-123 영상.mp4', 'sub/그냥.txt']);
+  const hidden = t.mock.method(commands, 'hiddenOrSystemEntries');
+  assert.strictEqual(normalizeFiles(dir).renamed.length, 0);
+  assert.strictEqual(hidden.mock.callCount(), 0);
+  make(dir, ['sub/영상 BCD-234.mp4']);
+  assert.strictEqual(normalizeFiles(dir).renamed.length, 1);
+  assert.strictEqual(hidden.mock.callCount(), 1);
+});
+
+test('숨김 속성 폴더 안의 보고할 파일은 다른 파일의 순서와 관계없이 폴더로만 알린다 (2차 리뷰, #94)', { skip: process.platform !== 'win32' }, () => {
+  const { execFileSync } = require('node:child_process');
+  for (const other of ['a/영상 CDE-345.mp4', 'z/영상 CDE-345.mp4', null]) {
+    const dir = tempDir();
+    make(dir, ['h/영상 ABC-123 BCD-234.mp4', ...(other ? [other] : [])]);
+    execFileSync('attrib', ['+h', path.join(dir, 'h')]);
+    const result = normalizeFiles(dir, { dryRun: true });
+    assert.deepStrictEqual(result.skipped.map((item) => path.relative(dir, item.path)), [], String(other));
+  }
+});

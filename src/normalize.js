@@ -52,8 +52,9 @@ function normalizeName(fileName) {
   const unchanged = (reason, number = null, inferred = false) => ({ name: fileName, number, inferred, reason });
   // 파일 이름은 255자를 넘을 수 없다. 긴 입력에서 정규식이 느려지거나 괄호 되풀이가 깊어지지 않게 먼저 거른다.
   if (fileName.length > MAX_NAME) return unchanged('파일 이름이 너무 깁니다.');
-  // 점으로 시작하는 이름은 숨김 파일이고, 앞에 번호를 붙이면 숨김이 풀린다. ~$는 Office가 쓰는 잠금 파일이다.
-  if (fileName.startsWith('.') || fileName.startsWith('~$')) return unchanged('숨김이나 임시 파일 이름은 바꾸지 않습니다.');
+  // 점으로 시작하는 이름은 숨김 파일이고, 앞에 번호를 붙이면 숨김이 풀린다. ~로 시작하는 이름은 Office 잠금 파일(~$)과
+  // 임시 파일(~WRL0001.tmp, ~abc-123.mp4)이다. 만든 프로그램이 그 이름으로 찾으므로 바꾸지 않는다(#94).
+  if (fileName.startsWith('.') || fileName.startsWith('~')) return unchanged('숨김이나 임시 파일 이름은 바꾸지 않습니다.');
   if (NOT_A_NAME.test(fileName)) return unchanged('파일 이름에 쓸 수 없는 문자가 있습니다.');
   if (ENDS_BADLY.test(fileName)) return unchanged('끝이 점이나 공백인 이름은 바꾸지 않습니다.');
   const extension = EXTENSION.exec(fileName)?.[0] ?? '';

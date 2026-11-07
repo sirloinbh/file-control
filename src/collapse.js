@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, freshPath } = require('./commands');
+const { FcError, remove, freshPath, hiddenOrSystemEntries } = require('./commands');
 const { grant, walk } = require('./target');
 const { extractProductNumbers } = require('./product');
 const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
@@ -53,6 +53,18 @@ function skipReason(chain, entries) {
   return null;
 }
 
+// 접으면 맨 아래 폴더가 맨 위 이름으로 옮겨 가 폴더 속성(숨김 등)과 ACL이 맨 아래 폴더의 것이 된다(#85).
+// Node에는 속성을 쓰는 API가 없고, 옮긴 뒤 attrib로 고쳐 쓰면 실패할 때 반쯤 바뀐 상태가 남으며 ACL은 옮길 수 없다.
+// 그래서 속성을 맞추지 않고, 구간의 폴더 중 하나라도 숨김이면 접지 않는다. 맨 위가 숨김이면 숨김이 풀리고,
+// 맨 아래가 숨김이면 맨 위 이름이 숨겨져 탐색기에서 사라진 것처럼 보이며, 가운데가 숨김이면 그 안이 드러난다.
+// 시스템 속성은 폴더 아이콘(desktop.ini)과 함께 쓰이는데, desktop.ini가 든 폴더는 맨 아래 폴더뿐이라 함께 옮겨 가므로 막지 않는다.
+// attributes는 hiddenOrSystemEntries가 돌려준 { 상대경로 -> 속성 비트(숨김 2, 시스템 4) }다.
+function hiddenReason(chain, attributes) {
+  const hidden = chain.filter((entry) => (attributes.get(entry.relative) ?? 0) & 2);
+  if (hidden.length === 0) return null;
+  return `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${hidden.map((entry) => entry.relative).join(', ')}`;
+}
+
 // 타겟 아래에서 폴더 하나만 이어지는 구간을 찾는다. 맨 위 폴더 이름을 남기고 맨 아래 폴더의 내용을 그 자리로 올린다.
 // 타겟 자신은 접지 않는다. 한 단계에 항목이 여럿이면 그 아래부터 따로 본다. 끝이 빈 폴더인 구간은 사용자가 만든 구조일 수 있어 건드리지 않는다.
 // - collapses: 접을 구간 ({ top, leaf, folders }). folders는 맨 위부터 맨 아래까지의 경로다. 깊은 것부터 놓아 앞의 작업이 뒤의 경로를 바꾸지 않게 한다.
@@ -63,6 +75,8 @@ function planCollapse(dir) {
   rejectRepository(access.target, entries);
   const children = childrenOf(entries);
   const plan = { target: access.target, collapses: [], skipped: [] };
+  // 속성을 볼 구간. 건너뜀 순서를 지키도록 그 자리에 빈 사유를 두고 나중에 채운다.
+  const pending = [];
   for (const entry of entries) {
     if (entry.type !== 'dir') continue;
     // 잔여물은 맨 위 하나만 알리고 안쪽은 보지 않는다. 되돌리지 못한 파일이 여기에 있을 수 있다.
@@ -82,6 +96,22 @@ function planCollapse(dir) {
       plan.skipped.push({ path: entry.path, reason });
       continue;
     }
+    const slot = { path: entry.path, reason: null };
+    plan.skipped.push(slot);
+    pending.push({ chain, slot });
+  }
+  // 속성은 접을 구간이 있을 때만 PowerShell 한 번으로 읽는다. 구간 폴더의 속성을 알려면 그 부모를 열거하면 되므로
+  // 맨 위 폴더의 부모와 맨 아래를 뺀 구간 폴더만 넘긴다. 구간과 상관없는 폴더가 많아도 느려지지 않는다(1차 리뷰).
+  const listed = new Set();
+  for (const { chain } of pending) {
+    const parent = path.dirname(chain[0].relative);
+    listed.add(parent === '.' ? '' : parent);
+    for (const item of chain.slice(0, -1)) listed.add(item.relative);
+  }
+  const attributes = pending.length > 0 ? hiddenOrSystemEntries(access.target, [...listed]) : new Map();
+  for (const { chain, slot } of pending) {
+    slot.reason = hiddenReason(chain, attributes);
+    if (slot.reason !== null) continue;
     try {
       const folders = chain.map((item) => item.path);
       // 링크가 든 폴더나 끝이 점인 이름처럼 다룰 수 없는 구간은 계획에서 알린다. 실행과 미리보기의 결과가 같아진다.
@@ -91,9 +121,11 @@ function planCollapse(dir) {
       plan.collapses.push({ top: folders[0], leaf: folders.at(-1), folders });
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
-      plan.skipped.push({ path: entry.path, reason: err.message });
+      slot.reason = err.message;
     }
   }
+  const slots = new Set(pending.map(({ slot }) => slot));
+  plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
   plan.collapses.sort((a, b) => b.leaf.split(path.sep).length - a.leaf.split(path.sep).length);
   return plan;
 }

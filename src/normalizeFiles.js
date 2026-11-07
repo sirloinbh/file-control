@@ -2,10 +2,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, freshPath } = require('./commands');
+const commands = require('./commands');
+const { FcError, freshPath } = commands;
 const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
-const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir } = require('./flatten');
+const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir } = require('./flatten');
+const { DOWNLOAD_MARKER, markerFinder } = require('./downloadMarker');
 
 // NTFS는 대소문자를 구분하지 않으므로 이름을 대문자로 비교한다. toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만든다.
 const nameKey = (p) => p.toUpperCase();
@@ -14,6 +16,88 @@ function skipReason(entry) {
   const parts = entry.relative.split(path.sep);
   if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 바꾸지 않습니다.';
   if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.';
+  return null;
+}
+
+// 저장한 웹 페이지(페이지.html)와 그 그림·스크립트를 담은 폴더(페이지_files). 페이지가 폴더 이름으로 안의 파일을 찾는다.
+const WEB_PAGE = /^(.+)\.(?:html?|xhtml|shtml)$/i;
+
+// 받는 중인 파일인지 본다(#94). 받기 도구의 꼬리가 붙은 이름(x.mp4.crdownload)과, 그런 표시 파일이 옆에 있거나
+// Safari 표시 폴더(x.mp4.download) 안에 있는 파일이다. 이름이 바뀌면 받기 도구가 파일을 찾지 못한다.
+function downloadReason(entry, findMarker) {
+  const name = path.basename(entry.path);
+  const own = DOWNLOAD_MARKER.exec(name);
+  if (own) return `받는 중인 파일의 이름(${name.slice(own[1].length)})이라 바꾸지 않습니다.`;
+  const found = findMarker(entry.path);
+  if (found === null) return null;
+  if (found.folder !== undefined) return `받기 도구의 표시 폴더(${found.folder}) 안에 있어 받는 중일 수 있어 바꾸지 않습니다.`;
+  if (found.error !== undefined) return `받기 도구의 표시 파일을 확인하려고 폴더를 읽지 못해 바꾸지 않습니다. (${found.error})`;
+  return `받기 도구의 표시 파일(${found.marker})이 옆에 있어 받는 중일 수 있어 바꾸지 않습니다.`;
+}
+
+// 안의 파일 이름을 바꾸지 않을 폴더를 { guarded: { 상대경로 -> 사유 }, pages: { 웹 페이지 상대경로 -> 자료 폴더 이름 }, dirs }로 돌려준다(#94). flatten의 #65 정책과 같게 프로그램 폴더(node_modules 등),
+// 프로젝트 표시 파일(package.json 등)이 든 폴더, 실행 파일과 DLL이 함께 든 폴더, 숨김 속성 폴더를 남긴다. 프로그램이 이름으로 파일을 찾기 때문이다.
+// 저장한 웹 페이지의 _files 폴더도 남긴다. 타겟 자신이 이런 폴더면 모든 파일이 그 일부라 거부한다.
+// 숨김 속성 폴더는 PowerShell을 불러야 알 수 있어 바뀔 파일이 있을 때 addHiddenFolders로 따로 더한다(1차 리뷰).
+function guardedFolders(target, entries) {
+  for (let dir = target; ; dir = path.dirname(dir)) {
+    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
+    if (dir === path.dirname(dir)) break;
+  }
+  const guarded = new Map();
+  const add = (relative, reason) => {
+    if (!guarded.has(relative)) guarded.set(relative, reason);
+  };
+  const dirs = new Map(entries.filter((entry) => entry.type === 'dir').map((entry) => [nameKey(entry.relative), entry.relative]));
+  const pages = new Map();
+  const programs = new Map();
+  for (const entry of entries) {
+    const name = path.basename(entry.relative);
+    const parent = path.dirname(entry.relative);
+    if (entry.type === 'dir') {
+      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `프로그램 폴더(${name})`);
+      continue;
+    }
+    if (entry.type !== 'file') continue;
+    if (PROJECT_FILE.test(name)) {
+      if (parent === '.') throw new FcError(`타겟이 프로젝트 폴더로 보여(${name} 있음) 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
+      add(parent, `프로젝트 폴더(${name} 있음)`);
+    }
+    const page = WEB_PAGE.exec(name);
+    const files = page && dirs.get(nameKey(path.join(parent, `${page[1]}_files`)));
+    if (files) {
+      add(files, `웹 페이지(${name})의 자료 폴더`);
+      pages.set(entry.relative, path.basename(files));
+    }
+    const ext = path.extname(name).toLowerCase();
+    if (ext === '.exe' || ext === '.dll') programs.set(parent, new Set([...(programs.get(parent) ?? []), ext]));
+  }
+  for (const [parent, kinds] of programs) {
+    if (kinds.size < 2) continue;
+    if (parent === '.') throw new FcError(`타겟에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
+    add(parent, '실행 파일과 DLL이 함께 든 프로그램 폴더');
+  }
+  return { guarded, pages, dirs };
+}
+
+// 숨김 속성 폴더를 guarded에 더한다. 남길 폴더 안은 어차피 바꾸지 않으므로 보지 않는다.
+function addHiddenFolders(target, { guarded, dirs }) {
+  const inside = (relative) => [...guarded.keys()].some((dir) => relative === dir || relative.startsWith(dir + path.sep));
+  const folders = [''].concat([...dirs.values()].filter((relative) => !inside(relative)));
+  // 시험에서 바꿔 끼울 수 있게 모듈을 거쳐 부른다.
+  for (const [relative, bits] of commands.hiddenOrSystemEntries(target, folders)) {
+    const folder = dirs.get(nameKey(relative));
+    if (bits & 2 && folder !== undefined && !guarded.has(folder)) guarded.set(folder, '숨김 속성 폴더');
+  }
+}
+
+// 상대경로가 남길 폴더 안이면 가장 바깥의 그 폴더를 돌려준다.
+function guardOf(relative, guarded) {
+  const parts = relative.split(path.sep);
+  for (let i = 1; i < parts.length; i++) {
+    const dir = parts.slice(0, i).join(path.sep);
+    if (guarded.has(dir)) return dir;
+  }
   return null;
 }
 
@@ -31,6 +115,12 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
   if (bare) throw new FcError(`저장소가 들어 있어 다루지 않습니다: ${bare.path}`);
   const existing = new Set(entries.map((entry) => nameKey(entry.path)));
+  const guards = guardedFolders(access.target, entries);
+  const { guarded, pages } = guards;
+  let hiddenChecked = false;
+  // 남길 폴더는 안에 이름이 바뀔 파일이 있을 때만 한 번 알린다. node_modules의 파일마다 알리면 목록이 묻힌다.
+  const reportedGuards = new Set();
+  const findMarker = markerFinder();
   const wanted = [];
   for (const entry of entries) {
     if (entry.type === 'dir') continue;
@@ -44,9 +134,35 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
       continue;
     }
     const result = normalizeName(path.basename(entry.path));
+    const changes = result.reason === null && result.name !== path.basename(entry.path);
+    // 바뀌거나 보고할 파일(번호가 여럿 등)이 처음 나오면 숨김 속성 폴더를 확인한다. 순서에 따라 보고가 달라지지 않게 한다(2차 리뷰).
+    const reported = result.reason !== null && (result.number !== null || /번호가 여럿/.test(result.reason));
+    let guard = guardOf(entry.relative, guarded);
+    if (guard === null && (changes || reported) && !hiddenChecked) {
+      hiddenChecked = true;
+      addHiddenFolders(access.target, guards);
+      guard = guardOf(entry.relative, guarded);
+    }
+    if (guard !== null) {
+      if (changes && !reportedGuards.has(guard)) {
+        reportedGuards.add(guard);
+        plan.skipped.push({ path: path.join(access.target, guard), reason: `${guarded.get(guard)}라 안의 파일 이름을 바꾸지 않습니다.` });
+      }
+      continue;
+    }
+    const pageFiles = pages.get(entry.relative);
+    if (changes && pageFiles !== undefined) {
+      plan.skipped.push({ path: entry.path, reason: `자료 폴더(${pageFiles})와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.` });
+      continue;
+    }
+    const downloading = changes ? downloadReason(entry, findMarker) : null;
+    if (downloading !== null) {
+      plan.skipped.push({ path: entry.path, reason: downloading });
+      continue;
+    }
     if (result.reason !== null) {
       // 숨김, 임시, 끝이 점이나 공백인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
-      if (result.number !== null || /번호가 여럿/.test(result.reason)) plan.skipped.push({ path: entry.path, reason: result.reason });
+      if (reported) plan.skipped.push({ path: entry.path, reason: result.reason });
       continue;
     }
     if (result.name === path.basename(entry.path)) continue;
