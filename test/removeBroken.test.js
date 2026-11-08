@@ -14,6 +14,9 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
+// 묶음마다 보낸 파일 수와, 묶음 결과를 직접 정하는 함수.
+const batches = [];
+let batchHook = null;
 let volume = () => 'True|Fixed\r\n';
 let probes = 0;
 // 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
@@ -30,6 +33,27 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     probes += 1;
     if (volume === REAL) return realExecFileSync(file, args, options);
     return volume();
+  }
+  // 묶음 휴지통 이동(#194): 줄마다 경로(UTF-16 base64)와 fileStamp를 받아 한 줄씩 결과를 낸다.
+  // onRecycle이 던지면 그 파일만 Windows의 사유(error)로 실패한 것처럼 한다. batchHook이 있으면 그것이 결과를 정한다.
+  if (options?.env?.FC_RECYCLE_FILES !== undefined) {
+    if (batchHook) return batchHook(options);
+    batches.push(0);
+    const lines = [];
+    for (const line of options.input.split('\n').filter(Boolean)) {
+      const [encoded, stamp] = line.split(' ');
+      const target = Buffer.from(encoded, 'base64').toString('utf16le');
+      batches[batches.length - 1] += 1;
+      recycled.push(target);
+      try {
+        onRecycle(target, stamp);
+        fs.rmSync(target);
+        lines.push(`ok ${encoded} `);
+      } catch (err) {
+        lines.push(`error ${encoded} ${Buffer.from(err.message, 'utf16le').toString('base64')}`);
+      }
+    }
+    return lines.join('\r\n') + '\r\n';
   }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
@@ -484,15 +508,15 @@ test('비대화형이면 기록을 남기기 전에 멈추고, 볼륨은 실행�
   assert.deepStrictEqual(logs(dir), []);
 });
 
-test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 사유에 스크립트를 적지 않는다', () => {
+test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 사유에 Windows가 준 문구를 적는다', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
   onRecycle = (target) => {
-    if (target.endsWith('a.mp4')) throw Object.assign(new Error('Command failed: powershell.exe Add-Type 스크립트 전문'), { status: 3 });
+    if (target.endsWith('a.mp4')) throw new Error('다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다.');
   };
   const result = confirmed(dir);
   assert.strictEqual(result.failed.length, 1);
-  assert.strictEqual(result.failed[0].reason, '휴지통으로 보내지 못했습니다. (종료 코드 3)');
+  assert.strictEqual(result.failed[0].reason, `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.mp4')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다).`);
   assert.strictEqual(result.removed.length, 1);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
   assert.ok(!fs.existsSync(path.join(dir, 'b.mp4')));
@@ -512,9 +536,9 @@ test('remove-broken은 실제로 지울 때 파일마다 몇 번째인지와 결
   const result = removeBroken(dir, { onProgress, confirm: listed.code });
   assert.strictEqual(result.removed.length, 2);
   assert.deepStrictEqual(lines, [
-    '휴지통으로 보내는 중: 3개 (파일당 0.5초 안팎)',
+    '휴지통으로 보내는 중: 3개 (100개씩 묶어 보냅니다)',
     '1/3 휴지통으로 이동: a.mp4',
-    '2/3 실패: b.mp4 (휴지통으로 보내지 못했습니다. (종료 코드 3))',
+    `2/3 실패: b.mp4 (휴지통으로 보내지 못했습니다: ${path.join(dir, 'b.mp4')} (recycle).)`,
     '3/3 휴지통으로 이동: c.mp4',
   ]);
 });
@@ -542,7 +566,71 @@ test('fctl remove-broken은 진행 줄을 progress로 넘긴다 (#99)', () => {
   const code = removeBroken(dir).code;
   const lines = [];
   run(['remove-broken', dir, `--yes=${code}`], { progress: (line) => lines.push(line) });
-  assert.deepStrictEqual(lines, ['휴지통으로 보내는 중: 1개 (파일당 0.5초 안팎)', '1/1 휴지통으로 이동: a.mp4']);
+  assert.deepStrictEqual(lines, ['휴지통으로 보내는 중: 1개 (100개씩 묶어 보냅니다)', '1/1 휴지통으로 이동: a.mp4']);
+});
+
+test('remove-broken은 100개씩 묶어 PowerShell 한 번으로 보내고 경로와 판별 때의 fileStamp를 함께 넘긴다 (#194)', () => {
+  const dir = tempDir();
+  const files = {};
+  for (let i = 0; i < 205; i++) files[`f${String(i).padStart(3, '0')}.mp4`] = BROKEN;
+  make(dir, files);
+  const listed = removeBroken(dir);
+  const stamps = new Map(listed.removals.map((item) => [item.path, item.stamp]));
+  const seen = [];
+  onRecycle = (target, stamp) => seen.push(stamp === stamps.get(target));
+  batches.length = 0;
+  const result = removeBroken(dir, { confirm: listed.code });
+  assert.deepStrictEqual(batches, [100, 100, 5]);
+  assert.strictEqual(result.removed.length, 205);
+  assert.ok(seen.length === 205 && seen.every(Boolean));
+});
+
+test('remove-broken은 묶음 안에서 PowerShell이 다시 본 결과(경로·파일 바뀜, 사라짐, 결과 모름)를 실패로 알린다 (#194)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN, 'd.mp4': BROKEN, 'e.mp4': BROKEN, 'f.mp4': BROKEN });
+  const listed = removeBroken(dir);
+  const status = { 'a.mp4': 'ok', 'b.mp4': 'moved', 'c.mp4': 'changed', 'd.mp4': 'notfile', 'e.mp4': 'gone' };
+  // f.mp4는 보고하기 전에 PowerShell이 끝난 것처럼 한다.
+  batchHook = (options) => {
+    const lines = [];
+    for (const line of options.input.split('\n').filter(Boolean)) {
+      const [encoded] = line.split(' ');
+      const name = path.basename(Buffer.from(encoded, 'base64').toString('utf16le'));
+      if (status[name]) lines.push(`${status[name]} ${encoded} `);
+      if (name === 'a.mp4') fs.rmSync(path.join(dir, name));
+    }
+    throw Object.assign(new Error('Command failed: powershell.exe 스크립트 전문'), { status: 3, stdout: lines.join('\r\n') });
+  };
+  try {
+    const result = removeBroken(dir, { confirm: listed.code });
+    assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)), ['a.mp4']);
+    const reasons = Object.fromEntries(result.failed.map((item) => [path.basename(item.path), item.reason]));
+    assert.match(reasons['b.mp4'], /^판별한 뒤 경로가 바뀌어 지우지 않았습니다/);
+    assert.match(reasons['c.mp4'], /^판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
+    assert.match(reasons['d.mp4'], /^판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
+    assert.match(reasons['e.mp4'], /^판별한 뒤 파일이 사라져 지우지 않았습니다/);
+    assert.strictEqual(reasons['f.mp4'], `휴지통으로 보냈는지 알 수 없습니다: ${path.join(dir, 'f.mp4')} (PowerShell 종료 코드 3). 휴지통과 원래 자리를 확인하세요.`);
+    assert.ok(Object.values(reasons).every((reason) => !/Command failed|스크립트/.test(reason)));
+  } finally {
+    batchHook = null;
+  }
+});
+
+test('remove-broken은 묶음을 시작하지 못하면(비대화형) 그 묶음을 모두 실패로 알린다 (#194)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
+  const listed = removeBroken(dir);
+  batchHook = () => {
+    throw Object.assign(new Error('Command failed'), { status: 75, stdout: '' });
+  };
+  try {
+    const result = removeBroken(dir, { confirm: listed.code });
+    assert.strictEqual(result.removed.length, 0);
+    assert.deepStrictEqual(result.failed.map((item) => item.reason), ['대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.', '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.']);
+    assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'b.mp4')));
+  } finally {
+    batchHook = null;
+  }
 });
 
 // 전체 경로가 length자인 파일 경로. 파일 이름이 20자 남짓 남도록 폴더 두 단계로 길이를 맞춘다.

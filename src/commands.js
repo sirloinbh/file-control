@@ -679,19 +679,21 @@ function moveToRecycleBin(target) {
       const long = inner.startsWith('\\\\') ? `\\\\?\\UNC\\${inner.slice(2)}` : `\\\\?\\${inner}`;
       throw new FcError(`휴지통으로 보내지 못했습니다. 안에 끝이 점이나 공백인 이름(${odd})이 있어 휴지통 이동이 폴더째 실패했습니다: ${full}. fctl rename에 \\\\?\\ 접두어 경로(${long})를 주어 이름을 바꾼 뒤 다시 지우세요.`);
     }
-    if (err.status === 77) {
-      const busy = busyInside(full);
-      const reason = decodeReason(err.stdout);
-      const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
-      const where = isDir ? `안에 다른 프로그램이 사용 중인 파일이 있습니다: ${busy}` : '다른 프로그램이 이 파일을 사용 중입니다';
-      const note = busy === undefined ? '' : ` ${where}. 그 프로그램을 닫은 뒤 다시 지우세요.`;
-      throw new FcError(`휴지통으로 보내지 못했습니다: ${full}${reason ? ` (${reason})` : ''}.${note}`);
-    }
+    if (err.status === 77) throw new FcError(recycleFailureMessage(full, decodeReason(err.stdout)));
     // 사유를 모르는 실패는 부른 쪽이 맥락을 붙이도록(풀었지만… 등) 원래 오류를 그대로 던진다.
     // 다만 명령 전문과 깨진 stderr가 든 문구는 보여 주지 않도록 바꾼다(#97).
     err.message = `휴지통으로 보내지 못했습니다: ${full} (PowerShell 종료 코드 ${err.status ?? err.code})`;
     throw err;
   }
+}
+
+// 휴지통 이동이 Windows의 사유(reason)와 함께 실패했을 때 알릴 문구. 사용 중인 파일이 있으면 그 이름을 붙인다(#97).
+function recycleFailureMessage(full, reason) {
+  const busy = busyInside(full);
+  const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
+  const where = isDir ? `안에 다른 프로그램이 사용 중인 파일이 있습니다: ${busy}` : '다른 프로그램이 이 파일을 사용 중입니다';
+  const note = busy === undefined ? '' : ` ${where}. 그 프로그램을 닫은 뒤 다시 지우세요.`;
+  return `휴지통으로 보내지 못했습니다: ${full}${reason ? ` (${reason})` : ''}.${note}`;
 }
 
 // PowerShell이 UTF-16 base64로 내보낸 사유 문구를 한 줄로 풀어 돌려준다. 없거나 깨졌으면 빈 문자열이다.
@@ -799,6 +801,108 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
     first = false;
     return { path: folder, status };
   });
+}
+
+// 파일 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#194). 파일마다 PowerShell을 띄우면 파일당 0.5~0.6초가 걸리지만
+// 묶으면 50개에 1.6초였다(빌드 26200에서 실측). 묶어 보내면 Node의 검사와 실제 삭제 사이가 길어지므로 PowerShell이 파일마다 지우기 직전에 다시 본다.
+// - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다(moved).
+// - 아직 파일인지(폴더·링크가 아닌지, notfile)와 판별한 때의 fileStamp(파일 ID, 크기, 수정·변경 시각 ns)와 같은지(changed).
+//   링크는 Node처럼 재분석 태그가 심볼릭 링크·정션·앱 실행 링크일 때만 본다. OneDrive 폴더의 파일은 내려받은 것도 재분석 속성이
+//   붙어 있어(클라우드 파일 태그), 속성만 보면 모두 지우지 못한다(1차 리뷰).
+//   PowerShell이 만든 값은 C:(NTFS)·D:(ReFS)에서 Node의 fileStamp와 글자 그대로 같았다(실측).
+// 휴지통 이동을 도중에 끊으면 파일을 잃을 수 있어 시간 제한을 두지 않는다(#97). 파일마다 끝나는 대로 결과를 한 줄씩 내보낸다.
+// items는 { path, stamp } 목록이고 path는 recycleTarget을 거친 경로다. 결과는 넘긴 순서대로 { path, status, reason } 목록이다.
+// status: ok(휴지통으로 보냄), moved, notfile, changed, gone, error(reason에 Windows의 사유), unknown(PowerShell이 도중에 끝나 결과를 모름)
+const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'error']);
+
+const RECYCLE_FILES_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
+if (-not [Environment]::UserInteractive) { exit 75 }
+try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { exit 76 }
+try { Add-Type -ReferencedAssemblies System.Numerics -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+public static class FcFileCheck {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder b, uint l, uint f);
+  [StructLayout(LayoutKind.Sequential)] struct Basic { public long Creation, Access, Write, Change; public uint Attr; }
+  [StructLayout(LayoutKind.Sequential)] struct Standard { public long Alloc, End; public uint Links; public byte Del, Dir; }
+  [StructLayout(LayoutKind.Sequential)] struct ById { public uint Attr, C1, C2, A1, A2, W1, W2, Vol, SizeHigh, SizeLow, Links, IdHigh, IdLow; }
+  [StructLayout(LayoutKind.Sequential)] struct Tag { public uint Attr, ReparseTag; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Basic b, uint n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Standard b, uint n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Tag b, uint n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandle(SafeFileHandle h, out ById b);
+  static string Ns(long ft) { return ((System.Numerics.BigInteger)(ft - 116444736000000000L) * 100).ToString(); }
+  public static string Final(string p) {
+    using (SafeFileHandle h = CreateFileW(p, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      if (h.IsInvalid) return null;
+      StringBuilder b = new StringBuilder(32768);
+      return GetFinalPathNameByHandleW(h, b, (uint)b.Capacity, 0) == 0 ? null : b.ToString();
+    }
+  }
+  public static string Stamp(string p) {
+    using (SafeFileHandle h = CreateFileW(p, 0x80, 7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero)) {
+      if (h.IsInvalid) return null;
+      Basic b; Standard s; ById i; Tag t;
+      if (!GetFileInformationByHandleEx(h, 0, out b, (uint)Marshal.SizeOf(typeof(Basic)))) return null;
+      if (!GetFileInformationByHandleEx(h, 1, out s, (uint)Marshal.SizeOf(typeof(Standard)))) return null;
+      if (!GetFileInformationByHandleEx(h, 9, out t, (uint)Marshal.SizeOf(typeof(Tag)))) return null;
+      if (!GetFileInformationByHandle(h, out i)) return null;
+      if ((b.Attr & 0x10) != 0) return "notfile";
+      if ((b.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003 || t.ReparseTag == 0x8000001B)) return "notfile";
+      ulong id = ((ulong)i.IdHigh << 32) | i.IdLow;
+      return id + ":" + s.End + ":" + Ns(b.Write) + ":" + Ns(b.Change);
+    }
+  }
+}' } catch { exit 76 }
+$u = [Text.Encoding]::Unicode
+function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
+function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
+foreach ($line in $input) {
+  if (-not $line) { continue }
+  $parts = $line.Split(' ')
+  $status = 'error'; $reason = ''
+  try {
+    $p = $u.GetString([Convert]::FromBase64String($parts[0]))
+    $long = Long $p
+    if (-not [IO.File]::Exists($long)) { if ([IO.Directory]::Exists($long)) { $status = 'notfile' } else { $status = 'gone' } }
+    else {
+      $final = [FcFileCheck]::Final($long)
+      $now = [FcFileCheck]::Stamp($long)
+      if (($final -eq $null) -or -not [string]::Equals((Plain $final), $p, [StringComparison]::OrdinalIgnoreCase)) { $status = 'moved' }
+      elseif ($now -eq 'notfile') { $status = 'notfile' }
+      elseif ($now -ne $parts[1]) { $status = 'changed' }
+      else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin'); $status = 'ok' }
+    }
+  } catch { $status = 'error'; $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; $reason = [Convert]::ToBase64String($u.GetBytes([string]$e.Message)) }
+  [Console]::Out.WriteLine($status + ' ' + $parts[0] + ' ' + $reason)
+  [Console]::Out.Flush()
+}`;
+
+function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
+  if (items.length === 0) return [];
+  const input = items.map((item) => `${Buffer.from(item.path, 'utf16le').toString('base64')} ${item.stamp}`).join('\n') + '\n';
+  let output;
+  let failure;
+  try {
+    output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_RECYCLE_FILES: '1' },
+      input,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    if (err.status === 76) throw new FcError('PowerShell에서 파일 확인용 형식을 만들 수 없어(잠금 환경 등) 휴지통으로 보내지 못했습니다.');
+    // 도중에 끝났어도 이미 보고한 파일의 결과는 쓴다. 보고하지 않은 파일은 결과를 모른다.
+    output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
+    failure = err.status == null && err.signal ? `PowerShell이 ${err.signal}로 끝남` : `PowerShell 종료 코드 ${err.status ?? err.code}`;
+  }
+  const done = new Map();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^(\w+) ([A-Za-z0-9+/=]+) ?([A-Za-z0-9+/=]*)$/.exec(line.trim());
+    if (match && FILE_BATCH_STATUS.has(match[1])) done.set(Buffer.from(match[2], 'base64').toString('utf16le'), { status: match[1], reason: decodeReason(match[3]) });
+  }
+  return items.map((item) => ({ path: item.path, ...(done.get(item.path) ?? { status: 'unknown', reason: failure ?? 'PowerShell이 결과를 알리지 않았습니다' }) }));
 }
 
 function bareDeviceInside(dir) {
@@ -1357,6 +1461,9 @@ module.exports = {
   hiddenOrSystemEntries,
   recycleEmptyFolders,
   RECYCLE_FOLDERS_SCRIPT,
+  recycleFiles,
+  RECYCLE_FILES_SCRIPT,
+  recycleFailureMessage,
   bareDeviceInside,
   MAX_RECYCLE_PATH,
   decodeReason,
