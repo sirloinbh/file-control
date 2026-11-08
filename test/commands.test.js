@@ -1118,6 +1118,53 @@ test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 �
   assert.deepStrictEqual(fc.archiveNames(p('b.zip')), ['LONGER~1.TXT']);
 });
 
+// unzip은 압축 안의 ~N 이름이 짧은 이름을 거쳐 기존 파일을 덮어쓰거나 다른 항목과 겹치면 풀지 않는다(#188).
+test('unzip은 압축 안의 8.3 짧은 이름이 풀 폴더의 기존 항목을 가리키면 풀지 않는다 (#188)', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'LONGER~1.TXT'), 'new');
+  fc.writeFile(p('src', 'LONGDI~1', 'x.txt'), 'x');
+  fc.zip(p('file.zip'), [p('src', 'LONGER~1.TXT')]);
+  fc.zip(p('dir.zip'), [p('src', 'LONGDI~1')]);
+  fc.writeFile(p('out', 'longername.txt'), 'old');
+  fc.makeDir(p('out', 'longdirectory'));
+  if (!fs.existsSync(p('out', 'LONGER~1.TXT'))) return t.skip('이 볼륨은 8.3 짧은 이름을 만들지 않는다');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.unzip(p('file.zip'), p('out'), { dryRun }), (err) => err instanceof fc.FcError && err.message.includes('LONGER~1.TXT') && err.message.includes(p('out', 'longername.txt')));
+    assert.throws(() => fc.unzip(p('dir.zip'), p('out'), { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(p('out', 'longdirectory')));
+  }
+  assert.strictEqual(fs.readFileSync(p('out', 'longername.txt'), 'utf8'), 'old');
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'longdirectory')), []);
+  // 이름이 그대로 같은 기존 파일은 지금처럼 덮어쓰고, 겹치는 이름이 없는 새 폴더에는 그대로 푼다.
+  fc.writeFile(p('same', 'LONGER~1.TXT'), 'old');
+  fc.unzip(p('file.zip'), p('same'));
+  assert.strictEqual(fs.readFileSync(p('same', 'LONGER~1.TXT'), 'utf8'), 'new');
+  fc.unzip(p('file.zip'), p('fresh'));
+  assert.deepStrictEqual(fs.readdirSync(p('fresh')), ['LONGER~1.TXT']);
+});
+
+test('unzip은 압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있으면 풀지 않는다 (#188)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  // zip은 이런 압축을 만들지 않으므로(#159) tar.exe로 직접 묶는다.
+  fc.writeFile(p('src', 'deep', 'LONGER~1.TXT'), '1');
+  fc.writeFile(p('src', 'deep', 'longername.txt'), '2');
+  const tar = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
+  execFileSync(tar, ['-a', '-cf', p('a.zip'), '-C', p('src'), 'deep']);
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.unzip(p('a.zip'), p('out'), { dryRun }), /압축 안에 8\.3 짧은 이름으로 겹칠 수 있는 항목.*deep\/LONGER~1\.TXT, deep\/longername\.txt/);
+  }
+  assert.ok(!fs.existsSync(p('out', 'deep')));
+});
+
+test('rejectExtractShortNameClash 어림: 깨진 글자는 무엇이든 될 수 있다고 보고, 겹칠 수 없는 이름은 통과한다 (#188)', () => {
+  const dir = tempDir();
+  assert.throws(() => fc.rejectExtractShortNameClash(['ABC~1.TXT', '???.txt'], path.join(dir, 'none')), /겹칠 수 있는 항목/);
+  assert.throws(() => fc.rejectExtractShortNameClash(['a/LONGNA~1.TXT', 'a/longname.txt'], path.join(dir, 'none')), /a\/LONGNA~1\.TXT/);
+  fc.rejectExtractShortNameClash(['foo~1.txt', 'bar.txt', 'a/LONGNA~1.TXT', 'longname.txt'], path.join(dir, 'none'));
+  fc.rejectExtractShortNameClash(['foo~1.txt'], dir);
+});
+
 // tar.exe는 x.cpio.gz를 gzip 안의 cpio로 만든다. 임시 파일에도 두 확장자를 붙여 이름과 내용이 같게 한다(#164).
 test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축으로 묶는다 (#164)', () => {
   const zlib = require('node:zlib');
