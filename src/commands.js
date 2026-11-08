@@ -1606,11 +1606,13 @@ function innerEntryExt(ext) {
 
 // tar.exe(bsdtar 3.8.9)에 내장되지 않아 외부 프로그램을 실행하는 압축(빌드 26200 실측: "Can't launch external program: lz4 -z …").
 // 그 프로그램이 PATH에 없으면 날것의 실패로 끝나므로 미리 거부한다(#230). 있으면 tar.exe에 맡긴다.
-const EXTERNAL_COMPRESSORS = { lz4: 'lz4', lzo: 'lzop', lrz: 'lrzip', grz: 'grzip' };
+// .tzo는 .tar.lzo의 별칭이다(1차 리뷰).
+const EXTERNAL_COMPRESSORS = { lz4: 'lz4', lzo: 'lzop', tzo: 'lzop', lrz: 'lrzip', grz: 'grzip' };
+// tar.exe(libarchive filter_fork_windows.c)는 SearchPath(NULL, 이름, ".exe")로 찾으므로 .exe만 실행한다. PATHEXT의 .cmd·.bat은 보지 않는다(1차 리뷰).
+// SearchPath는 tar.exe 폴더·시스템 폴더·현재 폴더도 찾지만, PATH만 보아 그곳에만 있는 프로그램이면 넉넉하게 거부한다.
 function findOnPath(program) {
-  const exts = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean);
   for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
-    for (const ext of ['', ...exts]) {
+    for (const ext of ['.exe']) {
       const candidate = path.join(dir.replace(/^"|"$/g, ''), `${program}${ext}`);
       try {
         if (fs.statSync(candidate).isFile()) return candidate;

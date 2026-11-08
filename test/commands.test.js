@@ -1335,7 +1335,9 @@ test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 
   const savedPath = process.env.PATH;
   process.env.PATH = p('bin');
   t.after(() => { process.env.PATH = savedPath; });
-  const cases = { 'x.tar.lz4': 'lz4', 'x.lz4': 'lz4', 'x.tar.lzo': 'lzop', 'x.tar.lrz': 'lrzip', 'x.tar.grz': 'grzip', 'x.cpio.lz4': 'lz4', 'x.tar.gz.lz4': 'lz4', 'X.TAR.LZ4': 'lz4' };
+  // tar.exe가 .exe만 실행하므로 .cmd는 있어도 없는 것으로 본다(1차 리뷰).
+  fs.writeFileSync(p('bin', 'lz4.cmd'), '@echo off');
+  const cases = { 'x.tar.lz4': 'lz4', 'x.lz4': 'lz4', 'x.tar.lzo': 'lzop', 'x.tar.lrz': 'lrzip', 'x.tar.grz': 'grzip', 'x.cpio.lz4': 'lz4', 'x.tar.gz.lz4': 'lz4', 'X.TAR.LZ4': 'lz4', 'x.tzo': 'lzop', 'X.TZO': 'lzop', 'x.tzo.gz': 'lzop' };
   for (const [name, program] of Object.entries(cases)) {
     for (const dryRun of [true, false]) {
       assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`외부 프로그램 ${program}이 필요한데 PATH에서 찾지 못했습니다`), name);
