@@ -239,6 +239,41 @@ test('rm은 \\\\?\\ 접두어를 떼도 같은 항목이면 떼고 보내고, �
   assert.deepStrictEqual(fresh.remove([`${LONG_PREFIX}${path.join(dir, 'dot.')}`], { permanent: true }), [`영구 삭제: ${LONG_PREFIX}${path.join(dir, 'dot.')}`]);
 });
 
+test('rm은 접두어 없이도 끝이 점인 이름을 거부해, 점을 지운 같은 이름의 다른 파일을 휴지통으로 보내지 않는다 (#129 1차 리뷰)', { skip: !isWindows && 'Windows 이름' }, (t) => {
+  const dir = tempDir();
+  // dot.과 dot이 함께 있으면 휴지통 이동(PowerShell 5.1)은 dot.을 받아 dot을 지웠다(실측).
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'DOTTED');
+  fs.writeFileSync(path.join(dir, 'dot'), 'PLAIN');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fresh.remove([path.join(dir, 'dot.')], { dryRun }), {
+      message: new RegExp(`^끝이 점이나 공백인 이름\\(dot\\.\\)이 있어 휴지통으로 보낼 수 없습니다\\. .*fctl rename에 .*--permanent`),
+    });
+  }
+  assert.strictEqual(calls.length, 0);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'dot'), 'utf8'), 'PLAIN');
+  assert.strictEqual(fs.readFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'utf8'), 'DOTTED');
+});
+
+test('rm은 접두어 경로를 Node가 정리한 결과와 뗀 경로가 같을 때만 떼고, 다르면 거부한다 (#129 1차 리뷰)', { skip: !isWindows && 'Windows 경로' }, (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'sub'));
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  // .과 ..이 같은 곳을 가리키면 정리한 경로로 보낸다. 슬래시 꼴(//?/)도 같다.
+  fresh.remove([`${LONG_PREFIX}${path.join(dir, 'sub')}\\.\\..\\a.txt`]);
+  fresh.remove([`//?/${path.join(dir, 'b.txt').replaceAll('\\', '/')}`]);
+  assert.deepStrictEqual(calls.map((call) => call.options.env.FC_TARGET), [path.join(dir, 'a.txt'), path.join(dir, 'b.txt')]);
+  // ..이 드라이브 성분까지 빠져나가면 Node는 \\?\y로, 뗀 경로는 C:\y로 풀려 서로 다르다.
+  const depth = dir.split(path.sep).length;
+  const escape = `${LONG_PREFIX}${dir}${'\\..'.repeat(depth)}\\y`;
+  // 그런 경로는 대개 없어서 rm이 먼저 "경로가 없습니다"로 막으므로, 검사 함수를 직접 본다.
+  assert.throws(() => fresh.recycleTarget(escape), { message: /^\\\\\?\\ 접두어를 떼면 다른 곳을 가리켜 휴지통으로 보낼 수 없습니다: / });
+  assert.strictEqual(fresh.recycleTarget(`${LONG_PREFIX}${path.join(dir, 'sub')}\\..\\a.txt`), path.join(dir, 'a.txt'));
+  assert.strictEqual(calls.length, 2);
+});
+
 test('rm은 앞 대상이 뒤 대상을 품어 이미 지웠으면 예전처럼 없다고 알린다 (#129)', (t) => {
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'a'));

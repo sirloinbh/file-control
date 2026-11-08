@@ -528,19 +528,28 @@ function busyInside(target, limit = MAX_BUSY_PROBE) {
 // 휴지통 이동에 넘길 경로를 돌려준다. 보낼 수 없는 것이 확실하면 사유를 밝혀 거부한다(#129).
 // rm은 미리보기와 여러 대상 실행 전에 이것으로 모두 검사해, 미리보기와 실제 결과가 같고 일부만 지운 채 멈추지 않게 한다.
 // - \\?\D:\... 접두어: 휴지통 이동은 이 꼴을 받지 못하고 항상 실패한다. 접두어를 떼도 같은 파일을 가리킬 때만 뗀다.
-//   끝이 점이나 공백인 이름은 접두어를 떼면 Windows가 그 점·공백을 지워 다른 항목을 가리키므로 거부한다.
-//   장치 이름은 remove가 rejectBareDeviceArgs로 먼저 거부한다. \\?\UNC\·\\.\ 같은 다른 꼴은 거부한다.
+//   Node가 정리한 접두어 경로와 뗀 경로가 다르면(\\?\C:\x\..\..\y 등) 거부한다. \\?\UNC\·\\.\ 같은 다른 꼴도 거부한다.
+//   장치 이름은 remove가 rejectBareDeviceArgs로 먼저 거부한다.
+// - 끝이 점이나 공백인 이름이 든 경로: 접두어가 있든 없든 거부한다(1차 리뷰). Node는 글자 그대로의 dot.을 보지만
+//   휴지통 이동(PowerShell 5.1)은 끝의 점·공백을 지운 dot을 열어, 옆에 dot이 있으면 그 파일을 휴지통으로 보냈다(실측).
 // - 259자(MAX_RECYCLE_PATH)를 넘는 경로
 function recycleTarget(target) {
   let plain = target;
-  if (/^[\\/]{2}[?.][\\/]/.test(target)) {
+  const prefixed = /^[\\/]{2}[?.][\\/]/.test(target);
+  if (prefixed) {
     const drive = /^[\\/]{2}\?[\\/]([A-Za-z]:[\\/].*)$/s.exec(target);
     if (!drive) throw new FcError(`이 꼴의 경로는 휴지통으로 보낼 수 없습니다: ${target}. 드라이브 문자 경로(D:\\...)로 다시 지정하세요.`);
-    const odd = drive[1].split(/[\\/]/).find((part) => part !== '' && /[. ]$/.test(part));
-    if (odd !== undefined) throw new FcError(`끝이 점이나 공백인 이름(${odd})이 있어 휴지통으로 보낼 수 없습니다. \\\\?\\ 접두어를 떼면 다른 항목을 가리킵니다. fctl rename에 접두어 경로를 주어 이름을 바꾼 뒤 다시 지우거나, 휴지통을 거치지 않으려면 --permanent를 쓰세요: ${target}`);
     plain = drive[1];
+    if (path.resolve(target).toUpperCase() !== `\\\\?\\${path.resolve(plain)}`.toUpperCase()) {
+      throw new FcError(`\\\\?\\ 접두어를 떼면 다른 곳을 가리켜 휴지통으로 보낼 수 없습니다: ${target}. .이나 ..이 없는 경로로 다시 지정하세요.`);
+    }
   }
   const full = path.resolve(plain);
+  const odd = full.split(path.sep).slice(1).find((part) => /[. ]$/.test(part));
+  if (odd !== undefined) {
+    const how = prefixed ? '' : ` 이름을 바꾸려면 fctl rename에 \\\\?\\ 접두어 경로(\\\\?\\${full})를 주세요.`;
+    throw new FcError(`끝이 점이나 공백인 이름(${odd})이 있어 휴지통으로 보낼 수 없습니다. 휴지통 이동은 끝의 점·공백을 지운 다른 이름을 가리킵니다.${how || ' fctl rename에 이 접두어 경로를 주어 이름을 바꾼 뒤 다시 지우세요.'} 휴지통을 거치지 않으려면 --permanent를 쓰세요: ${target}`);
+  }
   if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
   return full;
 }
@@ -1062,6 +1071,7 @@ module.exports = {
   MAX_RECYCLE_PATH,
   decodeReason,
   busyInside,
+  recycleTarget,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
