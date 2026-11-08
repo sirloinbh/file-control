@@ -1348,6 +1348,20 @@ test('unzip은 외부 프로그램이 필요한 압축(lz4·lzop)을 그 프로�
   // 그 밖의 tar.exe 실패는 지금처럼 날것의 오류로 둔다(형식을 알아보지 못함).
   fs.writeFileSync(p('junk.tar'), 'not an archive at all');
   assert.throws(() => fc.archiveEntries(p('junk.tar')), (err) => !(err instanceof fc.FcError));
+  // 항목 이름이 그 문구를 흉내 내도(`<이름>: Path contains '..'` 줄) 외부 프로그램 없음으로 알리지 않는다(1차 리뷰).
+  const header = (name) => {
+    const block = Buffer.alloc(512);
+    block.write(name, 0, 100, 'latin1');
+    block.write('0000644\0' + '0000000\0' + '0000000\0' + '00000000001\0' + '00000000000\0', 100, 'latin1');
+    block.fill(' ', 148, 156);
+    block.write('0', 156, 'latin1');
+    block.write('ustar\0' + '00', 257, 'latin1');
+    block.write(`${block.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0')}\0 `, 148, 'latin1');
+    return block;
+  };
+  const fake = Buffer.concat([header('../unable to run program "lz4 x"'), Buffer.from('x'), Buffer.alloc(511), Buffer.alloc(1024)]);
+  fs.writeFileSync(p('fake.tar'), fake);
+  assert.throws(() => fc.unzip(p('fake.tar'), p('out-fake')), (err) => !String(err.message).includes('외부 프로그램'));
 });
 
 // tar.exe는 외부 압축 프로그램을 SearchPath로 찾아 현재 폴더의 것을 PATH보다 먼저 실행한다. fctl은 tar.exe를 System32에서 실행한다(#242).
