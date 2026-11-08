@@ -1236,6 +1236,34 @@ test('archiveExt는 끝에서 이어지는 압축 확장자를 모두 돌려준�
   for (const [name, ext] of Object.entries(cases)) assert.strictEqual(fc.archiveExt(name), ext, name);
 });
 
+test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 수(25겹 이상)면 FcError로 거부하고 아무것도 남기지 않는다 (#213)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  for (const dryRun of [true, false]) {
+    // 마지막 확장자 하나가 아주 길면 임시 이름이 255자를 넘는다.
+    assert.throws(() => fc.zip(p(`x.${'a'.repeat(240)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /확장자가 너무 길어\(241자\).*255자를 넘습니다/.test(err.message));
+    // 25겹부터는 tar.exe가 다시 풀지 못한다(80겹은 이슈의 예).
+    for (const layers of [25, 80]) {
+      assert.throws(() => fc.zip(p(`x${'.gz'.repeat(layers)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`${layers}겹이라 tar.exe가 다시 풀 수 없습니다(24겹까지)`));
+    }
+    assert.throws(() => fc.zip(p(`x.${'tbz2.'.repeat(24)}tzst`), [p('a.txt')], { dryRun }), /25겹이라/);
+  }
+  // 경계: 임시 이름 길이 = 고정 부분 + 번호 여유 4자 + 확장자. 한도에 꼭 맞는 확장자는 묶고, 한 글자 더 길면 거부한다(1차 리뷰).
+  const fixed = `.fctl-new-${process.pid}-${Date.now()}-0`.length + 4;
+  const edge = `e.${'b'.repeat(255 - fixed - 1)}`;
+  fc.zip(p(edge), [p('a.txt')]);
+  fs.rmSync(p(edge));
+  assert.throws(() => fc.zip(p(`e.${'b'.repeat(255 - fixed)}`), [p('a.txt')], { dryRun: true }), /확장자가 너무 길어/);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
+  // 24겹은 묶고 다시 풀 수 있다.
+  const fits = `y${'.gz'.repeat(24)}`;
+  fc.zip(p(fits), [p('a.txt')]);
+  fc.unzip(p(fits), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'out', fits].sort());
+});
+
 test('zip은 압축 확장자가 여러 겹인 이름을 tar.exe가 그 이름으로 만들 때와 같은 겹으로 묶는다 (#193)', () => {
   const zlib = require('node:zlib');
   const dir = tempDir();

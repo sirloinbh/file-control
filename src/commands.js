@@ -1571,10 +1571,31 @@ function existingPlaces(dest, parts) {
   return places;
 }
 
+// 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
+const MAX_NAME_LENGTH = 255;
+// zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
+// 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
+const TEMP_SERIAL_RESERVE = 4;
+// tar.exe는 압축 겹을 이만큼까지만 풀 수 있다. 25겹부터는 묶기는 하지만 읽을 때 "Input requires too many filters for decoding"으로
+// 실패한다(빌드 26200 실측, gzip·xz 모두). 다시 풀 수 없는 압축 파일을 만들지 않도록 함께 거부한다(#213).
+const MAX_TAR_LAYERS = 24;
+function rejectLongTempName(archive) {
+  const ext = archiveExt(archive);
+  const layers = ext.split('.').filter((part) => part !== '' && isLayerExt(part)).length;
+  if (layers > MAX_TAR_LAYERS) {
+    throw new FcError(`압축 확장자가 ${layers}겹이라 tar.exe가 다시 풀 수 없습니다(${MAX_TAR_LAYERS}겹까지). 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+  const length = `.fctl-new-${process.pid}-${Date.now()}-0`.length + TEMP_SERIAL_RESERVE + ext.length;
+  if (length > MAX_NAME_LENGTH) {
+    throw new FcError(`확장자가 너무 길어(${ext.length}자) 묶는 동안 쓸 임시 파일 이름이 ${MAX_NAME_LENGTH}자를 넘습니다. 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
+  rejectLongTempName(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
