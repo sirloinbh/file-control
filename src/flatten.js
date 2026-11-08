@@ -93,6 +93,8 @@ function withOuterFolder(fileName, detailed, outer) {
   const stems = folderStems(outer, ext);
   const pick = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? stems.find(informativeFolder);
   if (pick === undefined || containsWords(words(chosen), words(pick).join(''))) return detailed;
+  // 바깥 이름이 받은 이름을 이미 담고 있으면(Show CD1/CD1/video.mp4) 겹치지 않게 바깥 이름만 쓴다(#178).
+  if (containsWords(words(pick), words(chosen).join(''))) return `${pick.normalize('NFC')}${ext}`.length <= MAX_NAME ? `${pick.normalize('NFC')}${ext}` : detailed;
   // 바깥 폴더와 받은 이름 사이의 화질 폴더 등도 접두어처럼 붙인다(1차 리뷰). Show/1080p/CD1/video.mp4 → Show 1080p CD1.mp4
   const full = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)} ${detailed}`;
   if (full.length <= MAX_NAME) return full;
@@ -205,8 +207,20 @@ function prefixedName(fileName, folders) {
   if (chosen === undefined) return fileName;
   // 고른 폴더와 파일 사이의 가까운 폴더 이름(1080p, CD1)도 바깥부터 함께 붙인다(#150). Show/1080p/video.mp4와 Show/720p/video.mp4가
   // Show video.mp4, Show video (2).mp4가 되어 화질 구분을 잃지 않게 한다. 이미 들어 있는 이름은 다시 붙이지 않는다.
-  const combined = `${joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)))} ${fileName}`;
-  return combined.length > MAX_NAME ? `${chosen.normalize('NFC')} ${fileName}` : combined;
+  const inner = joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)));
+  const names = [`${inner} ${fileName}`, `${chosen.normalize('NFC')} ${fileName}`];
+  // 고른 폴더가 제품번호 폴더가 아니면 바깥의 제목 폴더도 withOuterFolder처럼 앞에 붙인다(#178). Show/CD1/video.mp4와 video.en.srt가
+  // Show CD1 video.mp4, Show CD1 video.en.srt가 되어, video.mp4 하나만 있을 때(Show CD1.mp4)처럼 Show를 잃지 않는다.
+  if (extractProductNumbers(chosen).length === 0) {
+    const outer = stems.slice(stems.indexOf(chosen) + 1);
+    const pick = outer.find(informativeFolder);
+    // 바깥 이름이 고른 이름을 이미 담고 있으면(Show CD1/CD1/) 겹치지 않게 바깥 이름만 붙인다.
+    if (pick !== undefined && containsWords(words(pick), words(inner).join(''))) names.unshift(`${pick.normalize('NFC')} ${fileName}`);
+    else if (pick !== undefined && !containsWords(words(inner), words(pick).join(''))) {
+      names.unshift(`${joinBetween(pick, outer.slice(0, outer.indexOf(pick)), inner)} ${inner} ${fileName}`, `${pick.normalize('NFC')} ${inner} ${fileName}`);
+    }
+  }
+  return names.find((name) => name.length <= MAX_NAME) ?? names.at(-1);
 }
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
