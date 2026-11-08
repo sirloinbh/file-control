@@ -646,7 +646,7 @@ function recycleTarget(target) {
   return full;
 }
 
-function moveToRecycleBin(target) {
+function moveToRecycleBin(target, { permanentHint = false } = {}) {
   const full = recycleTarget(target);
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
@@ -662,7 +662,7 @@ function moveToRecycleBin(target) {
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
-    if (err.status === 78) throw new FcError(permanentRefusal(full, refusalReason(decodeReason(err.stdout))));
+    if (err.status === 78) throw new FcError(permanentRefusal(full, refusalReason(decodeReason(err.stdout)), permanentHint));
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
@@ -939,7 +939,18 @@ $type = 'Unknown'; $nuke = ''; $cap = ''
 try {
   Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+[StructLayout(LayoutKind.Sequential)] struct TagInfo { public uint Attr, ReparseTag; }
+[DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle h, int c, out TagInfo b, uint n);
+public static bool IsLink(string p) {
+  using (var h = CreateFileW(p, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+    if (h.IsInvalid) return false;
+    TagInfo t;
+    if (!GetFileInformationByHandleEx(h, 9, out t, 8)) return false;
+    return (t.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003);
+  }
+}'
   $b = New-Object Text.StringBuilder 1024
   $root = if ([FcVolume.Native]::GetVolumePathNameW($p, $b, 1024)) { $b.ToString() } else { [IO.Path]::GetPathRoot($p) }
   $type = $names[[int][FcVolume.Native]::GetDriveTypeW($root)]
@@ -977,15 +988,16 @@ $limit = if ($cap -ne '') { [long]$cap * 1MB } else { 1GB - 1 }
 $long = if ($p.StartsWith('\\\\')) { '\\\\?\\UNC\\' + $p.Substring(2) } else { '\\\\?\\' + $p }
 $size = [long]0
 try {
-  if ([IO.Directory]::Exists($long)) {
+  $isLink = { param($x) ([int][IO.File]::GetAttributes($x) -band 1024) -and [FcVolume.Native]::IsLink($x) }
+  if ([IO.Directory]::Exists($long) -and -not (& $isLink $long)) {
     $stack = [Collections.Stack]::new(); $stack.Push($long)
     while ($stack.Count -gt 0 -and $size -le $limit) {
       foreach ($e in [IO.DirectoryInfo]::new($stack.Pop()).EnumerateFileSystemInfos()) {
-        if ([int]$e.Attributes -band 16) { if (-not ([int]$e.Attributes -band 1024)) { $stack.Push($e.FullName) } }
-        else { $size += $e.Length; if ($size -gt $limit) { break } }
+        if ([int]$e.Attributes -band 16) { if (-not (([int]$e.Attributes -band 1024) -and [FcVolume.Native]::IsLink($e.FullName))) { $stack.Push($e.FullName) } }
+        elseif (-not (([int]$e.Attributes -band 1024) -and [FcVolume.Native]::IsLink($e.FullName))) { $size += $e.Length; if ($size -gt $limit) { break } }
       }
     }
-  } elseif ([IO.File]::Exists($long)) { $size = [IO.FileInfo]::new($long).Length }
+  } elseif ([IO.File]::Exists($long) -and -not (& $isLink $long)) { $size = [IO.FileInfo]::new($long).Length }
 } catch { Refuse 'size' }
 if ($size -gt $limit) { if ($cap -ne '') { Refuse ('cap|' + $cap) } else { Refuse 'unknown' } }
 try { Add-Type -AssemblyName Microsoft.VisualBasic
@@ -1009,8 +1021,10 @@ function volumeTypeReason(driveType) {
     : `휴지통이 없을 수 있는 드라이브(${driveType})라 영구 삭제될 수 있으므로`;
 }
 
-function permanentRefusal(full, why) {
-  return `휴지통으로 보내지 않았습니다: ${full}. ${why} 지우지 않았습니다. 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요.`;
+// hint는 rm처럼 --permanent를 받는 명령에서만 켠다. extract-all·collapse는 --permanent를 받지 않는다(1차 리뷰).
+function permanentRefusal(full, why, hint = false) {
+  const tail = hint ? ' 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요.' : '';
+  return `휴지통으로 보내지 않았습니다: ${full}. ${why} 지우지 않았습니다.${tail}`;
 }
 
 // 미리보기에서 RECYCLE_SCRIPT와 같은 판정을 한다(#81). 영구 삭제될 것이면 사유를, 아니면 null을 돌려준다.
@@ -1086,7 +1100,8 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
 // checkVolume이 true면 지우기 전에(미리보기 포함) 모든 대상의 볼륨 휴지통 설정과 크기를 보고, 영구 삭제될 대상이 있으면
 // 아무것도 지우지 않고 거부한다(#81). 실제로 지울 때는 휴지통 이동 스크립트가 지우기 직전에 한 번 더 본다.
 // 이미 같은 판정을 한 쪽(remove-broken 등)은 PowerShell을 한 번 더 띄우지 않도록 false로 부른다.
-function remove(targets, { permanent = false, dryRun = false, checkVolume = true } = {}) {
+// permanentHint는 거부 사유에 --permanent 안내를 붙일지다(rm 명령만 켬).
+function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false } = {}) {
   if (!permanent && !isWindows) {
     throw new FcError('휴지통 삭제는 Windows에서만 됩니다. 영구 삭제하려면 --permanent');
   }
@@ -1105,7 +1120,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
     const recycleAs = permanent ? undefined : recycleTarget(target);
     if (!permanent && checkVolume) {
       const why = previewRefusal(recycleAs);
-      if (why !== null) throw new FcError(permanentRefusal(recycleAs, why));
+      if (why !== null) throw new FcError(permanentRefusal(recycleAs, why, permanentHint));
     }
     if (dryRun) claim(planned, target);
     return { target, recycleAs };
@@ -1114,7 +1129,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
     // 앞 대상이 이 대상을 품고 있어 이미 지워졌으면(rm a a/b) 예전처럼 없다고 알린다.
     if (!dryRun) ensureExists(target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
-    return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(recycleAs));
+    return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });
 }
 

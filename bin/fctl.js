@@ -163,7 +163,7 @@ function run(argv, { progress } = {}) {
       return fc.copy(args.slice(0, -1), args[args.length - 1], { force, dryRun }).join('\n');
     case 'rm':
       need(args, 1, 'rm <경로...>');
-      return fc.remove(args, { permanent: flags.has('permanent'), dryRun }).join('\n');
+      return fc.remove(args, { permanent: flags.has('permanent'), dryRun, permanentHint: true }).join('\n');
     case 'unzip':
       need(args, 1, 'unzip <압축파일> [폴더]');
       return fc.unzip(args[0], args[1], { dryRun });

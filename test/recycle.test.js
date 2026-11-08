@@ -439,14 +439,16 @@ for (const [name, answer, pattern] of [
     fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
     const { fresh, calls } = fakeVolume(t, (volume) => (volume.endsWith('b.txt') ? answer : 'True|Fixed|0|26427\r\n'));
     for (const dryRun of [true, false]) {
-      assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt')], { dryRun }), (err) => {
+      assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt')], { dryRun, permanentHint: true }), (err) => {
         assert.ok(err instanceof fresh.FcError);
         assert.ok(err.message.startsWith(`휴지통으로 보내지 않았습니다: ${path.join(dir, 'b.txt')}. `), err.message);
         assert.match(err.message, pattern);
-        assert.match(err.message, /휴지통을 거치지 않고 지우려면 --permanent를 쓰세요\.$/);
+        assert.match(err.message, /지우지 않았습니다\. 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요\.$/);
         return true;
       });
     }
+    // --permanent를 받지 않는 명령(extract-all, collapse)이 부르면 그 안내를 붙이지 않는다(1차 리뷰).
+    assert.throws(() => fresh.remove([path.join(dir, 'b.txt')]), (err) => /지우지 않았습니다\.$/.test(err.message) && !err.message.includes('--permanent'));
     assert.deepStrictEqual(calls, []);
     assert.ok(fs.existsSync(path.join(dir, 'a.txt')) && fs.existsSync(path.join(dir, 'b.txt')));
     // --permanent는 휴지통을 거치지 않으므로 이 검사를 하지 않는다.
@@ -465,8 +467,27 @@ test('rm은 폴더면 안의 파일 합계로 최대 크기를 보고, 크기 �
   assert.throws(() => fresh.remove([path.join(dir, 'box')]), /휴지통 최대 크기\(1MB\)보다 커서/);
   fresh.remove([path.join(dir, 'box', 'a.bin')]);
   assert.deepStrictEqual(calls, [path.join(dir, 'box', 'a.bin')]);
-  // 최대 크기를 모르면 1GB부터 거부한다.
+  // a.bin을 보낸 뒤 남은 합계(700KB)는 최대 크기 안이다.
   assert.strictEqual(fresh.previewRefusal(path.join(dir, 'box')), null);
+});
+
+test('rm은 대상 자체가 정션이면 그 너머를 세지 않는다 (#81 1차 리뷰)', { skip: !isWindows && 'Windows 정션' }, (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'big'));
+  fs.writeFileSync(path.join(dir, 'big', 'x.bin'), Buffer.alloc(2 * 1024 * 1024));
+  fs.symlinkSync(path.join(dir, 'big'), path.join(dir, 'jn'), 'junction');
+  const { fresh } = fakeVolume(t, 'True|Fixed|0|1\r\n');
+  assert.strictEqual(fresh.sizeUpTo(path.join(dir, 'jn'), 1e9), 0);
+  assert.strictEqual(fresh.previewRefusal(path.join(dir, 'jn')), null);
+  assert.match(fresh.previewRefusal(path.join(dir, 'big')), /휴지통 최대 크기\(1MB\)보다 커서/);
+});
+
+test('휴지통 이동 스크립트의 78 표시가 비었거나 알 수 없으면 크기를 확인하지 못한 것으로 거부한다 (#81)', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  const { fresh } = fakeRecycle(t, () => failed(78, ''));
+  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), /크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로 지우지 않았습니다\.$/);
+  assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
 });
 
 test('sizeUpTo는 링크·정션을 따라가지 않고, 한도를 넘으면 그만 센다 (#81)', { skip: !isWindows && 'Windows 정션' }, () => {
@@ -531,6 +552,8 @@ test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크�
   assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Fixed'; $nuke = '1'; $cap = '26427'"), { status: 78, out: 'nuke' });
   assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Removable'"), { status: 78, out: 'type|Removable' });
   assert.deepStrictEqual(run(path.join(dir, 'big'), "$type = 'Fixed'; $nuke = ''; $cap = ''"), { status: 0, out: 'deleted-dir' });
+  // 대상 자체가 정션이어도 그 너머를 세지 않는다(1차 리뷰). Node의 sizeUpTo와 같다.
+  assert.deepStrictEqual(run(path.join(dir, 'box', 'j'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 0, out: 'deleted-dir' });
   // 볼륨 설정 부분은 실제 값을 읽는다(사본 안에서 바꾸지 않으면).
   const state = run(path.join(dir, 'box', 'a.bin'), '');
   assert.ok(state.status === 0 || state.status === 78, JSON.stringify(state));
