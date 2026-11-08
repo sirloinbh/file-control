@@ -6,7 +6,7 @@ const commands = require('./commands');
 const { FcError, freshPath } = commands;
 const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
-const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir } = require('./flatten');
+const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor } = require('./flatten');
 const { DOWNLOAD_MARKER, markerFinder } = require('./downloadMarker');
 
 // NTFS는 대소문자를 구분하지 않으므로 이름을 대문자로 비교한다. toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만든다.
@@ -37,13 +37,15 @@ function downloadReason(entry, findMarker) {
 
 // 안의 파일 이름을 바꾸지 않을 폴더를 { guarded: { 상대경로 -> 사유 }, pages: { 웹 페이지 상대경로 -> 자료 폴더 이름 }, dirs }로 돌려준다(#94). flatten의 #65 정책과 같게 프로그램 폴더(node_modules 등),
 // 프로젝트 표시 파일(package.json 등)이 든 폴더, 실행 파일과 DLL이 함께 든 폴더, 숨김 속성 폴더를 남긴다. 프로그램이 이름으로 파일을 찾기 때문이다.
-// 저장한 웹 페이지의 _files 폴더도 남긴다. 타겟 자신이 이런 폴더면 모든 파일이 그 일부라 거부한다.
+// 저장한 웹 페이지의 _files 폴더도 남긴다. 타겟 자신이나 위 폴더가 이런 폴더면 모든 파일이 그 일부라 거부한다(#167).
 // 숨김 속성 폴더는 PowerShell을 불러야 알 수 있어 바뀔 파일이 있을 때 addHiddenFolders로 따로 더한다(1차 리뷰).
 function guardedFolders(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
     if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
+  // 위 폴더가 프로젝트·프로그램 폴더면 타겟 안의 이름도 프로그램이 찾는 이름일 수 있다. flatten과 같은 기준으로 거부한다(#167).
+  rejectProjectAncestor(target);
   const guarded = new Map();
   const add = (relative, reason) => {
     if (!guarded.has(relative)) guarded.set(relative, reason);
