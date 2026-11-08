@@ -819,7 +819,14 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
   const taken = new Set(plan.moves.map((move) => nameKey(move.name)));
   const nextNumber = new Map();
   const relative = (p) => path.relative(plan.target, p) || '.';
-  const report = (line) => onProgress?.(line);
+  // 진행 표시가 던져도 집계와 다음 파일 처리, 빈 폴더 정리는 그대로 간다(#196). 이미 옮긴 파일을 실패로 세지 않는다.
+  const report = (line) => {
+    try {
+      onProgress?.(line);
+    } catch {
+      // 진행 표시는 결과에 영향을 주지 않는다.
+    }
+  };
   for (const move of plan.moves) {
     try {
       const moved = applyMove(move, access, taken, nextNumber);
