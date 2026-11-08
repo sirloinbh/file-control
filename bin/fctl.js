@@ -11,6 +11,7 @@ const { findBroken, formatBroken } = require('../src/broken');
 const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
 const { findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
 const { removeDuplicates, formatRemoveDuplicates } = require('../src/removeDuplicates');
+const { findLowQuality, formatLowQuality } = require('../src/lowQuality');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -36,6 +37,7 @@ const HELP = `fctl - 파일 컨트롤
   remove-broken <타겟>          깨진 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
   find-duplicates <타겟>        이름·제품번호나 길이가 같은 영상 묶기 (파일은 건드리지 않음)
   remove-duplicates <타겟>      중복 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
+  find-low-quality <타겟>       해상도·비트레이트가 기준 미만인 저화질 영상 찾기 (파일은 건드리지 않음)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -44,15 +46,20 @@ const HELP = `fctl - 파일 컨트롤
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
   --yes=확인값  remove-broken, remove-duplicates에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
   --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
+  --min-height=화소    find-low-quality에서 화면의 짧은 쪽이 이 값 미만이면 저화질 (기본: 360)
+  --min-bitrate=kbps   find-low-quality에서 비트레이트가 이 값 미만이면 저화질 (기본: 보지 않음)
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate']);
+// 값을 받는 옵션(--이름=값). 값은 values에 둔다.
+const VALUE_FLAGS = new Set(['min-height', 'min-bitrate']);
 
 function parse(argv) {
   const flags = new Set();
   const args = [];
   let confirm;
+  const values = new Map();
   const end = argv.indexOf('--');
   const options = end === -1 ? argv : argv.slice(0, end);
   for (const arg of options) {
@@ -61,13 +68,19 @@ function parse(argv) {
       flags.add('yes');
       confirm = arg.slice('--yes='.length);
     }
+    else if (arg.startsWith('--') && VALUE_FLAGS.has(arg.slice(2).split('=')[0])) {
+      const [name, ...rest] = arg.slice(2).split('=');
+      flags.add(name);
+      if (rest.length === 0) throw new fc.FcError(`--${name}에는 값을 --${name}=값처럼 붙이세요.`);
+      values.set(name, rest.join('='));
+    }
     else if (arg.startsWith('--')) flags.add(arg.slice(2));
     else args.push(arg);
   }
   // 오타 검사는 -- 앞의 인자만 본다. 명령 이름은 빼고 넘긴다.
   const unchecked = args.slice(1);
   if (end !== -1) args.push(...argv.slice(end + 1));
-  return { command: args.shift(), args, flags, unchecked, confirm };
+  return { command: args.shift(), args, flags, unchecked, confirm, values };
 }
 
 // --dry-run을 잘못 치면 무시되어 실제로 실행되므로, 모르는 옵션은 아무것도 하기 전에 거부한다.
@@ -101,7 +114,7 @@ function readStdin() {
 
 // progress(line)를 주면 오래 걸리는 명령(flatten)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67).
 function run(argv, { progress } = {}) {
-  const { command, args, flags, unchecked, confirm } = parse(argv);
+  const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
 
@@ -111,6 +124,9 @@ function run(argv, { progress } = {}) {
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
   if (flags.has('yes') && command !== 'remove-broken' && command !== 'remove-duplicates') throw new fc.FcError('--yes는 remove-broken, remove-duplicates에서만 쓸 수 있습니다.');
   if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
+  for (const name of VALUE_FLAGS) {
+    if (flags.has(name) && command !== 'find-low-quality') throw new fc.FcError(`--${name}는 find-low-quality에서만 쓸 수 있습니다.`);
+  }
 
   switch (command) {
     case 'ls':
@@ -213,6 +229,13 @@ function run(argv, { progress } = {}) {
       checkWholeTarget(command, args, flags);
       // 찾은 묶음은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
       return formatDuplicateNames(findDuplicateNames(args[0]));
+    case 'find-low-quality': {
+      checkWholeTarget(command, args, flags);
+      // 정수가 아닌 값(abc, 1.5, 빈 값)은 NaN으로 넘겨 lowQualityCriteria가 거부하게 한다.
+      const number = (name) => (values.has(name) ? (/^\d+$/.test(values.get(name)) ? Number(values.get(name)) : Number.NaN) : undefined);
+      // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      return formatLowQuality(findLowQuality(args[0], { minHeight: number('min-height'), minBitrate: number('min-bitrate') }));
+    }
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);
   }
