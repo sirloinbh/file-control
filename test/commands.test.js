@@ -1085,15 +1085,42 @@ test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위
 
 // 8.3 짧은 이름(#159). 풀 볼륨이 짧은 이름을 만들면 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 된다.
 test('couldBeShortNameOf는 긴 이름의 짧은 이름이 될 수 있는 이름을 고른다 (#159)', () => {
-  const yes = [['LONGNA~1.TXT', 'longname.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html'],
+  const yes = [['LONGNA~1.TXT', 'longnames.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html'],
     // 이름이 짧으면 처음부터 해시 형식이 되고, 한글은 OEM 바이트 단위로 잘리며, OEM에 없는 글자는 빠진다(1차 리뷰에서 실측).
     ['XAD1C~1.VER', 'x.verylongext'], ['가9BAB~1.TXT', '가나다라마바사5.txt'], ['한글~1.한', '한글.한글파일'], ['ABC~1.TXT', '€abc.txt'], ['GITIGN~1', '.gitignore'],
     // ~가 든 이름(Office 잠금 파일 등)과 앞에 점만 있는 이름(2차 리뷰에서 실측).
     ['~$LONG~1.DOC', '~$longdocument.docx'], ['~$AB~1.DOC', '~$ab.docx'], ['FOO~BA~1.TXT', 'foo~bar~baz.txt'], ['FOO~1', '..foo'], ['BAR~1', '...bar'],
     ['LENAME~1.TXT', 'ﬁlename.txt']];
-  const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt']];
+  const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt'],
+    // 원래 8.3 형식인 ASCII 이름은 대소문자와 상관없이 짧은 이름을 받지 않는다(#205).
+    ['LONGNA~1.TXT', 'longname.txt'], ['photo~1.jpg', 'photo.jpg'], ['PHOTO~1.JPG', 'Photo.Jpg'], ['NOEXT~1', 'noext'], ['A-@^_~1.TXT', 'a-@^_`{}.txt']];
   for (const [name, other] of yes) assert.strictEqual(fc.couldBeShortNameOf(name, other), true, `${name} ${other}`);
   for (const [name, other] of no) assert.strictEqual(fc.couldBeShortNameOf(name, other), false, `${name} ${other}`);
+});
+
+test('원래 8.3 형식인 이름은 ~N 이름과 함께 묶고 풀어도 겹치지 않는다 (#205)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'photo~1.jpg'), 'tilde');
+  fc.writeFile(p('src', 'Photo.Jpg'), 'plain');
+  fc.writeFile(p('src', 'NOEXT~1'), 'tilde2');
+  fc.writeFile(p('src', 'noext'), 'plain2');
+  // Windows는 원래 8.3 형식인 이름에 짧은 이름을 만들지 않는다(8.3이 켜진 볼륨에서도 dir /x에 짧은 이름이 없다).
+  const listing = childProcess.execFileSync('cmd.exe', ['/c', 'dir', '/x', p('src')], { encoding: 'latin1' });
+  assert.ok(!/~\d\S*\s+Photo\.Jpg/i.test(listing), listing);
+  fc.zip(p('a.zip'), [p('src')]);
+  // 기존 폴더에 같은 이름들이 있어도 그대로 덮어쓰며 풀린다(짧은 이름으로 다른 파일을 가리키지 않는다).
+  fc.writeFile(p('out', 'src', 'photo.jpg'), 'old');
+  fc.unzip(p('a.zip'), p('out'));
+  // tar.exe는 기존 파일을 지우고 압축 안의 대소문자로 다시 만든다.
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'src')).map((n) => n.toLowerCase()).sort(), ['noext', 'noext~1', 'photo.jpg', 'photo~1.jpg']);
+  assert.strictEqual(fc.readFile(p('out', 'src', 'photo.jpg')), 'plain');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'photo~1.jpg')), 'tilde');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'noext')), 'plain2');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'NOEXT~1')), 'tilde2');
+  // 짧은 이름을 받는 긴 이름과는 여전히 묶지 않는다.
+  fc.writeFile(p('src', 'photograph.jpg'), 'long');
+  assert.throws(() => fc.zip(p('b.zip'), [p('src')]), /8\.3 짧은 이름으로 겹칠 수 있는/);
 });
 
 test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름이 있으면 묶지 않는다 (#159)', { skip: !isWindows }, () => {
