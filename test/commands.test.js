@@ -1326,6 +1326,30 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   assert.strictEqual(fc.archiveEntries(p('deep.zip')).length, 2);
 });
 
+test('unzip은 외부 프로그램이 필요한 압축(lz4·lzop)을 그 프로그램이 없어 풀지 못하면 프로그램 이름을 밝힌 FcError로 알린다 (#241)', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  // 이름이 아니라 내용(매직과 프레임 머리)으로 판별되므로 확장자와 상관없다.
+  const samples = {
+    'a.tar.lz4': [Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9, 1, 2, 3, 4]), 'lz4'],
+    'b.tar.lzo': [Buffer.concat([Buffer.from([0x89, 0x4c, 0x5a, 0x4f, 0x00, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40, 1)]), 'lzop'],
+    'c.zip': [Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9, 1, 2, 3, 4]), 'lz4'],
+  };
+  const savedPath = process.env.PATH;
+  t.after(() => { process.env.PATH = savedPath; });
+  process.env.PATH = p('nothing');
+  for (const [name, [data, program]] of Object.entries(samples)) {
+    fs.writeFileSync(p(name), data);
+    const missing = (err) => err instanceof fc.FcError && err.message.includes(`외부 프로그램 ${program}이 필요한데 실행하지 못했습니다`);
+    assert.throws(() => fc.unzip(p(name), p(`out-${name}`)), missing, name);
+    assert.throws(() => fc.unzip(p(name), p(`out-${name}`), { dryRun: true }), missing, name);
+    assert.throws(() => fc.archiveEntries(p(name)), missing, name);
+  }
+  // 그 밖의 tar.exe 실패는 지금처럼 날것의 오류로 둔다(형식을 알아보지 못함).
+  fs.writeFileSync(p('junk.tar'), 'not an archive at all');
+  assert.throws(() => fc.archiveEntries(p('junk.tar')), (err) => !(err instanceof fc.FcError));
+});
+
 // tar.exe는 외부 압축 프로그램을 SearchPath로 찾아 현재 폴더의 것을 PATH보다 먼저 실행한다. fctl은 tar.exe를 System32에서 실행한다(#242).
 test('tar.exe가 현재 폴더에 심어 둔 외부 압축 프로그램(lz4.exe)을 실행하지 않는다 (#242)', { skip: !isWindows }, (t) => {
   const dir = tempDir();
