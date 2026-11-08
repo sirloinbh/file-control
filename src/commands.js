@@ -926,8 +926,8 @@ function writeArchive(archive, sources) {
   }
 }
 
-// 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자, 확장자는 0~3자다.
-const SHORT_NAME = /^([^~.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
+// 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자이고 ~가 들어갈 수 있다(~$LONG~1.DOC). 확장자는 0~3자다.
+const SHORT_NAME = /^([^.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 
 // name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 넉넉하게 어림한다. Windows는 긴 이름을 대문자로 바꾸고(공백과 점은 빼고
 // +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
@@ -936,11 +936,17 @@ const SHORT_NAME = /^([^~.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 function couldBeShortNameOf(name, other) {
   const short = SHORT_NAME.exec(name);
   if (!short || name.toUpperCase() === other.toUpperCase()) return false;
-  const dot = other.lastIndexOf('.');
+  // 앞쪽 점과 공백은 떼고 확장자를 나눈다(..foo는 FOO~1, .gitignore는 GITIGN~1).
+  const trimmed = other.replace(/^[ .]+/, '');
+  const dot = trimmed.lastIndexOf('.');
+  const rawBase = dot >= 0 ? trimmed.slice(0, dot) : trimmed;
+  const rawExt = dot >= 0 ? trimmed.slice(dot + 1) : '';
   const clean = (text) => text.toUpperCase().replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_');
-  const base = clean(dot > 0 ? other.slice(0, dot) : other);
-  const ext = dot > 0 ? clean(other.slice(dot + 1)) : '';
+  // 대문자로 바꾸면 ASCII가 되는 글자(ﬁ -> FI)도 있어 ASCII인지는 바꾸기 전 글자로 본다.
   const nonAscii = (text) => /[^\x00-\x7f]/.test(text);
+  // OEM에 없는 글자는 빠져 뒤 글자가 앞으로 오므로 이름 어디에든 있으면 겹칠 수 있다고 본다.
+  const base = nonAscii(rawBase) ? '\u0080' : clean(rawBase);
+  const ext = nonAscii(rawExt) ? '\u0080' : clean(rawExt);
   // 짧은 쪽 확장자는 긴 이름 확장자의 앞부분이다. 확장자가 없으면 긴 이름에도 없다.
   const shortExt = (short[3] ?? '').toUpperCase();
   const extMatches = nonAscii(ext) || nonAscii(shortExt) || (shortExt === '' ? ext === '' : [...shortExt].every((char, i) => char === '_' || ext[i] === char));

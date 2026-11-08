@@ -1064,7 +1064,10 @@ test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위
 test('couldBeShortNameOf는 긴 이름의 짧은 이름이 될 수 있는 이름을 고른다 (#159)', () => {
   const yes = [['LONGNA~1.TXT', 'longname.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html'],
     // 이름이 짧으면 처음부터 해시 형식이 되고, 한글은 OEM 바이트 단위로 잘리며, OEM에 없는 글자는 빠진다(1차 리뷰에서 실측).
-    ['XAD1C~1.VER', 'x.verylongext'], ['가9BAB~1.TXT', '가나다라마바사5.txt'], ['한글~1.한', '한글.한글파일'], ['ABC~1.TXT', '€abc.txt'], ['GITIGN~1', '.gitignore']];
+    ['XAD1C~1.VER', 'x.verylongext'], ['가9BAB~1.TXT', '가나다라마바사5.txt'], ['한글~1.한', '한글.한글파일'], ['ABC~1.TXT', '€abc.txt'], ['GITIGN~1', '.gitignore'],
+    // ~가 든 이름(Office 잠금 파일 등)과 앞에 점만 있는 이름(2차 리뷰에서 실측).
+    ['~$LONG~1.DOC', '~$longdocument.docx'], ['~$AB~1.DOC', '~$ab.docx'], ['FOO~BA~1.TXT', 'foo~bar~baz.txt'], ['FOO~1', '..foo'], ['BAR~1', '...bar'],
+    ['LENAME~1.TXT', 'ﬁlename.txt']];
   const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt']];
   for (const [name, other] of yes) assert.strictEqual(fc.couldBeShortNameOf(name, other), true, `${name} ${other}`);
   for (const [name, other] of no) assert.strictEqual(fc.couldBeShortNameOf(name, other), false, `${name} ${other}`);
