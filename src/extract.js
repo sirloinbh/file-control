@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract } = require('./commands');
+const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
@@ -23,6 +23,14 @@ const ZIP_TAIL = ZIP_END_SIZE + 65535;
 const ZIP_END = Buffer.from('PK\x05\x06', 'latin1');
 const ZIP_CENTRAL = 0x02014b50;
 const ZIP_CENTRAL_SIZE = 46;
+const ZIP_LOCAL_SIZE = 30;
+const ZIP_DESCRIPTOR = 0x08074b50;
+const ZIP_MAX = 0xffffffff;
+const ZIP64_EXTRA = 0x0001;
+const ZIP64_LOCATOR = 0x07064b50;
+const ZIP64_LOCATOR_SIZE = 20;
+const ZIP64_END = 0x06064b50;
+const ZIP64_END_SIZE = 56;
 // 이 글자가 든 이름은 tar.exe가 _로 바꾸거나 앞부분을 버린다.
 const CHANGED_NAME = /[:?*<>|"\x00-\x1f]/;
 
@@ -130,9 +138,86 @@ function extractOne(item, access) {
   return entries;
 }
 
+// extra 필드에서 id 항목의 데이터를 찾는다. 없으면 undefined, 구조가 어긋나면 null이다.
+function extraField(extra, id) {
+  let pos = 0;
+  while (pos + 4 <= extra.length) {
+    const length = extra.readUInt16LE(pos + 2);
+    if (pos + 4 + length > extra.length) return null;
+    if (extra.readUInt16LE(pos) === id) return extra.subarray(pos + 4, pos + 4 + length);
+    pos += 4 + length;
+  }
+  return pos === extra.length ? undefined : null;
+}
+
+const safeNumber = (big) => (big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : null);
+
+// UTF-8 표시가 없는 이름을 tar.exe처럼 OEM 코드페이지로 읽는다(#83). 그 코드페이지를 읽을 수 없으면 null이다.
+// 잘못 읽었더라도 풀린 결과에 그 이름이 없으면 남기므로, 여기서 틀려도 지우지는 않는다.
+function decodeOemName(bytes) {
+  const cp = oemCodePage();
+  const label = { 949: 'euc-kr', 932: 'shift_jis', 936: 'gbk', 950: 'big5', 866: 'ibm866' }[cp] ?? (cp >= 1250 && cp <= 1258 ? `windows-${cp}` : null);
+  if (label === null) return null;
+  try {
+    return new TextDecoder(label, { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+// Zip64 끝 레코드를 읽어 항목 수와 중앙 디렉터리 위치를 돌려준다(#83). 믿을 수 없으면 사유 문자열이다.
+// locatorAt은 32비트 끝 레코드 바로 앞의 Zip64 위치 표시 자리다.
+function readZip64End(target, archive, locatorAt) {
+  const locator = readRange(target, archive, { offset: locatorAt, length: ZIP64_LOCATOR_SIZE });
+  if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  const recordOffset = safeNumber(locator.readBigUInt64LE(8));
+  const record = recordOffset === null ? Buffer.alloc(0) : readRange(target, archive, { offset: recordOffset, length: ZIP64_END_SIZE });
+  if (record.length < ZIP64_END_SIZE || record.readUInt32LE(0) !== ZIP64_END) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+  // 레코드 크기(앞 12바이트를 뺀 길이)만큼 지나면 바로 위치 표시가 나와야 한다.
+  const recordSize = safeNumber(record.readBigUInt64LE(4));
+  if (recordSize === null || recordOffset + 12 + recordSize !== locatorAt) return 'Zip64 구조가 파일 크기와 맞지 않아 남겼습니다.';
+  if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0 || record.readBigUInt64LE(24) !== record.readBigUInt64LE(32)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  const total = safeNumber(record.readBigUInt64LE(32));
+  const directorySize = safeNumber(record.readBigUInt64LE(40));
+  const directoryOffset = safeNumber(record.readBigUInt64LE(48));
+  if (total === null || directorySize === null || directoryOffset === null) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+  return { total, directorySize, directoryOffset, directoryEnd: recordOffset };
+}
+
+// 항목이 파일 처음부터 중앙 디렉터리 앞까지 빈틈없이 이어지는지 본다. 목록에 없는 항목이 사이에 끼면
+// tar.exe는 풀지 않는데 원본을 지우게 된다(#83). 항목의 끝은 로컬 헤더, 압축된 본문, 데이터 설명자를 더한 자리다.
+function checkZipLayout(target, archive, entries, directoryOffset) {
+  const sorted = [...entries].sort((a, b) => a.offset - b.offset);
+  // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
+  if (sorted.length > 0 && sorted[0].offset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
+  for (const [i, entry] of sorted.entries()) {
+    const expected = i + 1 < sorted.length ? sorted[i + 1].offset : directoryOffset;
+    const local = readRange(target, archive, { offset: entry.offset, length: ZIP_LOCAL_SIZE });
+    if (local.length < ZIP_LOCAL_SIZE || !local.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'zip 구조를 읽지 못해 남겼습니다.';
+    const dataEnd = entry.offset + ZIP_LOCAL_SIZE + local.readUInt16LE(26) + local.readUInt16LE(28) + entry.compressed;
+    const gap = expected - dataEnd;
+    if ((local.readUInt16LE(6) & 0x8) === 0) {
+      if (gap !== 0) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+      continue;
+    }
+    // 데이터 설명자는 서명(4바이트)이 있을 수도 없을 수도 있고, 크기 칸이 4바이트나 8바이트다(tar.exe의 Zip64는 8바이트).
+    // 그래서 길이는 다음 항목까지의 거리로 정하고, CRC와 압축된 크기가 중앙 디렉터리와 같은지 본다.
+    const layout = { 12: [false, false], 16: [true, false], 20: [false, true], 24: [true, true] }[gap];
+    if (!layout) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+    const [signed, wide] = layout;
+    const descriptor = readRange(target, archive, { offset: dataEnd, length: gap });
+    if (descriptor.length !== gap || (signed && descriptor.readUInt32LE(0) !== ZIP_DESCRIPTOR)) return 'zip 구조를 읽지 못해 남겼습니다.';
+    const at = signed ? 4 : 0;
+    const compressed = wide ? safeNumber(descriptor.readBigUInt64LE(at + 4)) : descriptor.readUInt32LE(at + 4);
+    if (descriptor.readUInt32LE(at) !== entry.crc || compressed !== entry.compressed) return 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+  }
+  if (sorted.length === 0 && directoryOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
+  return null;
+}
+
 // zip의 중앙 디렉터리를 읽어 항목 목록을 돌려준다. 믿을 수 없으면 사유 문자열을 돌려준다.
 // tar.exe는 끝에서 처음 만난 끝 레코드를 믿어서, 잘린 zip 안의 무압축 zip이나 이어 붙인 zip이면 일부만 풀고 성공한다.
-// 그래서 끝 레코드가 파일 끝에 딱 맞고 중앙 디렉터리가 바로 앞에 이어지는지 본다.
+// 그래서 끝 레코드가 파일 끝에 딱 맞고 중앙 디렉터리가 바로 앞에 이어지는지 본다. Zip64면 Zip64 끝 레코드로 본다.
 function readZipEntries(target, archive, entryCount) {
   const size = fileSizeInside(target, archive);
   const tailOffset = Math.max(0, size - ZIP_TAIL);
@@ -141,33 +226,76 @@ function readZipEntries(target, archive, entryCount) {
   if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'zip 끝 표시가 없어 잘린 파일일 수 있어 남겼습니다.';
   const end = tailOffset + at;
   if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'zip 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.';
-  if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return '분할 압축의 조각일 수 있어 남겼습니다.';
-  const total = tail.readUInt16LE(at + 10);
-  const directorySize = tail.readUInt32LE(at + 12);
-  const directoryOffset = tail.readUInt32LE(at + 16);
-  if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return 'Zip64 형식은 내용을 확인하지 못해 남겼습니다.';
-  if (directoryOffset + directorySize !== end) return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
+  const disk = tail.readUInt16LE(at + 4);
+  const directoryDisk = tail.readUInt16LE(at + 6);
+  let total = tail.readUInt16LE(at + 10);
+  let directorySize = tail.readUInt32LE(at + 12);
+  let directoryOffset = tail.readUInt32LE(at + 16);
+  let directoryEnd = end;
+  const locatorAt = end - ZIP64_LOCATOR_SIZE;
+  const locator = locatorAt >= 0 ? readRange(target, archive, { offset: locatorAt, length: 4 }) : Buffer.alloc(0);
+  if (locator.length === 4 && locator.readUInt32LE(0) === ZIP64_LOCATOR) {
+    // 32비트 끝 레코드의 값은 Zip64 표시(모두 1인 값)이거나 Zip64 끝 레코드와 같아야 한다.
+    const zip64 = readZip64End(target, archive, locatorAt);
+    if (typeof zip64 === 'string') return zip64;
+    if ((disk !== 0 && disk !== 0xffff) || (directoryDisk !== 0 && directoryDisk !== 0xffff)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+    const agrees = (short, full, marker) => short === marker || short === full;
+    if (!agrees(total, zip64.total, 0xffff) || !agrees(directorySize, zip64.directorySize, ZIP_MAX) || !agrees(directoryOffset, zip64.directoryOffset, ZIP_MAX)) {
+      return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
+    }
+    ({ total, directorySize, directoryOffset, directoryEnd } = zip64);
+  } else {
+    if (disk !== 0 || directoryDisk !== 0) return '분할 압축의 조각일 수 있어 남겼습니다.';
+    if (total === 0xffff || directorySize === ZIP_MAX || directoryOffset === ZIP_MAX) return 'Zip64 표시가 있는데 Zip64 끝 레코드가 없어 남겼습니다.';
+  }
+  if (directoryOffset + directorySize !== directoryEnd) return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
   if (total !== entryCount) return `zip 항목 수가 풀린 목록과 달라 남겼습니다. (${total}개, ${entryCount}개)`;
   const directory = readRange(target, archive, { offset: directoryOffset, length: directorySize });
   const entries = [];
-  let firstOffset = Infinity;
   let pos = 0;
   while (pos < directory.length) {
     if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'zip 구조를 읽지 못해 남겼습니다.';
     const nameEnd = pos + ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28);
+    const extraEnd = nameEnd + directory.readUInt16LE(pos + 30);
+    const entryEnd = extraEnd + directory.readUInt16LE(pos + 32);
+    if (entryEnd > directory.length) return 'zip 구조를 읽지 못해 남겼습니다.';
     const bytes = directory.subarray(pos + ZIP_CENTRAL_SIZE, nameEnd);
     const unicode = (directory.readUInt16LE(pos + 8) & 0x800) !== 0;
-    if (!unicode && bytes.some((byte) => byte >= 0x80)) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
-    const usize = directory.readUInt32LE(pos + 24);
-    if (usize === 0xffffffff) return 'Zip64 형식은 내용을 확인하지 못해 남겼습니다.';
-    firstOffset = Math.min(firstOffset, directory.readUInt32LE(pos + 42));
-    entries.push({ name: bytes.toString('utf8'), size: usize });
-    pos = nameEnd + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
+    let name = bytes.toString('utf8');
+    if (!unicode && bytes.some((byte) => byte >= 0x80)) {
+      name = decodeOemName(bytes);
+      if (name === null) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
+    }
+    // 32비트 칸이 모두 1이면 Zip64 extra 필드에 원래 크기, 압축된 크기, 로컬 헤더 위치, 디스크 번호 순으로 그 칸만 들어 있다.
+    let size = directory.readUInt32LE(pos + 24);
+    let compressed = directory.readUInt32LE(pos + 20);
+    let offset = directory.readUInt32LE(pos + 42);
+    const startDisk = directory.readUInt16LE(pos + 34);
+    if (size === ZIP_MAX || compressed === ZIP_MAX || offset === ZIP_MAX || startDisk === 0xffff) {
+      const extra = extraField(directory.subarray(nameEnd, extraEnd), ZIP64_EXTRA);
+      if (!extra) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+      let at64 = 0;
+      const take = () => {
+        if (at64 + 8 > extra.length) return null;
+        const value = safeNumber(extra.readBigUInt64LE(at64));
+        at64 += 8;
+        return value;
+      };
+      if (size === ZIP_MAX) size = take();
+      if (compressed === ZIP_MAX) compressed = take();
+      if (offset === ZIP_MAX) offset = take();
+      if (size === null || compressed === null || offset === null) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+      if (startDisk === 0xffff && (at64 + 4 > extra.length || extra.readUInt32LE(at64) !== 0)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+    } else if (startDisk !== 0) {
+      return '분할 압축의 조각일 수 있어 남겼습니다.';
+    }
+    entries.push({ name, size, compressed, offset, crc: directory.readUInt32LE(pos + 16) });
+    pos = entryEnd;
   }
   if (pos !== directory.length || entries.length !== total) return 'zip 구조를 읽지 못해 남겼습니다.';
-  // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
-  if (firstOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
-  return entries;
+  const layout = checkZipLayout(target, archive, entries, directoryOffset);
+  if (layout !== null) return layout;
+  return entries.map(({ name, size }) => ({ name, size }));
 }
 
 // 항목이 원래 이름 그대로 풀렸는지 본다. 내용은 남아도 이름은 원본에만 있을 수 있다.

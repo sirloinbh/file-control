@@ -47,7 +47,8 @@ function tree(dir) {
 }
 
 // 무압축 zip. cut을 'entries'로 주면 항목 뒤에서, 'directory'로 주면 중앙 디렉터리 중간에서 잘린 파일이 된다.
-function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0, prefix = Buffer.alloc(0) } = {}) {
+// hide에 든 이름은 로컬 항목만 넣고 중앙 디렉터리에서 뺀다.
+function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0, prefix = Buffer.alloc(0), hide = [] } = {}) {
   const locals = [prefix];
   const centrals = [];
   let offset = prefix.length;
@@ -74,14 +75,14 @@ function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0,
     central.writeUInt16LE(nameBytes.length, 28);
     central.writeUInt32LE(offset, 42);
     locals.push(local, nameBytes, body);
-    centrals.push(central, nameBytes);
+    if (!hide.includes(name)) centrals.push(central, nameBytes);
     offset += local.length + nameBytes.length + body.length;
   }
   if (cut === 'entries') return Buffer.concat(locals);
   const directory = Buffer.concat(centrals);
   if (cut === 'directory') return Buffer.concat([...locals, directory.subarray(0, 20)]);
   const end = Buffer.alloc(22);
-  const count = Object.keys(files).length;
+  const count = Object.keys(files).length - hide.length;
   end.writeUInt32LE(0x06054b50, 0);
   end.writeUInt16LE(disk, 4);
   end.writeUInt16LE(disk, 6);
@@ -505,4 +506,151 @@ test('--remove-archives 옵션은 extract-all에서만 받고 지우지 못하�
   assert.throws(() => run(['extract-all', dir, '--remove-archives']), (err) => err instanceof FcError && /실패: a\.zip/.test(err.message));
   onRecycle = () => {};
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+});
+
+// 무압축 Zip64 zip(#83). 중앙 디렉터리의 크기와 위치 칸을 모두 1로 두고 Zip64 extra 필드와 Zip64 끝 레코드에 적는다.
+// change로 Zip64 끝 레코드의 값을 바꿀 수 있다.
+function zip64Buffer(files, { change = {} } = {}) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const [name, data] of Object.entries(files)) {
+    const body = Buffer.from(data);
+    const nameBytes = Buffer.from(name);
+    const crc = zlib.crc32(body);
+    const localExtra = Buffer.alloc(20);
+    localExtra.writeUInt16LE(1, 0);
+    localExtra.writeUInt16LE(16, 2);
+    localExtra.writeBigUInt64LE(BigInt(body.length), 4);
+    localExtra.writeBigUInt64LE(BigInt(body.length), 12);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(45, 4);
+    local.writeUInt16LE(0x800, 6);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(0xffffffff, 18);
+    local.writeUInt32LE(0xffffffff, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    local.writeUInt16LE(localExtra.length, 28);
+    const centralExtra = Buffer.alloc(28);
+    centralExtra.writeUInt16LE(1, 0);
+    centralExtra.writeUInt16LE(24, 2);
+    centralExtra.writeBigUInt64LE(BigInt(body.length), 4);
+    centralExtra.writeBigUInt64LE(BigInt(body.length), 12);
+    centralExtra.writeBigUInt64LE(BigInt(offset), 20);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(45, 4);
+    central.writeUInt16LE(45, 6);
+    central.writeUInt16LE(0x800, 8);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(0xffffffff, 20);
+    central.writeUInt32LE(0xffffffff, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt16LE(centralExtra.length, 30);
+    central.writeUInt32LE(0xffffffff, 42);
+    locals.push(local, nameBytes, localExtra, body);
+    centrals.push(central, nameBytes, centralExtra);
+    offset += local.length + nameBytes.length + localExtra.length + body.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const count = Object.keys(files).length;
+  const record = Buffer.alloc(56);
+  record.writeUInt32LE(0x06064b50, 0);
+  record.writeBigUInt64LE(44n, 4);
+  record.writeUInt16LE(45, 12);
+  record.writeUInt16LE(45, 14);
+  record.writeBigUInt64LE(BigInt(change.onDisk ?? count), 24);
+  record.writeBigUInt64LE(BigInt(change.total ?? count), 32);
+  record.writeBigUInt64LE(BigInt(change.directorySize ?? directory.length), 40);
+  record.writeBigUInt64LE(BigInt(change.directoryOffset ?? offset), 48);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(offset + directory.length), 8);
+  locator.writeUInt32LE(1, 16);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0xffff, 8);
+  end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(0xffffffff, 16);
+  return Buffer.concat([...locals, directory, record, locator, end]);
+}
+
+test('Zip64 zip은 Zip64 끝 레코드와 extra 필드로 구조를 확인하고 지운다 (#83)', () => {
+  const dir = tempDir();
+  const good = path.join(dir, 'good.zip');
+  fs.writeFileSync(good, zip64Buffer({ 'sub/': '', 'sub/x.txt': 'x', 'y.txt': 'yy' }));
+  // 끝 레코드의 항목 수나 중앙 디렉터리 위치가 어긋나면 남긴다.
+  fs.writeFileSync(path.join(dir, 'count.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { total: 2, onDisk: 2 } }));
+  fs.writeFileSync(path.join(dir, 'offset.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { directoryOffset: 1 } }));
+  fs.writeFileSync(path.join(dir, 'split.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { onDisk: 0 } }));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.removed, [good]);
+  assert.deepStrictEqual(recycled, [good]);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'good', 'y.txt'), 'utf8'), 'yy');
+  const reasons = Object.fromEntries([...result.kept, ...result.failed].map((item) => [path.basename(item.archive), item.reason]));
+  for (const name of ['count.zip', 'offset.zip', 'split.zip']) {
+    assert.ok(reasons[name] !== undefined, name);
+    assert.ok(fs.existsSync(path.join(dir, name)), name);
+  }
+  if (result.kept.some((item) => path.basename(item.archive) === 'split.zip')) assert.match(reasons['split.zip'], /분할 압축/);
+});
+
+test('tar.exe가 Zip64로 묶은 zip과 데이터 설명자를 쓴 보통 zip은 지운다 (#83)', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.writeFileSync(path.join(source, 'a.txt'), 'A'.repeat(5000));
+  fs.mkdirSync(path.join(source, 'sub'));
+  fs.writeFileSync(path.join(source, 'sub', 'b.txt'), 'B');
+  const tar = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
+  realExecFileSync(tar, ['-a', '-cf', path.join(dir, 'z64.zip'), '--options', 'zip:zip64', '-C', source, 'a.txt', 'sub']);
+  run(['zip', path.join(dir, 'plain.zip'), path.join(source, 'a.txt'), path.join(source, 'sub')]);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), ['plain.zip', 'z64.zip']);
+  assert.deepStrictEqual(tree(dir), ['plain/a.txt', 'plain/sub/b.txt', 'z64/a.txt', 'z64/sub/b.txt']);
+});
+
+test('중앙 디렉터리에 없는 항목이 사이에 끼면 풀리지 않으므로 지우지 않는다 (#83)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'hidden.zip', { 'a.txt': 'a', 'secret.txt': 'hidden data', 'c.txt': 'c' }, { hide: ['secret.txt'] });
+  makeZip(dir, 'last.zip', { 'a.txt': 'a', 'secret.txt': 'hidden data' }, { hide: ['secret.txt'] });
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  const reasons = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
+  assert.match(reasons['hidden.zip'], /항목 사이에 목록에 없는 데이터/);
+  assert.match(reasons['last.zip'], /항목 사이에 목록에 없는 데이터/);
+});
+
+test('UTF-8 표시가 없는 한글 이름은 OEM 코드페이지로 읽어 그대로 풀렸는지 확인하고 지운다 (#83)', (t) => {
+  const { oemCodePage } = require('../src/commands');
+  if (oemCodePage() !== 949) return t.skip(`OEM 코드페이지 ${oemCodePage()}에서는 CP949 이름을 시험하지 않는다`);
+  const dir = tempDir();
+  // 한글.txt를 CP949로 적는다. 자리 표시 ABCD를 같은 길이의 바이트로 바꾼다.
+  const hangul = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]);
+  const data = zipBuffer({ 'ABCD.txt': 'x', 'ok.txt': 'o' });
+  for (let at = data.indexOf('ABCD'); at !== -1; at = data.indexOf('ABCD', at + 4)) hangul.copy(data, at);
+  fs.writeFileSync(path.join(dir, 'cp949.zip'), data);
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.strictEqual(preview.removed.length, 1);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.strictEqual(result.removed.length, 1);
+  assert.deepStrictEqual(tree(dir), ['cp949/ok.txt', 'cp949/한글.txt']);
+});
+
+test('fctl zip으로 묶은 한글 이름의 zip도 OEM 코드페이지로 확인하고 지운다 (#83)', (t) => {
+  const { oemCodePage } = require('../src/commands');
+  if (oemCodePage() !== 949) return t.skip(`OEM 코드페이지 ${oemCodePage()}에서는 한글 이름을 시험하지 않는다`);
+  const dir = tempDir();
+  const source = tempDir();
+  fs.mkdirSync(path.join(source, '사진'));
+  fs.writeFileSync(path.join(source, '사진', '여름.txt'), 'summer');
+  run(['zip', path.join(dir, 'a.zip'), path.join(source, '사진')]);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.strictEqual(result.removed.length, 1);
+  assert.deepStrictEqual(tree(dir), ['a/사진/여름.txt']);
 });
