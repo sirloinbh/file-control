@@ -487,6 +487,36 @@ test('휴지통으로 보내지 못하면 풀린 결과와 원본을 두고 실�
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt', 'b/y.txt']);
 });
 
+// 휴지통 이동이 사유를 밝힌 FcError로 실패해도 풀린 뒤라는 맥락을 붙인다(#185).
+test('원본이 사용 중이라 휴지통으로 보내지 못하면 풀었다는 맥락과 Windows 사유를 함께 보고한다 (#185)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const reason = Buffer.from('The process cannot access the file because it is being used by another process.', 'utf16le').toString('base64');
+  onRecycle = () => {
+    throw Object.assign(new Error('recycle'), { status: 77, stdout: `${reason}\r\n` });
+  };
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.strictEqual(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 휴지통으로 보내지 못했습니다: .*a\.zip \(The process cannot access the file/);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+});
+
+test('경로가 길어 휴지통으로 보낼 수 없으면 풀었다는 맥락을 붙이고, 미리보기에서는 풀어도 지울 수 없다고 보고한다 (#185)', () => {
+  const dir = tempDir();
+  let folder = dir;
+  while (folder.length < 240) folder = path.join(folder, 'x'.repeat(30));
+  fs.mkdirSync(folder, { recursive: true });
+  const archive = makeZip(folder, `${'y'.repeat(Math.max(1, 262 - folder.length - 5))}.zip`, { 'x.txt': 'x' });
+  assert.ok(archive.length > 259, String(archive.length));
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.match(preview.failed[0].reason, /^풀어도 원본을 지울 수 없습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  // 긴 경로를 켜지 않은 Windows에서는 tar.exe가 260자를 넘는 곳에 풀지 못해 푸는 단계에서 실패한다(이 PC에서 확인). 어느 쪽이든 원본은 남는다.
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다|^압축을 풀지 못했습니다/);
+  assert.ok(fs.existsSync(archive));
+});
+
 test('대화형 세션이 아니라는 거부를 그대로 보고하고 영구 삭제하지 않는다', () => {
   const dir = tempDir();
   const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });

@@ -359,7 +359,13 @@ function removeArchive(access, item, before, dryRun) {
   if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
   const stat = fs.lstatSync(archive, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== before) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
-  remove([archive], { dryRun });
+  try {
+    remove([archive], { dryRun });
+  } catch (err) {
+    // 휴지통 이동의 FcError는 사유만 담으므로 풀린 뒤라는 맥락을 붙인다(#185). 다른 오류는 removalFailure가 붙인다.
+    if (err instanceof FcError) throw new FcError(`${dryRun ? '풀어도 원본을 지울 수 없습니다.' : '풀었지만 원본을 지우지 못했습니다.'} ${err.message}`);
+    throw err;
+  }
 }
 
 function removalFailure(err) {
