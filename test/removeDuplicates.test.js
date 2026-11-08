@@ -15,7 +15,14 @@ const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
+// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+let format = () => 'NTFS\r\n';
+let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) {
+    formatProbes += 1;
+    return format();
+  }
   if (options?.env?.FC_VOLUME !== undefined) return volume();
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
@@ -92,6 +99,8 @@ test.beforeEach(() => {
   recycled.length = 0;
   onRecycle = () => {};
   volume = () => 'True|Fixed\r\n';
+  format = () => 'NTFS\r\n';
+  formatProbes = 0;
   skew = HOUR;
 });
 
@@ -210,6 +219,20 @@ test('고정 디스크가 아닌 볼륨에서는 사본끼리 하드링크여도
   assert.deepStrictEqual(plan.removals, []);
   assert.strictEqual(plan.kept.length, 2);
   assert.ok(plan.kept.every((item) => /^고정 디스크가 아니라\(Removable\)/.test(item.reason)), JSON.stringify(plan.kept.map((item) => item.reason)));
+});
+
+test('exFAT 볼륨에서는 고정 디스크여도 사본을 지우지 않는다 (#184)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }), 'x/ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  format = () => 'exFAT\r\n';
+  const plan = removeDuplicates(dir);
+  assert.deepStrictEqual(plan.removals, []);
+  assert.strictEqual(plan.kept.length, 1);
+  assert.match(plan.kept[0].reason, /^exFAT 볼륨은 변경 시각을 적지 않아/);
+  assert.deepStrictEqual(removeDuplicates(dir, { confirm: plan.code }).removed, []);
+  assert.ok(fs.existsSync(f['x/ABC-123 copy.mp4']));
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(logs(dir), []);
 });
 
 test('다른 사본과 하드링크이면서 경로가 긴 사본은 경로 사유로 남긴다 (#127 1차 리뷰)', () => {

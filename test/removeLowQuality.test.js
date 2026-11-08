@@ -15,7 +15,14 @@ const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
+// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+let format = () => 'NTFS\r\n';
+let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) {
+    formatProbes += 1;
+    return format();
+  }
   if (options?.env?.FC_VOLUME !== undefined) return volume();
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
@@ -145,6 +152,23 @@ test('remove-low-quality는 확인값을 만든 뒤 파일이 바뀌면 지우�
   const big = removeLowQuality(dir, { maxSize: 10 });
   assert.deepStrictEqual(big.kept.map((item) => item.reason), ['1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.']);
   assert.deepStrictEqual(big.removals, []);
+});
+
+test('remove-low-quality는 exFAT 볼륨이면 고정 디스크여도 지우지 않는다 (#184)', (t) => {
+  const dir = tempDir();
+  const file = put(dir, 'small.mp4', mp4({ width: 480, height: 270 }));
+  t.after(() => {
+    format = () => 'NTFS\r\n';
+  });
+  format = () => 'exFAT\r\n';
+  recycled.length = 0;
+  const plan = removeLowQuality(dir);
+  assert.deepStrictEqual(plan.removals, []);
+  assert.match(plan.kept[0].reason, /^exFAT 볼륨은 변경 시각을 적지 않아/);
+  assert.deepStrictEqual(removeLowQuality(dir, { confirm: plan.code }).removed, []);
+  assert.ok(fs.existsSync(file));
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(logs(dir), []);
 });
 
 test('remove-low-quality는 고정 디스크가 아니거나 대화형 세션이 아니면 지우지 않는다 (#31)', (t) => {
