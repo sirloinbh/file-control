@@ -238,7 +238,7 @@ test('영상 트랙이 여럿이면 가장 큰 것을 쓴다', () => {
 test('없는 값은 null이다', () => {
   const dir = tempDir();
   const file = write(dir, 'a.mkv', header(), segment());
-  assert.deepStrictEqual(readMkvMetadata(dir, file), { title: null, comment: null, duration: null, width: null, height: null, displayWidth: null, displayHeight: null, bitrate: null });
+  assert.deepStrictEqual(readMkvMetadata(dir, file), { title: null, comment: null, duration: null, width: null, height: null, displayWidth: null, displayHeight: null, bitrate: null, bitrateNote: null });
 });
 
 test('길이가 0이거나 숫자가 아니면 null이고 나누기 오류가 없다', () => {
@@ -466,4 +466,47 @@ test('폴더 번호를 찾아도 메타데이터를 읽지 못한 사유를 보�
   assert.match(report, /이름 변경: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(폴더명, 메타데이터를 읽지 못함: MKV 요소가 너무 많아/);
   assert.match(report, /이름 변경: ABC-123[\\/]ok\.mkv -> ABC-123 ok\.mkv \(폴더명\)\n/);
   assert.match(report, /번호가 엇갈림: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, 메타데이터를 읽지 못함: MKV\/WebM 형식이 아닙니다/);
+});
+
+// #179: 탐색 표(Cues). points는 [시각(ms), Cluster 위치] 목록이다.
+const cues = (...points) => el(0x1c53bb6b, ...points.map(([time, position = 0]) => el(0xbb, el(0xb3, uint(time)), el(0xb7, el(0xf7, uint(1)), el(0xf1, uint(position))))));
+const cuesHead = (position) => el(0x114d9b74, el(0x4dbb, el(0x53ab, Buffer.from('1C53BB6B', 'hex')), el(0x53ac, uint(position))));
+
+test('길이 값이 탐색 표의 마지막 시각보다 훨씬 길면 비트레이트를 믿지 않는다 (#179)', () => {
+  const dir = tempDir();
+  // 60초짜리 영상의 길이가 60000초로 적힌 파일. 탐색 표는 Cluster 뒤에 있어 SeekHead로 찾는다.
+  const head = cuesHead(0);
+  const body = [info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cluster()];
+  const position = head.length + Buffer.concat(body).length;
+  const file = write(dir, 'a.mkv', header(), segment(cuesHead(position), ...body, cues([0], [30000], [58000])));
+  const result = readMkvMetadata(dir, file);
+  assert.strictEqual(result.duration, 60000);
+  assert.strictEqual(result.bitrate, null);
+  assert.match(result.bitrateNote, /^길이 값\(60000초\)이 탐색 표의 마지막 시각\(58초\)보다 훨씬 길어/);
+});
+
+test('길이 값이 탐색 표와 맞거나 탐색 표가 없으면 비트레이트를 계산한다 (#179)', () => {
+  const dir = tempDir();
+  const same = readMkvMetadata(dir, write(dir, 'a.mkv', header(), segment(info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cues([0], [55000]), cluster())));
+  assert.ok(same.bitrate > 0);
+  assert.strictEqual(same.bitrateNote, null);
+  const none = readMkvMetadata(dir, write(dir, 'b.mkv', header(), segment(info({ ticks: 600 * 1000 }), tracks(videoTrack(1920, 1080)), cluster())));
+  assert.ok(none.bitrate > 0);
+  assert.strictEqual(none.bitrateNote, null);
+});
+
+test('Segment나 탐색 표가 파일 끝 너머를 가리키는 받다 만 파일은 비트레이트를 믿지 않는다 (#179)', () => {
+  const dir = tempDir();
+  const whole = Buffer.concat([header(), segment(info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cluster(5000))]);
+  fs.writeFileSync(path.join(dir, 'cut.mkv'), whole.subarray(0, whole.length - 3000));
+  const cut = readMkvMetadata(dir, 'cut.mkv');
+  assert.strictEqual(cut.bitrate, null);
+  assert.match(cut.bitrateNote, /받다 만 파일일 수 있어/);
+  // 크기를 모르는 Segment(실시간 녹화)라도 탐색 표의 Cluster 위치가 파일 끝을 넘으면 받다 만 파일이다.
+  const open = Buffer.concat([header(), Buffer.from('18538067', 'hex'), Buffer.from('01FFFFFFFFFFFFFF', 'hex')]);
+  const live = write(dir, 'live.mkv', open, info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cues([0, 10], [55000, 90_000_000]), cluster());
+  assert.match(readMkvMetadata(dir, live).bitrateNote, /받다 만 파일일 수 있어/);
+  // SeekHead가 파일 끝 너머의 탐색 표를 가리키는 경우
+  const far = readMkvMetadata(dir, write(dir, 'far.mkv', header(), segment(cuesHead(90_000_000), info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cluster())));
+  assert.match(far.bitrateNote, /받다 만 파일일 수 있어/);
 });

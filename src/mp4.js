@@ -403,6 +403,7 @@ function firstTag(tags, sources) {
 
 // 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
+// 받다 만 파일이거나 길이가 표본 표와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
 // width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율과 90·270도 회전을 반영한 보이는 크기다(#106, #113).
 // 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(unrotatedSize), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
@@ -429,6 +430,7 @@ function parseOpenedMp4(file, p) {
 
   let movie = null;
   let fragmentDuration = null;
+  let fragmented = false;
   const traks = [];
   const tags = new Map();
   for (const box of boxes(read, p, moov.start, moov.end, true)) {
@@ -436,6 +438,7 @@ function parseOpenedMp4(file, p) {
     // mvhd의 회전을 함께 반영해야 하므로 트랙은 moov를 다 훑은 뒤에 읽는다. mvhd가 트랙 뒤에 오는 파일도 있다.
     if (box.type === 'trak') traks.push(box);
     if (box.type === 'mvex') {
+      fragmented = true;
       for (const part of boxes(read, p, box.start, box.end, true)) {
         if (part.type === 'mehd') fragmentDuration = readMehd(read, part);
       }
@@ -449,6 +452,7 @@ function parseOpenedMp4(file, p) {
   const duration = units && movie?.timescale ? units / movie.timescale : null;
   const tracks = traks.map((box) => readTrack(read, p, box, movie?.quarterTurn)).filter(Boolean);
   const video = mainVideo(tracks);
+  const bitrateNote = duration ? bitrateDoubt(read, traks, size, duration, fragmented) : null;
   return {
     title: firstTag(tags, TITLE_SOURCES),
     comment: firstTag(tags, COMMENT_SOURCES),
@@ -457,7 +461,8 @@ function parseOpenedMp4(file, p) {
     height: video?.height ?? null,
     displayWidth: video?.displayWidth ?? null,
     displayHeight: video?.displayHeight ?? null,
-    bitrate: duration ? Math.round((size * 8) / duration) : null,
+    bitrate: duration && bitrateNote === null ? Math.round((size * 8) / duration) : null,
+    bitrateNote,
   };
 }
 
@@ -505,6 +510,46 @@ function checkTrack(read, trak, size) {
   const at = read(table.start + 8 + (count - 1) * width, width);
   const last = width === 8 ? at.readBigUInt64BE(0) : BigInt(at.readUInt32BE(0));
   return last >= BigInt(size) ? { outside: true, reason: '데이터 위치표가 파일 끝 너머를 가리킵니다. 잘린 파일일 수 있습니다.' } : null;
+}
+
+// 표본 표(stts) 항목 수 한도. 한 항목이 8바이트라 8MB다. 가변 프레임 영상도 표본마다 한 항목이면 몇 시간 분량이 들어간다.
+const MAX_STTS_ENTRIES = 1024 * 1024;
+
+// 트랙의 표본 표(stts)에 적힌 표본 길이의 합을 mdhd의 시간 단위로 나눠 초로 돌려준다(#179).
+// 헤더의 길이(mvhd, tkhd, mdhd)와 달리 실제 표본마다 적힌 값이다. 표가 없거나 비었거나 읽을 수 없으면 null이다(조각 파일은 moov의 표가 비어 있다).
+function trackDataSeconds(read, trak) {
+  const mdia = findChild(read, trak, 'mdia');
+  const mdhd = mdia && findChild(read, mdia, 'mdhd');
+  const minf = mdia && findChild(read, mdia, 'minf');
+  const stbl = minf && findChild(read, minf, 'stbl');
+  const stts = stbl && findChild(read, stbl, 'stts');
+  if (!mdhd || !stts) return null;
+  const version = readVersion(read, mdhd);
+  if (version === null) return null;
+  const head = readPayload(read, mdhd, version === 1 ? 24 : 16);
+  const timescale = head?.readUInt32BE(version === 1 ? 20 : 12);
+  if (!timescale || stts.end - stts.start < 8) return null;
+  const count = read(stts.start + 4, 4).readUInt32BE(0);
+  if (count === 0 || count > MAX_STTS_ENTRIES || 8 + count * 8 > stts.end - stts.start) return null;
+  const table = read(stts.start + 8, count * 8);
+  let units = 0;
+  for (let at = 0; at < table.length; at += 8) units += table.readUInt32BE(at) * table.readUInt32BE(at + 4);
+  return units > 0 && Number.isSafeInteger(units) ? units / timescale : null;
+}
+
+// 머리글의 길이로 계산한 비트레이트를 믿을 수 없으면 사유를, 믿을 수 있으면 null을 돌려준다(#179).
+// - 데이터 위치표가 파일 끝 너머를 가리키면 받다 만 파일이다. 파일 크기가 적힌 길이보다 적어 비트레이트가 낮게 나온다.
+// - 적힌 길이가 표본 표 길이(트랙 중 가장 긴 것)의 2배에 60초를 더한 것보다 길면 길이가 깨졌다고 본다. 편집 목록의 빈 구간이나
+//   트랙끼리의 길이 차이는 이보다 작다. 적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
+// 조각 파일(mvex)은 moov의 표본 표가 비어 있어 길이를 맞춰 보지 않는다.
+function bitrateDoubt(read, traks, size, duration, fragmented) {
+  if (traks.some((trak) => checkTrack(read, trak, size)?.outside)) return '데이터 위치표가 파일 끝 너머를 가리켜, 받다 만 파일일 수 있어 비트레이트를 믿을 수 없습니다.';
+  if (fragmented || !duration) return null;
+  const seconds = traks.map((trak) => trackDataSeconds(read, trak)).filter((value) => value !== null);
+  if (seconds.length === 0) return null;
+  const data = Math.max(...seconds);
+  if (duration > data * 2 + 60) return `길이 값(${Math.round(duration)}초)이 표본 표의 길이(${Math.round(data)}초)보다 훨씬 길어 비트레이트를 믿을 수 없습니다.`;
+  return null;
 }
 
 // 넘어도 잘렸다고 볼 수 있는 박스. 다른 이름은 뒤에 덧붙은 데이터일 수 있다.
