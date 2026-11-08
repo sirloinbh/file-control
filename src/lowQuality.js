@@ -17,10 +17,14 @@ const BITRATE_LIMIT = 1000000;
 
 // 메타데이터 값이 정상 범위인지 본다(#30 댓글, PR #68 리뷰). 깨진 값이 저화질로 잡혀 삭제 후보가 되지 않게 한다.
 // - 화면 크기: 짧은 쪽 16화소 미만은 영상으로 쓰이지 않으므로 깨진 값으로 본다. 긴 쪽 65535 초과도 같다.
+//   보이는 크기가 인코딩 해상도와 크게 다르면(짧은 쪽끼리, 긴 쪽끼리 비교해 2배 넘게 차이) 깨진 값으로 본다(1차 리뷰).
+//   MP4는 tkhd 화면 크기의 비율이 다르면 그 값을 보이는 크기로 쓰므로, tkhd가 깨져 1920x1080이 1920x100으로 보이면 정상 파일이 저화질로 잡힌다.
+//   정상인 화소 비율(720x480 -> 853x480, 1440x1080 -> 1920x1080, 2:1 아나모픽)과 90·270도 회전은 이 범위 안이다.
 // - 길이: 7일을 넘으면 길이가 깨진 값이다(timescale이 비정상이면 수조 초가 나온다). 이때 파일 크기로 계산한 비트레이트는 0에 가까워진다.
 // - 비트레이트: 길이 1초 미만이면 머리 구조의 비중이 커서 믿지 않는다. 1kbps 미만은 영상이 담길 수 없는 값이라 깨진 값으로 본다.
 const MIN_SIDE = 16;
 const MAX_SIDE = 65535;
+const MAX_DISPLAY_SCALE = 2;
 const MAX_DURATION = 7 * 24 * 60 * 60;
 const MIN_BITRATE_DURATION = 1;
 const MIN_BITRATE = 1000;
@@ -29,10 +33,12 @@ const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
 const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
 
 // 옵션 값을 검사해 { minHeight, minBitrate }로 돌려준다. minBitrate는 kbps이고, null이면 비트레이트를 보지 않는다.
+// 값은 정수나 명령줄에서 받은 글자("480")다. 글자는 숫자로만 된 것만 받는다.
 function lowQualityCriteria({ minHeight = DEFAULT_MIN_HEIGHT, minBitrate = null } = {}) {
   const check = (value, name, limit) => {
-    if (!Number.isInteger(value) || value < 1 || value > limit) throw new FcError(`${name}은 1부터 ${limit}까지의 정수로 쓰세요: ${value}`);
-    return value;
+    const number = typeof value === 'string' ? (/^\d+$/.test(value) ? Number(value) : Number.NaN) : value;
+    if (!Number.isInteger(number) || number < 1 || number > limit) throw new FcError(`${name}는 1부터 ${limit}까지의 정수로 쓰세요: ${JSON.stringify(value)}`);
+    return number;
   };
   return {
     minHeight: check(minHeight, '--min-height', HEIGHT_LIMIT),
@@ -53,7 +59,10 @@ function saneInfo(info) {
   let shortSide = null;
   if (displayWidth !== null && displayHeight !== null && width !== null && height !== null) {
     const sides = [width, height, displayWidth, displayHeight];
-    if (Math.min(...sides) < MIN_SIDE || Math.max(...sides) > MAX_SIDE) {
+    const coded = [width, height].sort((a, b) => a - b);
+    const shown = [displayWidth, displayHeight].sort((a, b) => a - b);
+    const scaled = coded.some((side, index) => Math.max(side, shown[index]) / Math.min(side, shown[index]) > MAX_DISPLAY_SCALE);
+    if (Math.min(...sides) < MIN_SIDE || Math.max(...sides) > MAX_SIDE || scaled) {
       notes.push(`해상도 값(${width}x${height}, 보이는 크기 ${displayWidth}x${displayHeight})이 정상 범위를 벗어나 깨진 값일 수 있습니다.`);
       width = height = displayWidth = displayHeight = null;
     } else {
@@ -72,7 +81,7 @@ function saneInfo(info) {
     notes.push(`비트레이트 값(${bitrate}bps)이 너무 작아 깨진 값일 수 있습니다.`);
     bitrate = null;
   }
-  if (bitrate === null && !notes.some((note) => /길이|비트레이트/.test(note))) notes.push(duration === null ? '길이 정보가 없어 비트레이트를 알 수 없습니다.' : '길이가 1초 미만이라 비트레이트를 믿을 수 없습니다.');
+  if (bitrate === null && !notes.some((note) => /길이|비트레이트/.test(note))) notes.push(duration === null ? '길이 정보가 없어 비트레이트를 알 수 없습니다.' : duration < MIN_BITRATE_DURATION ? '길이가 1초 미만이라 비트레이트를 믿을 수 없습니다.' : '비트레이트 정보가 없습니다.');
   return { width, height, displayWidth, displayHeight, shortSide, duration, bitrate, notes };
 }
 

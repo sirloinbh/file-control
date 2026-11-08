@@ -231,10 +231,9 @@ function run(argv, { progress } = {}) {
       return formatDuplicateNames(findDuplicateNames(args[0]));
     case 'find-low-quality': {
       checkWholeTarget(command, args, flags);
-      // 정수가 아닌 값(abc, 1.5, 빈 값)은 NaN으로 넘겨 lowQualityCriteria가 거부하게 한다.
-      const number = (name) => (values.has(name) ? (/^\d+$/.test(values.get(name)) ? Number(values.get(name)) : Number.NaN) : undefined);
+      // 값은 글자 그대로 넘겨 lowQualityCriteria가 검사한다. 정수가 아니면(abc, 1.5, 빈 값) 받은 값을 밝혀 거부한다.
       // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
-      return formatLowQuality(findLowQuality(args[0], { minHeight: number('min-height'), minBitrate: number('min-bitrate') }));
+      return formatLowQuality(findLowQuality(args[0], { minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate') }));
     }
     default:
       throw new fc.FcError(`알 수 없는 명령: ${command}\n\n${HELP}`);
