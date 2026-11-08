@@ -1177,7 +1177,9 @@ test('rejectExtractShortNameClash 어림: 깨진 글자는 무엇이든 될 수 
   fc.rejectExtractShortNameClash(['��~1.md', 'plain/��~1.TXT', 'new/��~1.TXT'], path.join(dir, 'out'));
 });
 
-test('unzip은 한글 ~N 항목 하나만 든 압축을 새 폴더에 풀고, 한글 긴 이름이 있는 기존 폴더에는 풀지 않는다 (#188 1차 리뷰)', { skip: !isWindows }, () => {
+test('unzip은 한글 ~N 항목 하나만 든 압축을 새 폴더에 풀고, 한글 긴 이름이 있는 기존 폴더에는 풀지 않는다 (#188 1차 리뷰)', { skip: !isWindows }, (t) => {
+  // 한글 이름은 ANSI·OEM 코드페이지가 949일 때만 tar.exe로 묶을 수 있다(CI의 영어 Windows는 1252·437).
+  if (fc.oemCodePage() !== 949) return t.skip(`OEM 코드페이지 ${fc.oemCodePage()}에서는 한글 이름을 묶을 수 없다`);
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('src', '한글긴~1.TXT'), 'new');
