@@ -62,13 +62,14 @@ async function lockFile(file) {
   };
 }
 
-test('휴지통 이동은 시간 제한을 두고, 실패 사유를 UTF-16으로 받으며 stderr를 읽지 않는다 (#97)', (t) => {
+test('휴지통 이동은 시간 제한을 두지 않고, 실패 사유를 UTF-16으로 받으며 stderr를 읽지 않는다 (#97)', (t) => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
   const { fresh, calls } = fakeRecycle(t, () => failed(77, encode('사유')));
   assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), fresh.FcError);
   assert.strictEqual(calls.length, 1);
-  assert.strictEqual(calls[0].options.timeout, 120 * 1000);
+  // 도중에 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않으므로 시간 제한을 두지 않는다(1차 리뷰).
+  assert.strictEqual(calls[0].options.timeout, undefined);
   assert.deepStrictEqual(calls[0].options.stdio, ['ignore', 'pipe', 'ignore']);
   assert.match(calls[0].script, /catch \{ \$e = \$_\.Exception;.*ToBase64String.*exit 77 \}$/);
   // 대화형 세션 검사는 try 밖에서 먼저 한다.
@@ -107,19 +108,30 @@ test('휴지통 이동이 사유를 내보내지 못하고 77로 끝나면 경�
   assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.txt')}.` });
 });
 
-test('휴지통 이동이 시간 제한에 걸리면 멈췄다고 알리고 남은 상태를 적는다 (#97)', (t) => {
+test('decodeReason은 마지막 줄의 UTF-16 base64만 풀고, 아니면 빈 문자열을 돌려준다 (#97 1차 리뷰)', () => {
+  const { decodeReason } = require('../src/commands');
+  assert.strictEqual(decodeReason(`경고 문구\r\n${encode('첫 줄\r\n둘째 줄.')}\r\n`), '첫 줄 둘째 줄');
+  assert.strictEqual(decodeReason(`${encode('앞 사유')}\r\n깨진 마지막 줄`), '');
+  assert.strictEqual(decodeReason(''), '');
+  assert.strictEqual(decodeReason(undefined), '');
+  assert.strictEqual(decodeReason(Buffer.from(encode('버퍼 사유'))), '버퍼 사유');
+});
+
+test('사용 중인 파일 찾기는 정션을 따라가 폴더 밖의 잠긴 파일을 알리지 않는다 (#97 1차 리뷰)', { skip: !isWindows && 'Windows 잠금' }, async (t) => {
   const dir = tempDir();
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  let gone = false;
-  const { fresh } = fakeRecycle(t, (target) => {
-    if (gone) fs.rmSync(target);
-    return Object.assign(new Error('spawnSync powershell ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM', status: null });
-  });
-  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), {
-    message: `휴지통 이동이 120초 안에 끝나지 않아 멈췄습니다(오류 대화상자 등). 아직 그 자리에 있습니다: ${path.join(dir, 'a.txt')}`,
-  });
-  gone = true;
-  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), { message: /그 자리에 없으니 휴지통을 확인하세요: / });
+  fs.mkdirSync(path.join(dir, 'box', 'deep'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'outside'));
+  fs.writeFileSync(path.join(dir, 'outside', 'busy.txt'), 'x');
+  fs.symlinkSync(path.join(dir, 'outside'), path.join(dir, 'box', 'link'), 'junction');
+  fs.writeFileSync(path.join(dir, 'box', 'deep', 'free.txt'), 'f');
+  const { fresh } = fakeRecycle(t, () => failed(77, encode('사유')));
+  const unlock = await lockFile(path.join(dir, 'outside', 'busy.txt'));
+  try {
+    // 정션 너머의 잠긴 파일은 찾지 않는다.
+    assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'box')} (사유).` });
+  } finally {
+    await unlock();
+  }
 });
 
 test('휴지통 이동이 다른 이유로 실패하면 원래 오류를 던지되 명령 전문과 깨진 글자를 보여 주지 않는다 (#97)', (t) => {

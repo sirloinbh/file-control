@@ -487,12 +487,13 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
 // 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
 const MAX_RECYCLE_PATH = 259;
 
-// 휴지통 이동 한 번의 시간 제한(#97). 같은 볼륨의 휴지통 이동은 이름 바꾸기라 금방 끝나므로, 사람이 닫아야 하는 대화상자 같은
-// 경우에만 걸린다. 잠긴 파일과 잠긴 파일이 든 폴더는 대화상자 없이 1~2초 안에 실패했다(빌드 26200, 대화형 세션에서 확인).
-const RECYCLE_TIMEOUT_MS = 120 * 1000;
+// 휴지통 이동에는 시간 제한을 두지 않는다(#97). 잠긴 파일과 잠긴 파일이 든 폴더는 대화상자 없이 1~2초 안에 실패했고
+// (빌드 26200, 대화형 세션에서 확인), 휴지통 이동은 같은 볼륨에서도 파일 수에 비례해 걸린다(5만 개 폴더 15~25초).
+// 도중에 PowerShell을 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않았다(1차 리뷰에서 실측).
 
 // 파일이나 폴더 안에서 다른 프로그램이 쓰기·삭제를 막고 연 파일을 찾는다(#97). 그런 파일은 쓰기로 열면 EBUSY가 난다.
-// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 파일이 많으면 앞의 MAX_BUSY_PROBE개만 본다.
+// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 파일이 많으면 MAX_BUSY_PROBE개를 본 뒤 그만 읽는다.
+// 링크·정션은 따라가지 않는다. 읽기 전용 파일은 EPERM이라 사용 중으로 보지 않고, 여는 것만으로는 내용이 바뀌지 않는다.
 const MAX_BUSY_PROBE = 10000;
 function busyInside(target) {
   const busy = (file) => {
@@ -504,10 +505,23 @@ function busyInside(target) {
     }
   };
   try {
-    if (!fs.lstatSync(target).isDirectory()) return busy(target) ? path.basename(target) : undefined;
-    const files = fs.readdirSync(target, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).slice(0, MAX_BUSY_PROBE);
-    const found = files.find((entry) => busy(path.join(entry.parentPath, entry.name)));
-    return found && path.relative(target, path.join(found.parentPath, found.name));
+    const stat = fs.lstatSync(target);
+    if (stat.isFile()) return busy(target) ? path.basename(target) : undefined;
+    if (!stat.isDirectory()) return undefined;
+    const stack = [target];
+    let seen = 0;
+    while (stack.length > 0 && seen < MAX_BUSY_PROBE) {
+      const dir = stack.pop();
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.isFile()) {
+          if (busy(full)) return path.relative(target, full);
+          if (++seen >= MAX_BUSY_PROBE) break;
+        }
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -531,16 +545,10 @@ function moveToRecycleBin(target) {
       env: { ...process.env, FC_TARGET: full },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: RECYCLE_TIMEOUT_MS,
     });
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
-    // 시간 제한에 걸리면 execFileSync가 PowerShell을 끝낸다. 떠 있던 대화상자도 함께 닫힌다.
-    if (err.code === 'ETIMEDOUT' || (err.signal && err.status === null)) {
-      const left = fs.existsSync(full) ? '아직 그 자리에 있습니다' : '그 자리에 없으니 휴지통을 확인하세요';
-      throw new FcError(`휴지통 이동이 ${RECYCLE_TIMEOUT_MS / 1000}초 안에 끝나지 않아 멈췄습니다(오류 대화상자 등). ${left}: ${full}`);
-    }
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
@@ -1012,6 +1020,7 @@ module.exports = {
   RECYCLE_FOLDERS_SCRIPT,
   bareDeviceInside,
   MAX_RECYCLE_PATH,
+  decodeReason,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
