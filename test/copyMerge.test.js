@@ -193,6 +193,51 @@ test('cp는 원본 안이나 관계없는 곳을 가리키는 정션은 그 내�
   assert.deepStrictEqual(fs.readdirSync(path.join(root, 'many')), []);
 });
 
+// 이 검사가 빠지면 cpSync가 Node를 끝내 테스트 실행 자체가 끝난다(1차 리뷰).
+test('cp는 원본 안의 자기 위 폴더나 정션 너머의 고리를 가리키는 링크도 찾아 거부한다 (1차 리뷰, #142)', () => {
+  const { root, src } = fixture();
+  fs.mkdirSync(path.join(src, 'a', 'b'), { recursive: true });
+  const x = path.join(root, 'x');
+  fs.mkdirSync(path.join(x, 'sub'), { recursive: true });
+  const cases = [
+    // 원본 안의 링크가 자기 위 폴더(원본 안)를 가리킨다.
+    [[path.join(src, 'a'), path.join(src, 'a', 'b', 'up')]],
+    // 원본 밖 폴더 안에 그 폴더 자신을 가리키는 정션이 있다.
+    [[x, path.join(src, 'out')], [x, path.join(x, 'sub', 'self')]],
+    // 정션 두 개를 거쳐 원본으로 돌아온다.
+    [[x, path.join(src, 'out')], [src, path.join(x, 'back')]],
+    // 정션 너머 폴더의 실제 위 폴더를 가리킨다.
+    [[path.join(x, 'sub'), path.join(src, 'out')], [x, path.join(x, 'sub', 'parent')]],
+  ];
+  for (const links of cases) {
+    for (const [to, at] of links) junction(to, at);
+    for (const dryRun of [false, true]) {
+      assert.throws(() => fc.copy([src], path.join(root, 'fresh'), { dryRun }), LOOP, `${links.map(([, at]) => path.relative(root, at)).join(', ')} dryRun=${dryRun}`);
+    }
+    for (const [, at] of links) fs.rmSync(at);
+  }
+  assert.ok(!fs.existsSync(path.join(root, 'fresh')));
+  // 같은 폴더를 가리키는 정션이 둘이어도 고리가 아니면 복사한다.
+  junction(x, path.join(src, 'one'));
+  junction(x, path.join(src, 'a', 'two'));
+  fc.copy([src], path.join(root, 'twice'));
+  assert.ok(fs.existsSync(path.join(root, 'twice', 'one', 'sub')) && fs.existsSync(path.join(root, 'twice', 'a', 'two', 'sub')));
+});
+
+test('cp는 원본 안의 폴더를 읽지 못하면 미리보기에서도 FcError로 알리고 아무것도 복사하지 않는다 (1차 리뷰, #142)', (t) => {
+  const { root, src } = fixture();
+  fs.mkdirSync(path.join(src, 'locked'));
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (p, options) => {
+    if (path.basename(p) === 'locked') throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return readdir(p, options);
+  });
+  for (const dryRun of [false, true]) {
+    assert.throws(() => fc.copy([src], path.join(root, 'fresh'), { dryRun }), (err) => err instanceof fc.FcError && /원본 안의 폴더를 읽을 수 없어 .*locked \(EPERM\)$/.test(err.message));
+  }
+  assert.ok(!fs.existsSync(path.join(root, 'fresh')));
+});
+
 test('mv가 다른 드라이브로 옮길 때도 위 폴더를 가리키는 정션이 든 폴더는 복사하지 않고 그대로 둔다 (#142)', (t) => {
   const { root, src } = fixture();
   junction(src, path.join(src, 'loop'));
