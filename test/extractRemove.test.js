@@ -15,7 +15,14 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
+// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+let format = () => 'NTFS\r\n';
+let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) {
+    formatProbes += 1;
+    return format();
+  }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -25,6 +32,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 test.beforeEach(() => {
   recycled.length = 0;
   onRecycle = () => {};
+  format = () => 'NTFS\r\n';
+  formatProbes = 0;
 });
 
 const { FcError } = require('../src/commands');
@@ -119,6 +128,27 @@ test('정상으로 풀린 압축 파일을 휴지통으로 보낸다', () => {
   assert.deepStrictEqual(result.removed.sort(), [a, b].sort());
   assert.deepStrictEqual(tree(dir), ['a/x.txt', 'sub/b/y.txt']);
   assert.match(formatExtractions(result), /압축 해제 2개, 휴지통 2개, 남김 0개, 건너뜀 0개, 실패 0개/);
+});
+
+test('exFAT 볼륨이면 풀기만 하고 압축 파일은 남긴다 (#184)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  format = () => 'exFAT\r\n';
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.match(preview.kept[0].reason, /^exFAT 볼륨은 변경 시각을 적지 않아/);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.removed, []);
+  assert.deepStrictEqual(result.kept.map((item) => item.reason.slice(0, 5)), ['exFAT']);
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+  assert.strictEqual(formatProbes, 2);
+});
+
+test('압축 파일을 지우지 않으면 파일 시스템을 확인하지 않는다 (#184)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  extractArchives(dir);
+  assert.strictEqual(formatProbes, 0);
 });
 
 test('.zip과 .7z만 지우고, 다른 형식은 풀기만 하고 남긴다', () => {

@@ -16,8 +16,16 @@ const recycled = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
 let probes = 0;
+// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+let format = () => 'NTFS\r\n';
+let formatProbes = 0;
 const REAL = Symbol('실제 PowerShell 호출');
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) {
+    formatProbes += 1;
+    if (format === REAL) return realExecFileSync(file, args, options);
+    return format();
+  }
   if (options?.env?.FC_VOLUME !== undefined) {
     probes += 1;
     if (volume === REAL) return realExecFileSync(file, args, options);
@@ -39,7 +47,7 @@ test.mock.method(Date, 'now', () => realNow() + skew);
 const { removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE } = require('../src/removeBroken');
 const { recycleBinState, remove, MAX_RECYCLE_PATH } = require('../src/commands');
 const { REMOVAL_LOG } = require('../src/removalLog');
-const { fileStamp } = require('../src/target');
+const { fileStamp, volumeFormat } = require('../src/target');
 const { run } = require('../bin/fctl');
 
 const OLD = new Date(realNow() - HOUR);
@@ -89,6 +97,8 @@ test.beforeEach(() => {
   onRecycle = () => {};
   volume = () => 'True|Fixed\r\n';
   probes = 0;
+  format = () => 'NTFS\r\n';
+  formatProbes = 0;
   skew = HOUR;
 });
 
@@ -417,6 +427,50 @@ for (const [name, answer, pattern] of [
     assert.deepStrictEqual(logs(dir), []);
   });
 }
+
+for (const [name, answer, pattern] of [
+  ['exFAT', () => 'exFAT\r\n', /^exFAT 볼륨은 변경 시각을 적지 않아/],
+  ['FAT32', () => 'FAT32\r\n', /^FAT32 볼륨은 변경 시각을 적지 않아/],
+  ['FAT', () => 'FAT\r\n', /^FAT 볼륨은 변경 시각을 적지 않아/],
+  ['확인 실패', () => { throw new Error('실행 실패'); }, /^파일 시스템을 확인하지 못해/],
+  ['알 수 없는 답', () => '뜻밖의 출력', /^파일 시스템을 확인하지 못해/],
+]) {
+  test(`변경 시각이 없거나 확인하지 못한 파일 시스템이면 고정 디스크여도 지우지 않는다 (#184): ${name}`, () => {
+    const dir = tempDir();
+    make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
+    format = answer;
+    const plan = removeBroken(dir);
+    assert.strictEqual(plan.removals.length, 0);
+    assert.strictEqual(plan.kept.length, 2);
+    assert.ok(plan.kept.every((item) => pattern.test(item.reason)), JSON.stringify(plan.kept));
+    // 남길 파일만 남으면 확인값으로 지울 것이 없다.
+    const result = removeBroken(dir, { confirm: plan.code });
+    assert.deepStrictEqual(result.removed, []);
+    assert.deepStrictEqual(recycled, []);
+    assert.deepStrictEqual(logs(dir), []);
+    assert.match(formatRemoveBroken(plan), /남김: a\.mp4 \(/);
+  });
+}
+
+test('파일 시스템은 고정 디스크일 때 실행마다 한 번만 확인하고, NTFS면 지운다 (#184)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
+  volume = () => 'True|Removable\r\n';
+  removeBroken(dir);
+  assert.strictEqual(formatProbes, 0);
+  volume = () => 'True|Fixed\r\n';
+  const { code } = removeBroken(dir);
+  assert.strictEqual(formatProbes, 1);
+  const result = removeBroken(dir, { confirm: code });
+  assert.strictEqual(result.removed.length, 2);
+  assert.strictEqual(formatProbes, 2);
+});
+
+test('volumeFormat은 실제 볼륨의 파일 시스템 이름을 읽는다 (#184)', { skip: process.platform !== 'win32' }, () => {
+  format = REAL;
+  assert.match(volumeFormat(os.tmpdir()), /^\w+$/);
+  assert.strictEqual(volumeFormat(path.join(os.tmpdir(), 'fc-no-such-volume-\u0000')), null);
+});
 
 test('비대화형이면 기록을 남기기 전에 멈추고, 볼륨은 실행마다 한 번만 확인한다', () => {
   const dir = tempDir();

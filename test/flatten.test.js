@@ -856,6 +856,32 @@ test('fctl flatten은 드라이브 문자만 쓴 타겟을 거부하고 절대�
   assert.match(run(['flatten', dir, '--dry-run']), /이동 1개/);
 });
 
+test('flatten은 진행 표시가 던져도 옮긴 파일을 실패로 세지 않고 나머지와 빈 폴더 정리를 이어 간다', (t) => {
+  const dir = tempDir();
+  make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt']);
+  noHardLinks(t);
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (path.basename(from) === 'y.txt') throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  recycled.length = 0;
+  let calls = 0;
+  const result = flatten(dir, {
+    onProgress: () => {
+      calls += 1;
+      throw new Error('stderr closed');
+    },
+  });
+  assert.deepStrictEqual(result.moved.map((move) => move.name), ['x.txt', 'z.txt']);
+  assert.deepStrictEqual(result.failed.map((item) => path.relative(dir, item.from)), [path.join('b', 'y.txt')]);
+  assert.match(result.failed[0].reason, /locked/);
+  assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a'), path.join(dir, 'c')]);
+  assert.deepStrictEqual(result.keptFolders, []);
+  assert.strictEqual(calls, 5);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'z.txt'), 'utf8'), 'c/z.txt');
+});
+
 test('flatten은 자리표시가 이미 사라졌으면 원래 오류를 알린다', (t) => {
   const dir = tempDir();
   make(dir, ['a/x.txt']);

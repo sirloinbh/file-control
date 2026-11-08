@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, recycleBinState, MAX_RECYCLE_PATH } = require('./commands');
-const { grant, walk, fileStamp } = require('./target');
+const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
@@ -66,8 +66,10 @@ function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SI
   // 휴지통이 없는 볼륨에서는 영구 삭제될 수 있어 고정 디스크로 확인된 경우에만 지운다.
   const { interactive, driveType } = recycleBinState(access.target);
   plan.interactive = interactive;
-  if (driveType !== 'Fixed') {
-    const reason = driveType === null ? '볼륨 종류를 확인하지 못해 남겼습니다.' : `고정 디스크가 아니라(${driveType}) 영구 삭제될 수 있어 남겼습니다.`;
+  // 변경 시각이 없는 볼륨(exFAT 등)에서는 확인값과 5분 보호가 바꿔치기를 막지 못해 지우지 않는다(#184).
+  const volumeReason = driveType === 'Fixed' ? stampVolumeReason(access.target) : null;
+  if (driveType !== 'Fixed' || volumeReason !== null) {
+    const reason = volumeReason ?? (driveType === null ? '볼륨 종류를 확인하지 못해 남겼습니다.' : `고정 디스크가 아니라(${driveType}) 영구 삭제될 수 있어 남겼습니다.`);
     plan.kept.push(...plan.removals.map((item) => ({ path: item.path, reason, file: item })), ...linkKept.map(({ file }) => ({ path: file.path, reason, file })));
     plan.removals = [];
     return plan;
