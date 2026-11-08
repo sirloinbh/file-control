@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, oemCodePage, MAX_TAR_DIR } = require('./commands');
+const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, oemCodePage, MAX_TAR_DIR, TEMP_SERIAL_RESERVE } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { scanTarGzSync } = require('./tarGzScan');
 const { readSevenZip } = require('./sevenZip');
@@ -86,12 +86,13 @@ function planExtractions(dir) {
 
 // 압축 파일 옆에 만들 임시 폴더(.fctl-new-<pid>-<시각>-<번호>)를 tar.exe에 -C로 넘기므로, 그 경로가 MAX_TAR_DIR(258자)를 넘으면
 // unzip이 거부한다(#228). 미리보기는 unzip을 부르지 않으므로 여기서 같은 판정을 하고, 임시 경로가 아닌 압축 파일 기준으로 알린다(#238).
-// 번호가 늘어날 자리로 몇 글자를 남긴다.
-const TEMP_SERIAL_RESERVE = 4;
+// 번호가 늘어날 자리로 zip의 임시 이름과 같은 글자 수(TEMP_SERIAL_RESERVE)를 남긴다. 알릴 때는 압축 파일 폴더를 몇 자로 줄여야 하는지 보인다(1차 리뷰).
 function rejectLongTempDir(archive) {
-  const length = path.join(path.dirname(path.resolve(archive)), `.fctl-new-${process.pid}-${Date.now()}-0`).length + TEMP_SERIAL_RESERVE;
-  if (length > MAX_TAR_DIR) {
-    throw new FcError(`압축 파일이 있는 폴더의 경로가 길어, 풀 때 쓰는 임시 폴더(약 ${length}자)로 tar.exe가 옮겨 갈 수 없습니다(${MAX_TAR_DIR}자까지). 압축 파일을 더 짧은 경로로 옮긴 뒤 다시 실행하세요.`);
+  const folder = path.dirname(path.resolve(archive));
+  const name = `.fctl-new-${process.pid}-${Date.now()}-0`;
+  const limit = MAX_TAR_DIR - TEMP_SERIAL_RESERVE - name.length - 1;
+  if (folder.length > limit) {
+    throw new FcError(`압축 파일이 있는 폴더의 경로가 ${folder.length}자라, 풀 때 그 안에 만드는 임시 폴더로 tar.exe가 옮겨 갈 수 없습니다(-C 폴더는 ${MAX_TAR_DIR}자까지). 압축 파일을 ${limit}자 이하인 폴더로 옮긴 뒤 다시 실행하세요.`);
   }
 }
 
