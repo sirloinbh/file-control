@@ -509,7 +509,8 @@ function lzmaDecode(props, input, outSize) {
 // 7z LZMA2 코더(#222): 속성 1바이트(사전 크기)와 청크들. 제어 바이트 0은 끝, 1·2는 압축하지 않은 청크(1은 사전 재설정),
 // 0x80 이상은 LZMA 청크다. LZMA 청크의 비트 5~6은 재설정 단계(0 없음, 1 상태, 2 상태+속성, 3 상태+속성+사전)이고,
 // 풀린 크기는 비트 0~4와 뒤 2바이트, 압축된 크기는 그 뒤 2바이트(모두 1을 더함)다. 청크마다 범위 디코더를 새로 시작한다.
-// 첫 청크는 사전을 재설정해야 하고, 첫 LZMA 청크는 속성을 정해야 한다(xz의 LZMA2 디코더와 같은 조건).
+// 첫 청크는 사전을 재설정해야 하고, 사전 재설정(0x01, 0xE0 이상) 뒤의 첫 LZMA 청크는 속성을 정해야 한다(xz·LZMA SDK와 같은 조건).
+// 압축하지 않은 청크(0x02) 뒤에는 상태와 rep 거리를 그대로 이어 쓴다(2차 리뷰: xz는 이때 상태 재설정을 요구하지 않는다).
 function lzma2Decode(props, input, outSize) {
   if (props.length < 1 || props[0] > 40) throw broken('7z 헤더의 LZMA2 설정을 읽지 못해 남겼습니다.');
   const out = Buffer.alloc(outSize);
@@ -517,7 +518,6 @@ function lzma2Decode(props, input, outSize) {
   let at = 0;
   let first = true;
   let haveProps = false;
-  let needState = true;
   const byte = () => {
     if (at >= input.length) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');
     return input[at++];
@@ -538,8 +538,6 @@ function lzma2Decode(props, input, outSize) {
       input.copy(out, lzma.pos, at, at + size);
       lzma.pos += size;
       at += size;
-      // 압축하지 않은 청크 뒤의 LZMA 청크는 상태를 재설정해야 한다.
-      needState = true;
       continue;
     }
     if (control < 0x80) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
@@ -551,9 +549,8 @@ function lzma2Decode(props, input, outSize) {
       lzma.setProps(byte(), 4);
       haveProps = true;
     }
-    if (!haveProps || (needState && reset === 0)) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (!haveProps) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
     if (reset >= 1) lzma.resetState();
-    needState = false;
     if (unpacked > outSize - lzma.pos || packed > input.length - at) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
     lzma.run(input, at, at + packed, lzma.pos + unpacked, false);
     // 청크는 압축된 크기만큼 정확히 읽혀야 한다(xz와 같은 조건, 1차 리뷰).

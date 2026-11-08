@@ -138,3 +138,15 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
   loose.writeUInt16BE(loose.readUInt16BE(3) + 1, 3);
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([loose.subarray(0, loose.length - 1), Buffer.from([0x00, 0x00])]), 23)), /손상돼/);
 });
+
+test('lzma2Decode는 압축하지 않은 청크(0x02) 뒤의 상태 재설정 없는 LZMA 청크(0x80)를 xz처럼 이어서 푼다 (#222 2차 리뷰)', () => {
+  const crypto = require('node:crypto');
+  // xz --format=raw --lzma2=preset=6로 'abcdefghij'를 22만 번 반복한 것을 묶은 스트림(청크 0xFF, 0x81).
+  const stream = Buffer.from('ffff1a01775d00309888983ecbe26f34b352b73046111cd3e4d363f4dd2d4092a4a96357b6033b217e06eae7679f95f1bb53cc6ea748c86626a30487599a0984bab3f27bdb2537bda25944808b1e8fa29bc79a57cc3a3bcfd151c7a9430b18918856ac997b0cb323cf4c047dd57af33e14536276ac59e4e55b0508f9c7daadfcfb522b74cd1e5b2042f9dd533df82964093b80cb2a6cdfb53bf0c4bd2e5faa0f3e4b664290130eff1093f8717859f80bcdff9528460fa9fc7cdefb9a302e56c08f85f38381c065c42553f8f591363105a5b0ee6fc1704d470cd19111aaad601dbaceb127185c5986e9665258bee976ac59e4e55b0508f9c7daadfcfb522b74cd1e5b2042f9dd533df82964093b80cb2a6cdfb53bf0c4bd2e5faa0f3e4b664290130eff1093f8717859f80bcdff9528460fa9fc7cdefb9a302e56c08f85f38381c065c42553f8f591363105a5b0ee6fc1704d470cd19111aaad601dbaceb127185c5986e9665258bee976ac59e4e55b0508f9c7daadfcfb522b74b325ff628192a4001400ec7353a7fdbeae7c311a9fb78d31625b83bf000000', 'hex');
+  const text = Buffer.from('abcdefghij'.repeat(220000));
+  assert.ok(lzma2Decode(Buffer.from([0x16]), stream, text.length).equals(text));
+  // 두 청크 사이에 0x02 청크('XYZ')를 끼운다. xz -dc의 결과(2,200,003바이트)와 SHA-256이 같아야 한다.
+  const mid = Buffer.concat([stream.subarray(0, 382), Buffer.from([0x02, 0x00, 0x02, 0x58, 0x59, 0x5a]), stream.subarray(382)]);
+  const out = lzma2Decode(Buffer.from([0x16]), mid, text.length + 3);
+  assert.strictEqual(crypto.createHash('sha256').update(out).digest('hex'), '7a8d8bbc9771088f46bc641dc93e56c8b299435bc99910ee92919d44f8c0543d');
+});
