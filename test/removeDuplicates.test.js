@@ -179,6 +179,51 @@ test('남길 파일의 하드링크인 사본은 같은 파일의 다른 이름�
   assert.ok(fs.existsSync(keeper));
 });
 
+test('다른 묶음의 남길 파일과 하드링크인 사본은 지우지 않아, 그 묶음의 사본이 실행 중에 실패하지 않는다 (#127 1차 리뷰)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'AAA-100.mp4': mp4({ seconds: 3600 }), 'DEF-456.mp4': mp4({ seconds: 1800 }), 'z/DEF-456 copy.mp4': mp4({ seconds: 1800 }) });
+  // AAA-100 묶음의 사본이 DEF-456 묶음의 남길 파일과 같은 파일이다. 길이는 AAA-100과 같게 보이도록 한 파일을 두 이름으로 둔다.
+  const cross = path.join(dir, 'x', 'AAA-100 copy.mp4');
+  fs.mkdirSync(path.dirname(cross));
+  fs.writeFileSync(f['DEF-456.mp4'], mp4({ seconds: 3600 }));
+  fs.writeFileSync(f['z/DEF-456 copy.mp4'], mp4({ seconds: 3600 }));
+  for (const name of ['DEF-456.mp4', 'z/DEF-456 copy.mp4']) fs.utimesSync(f[name], OLD, OLD);
+  fs.linkSync(f['DEF-456.mp4'], cross);
+  const plan = removeDuplicates(dir);
+  const keepers = plan.sets.map((set) => set.keep.path).sort();
+  assert.deepStrictEqual(keepers, [f['AAA-100.mp4'], f['DEF-456.mp4']].sort());
+  assert.deepStrictEqual(plan.removals.map((item) => item.path), [f['z/DEF-456 copy.mp4']]);
+  assert.deepStrictEqual(plan.kept.map((item) => [item.path, item.reason]), [[cross, `다른 묶음의 남길 파일(DEF-456.mp4)과 같은 파일(하드링크)의 다른 이름이라 지워도 공간이 줄지 않아 남겼습니다. 지우면 그 파일의 변경 시각이 바뀝니다.`]]);
+  const result = confirmed(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(recycled, [f['z/DEF-456 copy.mp4']]);
+});
+
+test('고정 디스크가 아닌 볼륨에서는 사본끼리 하드링크여도 볼륨 사유로 남긴다 (#127 1차 리뷰)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }), 'x/ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  const copyLink = path.join(dir, 'y', 'ABC-123 (2).mp4');
+  fs.mkdirSync(path.dirname(copyLink));
+  fs.linkSync(f['x/ABC-123 copy.mp4'], copyLink);
+  volume = () => 'True|Removable\r\n';
+  const plan = removeDuplicates(dir);
+  assert.deepStrictEqual(plan.removals, []);
+  assert.strictEqual(plan.kept.length, 2);
+  assert.ok(plan.kept.every((item) => /^고정 디스크가 아니라\(Removable\)/.test(item.reason)), JSON.stringify(plan.kept.map((item) => item.reason)));
+});
+
+test('다른 사본과 하드링크이면서 경로가 긴 사본은 경로 사유로 남긴다 (#127 1차 리뷰)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }), 'x/ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  const long = path.join(dir, 'x'.repeat(120), 'y'.repeat(120), 'ABC-123 (2).mp4');
+  fs.mkdirSync(path.dirname(long), { recursive: true });
+  fs.linkSync(f['x/ABC-123 copy.mp4'], long);
+  const plan = removeDuplicates(dir);
+  const kept = Object.fromEntries(plan.kept.map((item) => [item.path, item.reason]));
+  assert.match(kept[long], /^경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  assert.deepStrictEqual(plan.removals.map((item) => item.path), [f['x/ABC-123 copy.mp4']]);
+});
+
 test('전체 경로가 259자를 넘는 사본은 휴지통으로 보낼 수 없어 계획에서 남긴다 (#127)', () => {
   const dir = tempDir();
   const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }) });
