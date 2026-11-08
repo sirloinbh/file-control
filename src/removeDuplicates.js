@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, recycleBinState } = require('./commands');
+const { FcError, recycleBinState, recycleTarget } = require('./commands');
 const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
 const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
@@ -87,6 +87,11 @@ function keeperStamp(access, keeper, now, markerOf) {
 // - lengthOnly: 지우지 않은 길이만 같은 묶음 수
 // - interactive: 휴지통으로 보낼 수 있는 세션인지. 지울 파일이 없으면 확인하지 않아 null이다.
 // 그 밖의 값(conflicts, unreadable, skipped 등)은 findDuplicateNames의 것이다.
+// 휴지통으로 보내다 실패할 것이 확실하거나 지워도 소용없는 사본은 미리 남긴다(#127).
+// - 휴지통으로 보낼 수 없는 경로(259자 초과, 끝이 점·공백인 이름). rm과 같은 검사(recycleTarget)다.
+// - 남길 파일과 같은 파일(하드링크)의 다른 이름. 지워도 공간이 줄지 않고, 지우면 남길 파일의 변경 시각이 바뀌어
+//   같은 묶음의 다음 사본이 "남길 파일이 바뀌었다"로 실패한다.
+// - 이번에 지울 다른 사본과 같은 파일인 사본. 한 이름을 지우면 이 이름의 변경 시각이 바뀌어 판별한 파일과 달라 보인다(remove-broken과 같다).
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
   rejectRepository(access.target, walk(access.target));
@@ -95,6 +100,34 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const checkedAt = now ?? Date.now();
   const plan = { ...found, sets: [], removals: [], kept: [], lengthOnly: found.metadataGroups.filter((group) => !group.alsoNamed).length, interactive: null };
   const markerOf = markerFinder();
+  // 파일 번호가 0이면 같은 파일인지 알 수 없어 비교하지 않는다(flatten·commands와 같다, 1차 리뷰).
+  const fileId = (stat) => (stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`);
+  // 모든 묶음의 남길 파일 { 파일 ID -> 경로 }. 다른 묶음의 남길 파일과 같은 파일인 사본을 지우면 그 남길 파일의
+  // 변경 시각이 바뀌어 그 묶음의 사본이 "남길 파일이 바뀌었다"로 실패하고, 공간도 줄지 않는다(1차 리뷰).
+  const keeperIds = new Map();
+  for (const group of found.groups) {
+    if (group.generic) continue;
+    try {
+      const id = fileId(fs.lstatSync(group.keep.path, { bigint: true }));
+      if (id !== null) keeperIds.set(id, group.keep.path);
+    } catch {
+      // 남길 파일을 읽지 못하면 keeperStamp가 그 묶음을 남긴다.
+    }
+  }
+  // 이번에 지울 사본 중 링크 수가 2 이상인 파일 { 파일 ID -> 경로 }
+  const linked = new Map();
+  // 다른 사본을 먼저 지우므로 이번에는 남기는 사본. 사유는 볼륨을 확인한 뒤 정한다(remove-broken과 같다, 1차 리뷰).
+  const linkKept = [];
+  // 휴지통으로 보낼 수 없는 경로면 그 사유를, 아니면 null을 돌려준다(rm과 같은 검사, #129).
+  const pathProblem = (p) => {
+    try {
+      recycleTarget(p);
+      return null;
+    } catch (err) {
+      if (err instanceof FcError) return err.message;
+      throw err;
+    }
+  };
   found.groups.forEach((group, set) => {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
@@ -121,11 +154,20 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
         const hold = holdReason(stat, checkedAt);
         // 사본도 받는 중일 수 있으면 지우지 않는다. remove-broken과 같은 순서로 본다.
         const marker = hold === null ? markerReason(markerOf(real)) : null;
+        const id = fileId(stat);
+        const twin = id === null ? undefined : keeperIds.get(id);
+        // 경로 검사는 하드링크 판정보다 먼저 한다. 그래야 "다음 실행에 지운다"고 했다가 다음에 경로로 남기는 일이 없다(1차 리뷰).
+        const badPath = pathProblem(real);
         if (real !== file.path || !stat.isFile()) keep(file, '찾은 뒤 파일이 바뀌어 남겼습니다.');
         else if (hold !== null) keep(file, hold);
         else if (marker !== null) keep(file, marker);
         else if (Number(stat.size) >= maxSize) keep(file, '1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
+        else if (badPath !== null) keep(file, badPath);
+        else if (twin === keeper.path) keep(file, '남길 파일과 같은 파일(하드링크)의 다른 이름이라 지워도 공간이 줄지 않아 남겼습니다. 지우면 남길 파일의 변경 시각이 바뀝니다.');
+        else if (twin !== undefined) keep(file, `다른 묶음의 남길 파일(${path.relative(access.target, twin)})과 같은 파일(하드링크)의 다른 이름이라 지워도 공간이 줄지 않아 남겼습니다. 지우면 그 파일의 변경 시각이 바뀝니다.`);
+        else if (stat.nlink > 1n && id !== null && linked.has(id)) linkKept.push({ path: file.path, set, file, other: linked.get(id) });
         else {
+          if (stat.nlink > 1n && id !== null) linked.set(id, real);
           plan.removals.push({
             path: real,
             size: Number(stat.size),
@@ -146,14 +188,21 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       }
     }
   });
+  // linkKept는 같은 파일의 다른 이름이 removals에 있을 때만 생기므로, removals가 비면 linkKept도 비어 있다.
   if (plan.removals.length === 0) return plan;
   // 휴지통이 없는 볼륨에서는 영구 삭제될 수 있어 고정 디스크로 확인된 경우에만 지운다.
   const { interactive, driveType } = recycleBinState(access.target);
   plan.interactive = interactive;
   if (driveType !== 'Fixed') {
     const reason = driveType === null ? '볼륨 종류를 확인하지 못해 남겼습니다.' : `고정 디스크가 아니라(${driveType}) 영구 삭제될 수 있어 남겼습니다.`;
-    plan.kept.push(...plan.removals.map((item) => ({ path: item.path, set: item.set, reason, file: item })));
+    plan.kept.push(...[...plan.removals, ...linkKept].map((item) => ({ path: item.path, set: item.set, reason, file: item.file ?? item })));
     plan.removals = [];
+    return plan;
+  }
+  // 한 실행에서 같은 파일의 이름을 하나씩만 지우므로, 이름이 셋 이상이면 실행할 때마다 하나씩 줄어든다.
+  for (const item of linkKept) {
+    const reason = `같은 파일의 다른 이름(하드링크: ${path.relative(access.target, item.other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
+    plan.kept.push({ path: item.path, set: item.set, reason, file: item.file });
   }
   return plan;
 }
