@@ -1067,14 +1067,27 @@ const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz'
 // .jar처럼 형식으로 읽지 않는 것은 x.jar.gz도 gzip 안의 tar가 되어 .gz만 붙인 것과 같다.
 const FORMAT_EXT = new Set(['cpio', 'iso', 'ar', 'shar', 'xar', 'warc', 'mtree', '7z', 'zip']);
 const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu)$/i;
+// tar.exe는 끝의 압축 확장자를 겹겹이 벗긴다(#193, 빌드 26200 실측: x.tar.gz.gz는 gzip 두 겹 안의 tar, x.cpio.gz.xz는 xz 안의 gzip 안의 cpio,
+// y.tgz.gz는 gzip 두 겹 안의 tar, y.Z.gz는 gzip 안의 compress). 그래서 끝에서부터 이어지는 압축 확장자(tar와 압축을 함께 뜻하는 .tgz 등 포함)를
+// 모두 임시 파일에 옮겨, tar.exe가 원래 이름(소문자로 바꾼 것)에서 정할 형식을 그대로 정하게 한다. 벗기는 규칙을 따로 흉내 내지 않는다.
+// 확장자는 영숫자만 받으므로 임시 이름에 --exclude 패턴 문자가 들어가지 않는다.
+const LAYER_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu|tgz|tbz|tbz2|txz|tlz|tzst|taz|tz2|tzo)$/i;
+const isLayerExt = (part) => LAYER_EXT.test(part) || KEEP_CASE_EXT.has(part);
 function archiveExt(archive) {
-  const base = path.basename(path.resolve(archive));
-  const layered = /\.([a-z0-9]+)\.([a-z0-9]+)$/i.exec(base);
-  const match = layered && FORMAT_EXT.has(layered[1].toLowerCase()) && (COMPRESS_EXT.test(layered[2]) || layered[2] === 'Z')
-    ? layered
-    : /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(base);
-  if (!match) return '';
-  return match[0].split('.').map((part) => (KEEP_CASE_EXT.has(part) ? part : part.toLowerCase())).join('.');
+  const parts = path.basename(path.resolve(archive)).split('.');
+  // parts[0]은 이름이라 확장자로 보지 않는다.
+  const usable = (i) => i >= 1 && /^[a-z0-9]+$/i.test(parts[i]);
+  const last = parts.length - 1;
+  if (!usable(last)) return '';
+  let start = last;
+  while (usable(start - 1) && isLayerExt(parts[start]) && isLayerExt(parts[start - 1])) start -= 1;
+  if (usable(start - 1)) {
+    const before = parts[start - 1].toLowerCase();
+    // 형식+압축(x.cpio.gz, #164)이나 tar 뒤의 확장자(x.tar.gz, x.tar.zip)는 앞의 확장자도 옮긴다.
+    const compressed = COMPRESS_EXT.test(parts[start]) || parts[start] === 'Z';
+    if ((compressed && (FORMAT_EXT.has(before) || before === 'tar')) || (start === last && before === 'tar')) start -= 1;
+  }
+  return parts.slice(start).map((part) => `.${KEEP_CASE_EXT.has(part) ? part : part.toLowerCase()}`).join('');
 }
 
 // 압축 파일이 묶을 폴더 안에 있으면 tar가 기존 압축 파일까지 묶으므로 미리 치워야 한다.
@@ -1329,7 +1342,7 @@ module.exports = {
   recycleTarget,
   unzip,
   archiveEntries,
-  archiveNames, probeArchive,
+  archiveNames, probeArchive, archiveExt,
   unsupportedChars,
   oemCodePage,
   couldBeShortNameOf,
