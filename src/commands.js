@@ -1776,5 +1776,7 @@ module.exports = {
   rejectExtractShortNameClash,
   ensureRoomToExtract,
   freshPath,
+  MAX_TAR_DIR,
+  TEMP_SERIAL_RESERVE,
   zip,
 };
