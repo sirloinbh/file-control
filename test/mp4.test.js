@@ -121,6 +121,7 @@ test('readMp4Metadata는 제목, 코멘트, 길이, 해상도, 비트레이트�
     displayWidth: 1920,
     displayHeight: 1080,
     bitrate: Math.round((size * 8) / 10),
+    bitrateNote: null,
   });
 });
 
@@ -135,6 +136,7 @@ test('찾지 못한 값은 null이다', () => {
     displayWidth: null,
     displayHeight: null,
     bitrate: null,
+    bitrateNote: null,
   });
 });
 
@@ -786,4 +788,75 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
   fs.rmSync(path.join(parent, 'probe.mp4'));
   if (fs.existsSync(file)) fs.rmSync(file);
   swapTo(() => fs.symlinkSync(path.join(parent, 'secret.mp4'), file));
+});
+
+// #179: 길이를 표본 표와 맞춰 보는 시험용 트랙. seconds는 표본 표(stts)의 실제 길이, header는 tkhd·mdhd에 적을 길이다.
+// chunk는 데이터 위치표(stco)가 가리킬 위치다.
+// version 1이면 mdhd를 64비트 시각으로, co64면 위치표를 64비트(co64)로 쓴다. entries를 주면 stts 항목 수를 그 값으로 적는다(내용은 그대로).
+function dataTrak({ kind = 'vide', seconds, header = seconds, timescale = 1000, chunk = 0, samples = 1, version = 0, co64 = false, entries = 1 }) {
+  const units = Math.round(seconds * timescale);
+  const length = Math.round(header * timescale);
+  const mdhd = version === 1
+    ? box('mdhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(length), u32(0))
+    : box('mdhd', u32(0), u32(0), u32(0), u32(timescale), u32(length), u32(0));
+  const stts = box('stts', u32(0), u32(entries), u32(samples), u32(units / samples));
+  const stco = co64 ? box('co64', u32(0), u32(1), u64(chunk)) : box('stco', u32(0), u32(1), u32(chunk));
+  const stbl = box('stbl', stsd(kind === 'vide' ? 1920 : 0, kind === 'vide' ? 1080 : 0), stts, stco);
+  return box('trak', tkhd({ width: 1920, height: 1080, duration: Math.round(header * 1000) }), box('mdia', mdhd, hdlr(kind), box('minf', stbl)));
+}
+
+test('길이 값이 표본 표의 길이보다 훨씬 길면 비트레이트를 믿지 않는다 (#179)', () => {
+  const dir = tempDir();
+  // 60초짜리 영상의 mvhd·tkhd·mdhd 길이가 60000초로 적힌 파일
+  const result = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 * 1000 }), dataTrak({ seconds: 60, header: 60000 })), box('mdat', Buffer.alloc(1000)));
+  assert.strictEqual(result.duration, 60000);
+  assert.strictEqual(result.bitrate, null);
+  assert.match(result.bitrateNote, /^길이 값\(60000초\)이 표본 표의 길이\(60초\)보다 훨씬 길어/);
+});
+
+test('길이 값이 표본 표와 맞거나 조금 다르면 비트레이트를 계산한다 (#179)', () => {
+  const dir = tempDir();
+  const same = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60 })), box('mdat', Buffer.alloc(1000)));
+  assert.ok(same.bitrate > 0);
+  assert.strictEqual(same.bitrateNote, null);
+  // 편집 목록의 빈 구간 등으로 조금 긴 것(2배 + 60초 이내)은 그대로 둔다.
+  const longer = write(dir, ftyp(), box('moov', mvhd({ duration: 170000 }), dataTrak({ seconds: 60, samples: 4 })), box('mdat', Buffer.alloc(1000)));
+  assert.ok(longer.bitrate > 0);
+  // 소리 트랙이 영상보다 길면 가장 긴 트랙과 맞춘다.
+  const audio = write(dir, ftyp(), box('moov', mvhd({ duration: 3600000 }), dataTrak({ seconds: 60 }), dataTrak({ kind: 'soun', seconds: 3600, timescale: 48000 })), box('mdat', Buffer.alloc(1000)));
+  assert.ok(audio.bitrate > 0);
+  assert.strictEqual(audio.bitrateNote, null);
+  // 표본 표가 없는 파일(지금까지의 시험 파일)은 맞춰 보지 않는다.
+  const plain = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), trak()), box('mdat', Buffer.alloc(1000)));
+  assert.ok(plain.bitrate > 0);
+  assert.strictEqual(plain.bitrateNote, null);
+});
+
+test('데이터 위치표가 파일 끝 너머를 가리키는 받다 만 파일은 비트레이트를 믿지 않는다 (#179)', () => {
+  const dir = tempDir();
+  const result = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, chunk: 50_000_000 })), box('mdat', Buffer.alloc(1000)));
+  assert.strictEqual(result.duration, 60);
+  assert.strictEqual(result.bitrate, null);
+  assert.match(result.bitrateNote, /받다 만 파일일 수 있어/);
+});
+
+test('조각 파일(mvex)은 moov의 빈 표본 표와 길이를 맞춰 보지 않는다 (#179)', () => {
+  const dir = tempDir();
+  const mvex = box('mvex', box('mehd', u32(0), u32(600000)));
+  const result = write(dir, ftyp(), box('moov', mvhd({ duration: 0 }), dataTrak({ seconds: 1 }), mvex), box('mdat', Buffer.alloc(1000)));
+  assert.strictEqual(result.duration, 600);
+  assert.ok(result.bitrate > 0);
+  assert.strictEqual(result.bitrateNote, null);
+});
+
+test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (#179, 1차 리뷰)', () => {
+  const dir = tempDir();
+  const v1 = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 * 1000 }), dataTrak({ seconds: 60, timescale: 90000, version: 1 })), box('mdat', Buffer.alloc(1000)));
+  assert.match(v1.bitrateNote, /표본 표의 길이\(60초\)/);
+  const cut = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, co64: true, chunk: 2 ** 33 })), box('mdat', Buffer.alloc(1000)));
+  assert.match(cut.bitrateNote, /받다 만 파일일 수 있어/);
+  // 항목 수가 표 크기보다 크게 적힌 stts는 읽지 않고, 맞춰 보지 못하므로 비트레이트를 그대로 계산한다.
+  const odd = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 1, entries: 5 })), box('mdat', Buffer.alloc(1000)));
+  assert.ok(odd.bitrate > 0);
+  assert.strictEqual(odd.bitrateNote, null);
 });
