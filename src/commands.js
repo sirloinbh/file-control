@@ -767,43 +767,47 @@ function probeArchive(archive, { maxBuffer, timeout }) {
 }
 
 // tar -tv 줄의 크기 칸. bsdtar는 종류와 권한, 링크 수, 소유자, 그룹, 크기 순으로 적는다.
+// ACL이나 확장 속성이 있는 항목은 권한 칸 끝에 +·@ 같은 글자가 하나 더 붙는다.
 // 소유자 이름에 공백이 있거나 장치 항목(주,부 번호)이면 읽지 못하므로 그때는 풀지 않는다.
-const LISTED_SIZE = /^\S{10}\s+\d+\s+\S+\s+\S+\s+(\d+)\s/;
-// 파일은 블록 단위로 자리를 차지하므로 크기를 블록 단위로 올려 더한다.
+const LISTED_SIZE = /^\S{10,11}\s+\d+\s+\S+\s+\S+\s+(\d+)\s/;
+// 파일은 클러스터 단위로 자리를 차지하므로 크기를 클러스터 크기(최소 4KB) 단위로 올려 더한다.
 const DISK_BLOCK = 4096n;
+// 크기가 0인 파일과 폴더도 항목마다 파일 시스템 기록(NTFS MFT 레코드 1KB)을 쓴다.
+const ENTRY_OVERHEAD = 1024n;
 // 풀고 나서도 이만큼은 남아야 한다. 같은 디스크를 쓰는 다른 프로그램과 OneDrive 동기화가 쓸 자리다.
 const SPACE_RESERVE = 1024n ** 3n;
 
-// 목록에 적힌 크기의 합(블록 단위로 올림). 압축 파일이 적은 값이라 실제와 다를 수 있다.
+// 목록에 적힌 크기의 합(block 단위로 올리고 항목마다 ENTRY_OVERHEAD를 더함). 압축 파일이 적은 값이라 실제와 다를 수 있다.
 // mtree 글처럼 size= 값만으로 큰 빈 파일을 만드는 경우도 목록에 그 크기로 나온다.
-function listedSize(entries) {
+function listedSize(entries, block) {
   let total = 0n;
   for (const line of entries) {
     const match = LISTED_SIZE.exec(line);
     if (!match) throw new FcError(`압축 파일 목록에서 크기를 읽지 못해 풀지 않았습니다: ${JSON.stringify(line.slice(0, 80))}`);
-    total += ((BigInt(match[1]) + DISK_BLOCK - 1n) / DISK_BLOCK) * DISK_BLOCK;
+    total += ((BigInt(match[1]) + block - 1n) / block) * block + ENTRY_OVERHEAD;
   }
   return total;
 }
 
-// dir이 들어갈 볼륨의 남은 공간. 아직 없는 폴더면 있는 상위 폴더로 본다.
+// dir이 들어갈 볼륨의 남은 공간과 클러스터 크기. 아직 없는 폴더면 있는 상위 폴더로 본다.
 function freeSpace(dir) {
   let current = path.resolve(dir);
   while (!exists(current) && path.dirname(current) !== current) current = path.dirname(current);
   const stat = fs.statfsSync(current, { bigint: true });
-  return stat.bavail * stat.bsize;
+  return { free: stat.bavail * stat.bsize, block: stat.bsize > DISK_BLOCK ? stat.bsize : DISK_BLOCK };
 }
 
 // 풀린 크기가 남은 공간에서 SPACE_RESERVE를 뺀 것보다 크면 풀기 전에 거부한다(#77). 확인할 수 없어도 풀지 않는다.
 // 돌려주는 값은 목록 크기의 합(바이트, BigInt)이다.
 function ensureRoomToExtract(dest, entries) {
-  const need = listedSize(entries);
-  let free;
+  let space;
   try {
-    free = freeSpace(dest);
+    space = freeSpace(dest);
   } catch (err) {
     throw new FcError(`남은 디스크 공간을 확인하지 못해 풀지 않았습니다: ${dest} (${err.code ?? err.message})`);
   }
+  const need = listedSize(entries, space.block);
+  const { free } = space;
   if (need + SPACE_RESERVE > free) {
     throw new FcError(`풀면 약 ${formatSize(Number(need))}가 되어 디스크에 ${formatSize(Number(SPACE_RESERVE))}보다 적게 남으므로 풀지 않았습니다. (남은 공간 ${formatSize(Number(free))})`);
   }

@@ -967,12 +967,12 @@ test('unzip은 풀고 나서 1GB보다 적게 남으면 거부하고, 남은 공
   fc.writeFile(p('a.txt'), 'A');
   fc.zip(p('a.zip'), [p('a.txt')]);
   const statfs = fs.statfsSync;
-  let free = 1024n ** 3n + 4096n;
+  let free = 1024n ** 3n + 5120n;
   t.mock.method(fs, 'statfsSync', (target, options) => {
     if (free === null) throw Object.assign(new Error('no'), { code: 'ENOSYS' });
     return { ...statfs(target, options), bavail: free / 512n, bsize: 512n };
   });
-  // 파일 하나(4KB로 셈)와 1GB 여유가 꼭 맞으면 푼다.
+  // 파일 하나(4KB와 항목 1KB로 셈)와 1GB 여유가 꼭 맞으면 푼다.
   fc.unzip(p('a.zip'), p('ok'));
   assert.strictEqual(fc.readFile(p('ok', 'a.txt')), 'A');
   free -= 512n;
@@ -994,4 +994,23 @@ test('unzip은 목록에서 크기를 읽지 못하면 풀지 않는다 (#77)', 
   assert.throws(() => mocked.unzip(p('a.zip'), p('out')), /크기를 읽지 못해 풀지 않았습니다/);
   assert.deepStrictEqual(calls, ['-tvf']);
   assert.ok(!fs.existsSync(p('out')));
+});
+
+test('unzip은 권한 칸 끝에 ACL 표시(+)가 붙은 목록 줄의 크기도 읽는다 (#77)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.writeFileSync(p('a.tar'), 'x');
+  const mocked = loadWithTar(t, () => Buffer.from('-rw-r--r--+ 0 0      0    99999999999999 Jan  1  2020 acl.txt\n'));
+  assert.throws(() => mocked.unzip(p('a.tar'), p('out'), { dryRun: true }), /풀면 약 90\.9TB가 되어/);
+});
+
+test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위로 올려 센다 (#77)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.writeFileSync(p('a.zip'), 'x');
+  const mocked = loadWithTar(t, () => Buffer.from('-rw-r--r--  0 0      0           1 Jan  1  2020 a.txt\n-rw-r--r--  0 0      0           1 Jan  1  2020 b.txt\n'));
+  const statfs = fs.statfsSync;
+  t.mock.method(fs, 'statfsSync', (target, options) => ({ ...statfs(target, options), bavail: 1n << 40n, bsize: 131072n }));
+  // 1바이트 파일 2개를 128KB씩 올리고 항목마다 1KB를 더한다.
+  assert.match(mocked.unzip(p('a.zip'), p('out'), { dryRun: true }), /풀린 크기 약 258\.0KB/);
 });
