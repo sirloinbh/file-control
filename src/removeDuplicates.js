@@ -268,7 +268,9 @@ function removeDuplicates(dir, { confirm, dryRun = false, now, maxSize = MAX_REC
     log,
     (item) => {
       checkKeeper(access, item);
-      return { ...checkOne(access, item), keep: { path: recycleTarget(item.keep), stamp: item.keepStamp } };
+      // 남길 파일은 지우지 않으므로 휴지통 경로 검사(recycleTarget)를 하지 않는다. 경로가 긴 남길 파일의 사본도 지운다(1차 리뷰).
+      // checkKeeper가 실제 경로와 같은지 이미 봤고, PowerShell은 \\?\ 접두어로 긴 경로를 연다.
+      return { ...checkOne(access, item), keep: { path: item.keep, stamp: item.keepStamp } };
     },
     {
       removed: (item) => result.removed.push(item),

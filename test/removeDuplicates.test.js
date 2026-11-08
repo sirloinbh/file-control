@@ -272,6 +272,23 @@ test('전체 경로가 259자를 넘는 사본은 휴지통으로 보낼 수 없
   assert.deepStrictEqual(plan.kept.map((item) => [item.path, item.reason]), [[long, `경로가 ${long.length}자라 휴지통으로 보낼 수 없습니다(259자까지): ${long}`]]);
 });
 
+test('남길 파일의 경로가 259자를 넘어도 그 사본은 지운다 (#216 1차 리뷰)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  const long = path.join(dir, 'x'.repeat(120), 'y'.repeat(120), 'ABC-123.mp4');
+  fs.mkdirSync(path.dirname(long), { recursive: true });
+  fs.writeFileSync(long, mp4({ seconds: 3600, padding: 100 }));
+  fs.utimesSync(long, OLD, OLD);
+  assert.ok(long.length > 259);
+  const plan = removeDuplicates(dir);
+  assert.strictEqual(plan.sets[0].keep.path, long);
+  assert.deepStrictEqual(plan.removals.map((item) => item.path), [f['ABC-123 copy.mp4']]);
+  const result = removeDuplicates(dir, { confirm: plan.code });
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.removed.map((item) => item.path), [f['ABC-123 copy.mp4']]);
+  assert.ok(fs.existsSync(long) && !fs.existsSync(f['ABC-123 copy.mp4']));
+});
+
 test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 제목)은 길이나 화면 비율이 다르면 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   make(dir, {

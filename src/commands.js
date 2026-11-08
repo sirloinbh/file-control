@@ -866,6 +866,8 @@ foreach ($line in $input) {
   $parts = $line.Split(' ')
   $status = 'error'; $reason = ''
   try {
+    # 칸은 사본 경로·stamp 2개, 또는 남길 파일 경로·stamp까지 4개다. 그 밖이면 남길 파일 검사를 건너뛰지 않도록 지우지 않는다(1차 리뷰).
+    if ($parts.Length -ne 2 -and $parts.Length -ne 4) { throw 'bad input line' }
     $p = $u.GetString([Convert]::FromBase64String($parts[0]))
     $long = Long $p
     if (-not [IO.File]::Exists($long)) { if ([IO.Directory]::Exists($long)) { $status = 'notfile' } else { $status = 'gone' } }

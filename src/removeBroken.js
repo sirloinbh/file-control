@@ -113,7 +113,7 @@ function checkOne(access, item) {
   if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
-  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 실제 휴지통 이동 스크립트도 지우기 직전에 다시 본다(#81).
+  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 묶음 스크립트(recycleFiles)는 지우기 직전에 이 설정을 다시 보지 않는다.
   remove([real], { dryRun: true, checkVolume: false });
   return { path: recycleTarget(real), stamp: item.stamp };
 }
