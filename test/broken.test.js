@@ -404,6 +404,8 @@ test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 �
   const cases = {
     'tar.exe: Error opening archive: Child process exited with status 1': /외부 프로그램이 실패해\(종료 코드 1\) 판단하지 않았습니다/,
     ' tar.exe: Error opening archive: Child process exited with status 2': /종료 코드 2/,
+    // 압축을 연 뒤 읽는 도중에 실패한 형태(1차 리뷰)
+    'tar.exe: Child process exited with status 3': /외부 프로그램이 실패해\(종료 코드 3\)/,
     'tar.exe: Error opening archive: Can\'t initialize filter; unable to run program "lzop -d"': /외부 프로그램 lzop이 없어/,
     // 항목 이름이 문구를 흉내 낸 줄은 프로그램 없음으로 보지 않는다(#241과 같은 규칙).
     '../unable to run program "lz4 x": Path contains \'..\'': /tar로 읽지 못해 판단하지 않았습니다/,
@@ -418,6 +420,14 @@ test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 �
     assert.strictEqual(result.unreadable.length, 1, stderr);
     assert.match(result.unreadable[0].reason, reason, stderr);
   }
+  // 정상 종료(0)한 출력에 흉내 줄이 섞여도 판단 못함으로 두지 않는다(1차 리뷰).
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.tar'), tar());
+  tarResult = { status: 0, stdout: Buffer.from('a.txt\n'), stderr: Buffer.from('tar.exe: Child process exited with status 1\n') };
+  const result = findBroken(dir);
+  tarResult = null;
+  assert.deepStrictEqual(result.unreadable, []);
+  assert.deepStrictEqual(result.broken, []);
 });
 
 test('tar로 읽을 수 없는 형식은 의심, 항목이 없으면 의심이다', { skip: process.platform !== 'win32' }, () => {
