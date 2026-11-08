@@ -1132,6 +1132,9 @@ test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축�
     // .jar는 tar.exe가 형식으로 읽지 않아 .gz만 붙인 것과 같이 gzip 안의 tar가 된다.
     ['j.jar.gz', GZIP, 'a.txt'],
     ['k.cpio.Z', [0x1f, 0x9d, 0x90]], ['i.iso.bz2', [0x42, 0x5a, 0x68]], ['w.warc.zst', [0x28, 0xb5, 0x2f]],
+    ['m.cpio.lzma', [0x5d, 0x00, 0x00]], ['l.cpio.lz', [0x4c, 0x5a, 0x49]], ['u.zip.uu', [0x62, 0x65, 0x67]], ['t.mtree.gz', GZIP, '#mtree'],
+    // 소문자 .z는 압축이 아니므로 두 겹으로 보지 않고 압축 없는 tar가 된다(.tar.z와 같다).
+    ['n.cpio.z', [0x61, 0x2e, 0x74]],
   ];
   for (const [name, magic, content] of cases) {
     fc.zip(p(name), [p('a.txt')]);
@@ -1140,7 +1143,7 @@ test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축�
   }
   // 압축 파일 이름은 받은 그대로 남고, 풀면 원래 내용이 나온다.
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', ...cases.map(([name]) => name)].sort());
-  for (const name of ['c.cpio.gz', 'z.zip.gz', 'k.cpio.Z', 'i.iso.bz2', 'x.xar.gz', 'w.warc.zst']) {
+  for (const name of ['c.cpio.gz', 'z.zip.gz', 'k.cpio.Z', 'i.iso.bz2', 'x.xar.gz', 'w.warc.zst', 'm.cpio.lzma', 'u.zip.uu', 'n.cpio.z']) {
     fc.unzip(p(name), p(`out-${name}`));
     assert.strictEqual(fc.readFile(p(`out-${name}`, 'a.txt')), 'A', name);
   }

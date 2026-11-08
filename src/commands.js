@@ -1006,7 +1006,7 @@ const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz'
 // x.cpio.gz를 tar.exe에 그대로 주면 gzip 안에 cpio를 넣으므로, 임시 파일에도 두 확장자를 함께 붙여야 이름과 내용이 같다.
 // .jar처럼 형식으로 읽지 않는 것은 x.jar.gz도 gzip 안의 tar가 되어 .gz만 붙인 것과 같다.
 const FORMAT_EXT = new Set(['cpio', 'iso', 'ar', 'shar', 'xar', 'warc', 'mtree', '7z', 'zip']);
-const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|uu)$/i;
+const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu)$/i;
 function archiveExt(archive) {
   const base = path.basename(path.resolve(archive));
   const layered = /\.([a-z0-9]+)\.([a-z0-9]+)$/i.exec(base);
