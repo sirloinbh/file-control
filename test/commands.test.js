@@ -1160,9 +1160,33 @@ test('unzip은 압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이
 test('rejectExtractShortNameClash 어림: 깨진 글자는 무엇이든 될 수 있다고 보고, 겹칠 수 없는 이름은 통과한다 (#188)', () => {
   const dir = tempDir();
   assert.throws(() => fc.rejectExtractShortNameClash(['ABC~1.TXT', '???.txt'], path.join(dir, 'none')), /겹칠 수 있는 항목/);
-  assert.throws(() => fc.rejectExtractShortNameClash(['a/LONGNA~1.TXT', 'a/longname.txt'], path.join(dir, 'none')), /a\/LONGNA~1\.TXT/);
-  fc.rejectExtractShortNameClash(['foo~1.txt', 'bar.txt', 'a/LONGNA~1.TXT', 'longname.txt'], path.join(dir, 'none'));
+  assert.throws(() => fc.rejectExtractShortNameClash(['a/LONGER~1.TXT', 'a/longername.txt'], path.join(dir, 'none')), /a\/LONGER~1\.TXT/);
+  // Windows는 대소문자를 가리지 않으므로 a/와 A/는 같은 폴더다(1차 리뷰).
+  assert.throws(() => fc.rejectExtractShortNameClash(['a/longername.txt', 'A/LONGER~1.TXT'], path.join(dir, 'none')), /a\/LONGER~1\.TXT, a\/longername\.txt/);
+  fc.rejectExtractShortNameClash(['foo~1.txt', 'bar.txt', 'a/LONGER~1.TXT', 'longername.txt'], path.join(dir, 'none'));
   fc.rejectExtractShortNameClash(['foo~1.txt'], dir);
+  assert.throws(() => fc.rejectExtractShortNameClash(['b\\LONGER~1.TXT', 'b/longername.txt'], path.join(dir, 'none')), /b\/LONGER~1\.TXT/);
+  // 깨진 글자가 든 ~N 항목 하나는 자기 자신과 겹치지 않는다(1차 리뷰).
+  for (const name of ['����~1.jpg', '??~1.jpg', '사진~1.jpg']) fc.rejectExtractShortNameClash([name, 'ok.txt'], path.join(dir, 'none'));
+  // 깨진 ~N 이름은 경로로 확인할 수 없으므로 기존 폴더의 이름과 어림으로 비교한다. 깨진 폴더 이름은 ASCII가 아닌 기존 폴더 모두로 본다.
+  fc.writeFile(path.join(dir, 'out', '한글긴파일이름입니다.txt'), 'old');
+  fc.writeFile(path.join(dir, 'out', '사진', 'longername.txt'), 'old');
+  fc.writeFile(path.join(dir, 'out', 'plain', 'other.txt'), 'old');
+  assert.throws(() => fc.rejectExtractShortNameClash(['���~1.TXT'], path.join(dir, 'out')), (err) => err.message.includes(path.join(dir, 'out', '한글긴파일이름입니다.txt')));
+  assert.throws(() => fc.rejectExtractShortNameClash(['��/LONGER~1.TXT'], path.join(dir, 'out')), (err) => err.message.includes(path.join(dir, 'out', '사진', 'longername.txt')));
+  fc.rejectExtractShortNameClash(['��~1.md', 'plain/��~1.TXT', 'new/��~1.TXT'], path.join(dir, 'out'));
+});
+
+test('unzip은 한글 ~N 항목 하나만 든 압축을 새 폴더에 풀고, 한글 긴 이름이 있는 기존 폴더에는 풀지 않는다 (#188 1차 리뷰)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', '한글긴~1.TXT'), 'new');
+  fc.zip(p('a.zip'), [p('src', '한글긴~1.TXT')]);
+  fc.unzip(p('a.zip'), p('fresh'));
+  assert.deepStrictEqual(fs.readdirSync(p('fresh')), ['한글긴~1.TXT']);
+  fc.writeFile(p('out', '한글긴파일이름입니다.txt'), 'old');
+  assert.throws(() => fc.unzip(p('a.zip'), p('out')), /8\.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어/);
+  assert.strictEqual(fs.readFileSync(p('out', '한글긴파일이름입니다.txt'), 'utf8'), 'old');
 });
 
 // tar.exe는 x.cpio.gz를 gzip 안의 cpio로 만든다. 임시 파일에도 두 확장자를 붙여 이름과 내용이 같게 한다(#164).
