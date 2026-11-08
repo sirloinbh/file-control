@@ -114,7 +114,7 @@ function readStdin() {
   return require('node:fs').readFileSync(0, 'utf8');
 }
 
-// progress(line)를 주면 오래 걸리는 명령(flatten)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67).
+// progress(line)를 주면 오래 걸리는 명령(flatten, remove-broken)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67, #99).
 function run(argv, { progress } = {}) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
@@ -225,7 +225,8 @@ function run(argv, { progress } = {}) {
         'remove-low-quality': [removeLowQuality, formatRemoveLowQuality],
       }[command];
       // 저화질 기준 값은 find-low-quality와 같게 글자 그대로 넘긴다. 다른 명령에서는 위에서 거부했다.
-      const result = remover(args[0], { dryRun, confirm, minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate') });
+      // 진행 표시는 remove-broken만 낸다(#99). 다른 두 명령은 받지 않는다.
+      const result = remover(args[0], { dryRun, confirm, minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate'), onProgress: progress });
       const report = format(result);
       // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
       const fail = (message) => Object.assign(new fc.FcError(message), { output: report });

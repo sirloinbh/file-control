@@ -109,7 +109,9 @@ function recycleFailure(err) {
 // confirm이 지금 목록의 확인값과 다르면 아무것도 지우지 않고 mismatch를 표시한다.
 // 지우기 전에 기록 파일을 남기고, 기록을 남기지 못하면 아무것도 지우지 않는다. 한 파일이 실패해도 나머지는 계속한다.
 // 돌려주는 값: planRemoval의 값에 { code, dryRun, confirmed, mismatch, removed, failed, log }를 더한 것. failed는 { path, reason } 목록이고 log는 기록 파일 경로다.
-function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
+// onProgress(line)를 주면 실제로 지울 때 파일 하나가 끝날 때마다 몇 번째인지와 결과를 한 줄로 넘긴다(#99).
+// 휴지통 이동은 파일마다 PowerShell을 띄워 파일당 0.5~0.6초가 걸린다(빌드 26200에서 20개·50개로 실측). 1000개면 9~10분이다.
+function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE_SIZE, onProgress } = {}) {
   const plan = planRemoval(dir, { now, maxSize });
   const code = confirmationCode(plan);
   const result = { ...plan, code, dryRun, confirmed: false, mismatch: false, removed: [], failed: [], log: null };
@@ -123,14 +125,29 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
   const log = writeRemovalLog(plan.target, '깨진 파일', plan.removals.map(({ path: file, reason }) => ({ path: file, reason })));
   result.log = log.path;
   const access = grant(plan.target, ['delete']);
+  const total = plan.removals.length;
+  const relative = (p) => path.relative(plan.target, p) || '.';
+  // 진행 표시가 던져도 집계와 다음 파일 처리는 그대로 간다(1차 리뷰). 이미 휴지통으로 간 파일을 실패로 세지 않는다.
+  const report = (line) => {
+    try {
+      onProgress?.(line);
+    } catch {
+      // 진행 표시는 결과에 영향을 주지 않는다.
+    }
+  };
+  report(`휴지통으로 보내는 중: ${total}개 (파일당 0.5초 안팎)`);
   plan.removals.forEach((item, index) => {
+    const step = `${index + 1}/${total}`;
     try {
       const logged = log.items[index].path;
       if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
       removeOne(access, item);
       result.removed.push(item);
+      report(`${step} 휴지통으로 이동: ${relative(item.path)}`);
     } catch (err) {
-      result.failed.push({ path: item.path, reason: recycleFailure(err) });
+      const reason = recycleFailure(err);
+      result.failed.push({ path: item.path, reason });
+      report(`${step} 실패: ${relative(item.path)} (${reason})`);
     }
   });
   return result;
