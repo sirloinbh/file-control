@@ -752,10 +752,11 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
 
 // tar.exe는 인자를 시스템 코드페이지로 받아서, 그 코드페이지에 없는 문자를 비슷한 글자로 바꾸거나(é -> e) 비정상 종료한다.
 // 그대로 넘기면 다른 파일을 묶거나 다른 폴더에 쓸 수 있으므로, 바뀌는 문자가 있으면 실행하기 전에 거부한다.
-// 인자는 ANSI 코드페이지로 받지만 zip 항목 이름은 OEM 코드페이지로 적는다. 영어 Windows(ANSI 1252, OEM 437)에서
-// COM¹.tar.gz를 묶고 풀면 오류 없이 COM1.tar.gz가 됐다(#136). 그래서 ANSI와 OEM 어느 쪽에서든 바뀌는 문자를 거부한다.
-// codePages를 주면 시스템 코드페이지 대신 그것으로 본다(테스트용).
-function unsupportedChars(text, codePages = null) {
+// 인자는 ANSI 코드페이지로 받지만 zip·cpio 항목 이름은 OEM 코드페이지로 적는다. 영어 Windows(ANSI 1252, OEM 437)에서
+// COM¹.tar.gz를 zip으로 묶고 풀면 오류 없이 COM1.tar.gz가 됐다(#136). 그래서 그 항목 이름은 ANSI와 OEM 어느 쪽에서든 바뀌는 문자를 거부한다.
+// 경로 인자와 다른 형식(pax tar, 7z, jar, iso 등)의 항목 이름은 OEM을 거치지 않는다(#173, CI의 영어 Windows에서 확인).
+// withOem이 거짓이면 ANSI만 본다. codePages를 주면 시스템 코드페이지 대신 그것으로 본다(테스트용).
+function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
   if (!isWindows) return [];
   const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
   if (chars.length === 0) return [];
@@ -764,14 +765,14 @@ function unsupportedChars(text, codePages = null) {
   const script =
     "$ErrorActionPreference = 'Stop'; " +
     '$cps = if ($env:FC_CODEPAGES) { $env:FC_CODEPAGES -split "," } else { ' +
-    "@([Text.Encoding]::Default.CodePage, (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP) }; " +
+    "@([Text.Encoding]::Default.CodePage) + @(if ($env:FC_WITH_OEM) { (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP }) }; " +
     '$encs = @($cps | ForEach-Object { if ([int]$_ -le 0) { throw "code page $_" }; [Text.Encoding]::GetEncoding([int]$_) }); ' +
     'foreach ($c in ($env:FC_CHARS -split "`n")) { foreach ($e in $encs) ' +
     '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0); break } } }';
   let output;
   try {
     output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
-      env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '' },
+      env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '', FC_WITH_OEM: withOem ? '1' : '' },
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
     });
@@ -786,22 +787,31 @@ function trailingDotOrSpaceName(p) {
   return p.slice(path.parse(p).root.length).split(path.sep).find((part) => /[. ]$/.test(part));
 }
 
-function ensureTarCanUse(paths) {
+// paths는 ANSI로만 보고, oemNames는 OEM으로도 본다.
+function ensureTarCanUse(paths, oemNames = []) {
   if (!isWindows) return;
-  const trailing = paths.find(trailingDotOrSpaceName);
+  const all = [...paths, ...oemNames];
+  const trailing = all.find(trailingDotOrSpaceName);
   // 끝 공백이 눈에 보이도록 이름을 따옴표로 감싼다.
   if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
-  const bad = unsupportedChars(paths.join(''));
+  let bad = unsupportedChars(paths.join(''), null, { withOem: false });
+  let checked = paths;
+  if (bad.length === 0) {
+    bad = unsupportedChars(oemNames.join(''));
+    checked = oemNames;
+  }
   if (bad.length === 0) return;
   // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
   const codes = bad.map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}(${char})`);
-  const where = paths.find((p) => bad.some((char) => p.includes(char)));
+  const where = checked.find((p) => bad.some((char) => p.includes(char)));
   throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${codes.join(' ')} (${where})`);
 }
 
-// args는 tar.exe에 인자로 넘기는 경로, inside는 묶을 폴더 안의 이름이다. 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135).
-function ensureTarArgs(args, inside = []) {
-  ensureTarCanUse([...args, ...inside]);
+// args는 tar.exe에 인자로 넘기는 경로, entries는 압축 안에 적힐 이름(원본 이름과 묶을 폴더 안의 이름)이다.
+// 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135). oemEntries는 항목 이름을 OEM으로 적는 형식(zip·cpio와 확인하지 않은 형식)인지다.
+function ensureTarArgs(args, entries = [], { oemEntries = false } = {}) {
+  if (oemEntries) ensureTarCanUse(args, entries);
+  else ensureTarCanUse([...args, ...entries]);
   rejectBareDeviceArgs(args, 'tar.exe가 장치로 열어 다룰 수 없습니다');
 }
 
@@ -929,6 +939,9 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
 // tar.exe는 확장자를 대소문자 구분해서 보아 X.ZIP·x.TAR.GZ를 압축 없는 tar로 만든다. 그래서 임시 파일에는 소문자 확장자를 붙인다.
 // 다만 compress 형식인 .Z, .taZ, .tZ는 대소문자로 갈리므로(.z는 압축 없는 tar, .taz는 gzip, .tz는 압축 없는 tar) 그대로 둔다.
 const KEEP_CASE_EXT = new Set(['Z', 'taZ', 'tZ']);
+// tar.exe가 항목 이름을 OEM 코드페이지를 거치지 않고(UTF-8이나 UTF-16으로) 적는다고 CI의 영어 Windows에서 확인한 확장자(#173).
+// archiveExt가 돌려주는 값으로 비교한다. .zip·.cpio(.tar.zip·.tar.cpio 포함)는 OEM으로 적고, 확인하지 않은 확장자도 OEM으로 적는다고 본다.
+const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.gz', '.taZ', '.7z', '.jar', '.iso', '.xar', '.mtree', '.warc']);
 function archiveExt(archive) {
   const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
   if (!match) return '';
@@ -1025,7 +1038,8 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   }
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
-  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], sources.flatMap(namesInside));
+  const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...sources.flatMap(namesInside)];
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
