@@ -12,6 +12,7 @@ const { removeBroken, formatRemoveBroken } = require('../src/removeBroken');
 const { findDuplicateNames, formatDuplicateNames } = require('../src/duplicates');
 const { removeDuplicates, formatRemoveDuplicates } = require('../src/removeDuplicates');
 const { findLowQuality, formatLowQuality } = require('../src/lowQuality');
+const { removeLowQuality, formatRemoveLowQuality } = require('../src/removeLowQuality');
 
 const HELP = `fctl - 파일 컨트롤
 
@@ -38,16 +39,17 @@ const HELP = `fctl - 파일 컨트롤
   find-duplicates <타겟>        이름·제품번호나 길이가 같은 영상 묶기 (파일은 건드리지 않음)
   remove-duplicates <타겟>      중복 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
   find-low-quality <타겟>       해상도·비트레이트가 기준 미만인 저화질 영상 찾기 (파일은 건드리지 않음)
+  remove-low-quality <타겟>     저화질 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
   --permanent   rm에서 휴지통을 거치지 않고 영구 삭제
   --dry-run     바뀔 내용만 출력하고 실제로는 건드리지 않음
   --remove-archives  extract-all에서 정상으로 풀린 압축 파일을 휴지통으로 보냄
-  --yes=확인값  remove-broken, remove-duplicates에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
+  --yes=확인값  remove-broken, remove-duplicates, remove-low-quality에서 목록이 그대로일 때만 실제로 휴지통으로 보냄
   --include-lowercase  normalize에서 소문자 말(abc-123)도 번호로 보고 바꿈
-  --min-height=화소    find-low-quality에서 화면의 짧은 쪽이 이 값 미만이면 저화질 (기본: 360)
-  --min-bitrate=kbps   find-low-quality에서 비트레이트가 이 값 미만이면 저화질 (기본: 보지 않음)
+  --min-height=화소    find-low-quality, remove-low-quality에서 화면의 짧은 쪽이 이 값 미만이면 저화질 (기본: 360)
+  --min-bitrate=kbps   find-low-quality, remove-low-quality에서 비트레이트가 이 값 미만이면 저화질 (기본: 보지 않음)
   --            뒤의 인자는 모두 옵션이 아닌 이름·내용으로 봄
   -h, --help    도움말`;
 
@@ -122,10 +124,11 @@ function run(argv, { progress } = {}) {
   if (!command || flags.has('help')) return HELP;
   // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
-  if (flags.has('yes') && command !== 'remove-broken' && command !== 'remove-duplicates') throw new fc.FcError('--yes는 remove-broken, remove-duplicates에서만 쓸 수 있습니다.');
+  const removing = command === 'remove-broken' || command === 'remove-duplicates' || command === 'remove-low-quality';
+  if (flags.has('yes') && !removing) throw new fc.FcError('--yes는 remove-broken, remove-duplicates, remove-low-quality에서만 쓸 수 있습니다.');
   if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
   for (const name of VALUE_FLAGS) {
-    if (flags.has(name) && command !== 'find-low-quality') throw new fc.FcError(`--${name}는 find-low-quality에서만 쓸 수 있습니다.`);
+    if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name}는 find-low-quality, remove-low-quality에서만 쓸 수 있습니다.`);
   }
 
   switch (command) {
@@ -213,11 +216,17 @@ function run(argv, { progress } = {}) {
       return formatBroken(findBroken(args[0]));
     }
     case 'remove-broken':
-    case 'remove-duplicates': {
+    case 'remove-duplicates':
+    case 'remove-low-quality': {
       checkWholeTarget(command, args, flags);
-      const duplicates = command === 'remove-duplicates';
-      const result = (duplicates ? removeDuplicates : removeBroken)(args[0], { dryRun, confirm });
-      const report = (duplicates ? formatRemoveDuplicates : formatRemoveBroken)(result);
+      const [remover, format] = {
+        'remove-broken': [removeBroken, formatRemoveBroken],
+        'remove-duplicates': [removeDuplicates, formatRemoveDuplicates],
+        'remove-low-quality': [removeLowQuality, formatRemoveLowQuality],
+      }[command];
+      // 저화질 기준 값은 find-low-quality와 같게 글자 그대로 넘긴다. 다른 명령에서는 위에서 거부했다.
+      const result = remover(args[0], { dryRun, confirm, minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate') });
+      const report = format(result);
       // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
       const fail = (message) => Object.assign(new fc.FcError(message), { output: report });
       if (result.failed.length > 0) throw fail(`휴지통으로 보내지 못한 파일이 ${result.failed.length}개 있습니다.`);

@@ -86,6 +86,7 @@ function saneInfo(info) {
 }
 
 // 기준으로 판별한다. 순수 함수다. { status: 'low' | 'ok' | 'unknown', reasons }를 돌려준다.
+// 저화질이면 해상도 기준에 걸렸는지(byResolution)도 함께 돌려준다. 비트레이트로만 걸린 파일은 길이가 깨졌을 수 있어 지우지 않는다(#31, #179).
 // 어느 한 기준이라도 미만이면 저화질이다. 미만인 기준이 없고 볼 기준 중 하나라도 값을 모르면 판단 못함이다.
 function judgeQuality(info, criteria) {
   const reasons = [];
@@ -96,7 +97,7 @@ function judgeQuality(info, criteria) {
     if (info.bitrate === null) unknown.push('비트레이트');
     else if (info.bitrate < criteria.minBitrate * 1000) reasons.push(`비트레이트 ${Math.round(info.bitrate / 1000)}kbps < ${criteria.minBitrate}kbps`);
   }
-  if (reasons.length > 0) return { status: 'low', reasons };
+  if (reasons.length > 0) return { status: 'low', reasons, byResolution: info.shortSide !== null && info.shortSide < criteria.minHeight };
   if (unknown.length > 0) return { status: 'unknown', reasons: [`${unknown.join('와 ')}를 알 수 없어 판단하지 못했습니다.`, ...info.notes] };
   return { status: 'ok', reasons: [] };
 }
@@ -109,7 +110,7 @@ function skipReason(parts) {
 
 // 타겟 아래 영상 중 기준 미만인 저화질 파일을 찾는다. 파일은 건드리지 않는다.
 // 해상도와 비트레이트를 읽는 형식은 MP4/MOV와 MKV/WebM이다. 그 밖의 영상은 판단 못함으로 알린다. 저장소 폴더 안은 보지 않는다.
-// - low: 저화질 파일 ({ path, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons })
+// - low: 저화질 파일 ({ path, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons, byResolution })
 // - unreadable: 판단 못한 영상 ({ path, reason })
 // - skipped: 링크·잔여물·시스템 폴더 ({ path, reason })
 // - checked: 읽은 영상 수, criteria: 쓴 기준
@@ -148,7 +149,7 @@ function findLowQuality(dir, options = {}) {
       if (judged.status === 'unknown') result.unreadable.push({ path: real, reason: judged.reasons.join(' ') });
       if (judged.status !== 'low') continue;
       const { width, height, displayWidth, displayHeight, duration, bitrate } = info;
-      result.low.push({ path: real, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons: judged.reasons });
+      result.low.push({ path: real, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons: judged.reasons, byResolution: judged.byResolution });
     } catch (err) {
       result.unreadable.push({ path: entry.path, reason: err instanceof FcError ? err.message : `파일을 읽을 수 없습니다. (${err.code ?? err.message})` });
     }
