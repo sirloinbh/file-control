@@ -1604,6 +1604,32 @@ function innerEntryExt(ext) {
   return parts.slice(0, keep).map((part) => `.${part}`).join('');
 }
 
+// tar.exe(bsdtar 3.8.9)에 내장되지 않아 외부 프로그램을 실행하는 압축(빌드 26200 실측: "Can't launch external program: lz4 -z …").
+// 그 프로그램이 PATH에 없으면 날것의 실패로 끝나므로 미리 거부한다(#230). 있으면 tar.exe에 맡긴다.
+const EXTERNAL_COMPRESSORS = { lz4: 'lz4', lzo: 'lzop', lrz: 'lrzip', grz: 'grzip' };
+function findOnPath(program) {
+  const exts = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean);
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+    for (const ext of ['', ...exts]) {
+      const candidate = path.join(dir.replace(/^"|"$/g, ''), `${program}${ext}`);
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // 없거나 읽을 수 없는 자리는 건너뛴다.
+      }
+    }
+  }
+  return null;
+}
+function rejectMissingCompressor(archive) {
+  for (const part of archiveExt(archive).split('.').filter(Boolean)) {
+    const program = EXTERNAL_COMPRESSORS[part.toLowerCase()];
+    if (program !== undefined && findOnPath(program) === null) {
+      throw new FcError(`.${part} 압축은 tar.exe에 들어 있지 않아 외부 프로그램 ${program}이 필요한데 PATH에서 찾지 못했습니다. 다른 압축(.gz, .xz, .zst 등)을 쓰거나 ${program}을 설치하세요: ${archive}`);
+    }
+  }
+}
+
 // 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
 const MAX_NAME_LENGTH = 255;
 // 경로의 한 칸이라도 한도를 넘으면 만들 수 없다. zip은 짧은 임시 이름으로 묶은 뒤 마지막 이름 바꾸기에서, unzip은 풀 폴더를 만들 때
@@ -1651,6 +1677,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
   rejectLongName(archive, '압축 파일');
   rejectLongTempName(archive);
+  rejectMissingCompressor(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
   for (const src of sources) rejectLongTarDir(path.dirname(path.resolve(src)), '원본의 상위 폴더');
