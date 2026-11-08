@@ -57,6 +57,13 @@ test('직접 만든 7z: UTF-16 이름을 읽고, CRC가 없거나 목록에 없�
     { name: '한글.txt', size: 3, folder: false }, { name: 'dir', size: 0, folder: true }, { name: 'dir/x.txt', size: 2, folder: false }, { name: 'e.txt', size: 0, folder: false },
   ]);
   assert.match(scan(sevenZipBuffer(files, { crc: false })).reason, /CRC가 없어/);
+  // 항목 CRC 없이 폴더 CRC만 있으면 libarchive가 검사하지 않으므로 CRC 없음으로 본다(1차 리뷰).
+  assert.match(scan(sevenZipBuffer([{ name: 'x.txt', data: 'hello' }], { folderCrcOnly: true })).reason, /CRC가 없어/);
+  // 항목 수가 남은 헤더 길이로 가능한 수를 넘으면 큰 배열을 만들기 전에 거부한다.
+  assert.match(scan(sevenZipBuffer(files, { mutateHeader: (header) => {
+    const at = header.lastIndexOf(Buffer.from([0x05, files.length]));
+    return Buffer.concat([header.subarray(0, at + 1), Buffer.from([0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]), header.subarray(at + 2)]);
+  } })).reason, /개수가 맞지 않아/);
   assert.match(scan(sevenZipBuffer(files, { gap: 4 })).reason, /목록에 없는 데이터/);
   assert.match(scan(Buffer.concat([sevenZipBuffer(files), Buffer.from('z')])).reason, /7z 끝 뒤에/);
   assert.match(scan(sevenZipBuffer(files).subarray(0, 40)).reason, /7z 끝 뒤에|중간에 끝나/);

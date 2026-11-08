@@ -3,6 +3,7 @@
 // 테스트용 7z를 직접 만든다(#198). 본문은 압축하지 않고(COPY) 한 폴더에 이어 붙인다.
 // files: [{ name, data } | { name, folder: true }]. crc를 false로 주면 항목 CRC를 적지 않는다.
 // gap은 본문 뒤, 헤더 앞에 끼울 목록에 없는 바이트 수다. encoded는 헤더를 COPY EncodedHeader로 한 번 감싼다.
+// folderCrcOnly는 항목 CRC 없이 폴더 CRC만 적는다(libarchive는 이때 검사하지 않는다).
 // mutateHeader는 헤더 바이트를 바꾸는 함수로, 바꾼 뒤 다음 헤더 CRC를 다시 계산한다.
 const zlib = require('node:zlib');
 
@@ -46,7 +47,7 @@ function streamsInfo({ packPos, packSizes, unpackSize, streams, crc, folderCrc }
   return Buffer.concat(parts);
 }
 
-function sevenZipBuffer(files, { crc = true, gap = 0, encoded = false, encodedCrc = true, anti = false, mutateHeader = null } = {}) {
+function sevenZipBuffer(files, { crc = true, gap = 0, encoded = false, encodedCrc = true, anti = false, folderCrcOnly = false, mutateHeader = null } = {}) {
   const streams = files.filter((f) => !f.folder && Buffer.byteLength(f.data) > 0).map((f) => Buffer.from(f.data));
   const body = Buffer.concat(streams);
   const emptyStream = files.map((f) => f.folder || Buffer.byteLength(f.data) === 0);
@@ -57,7 +58,7 @@ function sevenZipBuffer(files, { crc = true, gap = 0, encoded = false, encodedCr
   const names = Buffer.concat(files.map((f) => Buffer.from(`${f.name}\0`, 'utf16le')));
   fileProps.push(property(0x11, Buffer.concat([Buffer.from([0]), names])));
   const parts = [number(0x01)];
-  if (streams.length > 0) parts.push(number(0x04), streamsInfo({ packPos: 0, packSizes: [body.length], unpackSize: body.length, streams, crc }));
+  if (streams.length > 0) parts.push(number(0x04), streamsInfo({ packPos: 0, packSizes: [body.length], unpackSize: body.length, streams, crc: crc && !folderCrcOnly, folderCrc: folderCrcOnly ? zlib.crc32(body) : undefined }));
   parts.push(number(0x05), number(files.length), ...fileProps, number(0x00), number(0x00));
   let header = Buffer.concat(parts);
   let data = Buffer.concat([body, Buffer.alloc(gap, 0x41)]);

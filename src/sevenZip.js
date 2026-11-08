@@ -184,15 +184,21 @@ function readSubStreams(r, folders) {
   }
   const needDigest = folders.reduce((n, folder, i) => n + (counts[i] === 1 && folder.crc !== undefined ? 0 : counts[i]), 0);
   let digests = new Array(needDigest).fill(undefined);
+  // libarchive는 이 블록에 kCRC가 있을 때만 폴더 CRC를 항목 CRC로 옮겨 검사한다. kCRC가 없으면 폴더 CRC만 있어도
+  // 내용을 검사하지 않아 본문이 바뀌어도 성공으로 풀린다(1차 리뷰에서 실측). 그래서 그때는 모든 항목을 CRC 없음으로 본다.
+  let hasCrcBlock = false;
   for (; id !== ID.END; id = r.number()) {
-    if (id === ID.CRC) digests = readDigests(r, needDigest);
-    else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    if (id !== ID.CRC) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    digests = readDigests(r, needDigest);
+    hasCrcBlock = true;
   }
   let next = 0;
   let at = 0;
   folders.forEach((folder, i) => {
     for (let j = 0; j < counts[i]; j += 1) {
-      const crc = counts[i] === 1 && folder.crc !== undefined ? folder.crc : digests[next++];
+      const fromFolder = counts[i] === 1 && folder.crc !== undefined;
+      const digest = fromFolder ? folder.crc : digests[next++];
+      const crc = hasCrcBlock ? digest : undefined;
       streams.push({ size: sizes[at++], crc });
     }
   });
@@ -209,14 +215,17 @@ function readStreamsInfo(r) {
     else if (id === ID.SUBSTREAMS) info.streams = readSubStreams(r, info.folders);
     else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
   }
-  info.streams ??= info.folders.map((folder) => ({ size: folder.unpackSize, crc: folder.crc }));
+  // SubStreamsInfo가 없으면 tar.exe는 풀지 못한다(1차 리뷰에서 실측). 같은 기준으로 CRC 없음으로 본다.
+  info.streams ??= info.folders.map((folder) => ({ size: folder.unpackSize, crc: undefined }));
   const packed = info.folders.reduce((n, folder) => n + folder.numPacked, 0);
   if ((info.pack?.sizes.length ?? 0) !== packed) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
   return info;
 }
 
 function readFiles(r) {
-  const count = r.count();
+  // 항목마다 이름(끝의 NUL 포함 2바이트 이상)이 있어야 하므로 남은 헤더 길이의 절반을 넘을 수 없다(큰 배열을 만들지 않게, 1차 리뷰).
+  const count = r.number();
+  if (count > (r.buf.length - r.pos) / 2) throw broken('7z 헤더의 개수가 맞지 않아 남겼습니다.');
   let emptyStream = new Array(count).fill(false);
   let emptyFile = [];
   let names = null;

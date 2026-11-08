@@ -251,6 +251,10 @@ test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CR
   changed[changed.indexOf('hello')] = 0x4a;
   fs.writeFileSync(path.join(dir, 'changed.7z'), changed);
   fs.writeFileSync(path.join(dir, 'gap.7z'), sevenZipBuffer(files, { gap: 3 }));
+  // 폴더 CRC만 있는 7z는 tar.exe가 검사하지 않아 본문이 바뀌어도 풀린다(1차 리뷰에서 지워지던 경우).
+  const folderOnly = sevenZipBuffer([{ name: 'z.txt', data: 'hello' }], { folderCrcOnly: true });
+  folderOnly[folderOnly.indexOf('hello')] = 0x6a;
+  fs.writeFileSync(path.join(dir, 'folder-crc.7z'), folderOnly);
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['with-crc.7z']);
@@ -258,6 +262,8 @@ test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CR
   assert.match(kept['no-crc.7z'], /CRC가 없어/);
   assert.match(kept['changed.7z'], /CRC가 없어/);
   assert.match(kept['gap.7z'], /목록에 없는 데이터/);
+  assert.match(kept['folder-crc.7z'], /CRC가 없어/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'folder-crc', 'z.txt'), 'utf8'), 'jello');
   // 본문이 바뀐 CRC 없는 7z도 tar.exe는 성공으로 푼다(지우지 않는 이유).
   assert.strictEqual(fs.readFileSync(path.join(dir, 'changed', 'dir', 'x.txt'), 'utf8'), 'Jello');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'with-crc', 'y.txt'), 'utf8'), 'world');
