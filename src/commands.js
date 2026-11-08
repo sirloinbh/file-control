@@ -929,38 +929,45 @@ function writeArchive(archive, sources) {
 // 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자, 확장자는 0~3자다.
 const SHORT_NAME = /^([^~.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 
-// name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 어림한다. Windows는 짧은 이름을 긴 이름의 앞 1~6자(공백과 점은 빼고
-// +,;=[] 는 _로)와 확장자 앞 3자를 대문자로 바꿔 만들고, 같은 이름이 많으면 앞 2자 뒤에 해시를 붙인다.
-// 그래서 확장자가 같고 앞 2자(그보다 짧으면 그만큼)가 같으면 겹칠 수 있다고 본다. _는 아무 글자나로 본다.
+// name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 넉넉하게 어림한다. Windows는 긴 이름을 대문자로 바꾸고(공백과 점은 빼고
+// +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
+// OEM에 없는 글자는 빠지거나 _가 된다. 그래서 첫 글자와 확장자 앞부분만 비교하고, ASCII가 아닌 글자가 걸리면 겹칠 수 있다고 본다.
+// 실제로는 겹치지 않는 이름도 거부할 수 있다. ~N이 든 이름은 드물어서 그쪽이 안전하다(#159).
 function couldBeShortNameOf(name, other) {
   const short = SHORT_NAME.exec(name);
   if (!short || name.toUpperCase() === other.toUpperCase()) return false;
   const dot = other.lastIndexOf('.');
   const clean = (text) => text.toUpperCase().replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_');
   const base = clean(dot > 0 ? other.slice(0, dot) : other);
-  const ext = dot > 0 ? clean(other.slice(dot + 1)).slice(0, 3) : '';
-  if (ext !== (short[3] ?? '').toUpperCase()) return false;
-  const head = short[1].toUpperCase().slice(0, 2);
-  return [...head].every((char, i) => char === '_' || base[i] === char);
+  const ext = dot > 0 ? clean(other.slice(dot + 1)) : '';
+  const nonAscii = (text) => /[^\x00-\x7f]/.test(text);
+  // 짧은 쪽 확장자는 긴 이름 확장자의 앞부분이다. 확장자가 없으면 긴 이름에도 없다.
+  const shortExt = (short[3] ?? '').toUpperCase();
+  const extMatches = nonAscii(ext) || nonAscii(shortExt) || (shortExt === '' ? ext === '' : [...shortExt].every((char, i) => char === '_' || ext[i] === char));
+  if (!extMatches) return false;
+  const head = short[1].toUpperCase()[0];
+  return head === '_' || nonAscii(head) || nonAscii(base.slice(0, 6)) || base[0] === head;
 }
 
 // 풀 볼륨이 짧은 이름을 만들면, 한 폴더 안의 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 되어 한쪽이 덮어써진다(#159).
 // 원본을 짧은 이름으로 주면 tar.exe는 그 짧은 이름을 그대로 항목 이름으로 적으므로 맨 위 이름도 함께 본다. 압축 안의 폴더마다 확인한다.
-function rejectShortNameClash(sources) {
-  const levels = new Map([['', sources.map((src) => path.basename(path.resolve(src)))]]);
-  for (const src of sources) {
-    const top = path.basename(path.resolve(src));
-    for (const rel of namesInside(src)) {
-      const dir = path.join(top, path.dirname(rel));
+// inside는 원본마다 namesInside의 결과다.
+function rejectShortNameClash(sources, inside) {
+  const top = sources.map((src) => path.basename(path.resolve(src)));
+  // 맨 위에서 겹치면 어느 원본인지 보이도록 원본 경로로 알린다.
+  const levels = new Map([['', top.map((name, i) => ({ name, shown: sources[i] }))]]);
+  sources.forEach((src, i) => {
+    for (const rel of inside[i]) {
+      const dir = path.join(top[i], path.dirname(rel));
       if (!levels.has(dir)) levels.set(dir, []);
-      levels.get(dir).push(path.basename(rel));
+      levels.get(dir).push({ name: path.basename(rel), shown: path.join(dir, path.basename(rel)) });
     }
-  }
-  for (const [dir, names] of levels) {
-    for (const name of names.filter((n) => SHORT_NAME.test(n))) {
-      const other = names.find((n) => couldBeShortNameOf(name, n));
+  });
+  for (const items of levels.values()) {
+    for (const item of items.filter(({ name }) => SHORT_NAME.test(name))) {
+      const other = items.find(({ name }) => couldBeShortNameOf(item.name, name));
       if (other !== undefined) {
-        throw new FcError(`8.3 짧은 이름으로 겹칠 수 있는 이름이 함께 있어 묶지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${path.join(dir, name)}, ${path.join(dir, other)}`);
+        throw new FcError(`8.3 짧은 이름으로 겹칠 수 있는 이름이 함께 있어 묶지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${item.shown}, ${other.shown}`);
       }
     }
   }
@@ -986,10 +993,11 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
     if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
-  if (isWindows) rejectShortNameClash(sources);
+  const inside = sources.map(namesInside);
+  if (isWindows) rejectShortNameClash(sources, inside);
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
-  const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...sources.flatMap(namesInside)];
+  const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
