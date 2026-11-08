@@ -754,7 +754,7 @@ test('zip은 OEM을 거치지 않는다고 확인한 형식이 아니면(zip·cp
   delete require.cache[id];
   const mocked = require('../src/commands');
   require.cache[id] = saved;
-  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext']) {
+  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext', 'o.cpio.gz', 'o.ZIP.XZ', 'o.cpio.Z']) {
     assert.throws(() => mocked.zip(p(archive), [p('s¹.txt')], { dryRun: true }), /U\+00B9/, archive);
     assert.throws(() => mocked.zip(p(archive), [p('tree')], { dryRun: true }), /U\+00B9.*a¹\.txt/, archive);
     // 압축 파일 경로와 원본의 상위 폴더는 ANSI로만 본다.
@@ -1116,4 +1116,50 @@ test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 �
   // 하나만 짧은 이름으로 주면 tar.exe가 그 짧은 이름으로 적는다.
   fc.zip(p('b.zip'), [p('p', 'LONGER~1.TXT')]);
   assert.deepStrictEqual(fc.archiveNames(p('b.zip')), ['LONGER~1.TXT']);
+});
+
+// tar.exe는 x.cpio.gz를 gzip 안의 cpio로 만든다. 임시 파일에도 두 확장자를 붙여 이름과 내용이 같게 한다(#164).
+test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축으로 묶는다 (#164)', () => {
+  const zlib = require('node:zlib');
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const head = (name, n = 3) => [...fs.readFileSync(p(name)).subarray(0, n)];
+  const inner = (name, n) => zlib.gunzipSync(fs.readFileSync(p(name))).subarray(0, n).toString('latin1');
+  const GZIP = [0x1f, 0x8b, 0x08];
+  const cases = [
+    ['c.cpio.gz', GZIP, '070707'], ['U.CPIO.GZ', GZIP, '070707'], ['z.zip.gz', GZIP, 'PK'], ['r.ar.gz', GZIP, '!<arch>'], ['x.xar.gz', GZIP, 'xar!'],
+    // .jar는 tar.exe가 형식으로 읽지 않아 .gz만 붙인 것과 같이 gzip 안의 tar가 된다.
+    ['j.jar.gz', GZIP, 'a.txt'],
+    ['k.cpio.Z', [0x1f, 0x9d, 0x90]], ['i.iso.bz2', [0x42, 0x5a, 0x68]], ['w.warc.zst', [0x28, 0xb5, 0x2f]],
+    ['m.cpio.lzma', [0x5d, 0x00, 0x00]], ['l.cpio.lz', [0x4c, 0x5a, 0x49]], ['u.zip.uu', [0x62, 0x65, 0x67]], ['t.mtree.gz', GZIP, '#mtree'],
+    // 소문자 .z는 압축이 아니므로 두 겹으로 보지 않고 압축 없는 tar가 된다(.tar.z와 같다).
+    ['n.cpio.z', [0x61, 0x2e, 0x74]],
+  ];
+  for (const [name, magic, content] of cases) {
+    fc.zip(p(name), [p('a.txt')]);
+    assert.deepStrictEqual(head(name), magic, name);
+    if (content) assert.strictEqual(inner(name, content.length), content, name);
+  }
+  // 압축 파일 이름은 받은 그대로 남고, 풀면 원래 내용이 나온다.
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', ...cases.map(([name]) => name)].sort());
+  for (const name of ['c.cpio.gz', 'z.zip.gz', 'k.cpio.Z', 'i.iso.bz2', 'x.xar.gz', 'w.warc.zst', 'm.cpio.lzma', 'u.zip.uu', 'n.cpio.z']) {
+    fc.unzip(p(name), p(`out-${name}`));
+    assert.strictEqual(fc.readFile(p(`out-${name}`, 'a.txt')), 'A', name);
+  }
+});
+
+test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 tar.exe가 풀 수 없으므로 거부한다 (#164)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  for (const name of ['s.7z.gz', 'S.7Z.XZ', 's.7z.Z']) {
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다/, name);
+    }
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
+  // 압축이 아닌 확장자가 뒤에 붙으면 그 확장자로 정한다.
+  fc.zip(p('s.7z.zip'), [p('a.txt')]);
+  assert.strictEqual(fs.readFileSync(p('s.7z.zip')).subarray(0, 2).toString(), 'PK');
 });
