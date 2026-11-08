@@ -242,6 +242,19 @@ test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 �
   assert.deepStrictEqual(tree(dir), [`n/sub/${name}`]);
 });
 
+test('헤더가 LZMA2로 압축된 .7z도 헤더를 읽어 확인하고 지운다 (#222)', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.mkdirSync(path.join(source, 'sub'));
+  fs.writeFileSync(path.join(source, 'sub', 'a.txt'), 'A'.repeat(1000));
+  fs.writeFileSync(path.join(source, 'b.txt'), 'b');
+  realExecFileSync(SYSTEM_TAR, ['-a', '-cf', path.join(dir, 'l2.7z'), '--options', '7zip:compression=lzma2', '-C', source, 'sub', 'b.txt']);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['l2.7z']);
+  assert.deepStrictEqual(tree(dir), ['l2/b.txt', 'l2/sub/a.txt']);
+});
+
 test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CRC가 있는 같은 구조는 지운다 (#198)', () => {
   const dir = tempDir();
   const files = [{ name: 'dir', folder: true }, { name: 'dir/x.txt', data: 'hello' }, { name: 'y.txt', data: 'world' }];
