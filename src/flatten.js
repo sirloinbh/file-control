@@ -83,7 +83,7 @@ function distinguishingFolder(folder) {
 // 정보 없는 파일명이 가까운 폴더 이름(CD1)을 받았을 때, 유일한 파일이 아닌 바깥 폴더의 제품번호나 제목을 앞에 붙인다(#150).
 // ABC-123/CD1/video.mp4, ABC-123/CD2/video.mp4는 ABC-123 CD1.mp4, ABC-123 CD2.mp4가 된다. 받은 이름에 제품번호가 있거나,
 // 바깥 이름이 이미 들어 있거나, 붙이면 길이 한도를 넘으면 받은 이름을 그대로 돌려준다.
-// outer는 유일한 파일이 아닌 바깥 폴더들(가까운 쪽부터)이다.
+// outer는 받은 이름의 폴더보다 바깥 폴더들(가까운 쪽부터)이다. 파일 하나만 담은 바깥 폴더(Show/CD1/video.mp4의 Show)도 들어간다(#168).
 function withOuterFolder(fileName, detailed, outer) {
   const { name: base, ext } = path.parse(fileName);
   if (!GENERIC_WORD.test(words(base).join(''))) return detailed;
@@ -98,6 +98,17 @@ function withOuterFolder(fileName, detailed, outer) {
   if (full.length <= MAX_NAME) return full;
   const short = `${pick.normalize('NFC')} ${detailed}`;
   return short.length <= MAX_NAME ? short : detailed;
+}
+
+// detailedName이 고른 폴더보다 바깥의 폴더를 가까운 쪽부터 돌려준다(#168). 예전에는 유일한 파일이 아닌 바깥 폴더만 넘겨
+// Show/CD1/video.mp4 하나만 있으면 CD1.mp4가 되어 Show를 잃었고, 같은 Show에 CD2가 있을 때(Show CD1.mp4)와 결과가 달랐다.
+// 고른 폴더를 찾지 못하면 예전처럼 유일한 파일이 아닌 바깥 폴더만 돌려준다.
+function outerFolders(fileName, detailed, ancestors, soleCount) {
+  const ext = path.extname(fileName);
+  const chosen = detailed.slice(0, detailed.length - ext.length);
+  const stemOf = (folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder).normalize('NFC');
+  const index = ancestors.slice(0, soleCount).findIndex((folder) => stemOf(folder) === chosen);
+  return ancestors.slice(index === -1 ? soleCount : index + 1);
 }
 
 // 파일과 같은 확장자로 끝나는 폴더 이름은 그 확장자를 떼고, 비었거나 점 폴더이거나 다른 확장자처럼 보이는 이름은 뺀다.
@@ -453,7 +464,7 @@ function planFlatten(dir) {
       const ancestors = parts.slice(0, -1).reverse();
       let detailed = detailedName(original, sole);
       if (detailed === original) detailed = prefixedName(original, ancestors);
-      else detailed = withOuterFolder(original, detailed, ancestors.slice(sole.length));
+      else detailed = withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
       // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
       const twin = topFiles.get(fileKey(from));
       if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);
