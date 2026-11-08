@@ -151,16 +151,16 @@ test('압축 파일을 지우지 않으면 파일 시스템을 확인하지 않�
   assert.strictEqual(formatProbes, 0);
 });
 
-test('.zip과 .7z만 지우고, 다른 형식은 풀기만 하고 남긴다', () => {
+test('.zip·.7z·.tar.gz·.tgz만 지우고, 다른 형식은 풀기만 하고 남긴다 (#197)', () => {
   const dir = tempDir();
   const source = tempDir();
   fs.writeFileSync(path.join(source, 'x.txt'), 'x');
-  const kept = ['k.tar', 'k2.tar.gz', 'k3.tgz', 'k4.tar.bz2', 'k5.tbz2', 'k6.tar.xz', 'k7.txz'];
-  const removed = ['r.7z'];
+  const kept = ['k.tar', 'k4.tar.bz2', 'k5.tbz2', 'k6.tar.xz', 'k7.txz'];
+  const removed = ['r.7z', 'r2.tar.gz', 'r3.tgz'];
   for (const name of [...kept, ...removed]) run(['zip', path.join(dir, name), path.join(source, 'x.txt')]);
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(result.failed, []);
-  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), removed);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), [...removed].sort());
   assert.deepStrictEqual(result.kept.map((item) => path.basename(item.archive)).sort(), kept);
   for (const item of result.kept) assert.match(item.reason, /온전한지 확인할 수 없어/);
   for (const name of kept) assert.ok(fs.existsSync(path.join(dir, name)));
@@ -251,11 +251,15 @@ test('내용이 확장자와 다르면 풀려도 지우지 않는다', () => {
   run(['zip', path.join(dir, 'real.tar.gz'), path.join(source, 'x.txt')]);
   fs.copyFileSync(path.join(dir, 'real.tar.gz'), path.join(dir, 'fake.7z'));
   fs.copyFileSync(path.join(dir, 'real.tar.gz'), path.join(dir, 'fake2.zip'));
+  run(['zip', path.join(source, 'real.zip'), path.join(source, 'x.txt')]);
+  fs.copyFileSync(path.join(source, 'real.zip'), path.join(dir, 'fake3.tgz'));
   const result = extractArchives(dir, { removeArchives: true });
-  assert.deepStrictEqual(recycled, []);
+  // 내용이 맞는 real.tar.gz만 지운다(#197).
+  assert.deepStrictEqual(recycled, [path.join(dir, 'real.tar.gz')]);
   const reason = (name) => result.kept.find((item) => path.basename(item.archive) === name)?.reason;
   assert.match(reason('fake.7z'), /7z로 시작하지 않아/);
   assert.match(reason('fake2.zip'), /zip으로 시작하지 않아/);
+  assert.match(reason('fake3.tgz'), /gzip으로 시작하지 않아/);
 });
 
 test('이름이 바뀌어 풀리는 항목이 있으면 지우지 않는다', () => {
@@ -425,6 +429,116 @@ test('본문이 손상된 zip은 실패로 보고하고 지우지 않는다', ()
   assert.deepStrictEqual(tree(dir), ['bad.zip']);
 });
 
+// tar 헤더 하나(512바이트). 체크섬까지 채운다.
+function tarHeader(name, size, type = '0') {
+  const block = Buffer.alloc(512);
+  block.write(name, 0, 100, 'latin1');
+  block.write('0000644\0' + '0000000\0' + '0000000\0' + size.toString(8).padStart(11, '0') + '\0' + '00000000000\0', 100, 'latin1');
+  block.fill(' ', 148, 156);
+  block.write(type, 156, 'latin1');
+  block.write('ustar\0' + '00', 257, 'latin1');
+  block.write(block.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0') + '\0 ', 148, 'latin1');
+  return block;
+}
+
+// 파일 항목들과 끝 표시(0 블록 두 개)로 된 tar. end를 false로 주면 끝 표시를 넣지 않는다.
+function tarBuffer(files, { end = true, after = Buffer.alloc(0) } = {}) {
+  const parts = [];
+  for (const [name, data] of Object.entries(files)) {
+    const body = Buffer.from(data);
+    parts.push(tarHeader(name, body.length), body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  if (end) parts.push(Buffer.alloc(1024));
+  parts.push(after);
+  return Buffer.concat(parts);
+}
+
+const SYSTEM_TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+
+test('tar.exe로 만든 .tar.gz·.tgz는 gzip CRC와 tar 구조, 풀린 이름을 확인하고 지운다 (#197)', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  fs.writeFileSync(path.join(source, 'a.txt'), 'A'.repeat(5000));
+  fs.writeFileSync(path.join(source, 'empty.txt'), '');
+  fs.mkdirSync(path.join(source, 'sub', 'deep'), { recursive: true });
+  // 영어 Windows(CI)의 tar.exe는 ANSI에 없는 한글 이름에서 비정상 종료(0xC0000005)하므로 949일 때만 넣는다.
+  // pax UTF-8 이름은 test/tarGzScan.test.js에서 따로 본다.
+  const hangul = require('../src/commands').oemCodePage() === 949;
+  const named = hangul ? '한글 이름.txt' : 'space name.txt';
+  fs.writeFileSync(path.join(source, 'sub', named), '한');
+  fs.writeFileSync(path.join(source, 'sub', 'deep', `${'n'.repeat(120)}.txt`), 'long');
+  // -C source .로 묶으면 ./ 항목이 생기고 이름은 tar.exe가 유니코드로 읽어 pax에 UTF-8로 적는다.
+  realExecFileSync(SYSTEM_TAR, ['-czf', path.join(dir, 'a.tar.gz'), '-C', source, '.']);
+  realExecFileSync(SYSTEM_TAR, ['-czf', path.join(dir, 'b.tgz'), '-C', source, 'a.txt', 'sub']);
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.deepStrictEqual(preview.kept, []);
+  assert.strictEqual(preview.removed.length, 2);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), ['a.tar.gz', 'b.tgz']);
+  const long = `sub/deep/${'n'.repeat(120)}.txt`;
+  assert.deepStrictEqual(tree(dir), ['a/a.txt', 'a/empty.txt', `a/${long}`, `a/sub/${named}`, 'b/a.txt', `b/${long}`, `b/sub/${named}`].sort());
+});
+
+test('GNU 긴 이름(L) 항목도 그 이름으로 풀렸는지 확인하고 지운다 (#197)', () => {
+  const dir = tempDir();
+  const name = `${'g'.repeat(150)}.txt`;
+  const longName = Buffer.from(`${name}\0`, 'latin1');
+  const header = tarHeader('././@LongLink', longName.length, 'L');
+  const body = Buffer.concat([header, longName, Buffer.alloc(512 - longName.length), tarBuffer({ [name.slice(0, 99)]: 'gnu' })]);
+  fs.writeFileSync(path.join(dir, 'gnu.tar.gz'), zlib.gzipSync(body));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.strictEqual(result.removed.length, 1);
+  assert.deepStrictEqual(tree(dir), [`gnu/${name}`]);
+});
+
+test('손상되거나 tar.exe가 일부만 푸는 .tar.gz는 지우지 않는다 (#197)', () => {
+  const dir = tempDir();
+  const good = zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }));
+  const other = zlib.gzipSync(tarBuffer({ 'y.txt': 'more' }));
+  const cases = {
+    // 끝이 잘림: gzip 끝(CRC·길이)이 없다.
+    'cut.tar.gz': good.subarray(0, good.length - 6),
+    // 이어 붙인 gzip: tar.exe는 첫 tar의 끝 표시에서 멈춰 y.txt를 풀지 않는다.
+    'concat.tar.gz': Buffer.concat([good, other]),
+    // gzip 뒤에 다른 데이터
+    'junk.tgz': Buffer.concat([good, Buffer.from('garbage')]),
+    // 멤버 뒤가 0x00으로 시작하면 Node도 tar.exe도 오류 없이 뒤를 버린다(1차 리뷰에서 지워지던 경우).
+    'zero-gap.tar.gz': Buffer.concat([good, Buffer.alloc(1), other]),
+    // 끝 표시 뒤의 항목
+    'after-end.tar.gz': zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }, { after: tarBuffer({ 'z.txt': 'hidden' }) })),
+    // 끝 표시가 없다(항목 경계에서 잘린 tar를 다시 gzip으로 싼 것)
+    'no-end.tar.gz': zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }, { end: false })),
+    // 이름은 .tar.gz인데 gzip이 아니다.
+    'plain.tar.gz': tarBuffer({ 'x.txt': 'ok' }),
+  };
+  for (const [name, data] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), data);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(result.removed, []);
+  const reasons = Object.fromEntries([...result.kept, ...result.failed].map((item) => [path.basename(item.archive), item.reason]));
+  for (const name of Object.keys(cases)) {
+    assert.ok(reasons[name] !== undefined, name);
+    assert.ok(fs.existsSync(path.join(dir, name)), name);
+  }
+  // tar.exe가 성공으로 푼 것은 확인 단계의 사유로 남는다.
+  const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
+  const expect = {
+    'cut.tar.gz': /gzip이 손상됐거나 잘렸거나/,
+    'concat.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
+    'junk.tgz': /gzip이 손상됐거나 잘렸거나 뒤에 다른 데이터/,
+    'zero-gap.tar.gz': /gzip 끝 뒤에 다른 데이터/,
+    'after-end.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
+    'no-end.tar.gz': /tar 끝 표시가 없어/,
+    'plain.tar.gz': /gzip으로 시작하지 않아/,
+  };
+  for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
+  // 이어 붙인 gzip과 끝 표시 뒤의 항목은 tar.exe가 성공으로 풀므로 반드시 확인 단계에서 걸려야 한다.
+  for (const name of ['concat.tar.gz', 'after-end.tar.gz', 'junk.tgz', 'zero-gap.tar.gz']) assert.ok(kept[name] !== undefined, `${name}: ${reasons[name]}`);
+});
+
 test('tar.gz 본문이 변해 성공으로 풀려도 지우지 않는다', () => {
   const dir = tempDir();
   const body = Buffer.alloc(1536);
@@ -443,6 +557,8 @@ test('tar.gz 본문이 변해 성공으로 풀려도 지우지 않는다', () =>
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(file));
   assert.strictEqual(result.removed.length, 0);
+  // tar.exe는 성공으로 풀지만 gzip CRC가 맞지 않는다(#197).
+  assert.match(result.kept[0].reason, /gzip이 손상됐거나/);
 });
 
 test('건너뛰거나 항목이 없는 압축 파일은 지우지 않는다', () => {
