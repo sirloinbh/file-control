@@ -46,9 +46,14 @@ const ID = {
   TAG_NAME: 0x45a3,
   TAG_STRING: 0x4487,
   CLUSTER: 0x1f43b675,
+  CUES: 0x1c53bb6b,
+  CUE_POINT: 0xbb,
+  CUE_TIME: 0xb3,
+  CUE_TRACK_POSITIONS: 0xb7,
+  CUE_CLUSTER_POSITION: 0xf1,
 };
 
-const WANTED = new Set([ID.SEEK_HEAD, ID.INFO, ID.TRACKS, ID.TAGS]);
+const WANTED = new Set([ID.SEEK_HEAD, ID.INFO, ID.TRACKS, ID.TAGS, ID.CUES]);
 // 어디에나 올 수 있는 요소 (Void, CRC-32)
 const GLOBAL_ELEMENTS = new Set([0xec, 0xbf]);
 // 머리 요소를 찾는 데 필요한 읽기 횟수 한도. 손상된 파일이 작은 요소를 끝없이 늘어놓아도 멈춘다.
@@ -136,6 +141,41 @@ function parseInfo(body, found) {
   }
   const seconds = ticks !== null && scale !== null ? (ticks * scale) / 1e9 : null;
   if (Number.isFinite(seconds) && seconds > 0) found.duration ??= seconds;
+  found.scale ??= scale;
+}
+
+// 탐색 표(Cues)에서 가장 늦은 시각(시간 단위 수)과 가장 뒤의 Cluster 위치(Segment 안 바이트)를 모은다(#179).
+// 탐색 표는 보통 영상의 키프레임마다 있어 마지막 항목이 영상 끝 가까이에 있다.
+function parseCues(body, found) {
+  for (const point of children(body)) {
+    if (point.id !== ID.CUE_POINT) continue;
+    found.cuePoints = (found.cuePoints ?? 0) + 1;
+    for (const child of children(point.body)) {
+      if (child.id === ID.CUE_TIME) {
+        const time = readUint(child.body);
+        if (time !== null) found.lastCue = Math.max(found.lastCue ?? 0, time);
+      }
+      if (child.id !== ID.CUE_TRACK_POSITIONS) continue;
+      for (const part of children(child.body)) {
+        const position = part.id === ID.CUE_CLUSTER_POSITION ? readUint(part.body) : null;
+        if (position !== null) found.lastCluster = Math.max(found.lastCluster ?? 0, position);
+      }
+    }
+  }
+}
+
+// 머리글의 길이로 계산한 비트레이트를 믿을 수 없으면 사유를, 믿을 수 있으면 null을 돌려준다(#179).
+// - Segment의 크기나 SeekHead·탐색 표가 가리키는 위치가 파일 끝을 넘으면 받다 만 파일이다. 파일 크기가 적어 비트레이트가 낮게 나온다.
+// - 적힌 길이가 탐색 표의 마지막 시각의 2배에 60초를 더한 것보다 길면 길이가 깨졌다고 본다. 키프레임 간격은 이보다 짧다.
+//   적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
+// 탐색 표가 없거나 항목이 하나뿐이거나 마지막 시각이 0이면 길이는 맞춰 보지 않는다. 키프레임을 처음에만 넣은 화면 녹화나
+// 정지 그림 한 장을 영상 트랙으로 넣은 음악 파일이 그렇다(1차 리뷰). 마지막 Cluster를 찾으려면 영상 데이터를 훑어야 해서 보지 않는다.
+function bitrateDoubt(found, beyondEnd, duration) {
+  if (beyondEnd) return 'Segment 크기나 요소 위치가 파일 끝을 넘어, 받다 만 파일일 수 있어 비트레이트를 믿을 수 없습니다.';
+  if (!found.lastCue || (found.cuePoints ?? 0) < 2 || !found.scale) return null;
+  const cueSeconds = (found.lastCue * found.scale) / 1e9;
+  if (duration > cueSeconds * 2 + 60) return `길이 값(${Math.round(duration)}초)이 탐색 표의 마지막 시각(${Math.round(cueSeconds)}초)보다 훨씬 길어 비트레이트를 믿을 수 없습니다.`;
+  return null;
 }
 
 // 부호 있는 실수. 빈 요소는 기본값 0이다. 읽을 수 없으면 null이다.
@@ -300,6 +340,7 @@ function checkHeader(read, p) {
 
 // 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
+// 받다 만 파일이거나 길이가 탐색 표(Cues)와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
 // width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 잘라 낼 화소(PixelCrop), DisplayWidth/Height,
 // 평면 투영의 90·270도 회전(ProjectionPoseRoll)을 반영한 보이는 크기다(#106, #113). 영상 데이터(CodecPrivate의 SPS) 안의 화소 비율은 보지 않는다. 규격상 DisplayWidth/Height가 없으면 자른 화소 크기가 보이는 크기다.
 // FFmpeg 9.0도 SPS에 32:27이 있고 DisplayWidth가 없는 MKV를 1:1로 본다(#123에서 확인).
@@ -337,7 +378,9 @@ function parseOpenedMkv(file, p) {
     if (header.id === ID.INFO) parseInfo(body, found);
     if (header.id === ID.TRACKS) parseTracks(body, found);
     if (header.id === ID.TAGS) parseTags(body, tags);
+    if (header.id === ID.CUES) parseCues(body, found);
   };
+  let beyondEnd = segment.size !== null && segment.start + segment.size > size;
 
   // 크기를 모르는 요소나 첫 Cluster를 만나면 순서대로 읽기를 멈춘다. 영상 데이터를 훑지 않기 위해서다.
   let offset = segment.start;
@@ -354,6 +397,7 @@ function parseOpenedMkv(file, p) {
   // SeekHead가 다른 SeekHead를 가리킬 수 있어 목록이 늘어나는 동안 계속 본다. 본 위치는 다시 읽지 않으니 끝난다.
   for (const { id, position } of positions) {
     const at = segment.start + position;
+    if (at >= size) beyondEnd = true;
     if (at >= segmentEnd || seen.has(at)) continue;
     seen.add(at);
     const header = headerAt(read, at);
@@ -361,7 +405,9 @@ function parseOpenedMkv(file, p) {
   }
 
   const duration = found.duration;
-  const bitrate = duration ? Math.round((size * 8) / duration) : null;
+  if (found.lastCluster != null && segment.start + found.lastCluster >= size) beyondEnd = true;
+  const bitrateNote = duration ? bitrateDoubt(found, beyondEnd, duration) : null;
+  const bitrate = duration && bitrateNote === null ? Math.round((size * 8) / duration) : null;
   return {
     title: found.title ?? tags.get('TITLE') ?? null,
     comment: tags.get('COMMENT') ?? tags.get('DESCRIPTION') ?? null,
@@ -371,6 +417,7 @@ function parseOpenedMkv(file, p) {
     displayWidth: found.displayWidth,
     displayHeight: found.displayHeight,
     bitrate: Number.isFinite(bitrate) && bitrate > 0 ? bitrate : null,
+    bitrateNote,
   };
 }
 

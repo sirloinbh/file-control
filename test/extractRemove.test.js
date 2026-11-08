@@ -15,7 +15,14 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
+// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+let format = () => 'NTFS\r\n';
+let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) {
+    formatProbes += 1;
+    return format();
+  }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -25,6 +32,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 test.beforeEach(() => {
   recycled.length = 0;
   onRecycle = () => {};
+  format = () => 'NTFS\r\n';
+  formatProbes = 0;
 });
 
 const { FcError } = require('../src/commands');
@@ -119,6 +128,27 @@ test('정상으로 풀린 압축 파일을 휴지통으로 보낸다', () => {
   assert.deepStrictEqual(result.removed.sort(), [a, b].sort());
   assert.deepStrictEqual(tree(dir), ['a/x.txt', 'sub/b/y.txt']);
   assert.match(formatExtractions(result), /압축 해제 2개, 휴지통 2개, 남김 0개, 건너뜀 0개, 실패 0개/);
+});
+
+test('exFAT 볼륨이면 풀기만 하고 압축 파일은 남긴다 (#184)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  format = () => 'exFAT\r\n';
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.match(preview.kept[0].reason, /^exFAT 볼륨은 변경 시각을 적지 않아/);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.removed, []);
+  assert.deepStrictEqual(result.kept.map((item) => item.reason.slice(0, 5)), ['exFAT']);
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+  assert.strictEqual(formatProbes, 2);
+});
+
+test('압축 파일을 지우지 않으면 파일 시스템을 확인하지 않는다 (#184)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  extractArchives(dir);
+  assert.strictEqual(formatProbes, 0);
 });
 
 test('.zip과 .7z만 지우고, 다른 형식은 풀기만 하고 남긴다', () => {
@@ -455,6 +485,52 @@ test('휴지통으로 보내지 못하면 풀린 결과와 원본을 두고 실�
   assert.strictEqual(result.extracted.length, 2);
   assert.strictEqual(result.removed.length, 1);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt', 'b/y.txt']);
+});
+
+// 휴지통 이동이 사유를 밝힌 FcError로 실패해도 풀린 뒤라는 맥락을 붙인다(#185).
+test('원본이 사용 중이라 휴지통으로 보내지 못하면 풀었다는 맥락과 Windows 사유를 함께 보고한다 (#185)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const reason = Buffer.from('The process cannot access the file because it is being used by another process.', 'utf16le').toString('base64');
+  onRecycle = () => {
+    throw Object.assign(new Error('recycle'), { status: 77, stdout: `${reason}\r\n` });
+  };
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.strictEqual(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 휴지통으로 보내지 못했습니다: .*a\.zip \(The process cannot access the file/);
+  assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
+});
+
+test('경로가 길어 휴지통으로 보낼 수 없으면 풀었다는 맥락을 붙이고, 미리보기에서는 풀어도 지울 수 없다고 보고한다 (#185)', () => {
+  const dir = tempDir();
+  // 압축 파일 경로만 259자를 넘기고, 임시 폴더(.fctl-new-*, 약 32자)와 풀린 항목은 260자 안에 들어오게 한다(1차 리뷰).
+  let folder = dir;
+  while (folder.length < 200) folder = path.join(folder, 'x'.repeat(9));
+  fs.mkdirSync(folder, { recursive: true });
+  const archive = makeZip(folder, `${'y'.repeat(262 - folder.length - 5)}.zip`, { 'x.txt': 'x' });
+  assert.ok(archive.length > 259 && folder.length + 40 < 260, `${archive.length} ${folder.length}`);
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  assert.match(preview.failed[0].reason, /^풀어도 원본을 지울 수 없습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  assert.ok(fs.existsSync(archive));
+  assert.ok(fs.existsSync(path.join(archive.slice(0, -'.zip'.length), 'x.txt')));
+});
+
+test('미리보기에서 원본을 확인하지 못하면 풀었다고 하지 않는다 (#185 1차 리뷰)', (t) => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const lstatSync = fs.lstatSync;
+  let calls = 0;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    // 풀기 전 식별값을 잡은 뒤, 지우기 직전 확인에서 실패하게 한다.
+    if (path.basename(String(p)) === 'a.zip' && options?.bigint && ++calls === 2) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return lstatSync(p, options);
+  });
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  t.mock.restoreAll();
+  assert.match(preview.failed[0].reason, /^풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다\. \(EPERM\)/);
 });
 
 test('대화형 세션이 아니라는 거부를 그대로 보고하고 영구 삭제하지 않는다', () => {

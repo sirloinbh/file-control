@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
-const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames } = require('./target');
+const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
@@ -359,12 +359,19 @@ function removeArchive(access, item, before, dryRun) {
   if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
   const stat = fs.lstatSync(archive, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== before) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
-  remove([archive], { dryRun });
+  try {
+    remove([archive], { dryRun });
+  } catch (err) {
+    // 휴지통 이동의 FcError는 사유만 담으므로 풀린 뒤라는 맥락을 붙인다(#185). 다른 오류는 removalFailure가 붙인다.
+    if (err instanceof FcError) throw new FcError(`${dryRun ? '풀어도 원본을 지울 수 없습니다.' : '풀었지만 원본을 지우지 못했습니다.'} ${err.message}`);
+    throw err;
+  }
 }
 
-function removalFailure(err) {
+// 미리보기는 실제로 풀지 않았으므로 "풀어도"로 알린다(#185 1차 리뷰).
+function removalFailure(err, dryRun) {
   if (err instanceof FcError) return err.message;
-  return `풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+  return `${dryRun ? '풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다.' : '풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다.'} (${err.code ?? err.status})`;
 }
 
 function failureReason(err) {
@@ -385,6 +392,8 @@ function extractArchives(dir, options = {}) {
 function applyExtractions(plan, { dryRun = false, removeArchives = false } = {}) {
   const result = { target: plan.target, dryRun, removeArchives, extracted: [], skipped: plan.skipped, removed: [], kept: [], failed: [] };
   const access = grant(plan.target, removeArchives ? ['read', 'write', 'delete'] : ['read', 'write']);
+  // 변경 시각이 없는 볼륨(exFAT 등)에서는 푼 뒤 같은 크기로 바뀐 압축 파일을 알아보지 못해 지우지 않는다(#184).
+  const volumeReason = removeArchives && plan.extractions.length > 0 ? stampVolumeReason(plan.target) : null;
   for (const item of plan.extractions) {
     let before;
     let entries;
@@ -399,7 +408,7 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
     }
     if (!removeArchives) continue;
     try {
-      const reason = keepReason(access, item, entries, dryRun);
+      const reason = volumeReason ?? keepReason(access, item, entries, dryRun);
       if (reason !== null) {
         result.kept.push({ archive: item.archive, reason });
         continue;
@@ -407,7 +416,7 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
       removeArchive(access, item, before, dryRun);
       result.removed.push(item.archive);
     } catch (err) {
-      result.failed.push({ archive: item.archive, reason: removalFailure(err) });
+      result.failed.push({ archive: item.archive, reason: removalFailure(err, dryRun) });
     }
   }
   return result;
