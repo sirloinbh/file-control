@@ -341,26 +341,28 @@ function checkHeader(read, p) {
 // 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // 받다 만 파일이거나 길이가 탐색 표(Cues)와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
+// bitrate와 bitrateNote는 options.verifyBitrate가 true일 때만 채운다(#207). 끄면 둘 다 null이고 탐색 표(Cues, 최대 16MB)를 읽지 않는다.
+// 비트레이트를 쓰지 않는 중복·제품번호 찾기가 큰 탐색 표를 읽느라 입출력과 읽기 한도(MAX_TOTAL)를 쓰지 않게 하기 위해서다.
 // width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 잘라 낼 화소(PixelCrop), DisplayWidth/Height,
 // 평면 투영의 90·270도 회전(ProjectionPoseRoll)을 반영한 보이는 크기다(#106, #113). 영상 데이터(CodecPrivate의 SPS) 안의 화소 비율은 보지 않는다. 규격상 DisplayWidth/Height가 없으면 자른 화소 크기가 보이는 크기다.
 // FFmpeg 9.0도 SPS에 32:27이 있고 DisplayWidth가 없는 MKV를 1:1로 본다(#123에서 확인).
 // 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
 // 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
-function readMkvMetadata(dir, p) {
+function readMkvMetadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
-    return parseMkv(access.target, access.read(p), p);
+    return parseMkv(access.target, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
     if (err.syscall) throw new FcError(`MKV 파일을 읽을 수 없습니다: ${p} (${err.code})`);
     throw err;
   }
 }
 
-function parseMkv(target, real, p) {
-  return withOpenFile(target, real, (file) => parseOpenedMkv(file, p));
+function parseMkv(target, real, p, verifyBitrate) {
+  return withOpenFile(target, real, (file) => parseOpenedMkv(file, p, verifyBitrate));
 }
 
-function parseOpenedMkv(file, p) {
+function parseOpenedMkv(file, p, verifyBitrate) {
   const { size } = file;
   const read = makeReader(file, p);
   const segment = headerAt(read, checkHeader(read, p));
@@ -373,6 +375,7 @@ function parseOpenedMkv(file, p) {
   const seen = new Set();
   const handle = (header) => {
     if (header.size === null || header.size > MAX_ELEMENT || header.start + header.size > segmentEnd) return;
+    if (header.id === ID.CUES && !verifyBitrate) return;
     const body = read(header.start, header.size);
     if (header.id === ID.SEEK_HEAD) parseSeekHead(body, positions);
     if (header.id === ID.INFO) parseInfo(body, found);
@@ -398,7 +401,8 @@ function parseOpenedMkv(file, p) {
   for (const { id, position } of positions) {
     const at = segment.start + position;
     if (at >= size) beyondEnd = true;
-    if (at >= segmentEnd || seen.has(at)) continue;
+    // 비트레이트를 검증하지 않으면 탐색 표는 머리글도 읽지 않는다(#207).
+    if (at >= segmentEnd || seen.has(at) || (id === ID.CUES && !verifyBitrate)) continue;
     seen.add(at);
     const header = headerAt(read, at);
     if (header?.id === id) handle(header);
@@ -406,8 +410,8 @@ function parseOpenedMkv(file, p) {
 
   const duration = found.duration;
   if (found.lastCluster != null && segment.start + found.lastCluster >= size) beyondEnd = true;
-  const bitrateNote = duration ? bitrateDoubt(found, beyondEnd, duration) : null;
-  const bitrate = duration && bitrateNote === null ? Math.round((size * 8) / duration) : null;
+  const bitrateNote = verifyBitrate && duration ? bitrateDoubt(found, beyondEnd, duration) : null;
+  const bitrate = verifyBitrate && duration && bitrateNote === null ? Math.round((size * 8) / duration) : null;
   return {
     title: found.title ?? tags.get('TITLE') ?? null,
     comment: tags.get('COMMENT') ?? tags.get('DESCRIPTION') ?? null,

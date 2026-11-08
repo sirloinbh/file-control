@@ -105,7 +105,7 @@ const isoMeta = (...items) => box('meta', u32(0), hdlr('mdir'), box('ilst', ...i
 
 function write(dir, ...parts) {
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(parts));
-  return readMp4Metadata(dir, 'v.mp4');
+  return readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true });
 }
 
 test('readMp4Metadata는 제목, 코멘트, 길이, 해상도, 비트레이트를 꺼낸다', () => {
@@ -536,7 +536,7 @@ test('4GiB를 넘는 위치의 moov를 읽는다', (t) => {
     if (position >= head.length + gap) return moov.copy(buffer, at, position - head.length - gap, Math.min(moov.length, position - head.length - gap + length));
     return length;
   });
-  const result = readMp4Metadata(dir, 'v.mp4');
+  const result = readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true });
   assert.strictEqual(result.width, 1920);
   assert.strictEqual(result.bitrate, Math.round((total * 8) / 10));
 });
@@ -793,13 +793,14 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
 // #179: 길이를 표본 표와 맞춰 보는 시험용 트랙. seconds는 표본 표(stts)의 실제 길이, header는 tkhd·mdhd에 적을 길이다.
 // chunk는 데이터 위치표(stco)가 가리킬 위치다.
 // version 1이면 mdhd를 64비트 시각으로, co64면 위치표를 64비트(co64)로 쓴다. entries를 주면 stts 항목 수를 그 값으로 적는다(내용은 그대로).
-function dataTrak({ kind = 'vide', seconds, header = seconds, timescale = 1000, chunk = 0, samples = 1, version = 0, co64 = false, entries = 1 }) {
+function dataTrak({ kind = 'vide', seconds, header = seconds, timescale = 1000, chunk = 0, samples = 1, version = 0, co64 = false, entries = 1, pad = false }) {
   const units = Math.round(seconds * timescale);
   const length = Math.round(header * timescale);
   const mdhd = version === 1
     ? box('mdhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(length), u32(0))
     : box('mdhd', u32(0), u32(0), u32(0), u32(timescale), u32(length), u32(0));
-  const stts = box('stts', u32(0), u32(entries), u32(samples), u32(units / samples));
+  // pad면 나머지 항목을 길이 0으로 채워 항목 수만큼 실제로 있는 큰 표를 만든다.
+  const stts = box('stts', u32(0), u32(entries), u32(samples), u32(units / samples), Buffer.alloc(pad ? (entries - 1) * 8 : 0));
   const stco = co64 ? box('co64', u32(0), u32(1), u64(chunk)) : box('stco', u32(0), u32(1), u32(chunk));
   const stbl = box('stbl', stsd(kind === 'vide' ? 1920 : 0, kind === 'vide' ? 1080 : 0), stts, stco);
   return box('trak', tkhd({ width: 1920, height: 1080, duration: Math.round(header * 1000) }), box('mdia', mdhd, hdlr(kind), box('minf', stbl)));
@@ -847,6 +848,52 @@ test('조각 파일(mvex)은 moov의 빈 표본 표와 길이를 맞춰 보지 �
   assert.strictEqual(result.duration, 600);
   assert.ok(result.bitrate > 0);
   assert.strictEqual(result.bitrateNote, null);
+});
+
+test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽지 않고 비트레이트를 null로 둔다 (#207)', (t) => {
+  const dir = tempDir();
+  // 항목 20만 개(1.6MB)짜리 표본 표를 가진 60초 영상
+  const parts = [ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, entries: 200_000, pad: true })), box('mdat', Buffer.alloc(1000))];
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(parts));
+  const readBytes = (options) => {
+    const readSync = t.mock.method(fs, 'readSync');
+    const result = readMp4Metadata(dir, 'v.mp4', options);
+    const bytes = readSync.mock.calls.reduce((sum, call) => sum + call.result, 0);
+    readSync.mock.restore();
+    return { result, bytes };
+  };
+  for (const options of [undefined, {}, { verifyBitrate: false }]) {
+    const { result, bytes } = readBytes(options);
+    assert.strictEqual(result.duration, 60);
+    assert.strictEqual(result.width, 1920);
+    assert.strictEqual(result.bitrate, null);
+    assert.strictEqual(result.bitrateNote, null);
+    assert.ok(bytes < 64 * 1024, `${bytes}바이트를 읽음`);
+  }
+  const on = readBytes({ verifyBitrate: true });
+  assert.ok(on.result.bitrate > 0);
+  assert.ok(on.bytes >= 1_600_000, `${on.bytes}바이트를 읽음`);
+  // 받다 만 파일의 사유도 켰을 때만 적는다.
+  const cut = [ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, chunk: 50_000_000 })), box('mdat', Buffer.alloc(1000))];
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(cut));
+  assert.strictEqual(readMp4Metadata(dir, 'v.mp4').bitrateNote, null);
+  assert.match(readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true }).bitrateNote, /받다 만 파일일 수 있어/);
+  // 끄면 stts·stco 박스의 머리글 뒤(항목 수와 항목)를 한 번도 읽지 않는다(1차 리뷰). 켜면 읽는다.
+  const bytes = Buffer.concat(cut);
+  const payloads = ['stts', 'stco'].map((type) => {
+    const at = bytes.indexOf(type) - 4;
+    return [at + 8, at + bytes.readUInt32BE(at)];
+  });
+  const touched = (options) => {
+    const readSync = t.mock.method(fs, 'readSync');
+    readMp4Metadata(dir, 'v.mp4', options);
+    const positions = readSync.mock.calls.map((call) => call.arguments[4]);
+    readSync.mock.restore();
+    return payloads.map(([start, end]) => positions.some((at) => at >= start && at < end));
+  };
+  assert.deepStrictEqual(touched(undefined), [false, false]);
+  // 켜면 위치표에서 받다 만 파일임을 알고 멈추므로 stts까지는 가지 않는다. stts를 읽는 것은 위의 큰 표 시험이 본다.
+  assert.deepStrictEqual(touched({ verifyBitrate: true }), [false, true]);
 });
 
 test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (#179, 1차 리뷰)', () => {
