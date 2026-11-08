@@ -430,6 +430,24 @@ test('타겟이 프로그램 폴더 안이거나 프로젝트 폴더면 거부�
   assert.deepStrictEqual(tree(dir), ['node_modules/pkg/README ABC-123.md', 'proj/package.json', 'proj/영상 ABC-123.mp4']);
 });
 
+test('타겟의 위 폴더가 프로젝트·프로그램 폴더면 아무것도 바꾸지 않고 거부한다 (#167)', () => {
+  const project = tempDir();
+  make(project, ['myproj/package.json', 'myproj/src/영상 ABC-123.mp4', 'myproj/src/a/b/그림 BCD-234.png']);
+  assert.throws(() => normalizeFiles(path.join(project, 'myproj', 'src')), (err) => err instanceof FcError && /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다: .*myproj$/.test(err.message));
+  // 몇 단계 위든 막고, 계획(planNormalize)만 만들 때도 거부한다.
+  assert.throws(() => planNormalize(path.join(project, 'myproj', 'src', 'a', 'b')), (err) => err instanceof FcError && /위 폴더가 프로젝트 폴더로 보여/.test(err.message));
+  assert.deepStrictEqual(tree(project), ['myproj/package.json', 'myproj/src/a/b/그림 BCD-234.png', 'myproj/src/영상 ABC-123.mp4']);
+  const program = tempDir();
+  make(program, ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
+  assert.throws(() => normalizeFiles(path.join(program, 'App', 'sub')), (err) => err instanceof FcError && /위 폴더에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다: .*App$/.test(err.message));
+  assert.deepStrictEqual(tree(program), ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
+  // 옆 폴더의 표시 파일은 위 폴더가 아니므로 막지 않는다.
+  const side = tempDir();
+  make(side, ['lib/package.json', 'videos/영상 ABC-123.mp4']);
+  normalizeFiles(path.join(side, 'videos'));
+  assert.deepStrictEqual(tree(side), ['lib/package.json', 'videos/ABC-123 영상.mp4']);
+});
+
 test('저장한 웹 페이지와 그 _files 폴더는 바꾸지 않는다 (#94)', () => {
   const dir = tempDir();
   make(dir, ['페이지 ABC-123.html', '페이지 ABC-123_files/그림 BCD-234.png', '다른 CDE-345.html']);
