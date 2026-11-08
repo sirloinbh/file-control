@@ -701,8 +701,9 @@ test('코드페이지 검사는 ANSI와 OEM 중 어느 한쪽에서라도 바뀌
   assert.throws(() => fc.unsupportedChars('é', [949, 0]), fc.FcError);
 });
 
-// 이 PC의 ANSI에는 있고 OEM에는 없는 문자로 실제 zip·unzip이 실행 전에 거부하는지 본다. CI의 영어 Windows에서 실행된다.
-test('zip·unzip은 ANSI에는 있지만 OEM 코드페이지에서 바뀌는 문자를 실행 전에 거부한다 (#136)', { skip: !isWindows }, (t) => {
+// 이 PC의 ANSI에는 있고 OEM에는 없는 문자로 실제 zip·unzip을 본다. CI의 영어 Windows(ANSI 1252, OEM 437)에서 실행된다.
+// zip·cpio 항목 이름은 OEM으로 적혀 바뀌므로 실행 전에 거부하고(#136), 경로 인자와 pax tar의 항목 이름은 바뀌지 않으므로 받는다(#173).
+test('zip·unzip은 OEM 코드페이지에서 바뀌는 문자를 zip·cpio 항목 이름에서만 거부한다 (#136, #173)', { skip: !isWindows }, (t) => {
   const acp = Number(childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim());
   const candidates = ['¹', '²', '³', '½', '€', 'é', 'ñ'].join('');
   const inAnsi = new Set(fc.unsupportedChars(candidates, [acp]));
@@ -713,14 +714,58 @@ test('zip·unzip은 ANSI에는 있지만 OEM 코드페이지에서 바뀌는 문
   fc.writeFile(p(`s${char}.tar.gz`), 'S');
   fc.writeFile(p('tree', `a${char}.txt`), 'T');
   fc.writeFile(p('a.txt'), 'A');
-  fc.zip(p('ok.zip'), [p('a.txt')]);
+  fc.writeFile(p(`d${char}`, 'b.txt'), 'B');
   const before = fs.readdirSync(dir).sort();
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('o.zip'), [p(`s${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/);
-    assert.throws(() => fc.zip(p('o.zip'), [p('tree')], { dryRun }), /처리할 수 없는 문자/);
-    assert.throws(() => fc.unzip(p('ok.zip'), p(`out${char}`), { dryRun }), /처리할 수 없는 문자/);
+    for (const archive of ['o.zip', 'O.ZIP', 'o.cpio']) {
+      assert.throws(() => fc.zip(p(archive), [p(`s${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/, archive);
+      assert.throws(() => fc.zip(p(archive), [p('tree')], { dryRun }), /처리할 수 없는 문자/, archive);
+    }
   }
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), before);
+  // 압축 파일 경로, 원본의 상위 폴더, 풀 폴더에 있는 문자는 그대로 다룬다.
+  fc.zip(p(`d${char}`, `o${char}.zip`), [p(`d${char}`, 'b.txt')]);
+  fc.unzip(p(`d${char}`, `o${char}.zip`), p(`out${char}`));
+  assert.strictEqual(fc.readFile(p(`out${char}`, 'b.txt')), 'B');
+  assert.strictEqual(fc.archiveEntries(p(`d${char}`, `o${char}.zip`)).length, 1);
+  // pax로 묶는 tar.gz는 항목 이름에 있어도 그대로 풀린다.
+  fc.zip(p('o.tar.gz'), [p(`s${char}.tar.gz`), p('tree')]);
+  fc.unzip(p('o.tar.gz'), p('pax'));
+  assert.deepStrictEqual(fs.readdirSync(p('pax'), { recursive: true }).sort(), [`s${char}.tar.gz`, 'tree', path.join('tree', `a${char}.txt`)].sort());
+  assert.strictEqual(fc.readFile(p('pax', 'tree', `a${char}.txt`)), 'T');
+});
+
+// 코드페이지 확인(PowerShell)을 흉내 내 ANSI·OEM이 다른 환경에서 어느 이름을 OEM으로도 보는지 이 PC에서도 확인한다(#173).
+test('zip은 zip·cpio로 묶을 때만 항목 이름을 OEM으로도 보고, 경로 인자는 ANSI로만 본다 (#173)', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('s¹.txt'), 'S');
+  fc.writeFile(p('tree', 'a¹.txt'), 'T');
+  fc.writeFile(p('d¹', 'b.txt'), 'B');
+  // 영어 Windows처럼 ¹은 ANSI 1252에는 있고 OEM 437에서만 바뀐다고 답한다.
+  const checks = [];
+  t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    if (path.basename(file) !== 'powershell.exe') return Buffer.from('');
+    checks.push(options.env.FC_WITH_OEM === '1');
+    return options.env.FC_WITH_OEM === '1' && options.env.FC_CHARS.includes('¹') ? '185\n' : '';
+  });
+  const id = require.resolve('../src/commands');
+  const saved = require.cache[id];
+  delete require.cache[id];
+  const mocked = require('../src/commands');
+  require.cache[id] = saved;
+  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip']) {
+    assert.throws(() => mocked.zip(p(archive), [p('s¹.txt')], { dryRun: true }), /U\+00B9/, archive);
+    assert.throws(() => mocked.zip(p(archive), [p('tree')], { dryRun: true }), /U\+00B9.*a¹\.txt/, archive);
+    // 압축 파일 경로와 원본의 상위 폴더는 ANSI로만 본다.
+    mocked.zip(p(archive), [p('d¹', 'b.txt')], { dryRun: true });
+  }
+  for (const archive of ['o.tar.gz', 'o.7z', 'o.tar', 'o.jar', 'o¹.tar.gz']) {
+    mocked.zip(p(archive), [p('s¹.txt'), p('tree')], { dryRun: true });
+  }
+  fs.writeFileSync(p('in¹.zip'), 'x');
+  mocked.unzip(p('in¹.zip'), p('out¹'), { dryRun: true, checkSpace: false });
+  assert.ok(checks.includes(true) && checks.includes(false));
 });
 
 test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전에 거부하고 기존 파일을 건드리지 않는다', { skip: !isWindows }, () => {
