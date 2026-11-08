@@ -77,6 +77,11 @@ function saneInfo(info) {
     duration = null;
   }
   let bitrate = duration === null || duration < MIN_BITRATE_DURATION ? null : number(info.bitrate);
+  // 읽기에서 길이를 트랙·실제 데이터와 맞춰 보고 믿지 못한 경우(받다 만 파일, 깨진 길이, #179)
+  if (duration !== null && typeof info.bitrateNote === 'string') {
+    notes.push(info.bitrateNote);
+    bitrate = null;
+  }
   if (bitrate !== null && bitrate < MIN_BITRATE) {
     notes.push(`비트레이트 값(${bitrate}bps)이 너무 작아 깨진 값일 수 있습니다.`);
     bitrate = null;
