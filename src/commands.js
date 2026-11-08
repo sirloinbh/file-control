@@ -1571,10 +1571,42 @@ function existingPlaces(dest, parts) {
   return places;
 }
 
+// 항목 이름을 어떤 인코딩으로 적는지는 가장 안쪽 형식이 정하고 바깥 압축 겹은 바꾸지 않는다(#212). 그래서 archiveExt의 겹에서
+// 가장 안쪽 판정(첫 확장자, 형식·tar이면 그 뒤의 압축 하나까지)만 남겨 ANSI_ENTRY_EXT와 비교한다.
+// .tar.gz.gz -> .tar.gz, .gz.xz -> .gz, .tgz.gz -> .tgz, .cpio.gz.xz -> .cpio.gz(목록에 없어 OEM으로 본다).
+function innerEntryExt(ext) {
+  const parts = ext.split('.').filter(Boolean);
+  if (parts.length === 0) return ext;
+  const first = parts[0].toLowerCase();
+  const keep = parts.length > 1 && (FORMAT_EXT.has(first) || first === 'tar') ? 2 : 1;
+  return parts.slice(0, keep).map((part) => `.${part}`).join('');
+}
+
+// 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
+const MAX_NAME_LENGTH = 255;
+// zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
+// 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
+const TEMP_SERIAL_RESERVE = 4;
+// tar.exe는 압축 겹을 이만큼까지만 풀 수 있다. 25겹부터는 묶기는 하지만 읽을 때 "Input requires too many filters for decoding"으로
+// 실패한다(빌드 26200 실측, gzip·xz 모두). 다시 풀 수 없는 압축 파일을 만들지 않도록 함께 거부한다(#213).
+const MAX_TAR_LAYERS = 24;
+function rejectLongTempName(archive) {
+  const ext = archiveExt(archive);
+  const layers = ext.split('.').filter((part) => part !== '' && isLayerExt(part)).length;
+  if (layers > MAX_TAR_LAYERS) {
+    throw new FcError(`압축 확장자가 ${layers}겹이라 tar.exe가 다시 풀 수 없습니다(${MAX_TAR_LAYERS}겹까지). 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+  const length = `.fctl-new-${process.pid}-${Date.now()}-0`.length + TEMP_SERIAL_RESERVE + ext.length;
+  if (length > MAX_NAME_LENGTH) {
+    throw new FcError(`확장자가 너무 길어(${ext.length}자) 묶는 동안 쓸 임시 파일 이름이 ${MAX_NAME_LENGTH}자를 넘습니다. 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
+  rejectLongTempName(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
@@ -1598,7 +1630,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
-  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(innerEntryExt(archiveExt(archive))) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
