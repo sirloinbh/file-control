@@ -1334,6 +1334,8 @@ function ensureRoomToExtract(dest, entries) {
 function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
+  rejectLongName(dest, '풀 폴더');
+  rejectLongTarDir(dest, '풀 폴더');
   rejectNewDeviceName(dest);
   ensureTarArgs([path.resolve(archive), path.resolve(dest)]);
   let note = '';
@@ -1604,6 +1606,25 @@ function innerEntryExt(ext) {
 
 // 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
 const MAX_NAME_LENGTH = 255;
+// 경로의 한 칸이라도 한도를 넘으면 만들 수 없다. zip은 짧은 임시 이름으로 묶은 뒤 마지막 이름 바꾸기에서, unzip은 풀 폴더를 만들 때
+// 날것의 ENOENT로 실패하고 미리보기는 성공으로 보였으므로, 미리보기를 포함해 먼저 거부한다(#228).
+function rejectLongName(target, what) {
+  const full = path.resolve(target);
+  const long = full.split(/[\\/]/).slice(1).find((part) => part.length > MAX_NAME_LENGTH);
+  if (long !== undefined) {
+    throw new FcError(`${what} 경로에 ${long.length}자인 이름이 있어 만들 수 없습니다(이름 한 칸은 ${MAX_NAME_LENGTH}자까지): ${long.slice(0, 40)}… (${target})`);
+  }
+}
+
+// tar.exe는 -C로 받은 폴더로 옮겨 가는데, 그 경로가 이보다 길면 "could not chdir"로 날것의 실패를 낸다(빌드 26200 실측, 258자까지 됨).
+// unzip의 풀 폴더와 zip 원본의 상위 폴더가 -C로 넘어가므로 미리 거부한다(#228).
+const MAX_TAR_DIR = 258;
+function rejectLongTarDir(dir, what) {
+  const full = path.resolve(dir);
+  if (full.length > MAX_TAR_DIR) {
+    throw new FcError(`${what} 경로가 ${full.length}자라 tar.exe가 그 폴더로 옮겨 갈 수 없습니다(${MAX_TAR_DIR}자까지). 더 짧은 경로를 지정하세요: ${dir}`);
+  }
+}
 // zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
 // 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
 const TEMP_SERIAL_RESERVE = 4;
@@ -1626,9 +1647,11 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
+  rejectLongName(archive, '압축 파일');
   rejectLongTempName(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
+  for (const src of sources) rejectLongTarDir(path.dirname(path.resolve(src)), '원본의 상위 폴더');
   [archive, ...sources].forEach(rejectStreamPath);
   // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
   const root = sources.find((src) => path.basename(path.resolve(src)) === '');

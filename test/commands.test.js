@@ -1286,6 +1286,45 @@ test('archiveExt는 끝에서 이어지는 압축 확장자를 모두 돌려준�
   for (const [name, ext] of Object.entries(cases)) assert.strictEqual(fc.archiveExt(name), ext, name);
 });
 
+test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없는 259자 이상의 -C 폴더를 미리보기에서도 FcError로 거부한다 (#228)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  fc.zip(p('ok.zip'), [p('a.txt')]);
+  const long = 'a'.repeat(256);
+  const tooLong = (err) => err instanceof fc.FcError && /256자인 이름이 있어 만들 수 없습니다\(이름 한 칸은 255자까지\)/.test(err.message);
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p(`${long}.zip`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /260자인 이름/.test(err.message));
+    assert.throws(() => fc.zip(p(long, 'x.zip'), [p('a.txt')], { dryRun }), tooLong);
+    assert.throws(() => fc.unzip(p('ok.zip'), p(long), { dryRun }), tooLong);
+    assert.throws(() => fc.unzip(p('ok.zip'), p(long, 'in'), { dryRun }), tooLong);
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'ok.zip']);
+  // 255자 이름은 그대로 묶고 풀린다.
+  const fits = `${'b'.repeat(251)}.zip`;
+  fc.zip(p(fits), [p('a.txt')]);
+  fc.unzip(p(fits), p('c'));
+  assert.strictEqual(fc.readFile(p('c', 'a.txt')), 'A');
+  // tar.exe는 -C 폴더 경로가 258자까지만 옮겨 간다. 풀 폴더는 258자까지 풀고 259자부터 거부한다.
+  const destOf = (length) => p('d'.repeat(length - dir.length - 1));
+  fc.unzip(p('ok.zip'), destOf(258));
+  assert.strictEqual(fc.readFile(path.join(destOf(258), 'a.txt')), 'A');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.unzip(p('ok.zip'), destOf(259), { dryRun }), (err) => err instanceof fc.FcError && /풀 폴더 경로가 259자라 tar\.exe가 그 폴더로 옮겨 갈 수 없습니다\(258자까지\)/.test(err.message));
+  }
+  assert.ok(!fs.existsSync(destOf(259)));
+  // 원본의 상위 폴더도 -C로 넘어가므로 259자부터 거부한다.
+  const deepParent = path.join(destOf(258), 'e');
+  fc.writeFile(path.join(deepParent, 'x.txt'), 'X');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p('deep.zip'), [path.join(deepParent, 'x.txt')], { dryRun }), (err) => err instanceof fc.FcError && /원본의 상위 폴더 경로가 260자라/.test(err.message));
+  }
+  assert.ok(!fs.existsSync(p('deep.zip')));
+  // 상위 폴더를 원본으로 주면(-C는 258자 폴더) 그대로 묶인다.
+  fc.zip(p('deep.zip'), [deepParent]);
+  assert.strictEqual(fc.archiveEntries(p('deep.zip')).length, 2);
+});
+
 test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 수(25겹 이상)면 FcError로 거부하고 아무것도 남기지 않는다 (#213)', () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
