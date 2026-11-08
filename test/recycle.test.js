@@ -336,3 +336,53 @@ test('실제 휴지통 이동은 안에 끝이 점인 이름이 든 폴더를 �
   assert.strictEqual(fs.readFileSync(path.join(dir, 'box', 'ok.txt'), 'utf8'), 'ok');
   assert.ok(fs.existsSync(`${LONG_PREFIX}${path.join(dir, 'box', 'dot.')}`));
 });
+
+// #194: 묶음 휴지통 이동 스크립트를 실제 PowerShell로 돌린다. 사용자 휴지통을 건드리지 않도록 휴지통 이동만 영구 삭제(임시 폴더 안)로 바꾼다.
+test('recycleFiles의 PowerShell 스크립트는 파일마다 지우기 직전에 실제 경로·파일 여부·fileStamp를 다시 본다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const p = (...xs) => path.join(dir, ...xs);
+  fs.mkdirSync(p('real'));
+  for (const name of ['ok.mp4', '한글 이모지😀.mp4', 'changed.mp4', 'gone.mp4', 'real/x.mp4']) fs.writeFileSync(p(name), name);
+  fs.mkdirSync(p('dir.mp4'));
+  fs.symlinkSync(p('real'), p('junction'), 'junction');
+  const stamp = (file) => fileStamp(fs.lstatSync(file, { bigint: true }));
+  const items = ['ok.mp4', '한글 이모지😀.mp4', 'changed.mp4', 'gone.mp4', path.join('junction', 'x.mp4')].map((name) => ({ path: p(name), stamp: stamp(name.startsWith('junction') ? p('real', 'x.mp4') : p(name)) }));
+  items.push({ path: p('dir.mp4'), stamp: '1:2:3:4' });
+  fs.appendFileSync(p('changed.mp4'), '+');
+  fs.rmSync(p('gone.mp4'));
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.notStrictEqual(swapped, script, '휴지통 이동 호출을 찾아 바꿔야 한다');
+  const results = reload().recycleFiles(items, { script: swapped });
+  assert.deepStrictEqual(results.map((item) => [path.relative(dir, item.path), item.status]), [
+    ['ok.mp4', 'ok'],
+    ['한글 이모지😀.mp4', 'ok'],
+    ['changed.mp4', 'changed'],
+    ['gone.mp4', 'gone'],
+    [path.join('junction', 'x.mp4'), 'moved'],
+    ['dir.mp4', 'notfile'],
+  ]);
+  assert.ok(!fs.existsSync(p('ok.mp4')) && !fs.existsSync(p('한글 이모지😀.mp4')));
+  assert.ok(fs.existsSync(p('changed.mp4')) && fs.existsSync(p('real', 'x.mp4')) && fs.existsSync(p('dir.mp4')));
+});
+
+test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 Windows 사유를 UTF-16으로 알리고 다음 파일을 계속한다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const a = path.join(dir, 'a.mp4');
+  const b = path.join(dir, 'b.mp4');
+  fs.writeFileSync(a, 'a');
+  fs.writeFileSync(b, 'b');
+  const items = [a, b].map((file) => ({ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) }));
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  // a.mp4만 한글 사유로 실패하게 한다.
+  const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", "if ($p.EndsWith('a.mp4')) { throw [IO.IOException]::new('사용 중입니다.') }; [IO.File]::Delete($long)");
+  assert.notStrictEqual(swapped, script);
+  const results = reload().recycleFiles(items, { script: swapped });
+  assert.deepStrictEqual(results.map((item) => [path.basename(item.path), item.status, item.reason]), [
+    ['a.mp4', 'error', '사용 중입니다'],
+    ['b.mp4', 'ok', ''],
+  ]);
+  assert.ok(fs.existsSync(a) && !fs.existsSync(b));
+});

@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, recycleBinState, MAX_RECYCLE_PATH } = require('./commands');
+const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
@@ -92,13 +92,44 @@ function confirmationCode(plan) {
 }
 
 // 기록을 쓴 뒤 파일이 바뀌었으면 지우지 않는다. 지우는 것은 판별한 그 파일이어야 한다.
-function removeOne(access, item) {
+// 묶음으로 보내기 직전에 Node에서 보고, 휴지통 이동은 rm과 같은 검사(remove의 미리보기)를 거친 경로만 받는다.
+// 묶음 안에서도 PowerShell이 파일마다 지우기 직전에 실제 경로와 fileStamp를 다시 본다(recycleFiles, #194).
+function checkOne(access, item) {
   const real = access.delete(item.path);
   if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
-  remove([real]);
+  remove([real], { dryRun: true });
+  return { path: recycleTarget(real), stamp: item.stamp };
 }
+
+// 파일 하나를 검사하고 바로 휴지통으로 보낸다. remove-duplicates·remove-low-quality가 쓴다.
+function removeOne(access, item) {
+  remove([checkOne(access, item).path]);
+}
+
+// recycleFiles의 결과를 실패 사유로 바꾼다. ok면 undefined다.
+function batchFailure(file, { status, reason }) {
+  switch (status) {
+    case 'ok':
+      return undefined;
+    case 'moved':
+      return `판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${file}`;
+    case 'notfile':
+    case 'changed':
+      return `판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${file}`;
+    case 'gone':
+      return `판별한 뒤 파일이 사라져 지우지 않았습니다: ${file}`;
+    case 'error':
+      return recycleFailureMessage(file, reason);
+    default:
+      return `휴지통으로 보냈는지 알 수 없습니다: ${file} (${reason}). 휴지통과 원래 자리를 확인하세요.`;
+  }
+}
+
+// 한 번에 PowerShell로 보내는 파일 수. 묶음마다 결과와 진행 줄이 나오므로 너무 크면 진행 표시가 멈춘 것처럼 보인다.
+// 100개면 3초 안팎이다(50개 1.6초 실측).
+const FILE_BATCH = 100;
 
 // PowerShell 오류 문구에는 스크립트 전문과 깨진 글자가 들어 있어 쓰지 않는다.
 function recycleFailure(err) {
@@ -111,8 +142,8 @@ function recycleFailure(err) {
 // confirm이 지금 목록의 확인값과 다르면 아무것도 지우지 않고 mismatch를 표시한다.
 // 지우기 전에 기록 파일을 남기고, 기록을 남기지 못하면 아무것도 지우지 않는다. 한 파일이 실패해도 나머지는 계속한다.
 // 돌려주는 값: planRemoval의 값에 { code, dryRun, confirmed, mismatch, removed, failed, log }를 더한 것. failed는 { path, reason } 목록이고 log는 기록 파일 경로다.
-// onProgress(line)를 주면 실제로 지울 때 파일 하나가 끝날 때마다 몇 번째인지와 결과를 한 줄로 넘긴다(#99).
-// 휴지통 이동은 파일마다 PowerShell을 띄워 파일당 0.5~0.6초가 걸린다(빌드 26200에서 20개·50개로 실측). 1000개면 9~10분이다.
+// onProgress(line)를 주면 실제로 지울 때 파일마다 몇 번째인지와 결과를 한 줄로 넘긴다(#99). 묶음(FILE_BATCH개)이 끝날 때마다 그 묶음의 줄이 나온다.
+// 파일마다 PowerShell을 띄우면 파일당 0.5~0.6초가 걸려(20개 12.2초, 50개 26.6초) 묶어 보낸다(#194, 50개 1.6초).
 function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE_SIZE, onProgress } = {}) {
   const plan = planRemoval(dir, { now, maxSize });
   const code = confirmationCode(plan);
@@ -137,21 +168,39 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
       // 진행 표시는 결과에 영향을 주지 않는다.
     }
   };
-  report(`휴지통으로 보내는 중: ${total}개 (파일당 0.5초 안팎)`);
-  plan.removals.forEach((item, index) => {
-    const step = `${index + 1}/${total}`;
+  report(`휴지통으로 보내는 중: ${total}개 (${FILE_BATCH}개씩 묶어 보냅니다)`);
+  const fail = (step, item, reason) => {
+    result.failed.push({ path: item.path, reason });
+    report(`${step} 실패: ${relative(item.path)} (${reason})`);
+  };
+  for (let start = 0; start < total; start += FILE_BATCH) {
+    const batch = [];
+    plan.removals.slice(start, start + FILE_BATCH).forEach((item, offset) => {
+      const index = start + offset;
+      const step = `${index + 1}/${total}`;
+      try {
+        const logged = log.items[index].path;
+        if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
+        batch.push({ item, step, send: checkOne(access, item) });
+      } catch (err) {
+        fail(step, item, recycleFailure(err));
+      }
+    });
+    let outcomes;
     try {
-      const logged = log.items[index].path;
-      if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
-      removeOne(access, item);
-      result.removed.push(item);
-      report(`${step} 휴지통으로 이동: ${relative(item.path)}`);
+      outcomes = recycleFiles(batch.map((entry) => entry.send));
     } catch (err) {
-      const reason = recycleFailure(err);
-      result.failed.push({ path: item.path, reason });
-      report(`${step} 실패: ${relative(item.path)} (${reason})`);
+      // 묶음을 시작하지 못하면(비대화형 등) 이 묶음의 파일은 아무것도 지우지 않았다.
+      for (const entry of batch) fail(entry.step, entry.item, recycleFailure(err));
+      continue;
     }
-  });
+    batch.forEach((entry, i) => {
+      const reason = batchFailure(entry.item.path, outcomes[i]);
+      if (reason !== undefined) return fail(entry.step, entry.item, reason);
+      result.removed.push(entry.item);
+      report(`${entry.step} 휴지통으로 이동: ${relative(entry.item.path)}`);
+    });
+  }
   return result;
 }
 
