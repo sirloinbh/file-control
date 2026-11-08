@@ -12,8 +12,8 @@ const { markerFinder, markerReason } = require('./downloadMarker');
 
 // 이보다 최근에 바뀐 파일은 받는 중일 수 있어 남긴다.
 const RECENT_MS = 5 * 60 * 1000;
-// 휴지통 용량을 확인하지 못했을 때 남기는 크기(remove-low-quality가 아직 고정값으로 쓴다). remove-broken·remove-duplicates는
-// 볼륨의 휴지통 설정(최대 크기, 바로 제거)으로 판단하고(#100), 설정을 읽지 못했을 때만 이 크기부터 남긴다.
+// 휴지통 용량을 확인하지 못했을 때 남기는 크기. remove-broken·remove-duplicates·remove-low-quality는
+// 볼륨의 휴지통 설정(최대 크기, 바로 제거)으로 판단하고(#100, #219), 설정을 읽지 못했을 때만 이 크기부터 남긴다.
 const MAX_RECYCLE_SIZE = UNKNOWN_RECYCLE_LIMIT;
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
