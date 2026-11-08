@@ -355,15 +355,20 @@ function lzmaDecoder(out) {
   // 사전 시작 자리. 이보다 앞을 가리키는 거리는 손상이다(LZMA2의 사전 재설정).
   let dictStart = 0;
 
-  function setProps(byte) {
+  // maxLcLp는 LZMA2의 lc+lp 한도(4, xz의 LZMA_LCLP_MAX)다. 그보다 큰 값으로 상태를 자주 재설정하면 큰 표를 매번 채우게 된다(1차 리뷰).
+  function setProps(byte, maxLcLp = Infinity) {
     if (byte >= 9 * 5 * 5) throw broken('7z 헤더의 LZMA 설정을 읽지 못해 남겼습니다.');
     lc = byte % 9;
     lp = Math.floor(byte / 9) % 5;
     pb = Math.floor(byte / 45);
+    if (lc + lp > maxLcLp) throw broken('7z 헤더의 LZMA2 설정을 읽지 못해 남겼습니다.');
   }
 
   function resetState() {
-    literal = probs(0x300 << (lc + lp));
+    // 같은 크기면 표를 새로 만들지 않고 다시 채운다.
+    const size = 0x300 << (lc + lp);
+    if (literal?.length === size) literal.fill(1024);
+    else literal = probs(size);
     isMatch = probs(12 << 4);
     isRep = probs(12);
     isRepG0 = probs(12);
@@ -397,7 +402,8 @@ function lzmaDecoder(out) {
     while (pos < end) {
       const posState = pos & pbMask;
       if (bit(isMatch, (state << 4) + posState) === 0) {
-        const prev = pos > 0 ? out[pos - 1] : 0;
+        // 사전을 재설정한 자리에서는 앞 바이트를 0으로 본다(1차 리뷰).
+        const prev = pos > dictStart ? out[pos - 1] : 0;
         const base = 0x300 * (((pos & lpMask) << lc) + (prev >> (8 - lc)));
         let symbol = 1;
         if (state >= 7) {
@@ -483,7 +489,7 @@ function lzmaDecoder(out) {
     get pos() { return pos; },
     set pos(value) { pos = value; },
     resetDict() { dictStart = pos; },
-    // 범위 디코더가 읽은 바이트 수(LZMA2 청크 크기 확인용)
+    // 범위 디코더가 읽은 자리(LZMA2 청크가 압축된 크기만큼 정확히 읽혔는지 확인용)
     get consumed() { return inPos; },
   };
 }
@@ -523,7 +529,11 @@ function lzma2Decode(props, input, outSize) {
     first = false;
     if (control === 0x01 || control === 0x02) {
       const size = ((byte() << 8) | byte()) + 1;
-      if (control === 0x01) lzma.resetDict();
+      // 사전을 재설정하면 다음 LZMA 청크는 속성도 다시 정해야 한다(xz·LZMA SDK와 같은 조건, 1차 리뷰).
+      if (control === 0x01) {
+        lzma.resetDict();
+        haveProps = false;
+      }
       if (size > outSize - lzma.pos || size > input.length - at) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
       input.copy(out, lzma.pos, at, at + size);
       lzma.pos += size;
@@ -538,7 +548,7 @@ function lzma2Decode(props, input, outSize) {
     const packed = ((byte() << 8) | byte()) + 1;
     if (reset === 3) lzma.resetDict();
     if (reset >= 2) {
-      lzma.setProps(byte());
+      lzma.setProps(byte(), 4);
       haveProps = true;
     }
     if (!haveProps || (needState && reset === 0)) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
@@ -546,6 +556,8 @@ function lzma2Decode(props, input, outSize) {
     needState = false;
     if (unpacked > outSize - lzma.pos || packed > input.length - at) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
     lzma.run(input, at, at + packed, lzma.pos + unpacked, false);
+    // 청크는 압축된 크기만큼 정확히 읽혀야 한다(xz와 같은 조건, 1차 리뷰).
+    if (lzma.consumed !== at + packed) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
     at += packed;
   }
   if (lzma.pos !== outSize) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');

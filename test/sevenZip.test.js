@@ -125,4 +125,16 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
   assert.match(reason(() => lzma2Decode(Buffer.from([41]), ok, 11)), /LZMA2 설정/);
   // 풀린 크기보다 일찍 끝난다.
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 12)), /중간에 끝나/);
+  // lc+lp가 4를 넘는 LZMA2 속성(lc=8, lp=4)은 받지 않는다(1차 리뷰: 상태 재설정마다 큰 표를 채워 매우 느려짐).
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0xe0, 0, 0, 0, 4, 44, 0, 0, 0, 0, 0, 0x00]), 1)), /LZMA2 설정/);
+  // xz --format=raw --lzma2=lc=4,lp=0,pb=0로 만든 'hello hello hello world'. 앞에 0xFF로 끝나는 압축하지 않은 청크를 두고
+  // LZMA 청크가 사전을 재설정하면 첫 리터럴의 앞 바이트는 0으로 본다(1차 리뷰).
+  const raw = Buffer.from('e0001600100400341a154118b89b3e4fc54dd75df64d0000', 'hex');
+  assert.strictEqual(lzma2Decode(Buffer.from([0x10]), raw, 23).toString(), 'hello hello hello world');
+  const after = lzma2Decode(Buffer.from([0x10]), Buffer.concat([Buffer.from([0x01, 0x00, 0x01, 0x41, 0xff]), raw]), 25);
+  assert.strictEqual(after.subarray(2).toString(), 'hello hello hello world');
+  // 압축된 크기보다 덜 읽고 끝나는 청크(압축된 크기를 1 늘림)
+  const loose = Buffer.from(raw);
+  loose.writeUInt16BE(loose.readUInt16BE(3) + 1, 3);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([loose.subarray(0, loose.length - 1), Buffer.from([0x00, 0x00])]), 23)), /손상돼/);
 });
