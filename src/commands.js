@@ -233,6 +233,8 @@ function moveOne(src, dest) {
   } catch (err) {
     // 다른 드라이브로 옮길 때는 rename이 안 되므로 복사 후 원본을 지운다.
     if (err.code !== 'EXDEV') throw err;
+    // 복사로 옮기므로 cp와 같게 끝나지 않는 링크를 먼저 거부한다(#142). 아무것도 복사하지 않았으므로 원본과 대상은 그대로다.
+    rejectLoopingLinks(src, dest);
     try {
       fs.cpSync(src, dest, { recursive: true });
     } catch (copyErr) {
@@ -317,6 +319,40 @@ function hasAncestorSameAs(dir, p) {
     if (isSameFile(dir, current)) return true;
   }
   return false;
+}
+
+// 원본 폴더 안의 링크가 원본이나 대상과 겹치는 곳을 가리키면 아무것도 복사하기 전에 거부한다(#142).
+// fs.cpSync는 Windows에서 정션을 따라가 그 안의 내용을 복사한다(폴더 심볼릭 링크는 링크로 복사한다, 빌드 26200·Node 24.21에서 확인).
+// 그래서 원본 자신이나 그 위 폴더, 대상이나 그 위 폴더를 가리키는 정션은 복사가 끝나지 않고 경로가 길어지다가 Node가 오류 없이 끝난다.
+// 대상 안을 가리키는 링크도 복사하는 동안 읽는 내용이 바뀌므로 함께 거부한다. Node로는 정션과 폴더 심볼릭 링크를 구분하지 못해 둘 다 본다.
+// 링크 안으로는 들어가지 않는다. 끊어진 링크는 따라갈 곳이 없어 보지 않는다.
+function rejectLoopingLinks(src, target) {
+  const here = fs.lstatSync(src, { throwIfNoEntry: false });
+  if (!here || !here.isDirectory()) return;
+  const srcKey = realKey(src);
+  const targetKey = realKey(target);
+  const pending = [path.resolve(src)];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(full);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      let to;
+      try {
+        to = fs.realpathSync.native(full);
+      } catch {
+        continue;
+      }
+      const toKey = pathKey(to);
+      if (isSameOrUnder(toKey, srcKey) || isSameOrUnder(toKey, targetKey) || isSameOrUnder(targetKey, toKey)) {
+        throw new FcError(`원본 안의 링크가 원본이나 대상, 또는 그 위 폴더를 가리켜 복사가 끝나지 않을 수 있습니다. 아무것도 복사하지 않았습니다: ${full} -> ${to}`);
+      }
+    }
+  }
 }
 
 // UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
@@ -425,6 +461,11 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       }
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
+  }
+  // 원본 안의 링크 때문에 복사가 끝나지 않는 경우(#142)는 미리보기에서도, 여러 원본 중 하나만 그래도 아무것도 복사하지 않는다.
+  for (const src of sources) {
+    ensureExists(src);
+    rejectLoopingLinks(src, resolveDest(src, dest));
   }
   const planned = new Set();
   return sources.map((src) => {

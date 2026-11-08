@@ -135,11 +135,73 @@ test('cp --force는 깊은 곳의 어긋남, 대소문자만 다른 이름, 맨 
   assert.deepStrictEqual(fs.readdirSync(path.join(root, 'elsewhere')), []);
 });
 
-// 실제 복사는 하지 않는다. 위 폴더를 가리키는 정션이 든 폴더는 cpSync가 새 경로로 복사할 때도 Node를 끝낸다(#142).
+// 합치기 검사는 원본 안의 정션 안으로 들어가지 않아 끝나고, 위 폴더를 가리키는 정션은 #142의 검사가 거부한다.
+// 이 검사가 빠지면 cpSync가 정션을 따라 끝없이 복사하다 Node를 끝내므로 테스트 실행 자체가 끝난다.
 test('cp --force의 합치기 검사는 원본 안의 정션 안으로 들어가지 않아 위 폴더를 가리키는 정션에서도 끝난다 (1차 리뷰, #140)', () => {
   const { src, dst } = fixture();
   junction(src, path.join(src, 'loop'));
-  assert.match(fc.copy([src], dst, { force: true, dryRun: true })[0], /^\[미리보기\] 복사: /);
+  assert.throws(() => fc.copy([src], dst, { force: true, dryRun: true }), /원본 안의 링크가 원본이나 대상/);
+});
+
+const LOOP = /원본 안의 링크가 원본이나 대상, 또는 그 위 폴더를 가리켜 복사가 끝나지 않을 수 있습니다\. 아무것도 복사하지 않았습니다: /;
+
+test('cp는 원본 자신이나 그 위 폴더를 가리키는 정션이 든 폴더를 새 경로로도, 합치기로도 복사하지 않는다 (#142)', () => {
+  const { root, src, into, dst } = fixture();
+  fs.mkdirSync(path.join(src, 'deep', 'er'), { recursive: true });
+  for (const [at, to] of [[path.join(src, 'loop'), src], [path.join(src, 'deep', 'er', 'up'), root]]) {
+    junction(to, at);
+    for (const dryRun of [false, true]) {
+      assert.throws(() => fc.copy([src], path.join(root, 'fresh'), { dryRun }), (err) => err instanceof fc.FcError && LOOP.test(err.message) && err.message.includes(at), `${at} dryRun=${dryRun}`);
+      assert.throws(() => fc.copy([src], dst, { force: true, dryRun }), LOOP, `merge ${at} dryRun=${dryRun}`);
+    }
+    fs.rmSync(at);
+  }
+  assert.ok(!fs.existsSync(path.join(root, 'fresh')));
+  assert.deepStrictEqual(tree(into), []);
+});
+
+test('cp는 대상이나 그 위 폴더, 대상 안을 가리키는 정션이 든 폴더를 복사하지 않는다 (#142)', () => {
+  const { root, src } = fixture();
+  const out = path.join(root, 'out');
+  // cp는 dst 안의 dst/src로 복사하므로 out, dst, dst/src는 대상이나 그 위 폴더이고 dst/src/inner는 대상 안이다.
+  fs.mkdirSync(path.join(out, 'dst', 'src', 'inner'), { recursive: true });
+  for (const to of [out, path.join(out, 'dst'), path.join(out, 'dst', 'src'), path.join(out, 'dst', 'src', 'inner')]) {
+    junction(to, path.join(src, 'j'));
+    assert.throws(() => fc.copy([src], path.join(out, 'dst'), { force: true }), LOOP, to);
+    fs.rmSync(path.join(src, 'j'));
+  }
+  assert.deepStrictEqual(tree(path.join(out, 'dst')), ['src', path.join('src', 'inner')]);
+});
+
+test('cp는 원본 안이나 관계없는 곳을 가리키는 정션은 그 내용을 복사하고, 여러 원본 중 하나라도 걸리면 아무것도 복사하지 않는다 (#142)', () => {
+  const { root, src } = fixture();
+  fs.mkdirSync(path.join(src, 'inner'));
+  fs.writeFileSync(path.join(src, 'inner', 'i.txt'), 'I');
+  fs.mkdirSync(path.join(root, 'elsewhere'));
+  fs.writeFileSync(path.join(root, 'elsewhere', 'e.txt'), 'E');
+  junction(path.join(src, 'inner'), path.join(src, 'in'));
+  junction(path.join(root, 'elsewhere'), path.join(src, 'out'));
+  fc.copy([src], path.join(root, 'copy'));
+  assert.strictEqual(fs.readFileSync(path.join(root, 'copy', 'in', 'i.txt'), 'utf8'), 'I');
+  assert.strictEqual(fs.readFileSync(path.join(root, 'copy', 'out', 'e.txt'), 'utf8'), 'E');
+  // 두 번째 원본에 위 폴더를 가리키는 정션이 있으면 첫 번째 원본도 복사하지 않는다.
+  const looped = path.join(root, 'looped');
+  fs.mkdirSync(looped);
+  junction(root, path.join(looped, 'up'));
+  fs.mkdirSync(path.join(root, 'many'));
+  assert.throws(() => fc.copy([path.join(root, 'elsewhere'), looped], path.join(root, 'many')), LOOP);
+  assert.deepStrictEqual(fs.readdirSync(path.join(root, 'many')), []);
+});
+
+test('mv가 다른 드라이브로 옮길 때도 위 폴더를 가리키는 정션이 든 폴더는 복사하지 않고 그대로 둔다 (#142)', (t) => {
+  const { root, src } = fixture();
+  junction(src, path.join(src, 'loop'));
+  t.mock.method(fs, 'renameSync', () => {
+    throw Object.assign(new Error('cross-device'), { code: 'EXDEV' });
+  });
+  assert.throws(() => fc.move([src], path.join(root, 'moved')), LOOP);
+  assert.ok(!fs.existsSync(path.join(root, 'moved')));
+  assert.deepStrictEqual(fs.readdirSync(src).sort(), ['a.txt', 'loop']);
 });
 
 test('cp --force는 같은 원본을 두 번 줘도 자기 자신과 비교해 거부하지 않는다 (2차 리뷰, #140)', () => {
