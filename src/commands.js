@@ -1047,6 +1047,7 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
     const sizeNote = size === null ? '' : `, 풀린 크기 약 ${formatSize(Number(size))}`;
     if (dryRun) note = ` (항목 ${entries.length}개${sizeNote}${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
   }
+  if (isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
   return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
     runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -1197,6 +1198,82 @@ function rejectShortNameClash(sources, inside) {
   }
 }
 
+// 풀 때 압축 안의 ~N 이름이 짧은 이름을 거쳐 다른 파일이 되는 것을 막는다(#188). names는 archiveNames의 결과, dest는 풀 폴더다.
+// 1) 같은 폴더의 다른 항목과 짧은 이름으로 겹칠 수 있으면 푸는 순서에 따라 한쪽이 덮어써지므로 거부한다(rejectShortNameClash와 같은 어림).
+//    Windows는 대소문자를 가리지 않으므로 a/와 A/는 같은 폴더로 본다.
+// 2) 풀 폴더에 이미 있는 항목에 ~N 이름이 짧은 이름으로 닿으면 기존 파일을 덮어쓰거나 기존 폴더에 섞이므로 거부한다.
+//    ASCII 이름은 볼륨에 실제로 있는 짧은 이름으로 본다(이름은 목록에 없는데 그 경로가 있으면 거부). 짧은 이름을 만들지 않는 볼륨에서는 걸리지 않는다.
+// 목록의 이름은 코드페이지로 나와 ASCII가 아닌 글자가 ?나 깨진 글자, 다른 글자가 될 수 있다. 그런 글자는 무엇이든 될 수 있는 글자로 보고,
+// 그런 ~N 이름은 경로로 확인할 수 없으므로 기존 이름과 어림으로 비교한다. 그런 폴더 이름은 같은 자리의 ASCII가 아닌 기존 폴더 모두로 본다.
+const UNRELIABLE_NAME = /[^\x00-\x7f]|\?/;
+function rejectExtractShortNameClash(names, dest) {
+  const unknown = (name) => name.replace(/[^\x00-\x7f]|\?/g, '\u0080');
+  // ASCII가 아닌 글자가 든 짧은 이름은 그런 글자가 든 긴 이름에서만 생긴다(ASCII 긴 이름의 짧은 이름은 ASCII다).
+  const mayBe = (name, other) => (!UNRELIABLE_NAME.test(name) || UNRELIABLE_NAME.test(other)) && couldBeShortNameOf(unknown(name), unknown(other));
+  const levels = new Map();
+  for (const raw of names) {
+    const parts = raw.split(/[\\/]/).filter((part) => part !== '' && part !== '.');
+    parts.forEach((part, i) => {
+      const key = parts.slice(0, i).map((p) => p.toUpperCase()).join('/');
+      if (!levels.has(key)) levels.set(key, { parts: parts.slice(0, i), items: new Map() });
+      levels.get(key).items.set(part.toUpperCase(), part);
+    });
+  }
+  const shown = (parts, name) => [...parts, name].join('/');
+  // 목록의 ASCII가 아닌 이름은 깨져 보이므로 그렇다고 알린다(2차 리뷰).
+  const garbled = (...texts) => (texts.some((text) => UNRELIABLE_NAME.test(text)) ? ' (압축 목록의 ASCII가 아닌 이름은 코드페이지 때문에 깨져 보일 수 있습니다)' : '');
+  for (const { parts, items } of levels.values()) {
+    const all = [...items.values()];
+    const shorts = all.filter((name) => SHORT_NAME.test(name));
+    for (const name of shorts) {
+      const other = all.find((candidate) => candidate !== name && mayBe(name, candidate));
+      if (other !== undefined) {
+        throw new FcError(`압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있어 풀지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${shown(parts, name)}, ${shown(parts, other)}${garbled(shown(parts, name), other)}`);
+      }
+    }
+    if (shorts.length === 0) continue;
+    for (const place of existingPlaces(dest, parts)) {
+      const existing = fs.readdirSync(place);
+      const keys = new Set(existing.map((name) => name.toUpperCase()));
+      for (const name of shorts) {
+        let real;
+        let note = '';
+        if (UNRELIABLE_NAME.test(name)) {
+          real = existing.find((candidate) => mayBe(name, candidate));
+          if (real === undefined) continue;
+          // 이름을 확인할 수 없으므로 같은 압축을 다시 풀 때처럼 이름이 그대로 같은 항목도 여기서 걸린다.
+          note = ` 이름이 그대로 같은 항목일 수도 있지만 확인할 수 없습니다.${garbled(name)}`;
+        } else {
+          if (keys.has(name.toUpperCase()) || !exists(path.join(place, name))) continue;
+          real = existing.find((candidate) => couldBeShortNameOf(name, candidate)) ?? name;
+          note = garbled(shown(parts, name));
+        }
+        throw new FcError(`압축 안의 ${shown(parts, name)}이 8.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어 풀지 않습니다. 풀면 그 항목이 덮어써지거나 섞입니다: ${path.join(place, real)}${note}`);
+      }
+    }
+  }
+}
+
+// 압축 안의 폴더 경로 parts가 풀 폴더 dest에서 닿을 수 있는 기존 폴더들. 믿을 수 없는 이름은 그 자리의 ASCII가 아닌 기존 폴더 모두로 본다.
+function existingPlaces(dest, parts) {
+  const isDir = (p) => fs.statSync(p, { throwIfNoEntry: false })?.isDirectory() === true;
+  let places = isDir(dest) ? [dest] : [];
+  for (const part of parts) {
+    const next = [];
+    for (const place of places) {
+      if (!UNRELIABLE_NAME.test(part)) {
+        if (isDir(path.join(place, part))) next.push(path.join(place, part));
+        continue;
+      }
+      for (const entry of fs.readdirSync(place, { withFileTypes: true })) {
+        if (UNRELIABLE_NAME.test(entry.name) && isDir(path.join(place, entry.name))) next.push(path.join(place, entry.name));
+      }
+    }
+    places = next;
+  }
+  return places;
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
@@ -1256,6 +1333,7 @@ module.exports = {
   unsupportedChars,
   oemCodePage,
   couldBeShortNameOf,
+  rejectExtractShortNameClash,
   ensureRoomToExtract,
   freshPath,
   zip,
