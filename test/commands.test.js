@@ -1326,6 +1326,33 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   assert.strictEqual(fc.archiveEntries(p('deep.zip')).length, 2);
 });
 
+test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 그 프로그램이 PATH에 없으면 미리보기에서도 FcError로 거부한다 (#230)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  // PATH를 빈 폴더 하나로 바꿔 프로그램이 없는 환경을 만든다.
+  fs.mkdirSync(p('bin'));
+  const savedPath = process.env.PATH;
+  process.env.PATH = p('bin');
+  t.after(() => { process.env.PATH = savedPath; });
+  // tar.exe가 .exe만 실행하므로 .cmd는 있어도 없는 것으로 본다(1차 리뷰).
+  fs.writeFileSync(p('bin', 'lz4.cmd'), '@echo off');
+  const cases = { 'x.tar.lz4': 'lz4', 'x.lz4': 'lz4', 'x.tar.lzo': 'lzop', 'x.tar.lrz': 'lrzip', 'x.tar.grz': 'grzip', 'x.cpio.lz4': 'lz4', 'x.tar.gz.lz4': 'lz4', 'X.TAR.LZ4': 'lz4', 'x.tzo': 'lzop', 'X.TZO': 'lzop', 'x.tzo.gz': 'lzop' };
+  for (const [name, program] of Object.entries(cases)) {
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`외부 프로그램 ${program}이 필요한데 PATH에서 찾지 못했습니다`), name);
+    }
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'bin']);
+  // 내장된 압축(.lz, .lzma, .zst)과 압축이 아닌 마지막 확장자(.lz4.txt)는 그대로 묶는다.
+  process.env.PATH = savedPath;
+  for (const name of ['x.tar.lz', 'x.tar.lzma', 'x.tar.zst', 'x.lz4.txt']) fc.zip(p(name), [p('a.txt')]);
+  // 프로그램이 PATH에 있으면 거부하지 않고 tar.exe에 맡긴다(미리보기로 이 검사만 본다).
+  fs.writeFileSync(p('bin', 'lz4.exe'), '');
+  process.env.PATH = p('bin');
+  assert.match(fc.zip(p('y.tar.lz4'), [p('a.txt')], { dryRun: true }), /\[미리보기\] 압축/);
+});
+
 test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 수(25겹 이상)면 FcError로 거부하고 아무것도 남기지 않는다 (#213)', () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
