@@ -8,7 +8,7 @@ const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
-const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./removeBroken');
+const { holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE } = require('./removeBroken');
 const { markerFinder, markerReason } = require('./downloadMarker');
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
@@ -129,15 +129,10 @@ function removeLowQuality(dir, { minHeight, minBitrate, confirm, dryRun = false,
   );
   result.log = log.path;
   const access = grant(plan.target, ['delete']);
-  plan.removals.forEach((item, index) => {
-    try {
-      const logged = log.items[index].path;
-      if (logged !== item.path) throw new FcError(`찾은 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
-      removeOne(access, item);
-      result.removed.push(item);
-    } catch (err) {
-      result.failed.push({ path: item.path, reason: recycleFailure(err) });
-    }
+  // remove-broken처럼 묶어 보낸다(#216). 파일마다 PowerShell을 띄우면 파일당 0.5~0.6초가 걸린다.
+  recycleInBatches(plan.removals, log, (item) => checkOne(access, item), {
+    removed: (item) => result.removed.push(item),
+    failed: (item, reason) => result.failed.push({ path: item.path, reason }),
   });
   return result;
 }

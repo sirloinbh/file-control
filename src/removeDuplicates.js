@@ -9,7 +9,7 @@ const { inspect } = require('./broken');
 const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
 const { rejectRepository } = require('./flatten');
 const { writeRemovalLog } = require('./removalLog');
-const { holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE } = require('./removeBroken');
+const { holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE } = require('./removeBroken');
 const { markerFinder, markerReason } = require('./downloadMarker');
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
@@ -261,17 +261,22 @@ function removeDuplicates(dir, { confirm, dryRun = false, now, maxSize = MAX_REC
   );
   result.log = log.path;
   const access = grant(plan.target, ['read', 'delete']);
-  plan.removals.forEach((item, index) => {
-    try {
-      const logged = log.items[index].path;
-      if (logged !== item.path) throw new FcError(`찾은 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
+  // remove-broken처럼 묶어 보낸다(#216). 남길 파일은 묶음을 보내기 직전에 Node가 보고(checkKeeper), PowerShell도 사본마다
+  // 지우기 직전에 실제 경로·파일 여부·fileStamp를 다시 본다(keep). 묶음 도중 남길 파일이 바뀌면 남은 사본을 지우지 않는다.
+  recycleInBatches(
+    plan.removals,
+    log,
+    (item) => {
       checkKeeper(access, item);
-      removeOne(access, item);
-      result.removed.push(item);
-    } catch (err) {
-      result.failed.push({ path: item.path, set: item.set, reason: recycleFailure(err) });
-    }
-  });
+      // 남길 파일은 지우지 않으므로 휴지통 경로 검사(recycleTarget)를 하지 않는다. 경로가 긴 남길 파일의 사본도 지운다(1차 리뷰).
+      // checkKeeper가 실제 경로와 같은지 이미 봤고, PowerShell은 \\?\ 접두어로 긴 경로를 연다.
+      return { ...checkOne(access, item), keep: { path: item.keep, stamp: item.keepStamp } };
+    },
+    {
+      removed: (item) => result.removed.push(item),
+      failed: (item, reason) => result.failed.push({ path: item.path, set: item.set, reason }),
+    },
+  );
   return result;
 }
 

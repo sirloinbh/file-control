@@ -807,9 +807,11 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 //   붙어 있어(클라우드 파일 태그), 속성만 보면 모두 지우지 못한다(1차 리뷰).
 //   PowerShell이 만든 값은 C:(NTFS)·D:(ReFS)에서 Node의 fileStamp와 글자 그대로 같았다(실측).
 // 휴지통 이동을 도중에 끊으면 파일을 잃을 수 있어 시간 제한을 두지 않는다(#97). 파일마다 끝나는 대로 결과를 한 줄씩 내보낸다.
-// items는 { path, stamp } 목록이고 path는 recycleTarget을 거친 경로다. 결과는 넘긴 순서대로 { path, status, reason } 목록이다.
-// status: ok(휴지통으로 보냄), moved, notfile, changed, gone, error(reason에 Windows의 사유), unknown(PowerShell이 도중에 끝나 결과를 모름)
-const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'error']);
+// items는 { path, stamp, keep? } 목록이고 path는 recycleTarget을 거친 경로다. 결과는 넘긴 순서대로 { path, status, reason } 목록이다.
+// keep({ path, stamp })을 주면 그 파일(remove-duplicates의 남길 파일)도 지우기 직전에 실제 경로·파일 여부·fileStamp가 그대로인지 보고,
+// 다르면 지우지 않는다(keepchanged, #216). 묶음 도중 남길 파일이 바뀌어도 사본을 지우지 않게 한다.
+// status: ok(휴지통으로 보냄), moved, notfile, changed, gone, keepchanged, error(reason에 Windows의 사유), unknown(PowerShell이 도중에 끝나 결과를 모름)
+const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'keepchanged', 'error']);
 
 const RECYCLE_FILES_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 if (-not [Environment]::UserInteractive) { exit 75 }
@@ -852,11 +854,20 @@ public static class FcFileCheck {
 $u = [Text.Encoding]::Unicode
 function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
 function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
+function Same([string]$k, [string]$stamp) {
+  $kl = Long $k
+  if (-not [IO.File]::Exists($kl)) { return $false }
+  $f = [FcFileCheck]::Final($kl)
+  if (($f -eq $null) -or -not [string]::Equals((Plain $f), $k, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+  return ([FcFileCheck]::Stamp($kl) -eq $stamp)
+}
 foreach ($line in $input) {
   if (-not $line) { continue }
   $parts = $line.Split(' ')
   $status = 'error'; $reason = ''
   try {
+    # 칸은 사본 경로·stamp 2개, 또는 남길 파일 경로·stamp까지 4개다. 그 밖이면 남길 파일 검사를 건너뛰지 않도록 지우지 않는다(1차 리뷰).
+    if ($parts.Length -ne 2 -and $parts.Length -ne 4) { throw 'bad input line' }
     $p = $u.GetString([Convert]::FromBase64String($parts[0]))
     $long = Long $p
     if (-not [IO.File]::Exists($long)) { if ([IO.Directory]::Exists($long)) { $status = 'notfile' } else { $status = 'gone' } }
@@ -866,6 +877,7 @@ foreach ($line in $input) {
       if (($final -eq $null) -or -not [string]::Equals((Plain $final), $p, [StringComparison]::OrdinalIgnoreCase)) { $status = 'moved' }
       elseif ($now -eq 'notfile') { $status = 'notfile' }
       elseif ($now -ne $parts[1]) { $status = 'changed' }
+      elseif (($parts.Length -ge 4) -and -not (Same ($u.GetString([Convert]::FromBase64String($parts[2]))) $parts[3])) { $status = 'keepchanged' }
       else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin'); $status = 'ok' }
     }
   } catch { $status = 'error'; $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; $reason = [Convert]::ToBase64String($u.GetBytes([string]$e.Message)) }
@@ -875,7 +887,8 @@ foreach ($line in $input) {
 
 function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
   if (items.length === 0) return [];
-  const input = items.map((item) => `${Buffer.from(item.path, 'utf16le').toString('base64')} ${item.stamp}`).join('\n') + '\n';
+  const b64 = (p) => Buffer.from(p, 'utf16le').toString('base64');
+  const input = items.map((item) => `${b64(item.path)} ${item.stamp}${item.keep ? ` ${b64(item.keep.path)} ${item.keep.stamp}` : ''}`).join('\n') + '\n';
   let output;
   let failure;
   try {
