@@ -99,7 +99,8 @@ function readPackInfo(r) {
     const id = r.number();
     if (id === ID.END) break;
     if (id === ID.SIZE) sizes = Array.from({ length: count }, () => r.number());
-    else if (id === ID.CRC) readDigests(r, count);
+    // libarchive처럼 kSize가 먼저 와야 한다. 그 전에 큰 개수로 CRC 배열을 만들지 않는다(2차 리뷰).
+    else if (id === ID.CRC && sizes.length === count) readDigests(r, count);
     else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
   }
   if (sizes.length !== count) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
