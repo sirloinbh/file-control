@@ -1185,8 +1185,10 @@ test('unzip은 한글 ~N 항목 하나만 든 압축을 새 폴더에 풀고, �
   fc.unzip(p('a.zip'), p('fresh'));
   assert.deepStrictEqual(fs.readdirSync(p('fresh')), ['한글긴~1.TXT']);
   fc.writeFile(p('out', '한글긴파일이름입니다.txt'), 'old');
-  assert.throws(() => fc.unzip(p('a.zip'), p('out')), /8\.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어/);
+  assert.throws(() => fc.unzip(p('a.zip'), p('out')), /8\.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어.*확인할 수 없습니다.*깨져 보일 수 있습니다/);
   assert.strictEqual(fs.readFileSync(p('out', '한글긴파일이름입니다.txt'), 'utf8'), 'old');
+  // 같은 압축을 같은 폴더에 다시 풀어도 이름을 확인할 수 없어 거부한다(README에 적은 한계, 2차 리뷰).
+  assert.throws(() => fc.unzip(p('a.zip'), p('fresh')), /이름이 그대로 같은 항목일 수도 있지만/);
 });
 
 // tar.exe는 x.cpio.gz를 gzip 안의 cpio로 만든다. 임시 파일에도 두 확장자를 붙여 이름과 내용이 같게 한다(#164).

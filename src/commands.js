@@ -1220,13 +1220,15 @@ function rejectExtractShortNameClash(names, dest) {
     });
   }
   const shown = (parts, name) => [...parts, name].join('/');
+  // 목록의 ASCII가 아닌 이름은 깨져 보이므로 그렇다고 알린다(2차 리뷰).
+  const garbled = (...texts) => (texts.some((text) => UNRELIABLE_NAME.test(text)) ? ' (압축 목록의 ASCII가 아닌 이름은 코드페이지 때문에 깨져 보일 수 있습니다)' : '');
   for (const { parts, items } of levels.values()) {
     const all = [...items.values()];
     const shorts = all.filter((name) => SHORT_NAME.test(name));
     for (const name of shorts) {
       const other = all.find((candidate) => candidate !== name && mayBe(name, candidate));
       if (other !== undefined) {
-        throw new FcError(`압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있어 풀지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${shown(parts, name)}, ${shown(parts, other)}`);
+        throw new FcError(`압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있어 풀지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${shown(parts, name)}, ${shown(parts, other)}${garbled(shown(parts, name), other)}`);
       }
     }
     if (shorts.length === 0) continue;
@@ -1235,14 +1237,18 @@ function rejectExtractShortNameClash(names, dest) {
       const keys = new Set(existing.map((name) => name.toUpperCase()));
       for (const name of shorts) {
         let real;
+        let note = '';
         if (UNRELIABLE_NAME.test(name)) {
           real = existing.find((candidate) => mayBe(name, candidate));
           if (real === undefined) continue;
+          // 이름을 확인할 수 없으므로 같은 압축을 다시 풀 때처럼 이름이 그대로 같은 항목도 여기서 걸린다.
+          note = ` 이름이 그대로 같은 항목일 수도 있지만 확인할 수 없습니다.${garbled(name)}`;
         } else {
           if (keys.has(name.toUpperCase()) || !exists(path.join(place, name))) continue;
           real = existing.find((candidate) => couldBeShortNameOf(name, candidate)) ?? name;
+          note = garbled(shown(parts, name));
         }
-        throw new FcError(`압축 안의 ${shown(parts, name)}이 8.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어 풀지 않습니다. 풀면 그 항목이 덮어써지거나 섞입니다: ${path.join(place, real)}`);
+        throw new FcError(`압축 안의 ${shown(parts, name)}이 8.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어 풀지 않습니다. 풀면 그 항목이 덮어써지거나 섞입니다: ${path.join(place, real)}${note}`);
       }
     }
   }
