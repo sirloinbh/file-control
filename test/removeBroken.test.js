@@ -444,6 +444,53 @@ test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 
   assert.ok(!fs.existsSync(path.join(dir, 'b.mp4')));
 });
 
+test('remove-broken은 실제로 지울 때 파일마다 몇 번째인지와 결과를 진행 줄로 넘기고, 목록만 볼 때는 넘기지 않는다 (#99)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN });
+  onRecycle = (target) => {
+    if (target.endsWith('b.mp4')) throw Object.assign(new Error('recycle'), { status: 3 });
+  };
+  const lines = [];
+  const onProgress = (line) => lines.push(line);
+  const listed = removeBroken(dir, { onProgress });
+  removeBroken(dir, { onProgress, dryRun: true, confirm: listed.code });
+  assert.deepStrictEqual(lines, []);
+  const result = removeBroken(dir, { onProgress, confirm: listed.code });
+  assert.strictEqual(result.removed.length, 2);
+  assert.deepStrictEqual(lines, [
+    '휴지통으로 보내는 중: 3개 (파일당 0.5초 안팎)',
+    '1/3 휴지통으로 이동: a.mp4',
+    '2/3 실패: b.mp4 (휴지통으로 보내지 못했습니다. (종료 코드 3))',
+    '3/3 휴지통으로 이동: c.mp4',
+  ]);
+});
+
+test('remove-broken은 진행 표시가 던져도 집계와 남은 파일 처리를 그대로 한다 (#99 1차 리뷰)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN });
+  onRecycle = (target) => {
+    if (target.endsWith('b.mp4')) throw Object.assign(new Error('recycle'), { status: 3 });
+  };
+  const code = removeBroken(dir).code;
+  const result = removeBroken(dir, {
+    confirm: code,
+    onProgress: () => {
+      throw new Error('진행 표시 실패');
+    },
+  });
+  assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)), ['a.mp4', 'c.mp4']);
+  assert.deepStrictEqual(result.failed.map((item) => path.basename(item.path)), ['b.mp4']);
+});
+
+test('fctl remove-broken은 진행 줄을 progress로 넘긴다 (#99)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN });
+  const code = removeBroken(dir).code;
+  const lines = [];
+  run(['remove-broken', dir, `--yes=${code}`], { progress: (line) => lines.push(line) });
+  assert.deepStrictEqual(lines, ['휴지통으로 보내는 중: 1개 (파일당 0.5초 안팎)', '1/1 휴지통으로 이동: a.mp4']);
+});
+
 // 전체 경로가 length자인 파일 경로. 파일 이름이 20자 남짓 남도록 폴더 두 단계로 길이를 맞춘다.
 function pathOfLength(dir, length, ext = '.mp4') {
   const rest = length - dir.length - 2 - 20 - ext.length;
