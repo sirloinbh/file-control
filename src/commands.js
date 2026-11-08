@@ -929,22 +929,73 @@ function entryInside(dir, test) {
 
 // 휴지통을 거칠 수 있는지 미리 본다. 실패하면 알 수 없음(null)으로 돌려주어 호출한 쪽이 지우지 않게 한다.
 // 돌려주는 값: { interactive, driveType }. driveType은 Fixed, Removable, Network 같은 .NET DriveType 이름이다.
+// 돌려주는 값에는 그 볼륨의 휴지통 설정도 들어 있다(#100). nukeOnDelete는 "파일을 휴지통으로 이동하지 않고 바로 제거"가 켜졌는지,
+// maxCapacity는 휴지통 최대 크기(바이트)다. 읽지 못하면 null이다.
+// 실측(빌드 26200, 대화형): 항목 하나(파일, 폴더면 안의 합계)가 maxCapacity를 넘거나 nukeOnDelete가 켜진 볼륨이면
+// 휴지통 이동이 묻지 않고 영구 삭제하면서 성공으로 끝났다(D: 용량 7164MB에서 7100MB는 휴지통, 7200MB는 영구 삭제).
+// 휴지통에 이미 든 양은 상관없었다(합계가 용량을 넘어도 기존 항목을 비우거나 새 항목을 지우지 않았다).
+// 볼륨은 GetVolumePathName으로 찾아 볼륨 마운트 폴더 아래도 그 볼륨의 설정을 본다. 설정은 사용자별(HKCU)
+// BitBucket\Volume\{GUID}의 NukeOnDelete·MaxCapacity(MB)다. 정책(NoRecycleFiles)이 켜져 있으면 바로 제거로 보고,
+// 정책으로 크기를 정했으면(RecycleBinSize) 크기를 모르는 것으로 본다.
+const RECYCLE_STATE_SCRIPT = String.raw`$p = $env:FC_VOLUME
+$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
+$type = 'Unknown'; $nuke = ''; $cap = ''
+try {
+  Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);'
+  $b = New-Object Text.StringBuilder 1024
+  $root = if ([FcVolume.Native]::GetVolumePathNameW($p, $b, 1024)) { $b.ToString() } else { [IO.Path]::GetPathRoot($p) }
+  $type = $names[[int][FcVolume.Native]::GetDriveTypeW($root)]
+  $g = New-Object Text.StringBuilder 1024
+  if ([FcVolume.Native]::GetVolumeNameForVolumeMountPointW($root, $g, 1024) -and ($g.ToString() -match '(\{[0-9A-Fa-f-]+\})')) {
+    $k = Get-ItemProperty -LiteralPath ('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\' + $matches[1]) -ErrorAction SilentlyContinue
+    if ($k -and $k.NukeOnDelete -ne $null) { $nuke = [string][int]$k.NukeOnDelete }
+    if ($k -and $k.MaxCapacity -ne $null) { $cap = [string][long]$k.MaxCapacity }
+  }
+  foreach ($hive in 'HKLM:', 'HKCU:') {
+    $pol = Get-ItemProperty -LiteralPath ($hive + '\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer') -ErrorAction SilentlyContinue
+    if ($pol -and [int]$pol.NoRecycleFiles -eq 1) { $nuke = '1' }
+    if ($pol -and $pol.RecycleBinSize -ne $null) { $cap = '' }
+  }
+} catch { $type = 'Unknown' }
+[Environment]::UserInteractive.ToString() + '|' + $type + '|' + $nuke + '|' + $cap`;
+
 function recycleBinState(target) {
-  const unknown = { interactive: null, driveType: null };
+  const unknown = { interactive: null, driveType: null, nukeOnDelete: null, maxCapacity: null };
   if (!isWindows) return unknown;
-  const script = '[Environment]::UserInteractive.ToString() + "|" + [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:FC_VOLUME)).DriveType';
   try {
-    const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATE_SCRIPT], {
       env: { ...process.env, FC_VOLUME: path.resolve(target) },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 60 * 1000,
     });
-    const found = /^(True|False)\|(\w+)\s*$/.exec(output);
-    return found ? { interactive: found[1] === 'True', driveType: found[2] } : unknown;
+    // 설정 칸이 없는 꼴(True|Fixed)도 받는다. 그때 설정은 모르는 것으로 둔다.
+    const found = /^(True|False)\|(\w+)(?:\|(\d*)\|(\d*))?\s*$/.exec(output);
+    if (!found) return unknown;
+    const driveType = found[2] === 'Unknown' ? null : found[2];
+    const nukeOnDelete = found[3] ? found[3] !== '0' : null;
+    const maxCapacity = found[4] ? Number(found[4]) * 1024 * 1024 : null;
+    return { interactive: found[1] === 'True', driveType, nukeOnDelete, maxCapacity };
   } catch {
     return unknown;
   }
+}
+
+// 휴지통 용량을 확인하지 못했을 때 남기는 크기. 기본 휴지통 용량은 볼륨의 약 5%라 20GB 볼륨이면 1GB다.
+const UNKNOWN_RECYCLE_LIMIT = 1024 * 1024 * 1024;
+
+// 크기가 size바이트인 항목을 휴지통으로 보내면 영구 삭제되는지 볼륨 설정(recycleBinState)으로 본다(#100).
+// 영구 삭제되면 사유("…라 영구 삭제되므로")를, 아니면 null을 돌려준다. 용량을 모르면 UNKNOWN_RECYCLE_LIMIT부터 영구 삭제로 본다.
+// fallback은 용량을 모를 때의 한도로, 테스트에서만 바꾼다.
+function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
+  if (state.nukeOnDelete === true) return '이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로';
+  const mb = (bytes) => `${Math.floor(bytes / (1024 * 1024))}MB`;
+  if (state.maxCapacity !== null && state.maxCapacity !== undefined) {
+    return size > state.maxCapacity ? `휴지통 최대 크기(${mb(state.maxCapacity)})보다 커서 Windows가 묻지 않고 영구 삭제하므로` : null;
+  }
+  return size >= fallback ? '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로' : null;
 }
 
 function remove(targets, { permanent = false, dryRun = false } = {}) {
@@ -1458,6 +1509,9 @@ module.exports = {
   copy,
   remove,
   recycleBinState,
+  permanentDeleteReason,
+  UNKNOWN_RECYCLE_LIMIT,
+  RECYCLE_STATE_SCRIPT,
   hiddenOrSystemEntries,
   recycleEmptyFolders,
   RECYCLE_FOLDERS_SCRIPT,

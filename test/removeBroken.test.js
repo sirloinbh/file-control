@@ -452,6 +452,53 @@ for (const [name, answer, pattern] of [
   });
 }
 
+test('휴지통 설정상 영구 삭제될 파일(바로 제거, 최대 크기 초과)은 남기고, 그 하드링크 이름도 같은 사유로 남긴다 (#100)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'big.mp4': BROKEN.repeat(100000) });
+  fs.linkSync(path.join(dir, 'big.mp4'), path.join(dir, 'big-link.mp4'));
+  try {
+    volume = () => 'True|Fixed|1|26427\r\n';
+    const nuke = removeBroken(dir);
+    assert.deepStrictEqual(nuke.removals, []);
+    assert.ok(nuke.kept.length === 3 && nuke.kept.every((item) => /^이 볼륨은 휴지통 설정이 "바로 제거"라 .*남겼습니다\.$/.test(item.reason)), JSON.stringify(nuke.kept));
+    // 최대 크기 1MB: big.mp4(약 2.6MB)와 그 하드링크는 남기고 a.mp4는 지울 목록에 둔다.
+    volume = () => 'True|Fixed|0|1\r\n';
+    const plan = removeBroken(dir);
+    assert.deepStrictEqual(plan.removals.map((item) => path.basename(item.path)), ['a.mp4']);
+    const kept = Object.fromEntries(plan.kept.map((item) => [path.basename(item.path), item.reason]));
+    assert.strictEqual(kept['big.mp4'] ?? kept['big-link.mp4'], '휴지통 최대 크기(1MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로 남겼습니다.');
+    assert.strictEqual(kept['big.mp4'], kept['big-link.mp4']);
+    assert.deepStrictEqual(recycled, []);
+  } finally {
+    volume = () => 'True|Fixed\r\n';
+  }
+});
+
+test('recycleBinState는 볼륨 설정을 읽고, 설정 칸이 없거나 비면 모르는 것으로 둔다 (#100)', (t) => {
+  const { recycleBinState } = require('../src/commands');
+  const cases = [
+    ['True|Fixed|0|7164\r\n', { interactive: true, driveType: 'Fixed', nukeOnDelete: false, maxCapacity: 7164 * 1024 * 1024 }],
+    ['True|Fixed|1|\r\n', { interactive: true, driveType: 'Fixed', nukeOnDelete: true, maxCapacity: null }],
+    ['True|Fixed||\r\n', { interactive: true, driveType: 'Fixed', nukeOnDelete: null, maxCapacity: null }],
+    ['True|Fixed\r\n', { interactive: true, driveType: 'Fixed', nukeOnDelete: null, maxCapacity: null }],
+    ['False|Unknown||\r\n', { interactive: false, driveType: null, nukeOnDelete: null, maxCapacity: null }],
+  ];
+  try {
+    for (const [answer, expected] of cases) {
+      volume = () => answer;
+      assert.deepStrictEqual(recycleBinState(os.tmpdir()), expected, answer);
+    }
+  } finally {
+    volume = () => 'True|Fixed\r\n';
+  }
+});
+
+test('실제 휴지통 설정 스크립트는 볼륨 종류와 설정 칸을 정한 꼴로 낸다 (#100)', { skip: process.platform !== 'win32' && 'Windows' }, () => {
+  const { RECYCLE_STATE_SCRIPT } = require('../src/commands');
+  const output = realExecFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATE_SCRIPT], { env: { ...process.env, FC_VOLUME: os.tmpdir() }, encoding: 'utf8' });
+  assert.match(output, /^(True|False)\|Fixed\|[01]?\|\d*\s*$/);
+});
+
 for (const [name, answer, pattern] of [
   ['exFAT', () => 'exFAT\r\n', /^exFAT 볼륨은 변경 시각을 적지 않아/],
   ['FAT32', () => 'FAT32\r\n', /^FAT32 볼륨은 변경 시각을 적지 않아/],

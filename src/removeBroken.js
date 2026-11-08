@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, MAX_RECYCLE_PATH } = require('./commands');
+const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
@@ -12,8 +12,9 @@ const { markerFinder, markerReason } = require('./downloadMarker');
 
 // 이보다 최근에 바뀐 파일은 받는 중일 수 있어 남긴다.
 const RECENT_MS = 5 * 60 * 1000;
-// 휴지통 용량을 넘는 파일은 Windows가 묻지 않고 영구 삭제할 수 있어(#81) 이 크기부터 남긴다. 기본 휴지통 용량은 볼륨의 약 5%다.
-const MAX_RECYCLE_SIZE = 1024 * 1024 * 1024;
+// 휴지통 용량을 확인하지 못했을 때 남기는 크기(remove-low-quality가 아직 고정값으로 쓴다). remove-broken·remove-duplicates는
+// 볼륨의 휴지통 설정(최대 크기, 바로 제거)으로 판단하고(#100), 설정을 읽지 못했을 때만 이 크기부터 남긴다.
+const MAX_RECYCLE_SIZE = UNKNOWN_RECYCLE_LIMIT;
 
 const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
 
@@ -55,7 +56,6 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       else if (real.length > MAX_RECYCLE_PATH) keep(`경로가 ${real.length}자라 휴지통으로 보낼 수 있는 ${MAX_RECYCLE_PATH}자를 넘어 남겼습니다. 이름을 줄이거나 위 폴더로 옮긴 뒤 다시 실행하세요.`);
       else if (hold !== null) keep(hold);
       else if (marker !== null) keep(marker);
-      else if (item.size >= maxSize) keep('1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
       else if (sameFile !== undefined) linkKept.push({ path: item.path, other: sameFile });
       else {
         if (stat.nlink > 1n) linked.set(`${stat.dev}:${stat.ino}`, real);
@@ -67,7 +67,8 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   }
   if (plan.removals.length === 0) return plan;
   // 휴지통이 없는 볼륨에서는 영구 삭제될 수 있어 고정 디스크로 확인된 경우에만 지운다.
-  const { interactive, driveType } = recycleBinState(access.target);
+  const state = recycleBinState(access.target);
+  const { interactive, driveType } = state;
   plan.interactive = interactive;
   // 변경 시각이 없는 볼륨(exFAT 등)에서는 확인값과 5분 보호가 바꿔치기를 막지 못해 지우지 않는다(#184).
   const volumeReason = driveType === 'Fixed' ? stampVolumeReason(access.target) : null;
@@ -77,8 +78,21 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     plan.removals = [];
     return plan;
   }
+  // 휴지통 설정상 영구 삭제될 파일(바로 제거, 최대 크기 초과)은 남긴다(#100). 그 다른 이름(하드링크)도 이번에 지울 이름이 없어진다.
+  const dropped = new Map();
+  plan.removals = plan.removals.filter((item) => {
+    const why = permanentDeleteReason(state, Number(item.size), maxSize);
+    if (why === null) return true;
+    plan.kept.push({ path: item.path, reason: `${why} 남겼습니다.` });
+    dropped.set(item.path, why);
+    return false;
+  });
   // 한 실행에서 같은 파일의 이름을 하나씩만 지우므로, 이름이 셋 이상이면 실행할 때마다 하나씩 줄어든다.
   for (const item of linkKept) {
+    if (dropped.has(item.other)) {
+      plan.kept.push({ path: item.path, reason: `${dropped.get(item.other)} 남겼습니다.` });
+      continue;
+    }
     const reason = `같은 파일의 다른 이름(하드링크: ${path.relative(access.target, item.other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
     plan.kept.push({ path: item.path, reason });
   }
