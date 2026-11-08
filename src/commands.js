@@ -1616,29 +1616,17 @@ function rejectLongName(target, what) {
   }
 }
 
-// tar.exe는 -C로 받은 폴더로 옮겨 가는데, 긴 경로가 꺼진 Windows(LongPathsEnabled=0)에서는 그 경로가 이보다 길면
-// "could not chdir"로 날것의 실패를 낸다(빌드 26200 실측, UTF-16 258자까지 됨). tar.exe는 longPathAware라 긴 경로가 켜지면 더 길어도 된다.
-// unzip의 풀 폴더와 zip 원본의 상위 폴더가 -C로 넘어가므로 긴 경로가 꺼졌거나 확인하지 못하면 미리 거부한다(#228).
+// tar.exe는 -C로 받은 폴더로 옮겨 가는데, 그 경로가 이보다 길면 "could not chdir"로 날것의 실패를 낸다(UTF-16 258자까지 됨).
+// 이 PC(LongPathsEnabled=0)와 긴 경로가 켜진 CI(GitHub windows-latest) 모두에서 실측했다. tar.exe 매니페스트는 longPathAware지만
+// 작업 폴더 옮기기에는 적용되지 않는다(2차 리뷰). unzip의 풀 폴더와 zip 원본의 상위 폴더가 -C로 넘어가므로 미리 거부한다(#228).
 const MAX_TAR_DIR = 258;
-let longPathsCache;
-function longPathsEnabled() {
-  if (longPathsCache === undefined) {
-    try {
-      const out = String(execFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe'),
-        ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem', '/v', 'LongPathsEnabled'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
-      longPathsCache = /LongPathsEnabled\s+REG_DWORD\s+0x0*1\s*$/m.test(out);
-    } catch {
-      longPathsCache = false;
-    }
-  }
-  return longPathsCache;
-}
 function rejectLongTarDir(dir, what) {
   const full = path.resolve(dir);
-  if (full.length > MAX_TAR_DIR && !(isWindows && longPathsEnabled())) {
+  if (full.length > MAX_TAR_DIR) {
     throw new FcError(`${what} 경로가 ${full.length}자라 tar.exe가 그 폴더로 옮겨 갈 수 없습니다(${MAX_TAR_DIR}자까지). 더 짧은 경로를 지정하세요: ${dir}`);
   }
 }
+
 // zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
 // 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
 const TEMP_SERIAL_RESERVE = 4;
@@ -1724,7 +1712,7 @@ module.exports = {
   recycleTarget,
   unzip,
   archiveEntries,
-  archiveNames, probeArchive, archiveExt, longPathsEnabled,
+  archiveNames, probeArchive, archiveExt,
   unsupportedChars,
   oemCodePage,
   couldBeShortNameOf,
