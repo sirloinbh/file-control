@@ -461,7 +461,11 @@ test('tar.exe로 만든 .tar.gz·.tgz는 gzip CRC와 tar 구조, 풀린 이름�
   fs.writeFileSync(path.join(source, 'a.txt'), 'A'.repeat(5000));
   fs.writeFileSync(path.join(source, 'empty.txt'), '');
   fs.mkdirSync(path.join(source, 'sub', 'deep'), { recursive: true });
-  fs.writeFileSync(path.join(source, 'sub', '한글 이름.txt'), '한');
+  // 영어 Windows(CI)의 tar.exe는 ANSI에 없는 한글 이름에서 비정상 종료(0xC0000005)하므로 949일 때만 넣는다.
+  // pax UTF-8 이름은 test/tarGzScan.test.js에서 따로 본다.
+  const hangul = require('../src/commands').oemCodePage() === 949;
+  const named = hangul ? '한글 이름.txt' : 'space name.txt';
+  fs.writeFileSync(path.join(source, 'sub', named), '한');
   fs.writeFileSync(path.join(source, 'sub', 'deep', `${'n'.repeat(120)}.txt`), 'long');
   // -C source .로 묶으면 ./ 항목이 생기고 이름은 tar.exe가 유니코드로 읽어 pax에 UTF-8로 적는다.
   realExecFileSync(SYSTEM_TAR, ['-czf', path.join(dir, 'a.tar.gz'), '-C', source, '.']);
@@ -474,7 +478,7 @@ test('tar.exe로 만든 .tar.gz·.tgz는 gzip CRC와 tar 구조, 풀린 이름�
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), ['a.tar.gz', 'b.tgz']);
   const long = `sub/deep/${'n'.repeat(120)}.txt`;
-  assert.deepStrictEqual(tree(dir), ['a/a.txt', 'a/empty.txt', `a/${long}`, 'a/sub/한글 이름.txt', 'b/a.txt', `b/${long}`, 'b/sub/한글 이름.txt'].sort());
+  assert.deepStrictEqual(tree(dir), ['a/a.txt', 'a/empty.txt', `a/${long}`, `a/sub/${named}`, 'b/a.txt', `b/${long}`, `b/sub/${named}`].sort());
 });
 
 test('GNU 긴 이름(L) 항목도 그 이름으로 풀렸는지 확인하고 지운다 (#197)', () => {
