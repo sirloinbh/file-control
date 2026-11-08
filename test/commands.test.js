@@ -1309,17 +1309,25 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   const destOf = (length) => p('d'.repeat(length - dir.length - 1));
   fc.unzip(p('ok.zip'), destOf(258));
   assert.strictEqual(fc.readFile(path.join(destOf(258), 'a.txt')), 'A');
-  for (const dryRun of [true, false]) {
-    assert.throws(() => fc.unzip(p('ok.zip'), destOf(259), { dryRun }), (err) => err instanceof fc.FcError && /풀 폴더 경로가 259자라 tar\.exe가 그 폴더로 옮겨 갈 수 없습니다\(258자까지\)/.test(err.message));
-  }
-  assert.ok(!fs.existsSync(destOf(259)));
-  // 원본의 상위 폴더도 -C로 넘어가므로 259자부터 거부한다.
   const deepParent = path.join(destOf(258), 'e');
   fc.writeFile(path.join(deepParent, 'x.txt'), 'X');
-  for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('deep.zip'), [path.join(deepParent, 'x.txt')], { dryRun }), (err) => err instanceof fc.FcError && /원본의 상위 폴더 경로가 260자라/.test(err.message));
+  if (isWindows && fc.longPathsEnabled()) {
+    // 긴 경로가 켜진 Windows에서는 tar.exe(longPathAware)가 더 긴 -C 폴더로도 옮겨 가므로 거부하지 않는다(1차 리뷰).
+    fc.unzip(p('ok.zip'), destOf(259));
+    assert.strictEqual(fc.readFile(path.join(destOf(259), 'a.txt')), 'A');
+    fc.zip(p('deep-x.zip'), [path.join(deepParent, 'x.txt')]);
+    assert.strictEqual(fc.archiveEntries(p('deep-x.zip')).length, 1);
+  } else {
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fc.unzip(p('ok.zip'), destOf(259), { dryRun }), (err) => err instanceof fc.FcError && /풀 폴더 경로가 259자라 tar\.exe가 그 폴더로 옮겨 갈 수 없습니다\(258자까지\)/.test(err.message));
+    }
+    assert.ok(!fs.existsSync(destOf(259)));
+    // 원본의 상위 폴더도 -C로 넘어가므로 259자부터 거부한다.
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fc.zip(p('deep.zip'), [path.join(deepParent, 'x.txt')], { dryRun }), (err) => err instanceof fc.FcError && /원본의 상위 폴더 경로가 260자라/.test(err.message));
+    }
+    assert.ok(!fs.existsSync(p('deep.zip')));
   }
-  assert.ok(!fs.existsSync(p('deep.zip')));
   // 상위 폴더를 원본으로 주면(-C는 258자 폴더) 그대로 묶인다.
   fc.zip(p('deep.zip'), [deepParent]);
   assert.strictEqual(fc.archiveEntries(p('deep.zip')).length, 2);
