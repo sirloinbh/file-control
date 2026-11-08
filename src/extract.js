@@ -368,9 +368,10 @@ function removeArchive(access, item, before, dryRun) {
   }
 }
 
-function removalFailure(err) {
+// 미리보기는 실제로 풀지 않았으므로 "풀어도"로 알린다(#185 1차 리뷰).
+function removalFailure(err, dryRun) {
   if (err instanceof FcError) return err.message;
-  return `풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+  return `${dryRun ? '풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다.' : '풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다.'} (${err.code ?? err.status})`;
 }
 
 function failureReason(err) {
@@ -415,7 +416,7 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
       removeArchive(access, item, before, dryRun);
       result.removed.push(item.archive);
     } catch (err) {
-      result.failed.push({ archive: item.archive, reason: removalFailure(err) });
+      result.failed.push({ archive: item.archive, reason: removalFailure(err, dryRun) });
     }
   }
   return result;

@@ -503,18 +503,34 @@ test('원본이 사용 중이라 휴지통으로 보내지 못하면 풀었다�
 
 test('경로가 길어 휴지통으로 보낼 수 없으면 풀었다는 맥락을 붙이고, 미리보기에서는 풀어도 지울 수 없다고 보고한다 (#185)', () => {
   const dir = tempDir();
+  // 압축 파일 경로만 259자를 넘기고, 임시 폴더(.fctl-new-*, 약 32자)와 풀린 항목은 260자 안에 들어오게 한다(1차 리뷰).
   let folder = dir;
-  while (folder.length < 240) folder = path.join(folder, 'x'.repeat(30));
+  while (folder.length < 200) folder = path.join(folder, 'x'.repeat(9));
   fs.mkdirSync(folder, { recursive: true });
-  const archive = makeZip(folder, `${'y'.repeat(Math.max(1, 262 - folder.length - 5))}.zip`, { 'x.txt': 'x' });
-  assert.ok(archive.length > 259, String(archive.length));
+  const archive = makeZip(folder, `${'y'.repeat(262 - folder.length - 5)}.zip`, { 'x.txt': 'x' });
+  assert.ok(archive.length > 259 && folder.length + 40 < 260, `${archive.length} ${folder.length}`);
   const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
   assert.match(preview.failed[0].reason, /^풀어도 원본을 지울 수 없습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
-  // 긴 경로를 켜지 않은 Windows에서는 tar.exe가 260자를 넘는 곳에 풀지 못해 푸는 단계에서 실패한다(이 PC에서 확인). 어느 쪽이든 원본은 남는다.
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다|^압축을 풀지 못했습니다/);
+  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
   assert.ok(fs.existsSync(archive));
+  assert.ok(fs.existsSync(path.join(archive.slice(0, -'.zip'.length), 'x.txt')));
+});
+
+test('미리보기에서 원본을 확인하지 못하면 풀었다고 하지 않는다 (#185 1차 리뷰)', (t) => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'x.txt': 'x' });
+  const lstatSync = fs.lstatSync;
+  let calls = 0;
+  t.mock.method(fs, 'lstatSync', (p, options) => {
+    // 풀기 전 식별값을 잡은 뒤, 지우기 직전 확인에서 실패하게 한다.
+    if (path.basename(String(p)) === 'a.zip' && options?.bigint && ++calls === 2) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return lstatSync(p, options);
+  });
+  const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
+  t.mock.restoreAll();
+  assert.match(preview.failed[0].reason, /^풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다\. \(EPERM\)/);
 });
 
 test('대화형 세션이 아니라는 거부를 그대로 보고하고 영구 삭제하지 않는다', () => {
