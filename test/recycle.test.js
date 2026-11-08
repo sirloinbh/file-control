@@ -166,3 +166,19 @@ test('실제 휴지통 스크립트는 실패하면 77로 끝나고 Windows의 �
   assert.strictEqual(seen.status, 77);
   assert.match(seen.stdout.trim(), /^[A-Za-z0-9+/=]+$/);
 });
+
+test('사용 중인 파일 찾기는 파일과 폴더를 합쳐 limit개를 보면 멈춘다 (#97 2차 리뷰)', { skip: !isWindows && 'Windows 잠금' }, async () => {
+  const { busyInside } = require('../src/commands');
+  const dir = tempDir();
+  // 폴더만 여럿 있고 잠긴 파일은 맨 뒤에 있다. 폴더도 세므로 limit이 작으면 잠긴 파일까지 가지 않는다.
+  for (let i = 0; i < 5; i++) fs.mkdirSync(path.join(dir, `d${i}`));
+  fs.mkdirSync(path.join(dir, 'z'));
+  fs.writeFileSync(path.join(dir, 'z', 'busy.txt'), 'b');
+  const unlock = await lockFile(path.join(dir, 'z', 'busy.txt'));
+  try {
+    assert.strictEqual(busyInside(dir, 3), undefined);
+    assert.strictEqual(busyInside(dir), path.join('z', 'busy.txt'));
+  } finally {
+    await unlock();
+  }
+});

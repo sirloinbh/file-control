@@ -492,10 +492,10 @@ const MAX_RECYCLE_PATH = 259;
 // 도중에 PowerShell을 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않았다(1차 리뷰에서 실측).
 
 // 파일이나 폴더 안에서 다른 프로그램이 쓰기·삭제를 막고 연 파일을 찾는다(#97). 그런 파일은 쓰기로 열면 EBUSY가 난다.
-// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 파일이 많으면 MAX_BUSY_PROBE개를 본 뒤 그만 읽는다.
+// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 항목(파일과 폴더)이 많으면 limit개를 본 뒤 그만 읽는다.
 // 링크·정션은 따라가지 않는다. 읽기 전용 파일은 EPERM이라 사용 중으로 보지 않고, 여는 것만으로는 내용이 바뀌지 않는다.
 const MAX_BUSY_PROBE = 10000;
-function busyInside(target) {
+function busyInside(target, limit = MAX_BUSY_PROBE) {
   const busy = (file) => {
     try {
       fs.closeSync(fs.openSync(file, 'r+'));
@@ -510,15 +510,13 @@ function busyInside(target) {
     if (!stat.isDirectory()) return undefined;
     const stack = [target];
     let seen = 0;
-    while (stack.length > 0 && seen < MAX_BUSY_PROBE) {
+    while (stack.length > 0 && seen < limit) {
       const dir = stack.pop();
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) stack.push(full);
-        else if (entry.isFile()) {
-          if (busy(full)) return path.relative(target, full);
-          if (++seen >= MAX_BUSY_PROBE) break;
-        }
+        else if (entry.isFile() && busy(full)) return path.relative(target, full);
+        if (++seen >= limit) break;
       }
     }
     return undefined;
@@ -547,7 +545,7 @@ function moveToRecycleBin(target) {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (err) {
-    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
+    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
@@ -1021,6 +1019,7 @@ module.exports = {
   bareDeviceInside,
   MAX_RECYCLE_PATH,
   decodeReason,
+  busyInside,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
