@@ -1249,6 +1249,12 @@ test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 
     }
     assert.throws(() => fc.zip(p(`x.${'tbz2.'.repeat(24)}tzst`), [p('a.txt')], { dryRun }), /25겹이라/);
   }
+  // 경계: 임시 이름 길이 = 고정 부분 + 번호 여유 4자 + 확장자. 한도에 꼭 맞는 확장자는 묶고, 한 글자 더 길면 거부한다(1차 리뷰).
+  const fixed = `.fctl-new-${process.pid}-${Date.now()}-0`.length + 4;
+  const edge = `e.${'b'.repeat(255 - fixed - 1)}`;
+  fc.zip(p(edge), [p('a.txt')]);
+  fs.rmSync(p(edge));
+  assert.throws(() => fc.zip(p(`e.${'b'.repeat(255 - fixed)}`), [p('a.txt')], { dryRun: true }), /확장자가 너무 길어/);
   assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
   // 24겹은 묶고 다시 풀 수 있다.
   const fits = `y${'.gz'.repeat(24)}`;
