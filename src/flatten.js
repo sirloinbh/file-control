@@ -93,8 +93,11 @@ function withOuterFolder(fileName, detailed, outer) {
   const stems = folderStems(outer, ext);
   const pick = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? stems.find(informativeFolder);
   if (pick === undefined || containsWords(words(chosen), words(pick).join(''))) return detailed;
-  // 바깥 이름이 받은 이름을 이미 담고 있으면(Show CD1/CD1/video.mp4) 겹치지 않게 바깥 이름만 쓴다(#178).
-  if (containsWords(words(pick), words(chosen).join(''))) return `${pick.normalize('NFC')}${ext}`.length <= MAX_NAME ? `${pick.normalize('NFC')}${ext}` : detailed;
+  // 바깥 이름이 받은 이름을 이미 담고 있으면(Show CD1/CD1/video.mp4) 겹치지 않게 바깥 이름과 사이 폴더만 쓴다(#178).
+  if (containsWords(words(pick), words(chosen).join(''))) {
+    const merged = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)}${ext}`;
+    return merged.length <= MAX_NAME ? merged : detailed;
+  }
   // 바깥 폴더와 받은 이름 사이의 화질 폴더 등도 접두어처럼 붙인다(1차 리뷰). Show/1080p/CD1/video.mp4 → Show 1080p CD1.mp4
   const full = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)} ${detailed}`;
   if (full.length <= MAX_NAME) return full;
@@ -208,20 +211,23 @@ function prefixedName(fileName, folders) {
   // 고른 폴더와 파일 사이의 가까운 폴더 이름(1080p, CD1)도 바깥부터 함께 붙인다(#150). Show/1080p/video.mp4와 Show/720p/video.mp4가
   // Show video.mp4, Show video (2).mp4가 되어 화질 구분을 잃지 않게 한다. 이미 들어 있는 이름은 다시 붙이지 않는다.
   const inner = joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)));
-  const names = [`${inner} ${fileName}`, `${chosen.normalize('NFC')} ${fileName}`];
+  const prefixes = [inner, chosen.normalize('NFC')];
   // 고른 폴더가 제품번호 폴더가 아니면 바깥의 제목 폴더도 withOuterFolder처럼 앞에 붙인다(#178). Show/CD1/video.mp4와 video.en.srt가
   // Show CD1 video.mp4, Show CD1 video.en.srt가 되어, video.mp4 하나만 있을 때(Show CD1.mp4)처럼 Show를 잃지 않는다.
+  // 고른 폴더도 사이 폴더처럼 joinBetween으로 붙여, 바깥 이름이 이미 담고 있으면(Show CD1/CD1/1080p/) 다시 붙이지 않는다(1차 리뷰).
   if (extractProductNumbers(chosen).length === 0) {
-    const outer = stems.slice(stems.indexOf(chosen) + 1);
-    const pick = outer.find(informativeFolder);
-    // 바깥 이름이 고른 이름을 이미 담고 있으면(Show CD1/CD1/) 겹치지 않게 바깥 이름만 붙인다.
-    if (pick !== undefined && containsWords(words(pick), words(inner).join(''))) names.unshift(`${pick.normalize('NFC')} ${fileName}`);
-    else if (pick !== undefined && !containsWords(words(inner), words(pick).join(''))) {
-      names.unshift(`${joinBetween(pick, outer.slice(0, outer.indexOf(pick)), inner)} ${inner} ${fileName}`, `${pick.normalize('NFC')} ${inner} ${fileName}`);
-    }
+    const pick = stems.slice(stems.indexOf(chosen) + 1).find(informativeFolder);
+    if (pick !== undefined && !containsWords(words(inner), words(pick).join(''))) prefixes.unshift(joinBetween(pick, stems.slice(0, stems.indexOf(pick))));
   }
-  return names.find((name) => name.length <= MAX_NAME) ?? names.at(-1);
+  // 길이 한도는 파일 이름 전체가 아니라 접두어와 첫 점 앞부분으로 판단한다(1차 리뷰). video.mp4와 video.en.srt가 길이 차이로
+  // 서로 다른 접두어를 받으면 짝이 깨지기 때문이다. 확장자와 언어 표시 몫으로 PAIR_RESERVE자를 남긴다.
+  const stem = fileName.split('.')[0];
+  const prefix = prefixes.find((candidate) => candidate.length + 1 + stem.length + PAIR_RESERVE <= MAX_NAME) ?? prefixes.at(-1);
+  return `${prefix} ${fileName}`;
 }
+
+// 접두어를 고를 때 첫 점 뒤(확장자, .en.forced 같은 언어 표시)에 남겨 두는 글자 수(#178).
+const PAIR_RESERVE = 30;
 
 // mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
 const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+-\d+(?:\.|$)/;

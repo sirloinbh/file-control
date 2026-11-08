@@ -2013,9 +2013,21 @@ test('prefixedName은 고른 폴더가 제품번호 폴더가 아니면 바깥 �
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show CD1']), 'Show CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['Show CD1', 'Show']), 'Show CD1 video.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Show CD1']), 'Show CD1.mp4');
+  // 고른 이름 사이에 화질 폴더가 있어도 겹치지 않는다(1차 리뷰).
+  assert.strictEqual(prefixedName('video.mp4', ['1080p', 'CD1', 'Show CD1']), 'Show CD1 1080p video.mp4');
+  assert.deepStrictEqual(names(['Show CD1/CD1/1080p/video.mp4', 'Show CD1/CD1/1080p/sample.mp4']), ['Show CD1 1080p sample.mp4', 'Show CD1 1080p video.mp4']);
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['1080p', 'Show CD1']), 'Show CD1 1080p.mp4');
   // 길이 한도를 넘으면 바깥 이름을 빼고 예전 이름으로 돌아간다.
   const long = 'L'.repeat(250);
   assert.strictEqual(prefixedName('video.mp4', ['CD1', long]), 'CD1 video.mp4');
+  // 한도 근처에서도 영상과 자막이 같은 접두어를 받는다(1차 리뷰). 길이는 첫 점 앞부분으로 판단한다.
+  for (let size = 200; size <= 250; size++) {
+    const outer = 'L'.repeat(size);
+    const video = prefixedName('video.mp4', ['CD1', outer]);
+    const subtitle = prefixedName('video.en.forced.srt', ['CD1', outer]);
+    assert.strictEqual(subtitle.slice(0, -'en.forced.srt'.length), video.slice(0, -'mp4'.length), String(size));
+    assert.ok(subtitle.length <= 255, String(size));
+  }
 });
 
 test('flatten은 바깥 폴더와 받은 폴더 이름 사이의 화질 폴더도 남긴다 (#150 1차 리뷰)', () => {
