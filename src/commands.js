@@ -547,7 +547,9 @@ function recycleTarget(target) {
   const full = path.resolve(plain);
   const odd = full.split(path.sep).slice(1).find((part) => /[. ]$/.test(part));
   if (odd !== undefined) {
-    const how = prefixed ? '' : ` 이름을 바꾸려면 fctl rename에 \\\\?\\ 접두어 경로(\\\\?\\${full})를 주세요.`;
+    // UNC 경로(\\server\share)는 \\?\UNC\server\share 꼴이 접두어 경로다(2차 리뷰).
+    const long = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
+    const how = prefixed ? '' : ` 이름을 바꾸려면 fctl rename에 \\\\?\\ 접두어 경로(${long})를 주세요.`;
     throw new FcError(`끝이 점이나 공백인 이름(${odd})이 있어 휴지통으로 보낼 수 없습니다. 휴지통 이동은 끝의 점·공백을 지운 다른 이름을 가리킵니다.${how || ' fctl rename에 이 접두어 경로를 주어 이름을 바꾼 뒤 다시 지우세요.'} 휴지통을 거치지 않으려면 --permanent를 쓰세요: ${target}`);
   }
   if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);

@@ -251,6 +251,9 @@ test('rm은 접두어 없이도 끝이 점인 이름을 거부해, 점을 지운
     });
   }
   assert.strictEqual(calls.length, 0);
+  // 안내하는 접두어 경로는 드라이브 경로면 \\?\D:\…, UNC 경로면 \\?\UNC\server\share\… 꼴이다(2차 리뷰).
+  assert.throws(() => fresh.recycleTarget(path.join(dir, 'dot.')), { message: new RegExp(`\\(${`${LONG_PREFIX}${path.join(dir, 'dot.')}`.replace(/[\\.?$]/g, '\\$&')}\\)를 주세요`) });
+  assert.throws(() => fresh.recycleTarget('\\\\server\\share.\\x'), { message: /\(\\\\\?\\UNC\\server\\share\.\\x\)를 주세요/ });
   assert.strictEqual(fs.readFileSync(path.join(dir, 'dot'), 'utf8'), 'PLAIN');
   assert.strictEqual(fs.readFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'utf8'), 'DOTTED');
 });
