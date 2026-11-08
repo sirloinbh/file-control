@@ -12,7 +12,10 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 
 // 시험 파일이 실제 휴지통으로 가지 않도록 휴지통 호출을 가로챈다. commands.js가 불러올 때 함수를 받아 두므로 require보다 먼저 바꿔 둔다.
 const realExecFileSync = childProcess.execFileSync;
+const { fakeRecycleFiles } = require('./fakeRecycleFiles');
 const recycled = [];
+// 묶음 휴지통 이동에 넘긴 입력(줄마다 사본 경로·stamp·남길 파일 경로·stamp).
+const batchInputs = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
 // 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
@@ -24,6 +27,14 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     return format();
   }
   if (options?.env?.FC_VOLUME !== undefined) return volume();
+  // 묶음 휴지통 이동(#216)도 사용자 휴지통을 건드리지 않게 흉내 낸다.
+  if (options?.env?.FC_RECYCLE_FILES !== undefined) {
+    batchInputs.push(options.input);
+    return fakeRecycleFiles(options, (target) => {
+      recycled.push(target);
+      onRecycle(target);
+    });
+  }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -259,6 +270,23 @@ test('전체 경로가 259자를 넘는 사본은 휴지통으로 보낼 수 없
   assert.strictEqual(plan.sets[0].keep.path, f['ABC-123.mp4']);
   assert.deepStrictEqual(plan.removals, []);
   assert.deepStrictEqual(plan.kept.map((item) => [item.path, item.reason]), [[long, `경로가 ${long.length}자라 휴지통으로 보낼 수 없습니다(259자까지): ${long}`]]);
+});
+
+test('남길 파일의 경로가 259자를 넘어도 그 사본은 지운다 (#216 1차 리뷰)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  const long = path.join(dir, 'x'.repeat(120), 'y'.repeat(120), 'ABC-123.mp4');
+  fs.mkdirSync(path.dirname(long), { recursive: true });
+  fs.writeFileSync(long, mp4({ seconds: 3600, padding: 100 }));
+  fs.utimesSync(long, OLD, OLD);
+  assert.ok(long.length > 259);
+  const plan = removeDuplicates(dir);
+  assert.strictEqual(plan.sets[0].keep.path, long);
+  assert.deepStrictEqual(plan.removals.map((item) => item.path), [f['ABC-123 copy.mp4']]);
+  const result = removeDuplicates(dir, { confirm: plan.code });
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.removed.map((item) => item.path), [f['ABC-123 copy.mp4']]);
+  assert.ok(fs.existsSync(long) && !fs.existsSync(f['ABC-123 copy.mp4']));
 });
 
 test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 제목)은 길이나 화면 비율이 다르면 지우지 않는다 (#103)', () => {
@@ -549,7 +577,7 @@ test('지우는 중에 남길 파일이나 다음 사본이 바뀌면 그 사본
   const result = confirmed(dir);
   assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)).sort(), ['ABC-123 (1).mp4', 'XYZ-999 (1).mp4']);
   assert.deepStrictEqual(result.failed.map((item) => path.basename(item.path)).sort(), ['ABC-123 (2).mp4', 'XYZ-999 (2).mp4']);
-  assert.match(result.failed.find((item) => item.path === f['ABC-123 (2).mp4']).reason, /남길 파일이 바뀌어 지우지 않았습니다/);
+  assert.match(result.failed.find((item) => item.path === f['ABC-123 (2).mp4']).reason, /남길 파일이 바뀌었거나 없어져 지우지 않았습니다/);
   assert.match(result.failed.find((item) => item.path === f['XYZ-999 (2).mp4']).reason, /판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
   assert.ok(fs.existsSync(f['ABC-123 (2).mp4']));
   assert.ok(fs.existsSync(f['XYZ-999 (2).mp4']));
@@ -643,8 +671,35 @@ test('지우는 중에 남길 파일이 없어지면 남은 사본은 지우지 
   const result = confirmed(dir);
   assert.strictEqual(result.removed.length, 1);
   assert.strictEqual(result.failed.length, 1);
-  assert.match(result.failed[0].reason, /남길 파일을 찾을 수 없어 지우지 않았습니다/);
+  // 묶어 보내므로(#216) 같은 묶음 안에서는 PowerShell이 사본을 지우기 직전에 남길 파일을 다시 보고 멈춘다.
+  assert.strictEqual(result.failed[0].reason, `남길 파일이 바뀌었거나 없어져 지우지 않았습니다: ${f['ABC-123.mp4']}`);
   assert.ok(fs.existsSync(result.failed[0].path));
+});
+
+test('remove-duplicates는 사본을 묶어 PowerShell 한 번으로 보내고, 사본마다 남길 파일의 경로와 확인값을 함께 넘긴다 (#216)', () => {
+  const dir = tempDir();
+  const f = make(dir, {
+    'ABC-123.mp4': mp4({ seconds: 600, padding: 100 }),
+    'ABC-123 (1).mp4': mp4({ seconds: 600 }),
+    'ABC-123 (2).mp4': mp4({ seconds: 600 }),
+    'DEF-456.mp4': mp4({ seconds: 300, padding: 100 }),
+    'DEF-456 (1).mp4': mp4({ seconds: 300 }),
+  });
+  const plan = removeDuplicates(dir);
+  const keepStamps = new Map(plan.removals.map((item) => [item.keep, item.keepStamp]));
+  batchInputs.length = 0;
+  const result = removeDuplicates(dir, { confirm: plan.code });
+  assert.strictEqual(result.removed.length, 3);
+  assert.strictEqual(batchInputs.length, 1);
+  const decode = (encoded) => Buffer.from(encoded, 'base64').toString('utf16le');
+  const lines = batchInputs[0].split('\n').filter(Boolean).map((line) => line.split(' '));
+  assert.deepStrictEqual(lines.map(([copy, , keep]) => [path.basename(decode(copy)), path.basename(decode(keep))]).sort(), [
+    ['ABC-123 (1).mp4', 'ABC-123.mp4'],
+    ['ABC-123 (2).mp4', 'ABC-123.mp4'],
+    ['DEF-456 (1).mp4', 'DEF-456.mp4'],
+  ]);
+  for (const [, , keep, stamp] of lines) assert.strictEqual(stamp, keepStamps.get(decode(keep)));
+  assert.ok(fs.existsSync(f['ABC-123.mp4']) && fs.existsSync(f['DEF-456.mp4']));
 });
 
 test('--dry-run은 확인값이 맞아도 아무것도 바꾸지 않는다', () => {
