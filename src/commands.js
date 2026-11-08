@@ -849,6 +849,26 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
   });
 }
 
+// 시스템 OEM 코드페이지 번호. tar.exe는 UTF-8 표시가 없는 zip 항목 이름을 이 코드페이지로 읽고 쓴다(#173, #83).
+// 확인하지 못하면 null이다. 한 번 읽으면 기억해 둔다.
+let oemCodePageCache;
+function oemCodePage() {
+  if (oemCodePageCache !== undefined) return oemCodePageCache;
+  oemCodePageCache = null;
+  if (!isWindows) return null;
+  try {
+    const output = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP"], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    });
+    const cp = Number(output.trim());
+    if (Number.isSafeInteger(cp) && cp > 0) oemCodePageCache = cp;
+  } catch {
+    // 확인하지 못하면 null로 둔다. 쓰는 쪽에서 이름을 믿지 않는다.
+  }
+  return oemCodePageCache;
+}
+
 // tar.exe는 인자를 시스템 코드페이지로 받아서, 그 코드페이지에 없는 문자를 비슷한 글자로 바꾸거나(é -> e) 비정상 종료한다.
 // 그대로 넘기면 다른 파일을 묶거나 다른 폴더에 쓸 수 있으므로, 바뀌는 문자가 있으면 실행하기 전에 거부한다.
 // 인자는 ANSI 코드페이지로 받지만 zip·cpio 항목 이름은 OEM 코드페이지로 적는다. 영어 Windows(ANSI 1252, OEM 437)에서
@@ -1234,6 +1254,7 @@ module.exports = {
   archiveEntries,
   archiveNames, probeArchive,
   unsupportedChars,
+  oemCodePage,
   couldBeShortNameOf,
   ensureRoomToExtract,
   freshPath,
