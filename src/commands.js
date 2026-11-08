@@ -233,6 +233,8 @@ function moveOne(src, dest) {
   } catch (err) {
     // 다른 드라이브로 옮길 때는 rename이 안 되므로 복사 후 원본을 지운다.
     if (err.code !== 'EXDEV') throw err;
+    // 복사로 옮기므로 cp와 같게 끝나지 않는 링크를 먼저 거부한다(#142). 아무것도 복사하지 않았으므로 원본과 대상은 그대로다.
+    rejectLoopingLinks(src, dest);
     try {
       fs.cpSync(src, dest, { recursive: true });
     } catch (copyErr) {
@@ -317,6 +319,89 @@ function hasAncestorSameAs(dir, p) {
     if (isSameFile(dir, current)) return true;
   }
   return false;
+}
+
+// 원본 폴더 안의 링크가 원본이나 대상과 겹치는 곳을 가리키면 아무것도 복사하기 전에 거부한다(#142).
+// fs.cpSync는 Windows에서 정션을 따라가 그 안의 내용을 복사한다(폴더 심볼릭 링크는 링크로 복사한다, 빌드 26200·Node 24.21에서 확인).
+// 그래서 원본 자신이나 그 위 폴더, 대상이나 그 위 폴더를 가리키는 정션은 복사가 끝나지 않고 경로가 길어지다가 Node가 오류 없이 끝난다.
+// 대상 안을 가리키는 링크도 복사하는 동안 읽는 내용이 바뀌므로 함께 거부한다. Node로는 정션과 폴더 심볼릭 링크를 구분하지 못해 둘 다 본다.
+// cpSync처럼 링크를 따라 걸으며, 지나온 폴더(원본 안의 위 폴더, 정션 너머의 폴더와 그 실제 위 폴더 포함)를 가리키는 링크를 찾는다(1차 리뷰).
+// src/a/b/up -> src/a, src/out -> X와 X/self -> X, src/out -> X와 X/back -> src가 모두 고리다.
+// 경로 글자 대신 폴더의 파일 번호로 비교한다. UNC 별칭(\\localhost\C$)으로 준 원본도 정션의 실제 경로와 맞춰 볼 수 있다.
+// 한 번 걸은 폴더는 다시 걷지 않는다. 끊어진 링크와 파일 링크는 따라갈 폴더가 없어 보지 않는다.
+function rejectLoopingLinks(src, target) {
+  const here = fs.lstatSync(src, { throwIfNoEntry: false });
+  if (!here || !here.isDirectory()) return;
+  // 지금 걷는 경로 위의 폴더 식별값 -> 겹친 수
+  const onPath = new Map();
+  const add = (ids) => ids.forEach((id) => onPath.set(id, (onPath.get(id) ?? 0) + 1));
+  const drop = (ids) => ids.forEach((id) => (onPath.get(id) === 1 ? onPath.delete(id) : onPath.set(id, onPath.get(id) - 1)));
+  const destId = dirId(target);
+  add(selfAndAncestorIds(target));
+  add(selfAndAncestorIds(src));
+  add(selfAndAncestorIds(fs.realpathSync.native(src)));
+  const walked = new Set([dirId(src)]);
+  const walkDir = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      throw new FcError(`원본 안의 폴더를 읽을 수 없어 복사가 끝나는지 확인하지 못했습니다. 아무것도 복사하지 않았습니다: ${dir} (${err.code})`);
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      const link = entry.isSymbolicLink();
+      let ids;
+      if (link) {
+        let real;
+        try {
+          real = fs.realpathSync.native(full);
+        } catch {
+          continue;
+        }
+        const id = dirId(real);
+        if (id === null) continue;
+        const reached = selfAndAncestorIds(real);
+        if (onPath.has(id) || (destId !== null && reached.includes(destId))) {
+          throw new FcError(`원본 안의 링크가 원본이나 대상, 또는 그 위 폴더를 가리켜 복사가 끝나지 않을 수 있습니다. 아무것도 복사하지 않았습니다: ${full} -> ${real}`);
+        }
+        if (walked.has(id)) continue;
+        walked.add(id);
+        ids = reached;
+      } else {
+        const id = dirId(full);
+        if (id === null || walked.has(id)) continue;
+        walked.add(id);
+        ids = [id];
+      }
+      add(ids);
+      walkDir(full);
+      drop(ids);
+    }
+  };
+  walkDir(path.resolve(src));
+}
+
+// 폴더의 식별값(볼륨과 파일 번호). 링크는 따라간다. 폴더가 아니거나 없으면 null이다.
+function dirId(p) {
+  try {
+    const stat = fs.statSync(p, { bigint: true, throwIfNoEntry: false });
+    return stat && stat.isDirectory() ? `${stat.dev}:${stat.ino}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// p 자신과 그 위 폴더들의 식별값. 없는 경로는 있는 위 폴더부터 센다.
+function selfAndAncestorIds(p) {
+  const ids = [];
+  for (let current = path.resolve(p); ; current = path.dirname(current)) {
+    const id = dirId(current);
+    if (id !== null) ids.push(id);
+    if (path.dirname(current) === current) break;
+  }
+  return ids;
 }
 
 // UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
@@ -426,6 +511,11 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
+  // 원본 안의 링크 때문에 복사가 끝나지 않는 경우(#142)는 미리보기에서도, 여러 원본 중 하나만 그래도 아무것도 복사하지 않는다.
+  for (const src of sources) {
+    ensureExists(src);
+    rejectLoopingLinks(src, resolveDest(src, dest));
+  }
   const planned = new Set();
   return sources.map((src) => {
     ensureExists(src);
@@ -487,29 +577,89 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
 // 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
 const MAX_RECYCLE_PATH = 259;
 
+// 휴지통 이동에는 시간 제한을 두지 않는다(#97). 잠긴 파일과 잠긴 파일이 든 폴더는 대화상자 없이 1~2초 안에 실패했고
+// (빌드 26200, 대화형 세션에서 확인), 휴지통 이동은 같은 볼륨에서도 파일 수에 비례해 걸린다(5만 개 폴더 15~25초).
+// 도중에 PowerShell을 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않았다(1차 리뷰에서 실측).
+
+// 파일이나 폴더 안에서 다른 프로그램이 쓰기·삭제를 막고 연 파일을 찾는다(#97). 그런 파일은 쓰기로 열면 EBUSY가 난다.
+// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 항목(파일과 폴더)이 많으면 limit개를 본 뒤 그만 읽는다.
+// 링크·정션은 따라가지 않는다. 읽기 전용 파일은 EPERM이라 사용 중으로 보지 않고, 여는 것만으로는 내용이 바뀌지 않는다.
+const MAX_BUSY_PROBE = 10000;
+function busyInside(target, limit = MAX_BUSY_PROBE) {
+  const busy = (file) => {
+    try {
+      fs.closeSync(fs.openSync(file, 'r+'));
+      return false;
+    } catch (err) {
+      return err.code === 'EBUSY';
+    }
+  };
+  try {
+    const stat = fs.lstatSync(target);
+    if (stat.isFile()) return busy(target) ? path.basename(target) : undefined;
+    if (!stat.isDirectory()) return undefined;
+    const stack = [target];
+    let seen = 0;
+    while (stack.length > 0 && seen < limit) {
+      const dir = stack.pop();
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) stack.push(full);
+        else if (entry.isFile() && busy(full)) return path.relative(target, full);
+        if (++seen >= limit) break;
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function moveToRecycleBin(target) {
   const full = path.resolve(target);
   if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
+  // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
+  // 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
   const script =
     'if (-not [Environment]::UserInteractive) { exit 75 }; ' +
-    'Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
+    'try { Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
-    "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
+    "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } } " +
+    'catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$e.Message)); exit 77 }';
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
   try {
     execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_TARGET: full },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (err) {
-    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
+    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+    if (err.status === 77) {
+      const busy = busyInside(full);
+      const reason = decodeReason(err.stdout);
+      const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
+      const where = isDir ? `안에 다른 프로그램이 사용 중인 파일이 있습니다: ${busy}` : '다른 프로그램이 이 파일을 사용 중입니다';
+      const note = busy === undefined ? '' : ` ${where}. 그 프로그램을 닫은 뒤 다시 지우세요.`;
+      throw new FcError(`휴지통으로 보내지 못했습니다: ${full}${reason ? ` (${reason})` : ''}.${note}`);
+    }
+    // 사유를 모르는 실패는 부른 쪽이 맥락을 붙이도록(풀었지만… 등) 원래 오류를 그대로 던진다.
+    // 다만 명령 전문과 깨진 stderr가 든 문구는 보여 주지 않도록 바꾼다(#97).
+    err.message = `휴지통으로 보내지 못했습니다: ${full} (PowerShell 종료 코드 ${err.status ?? err.code})`;
     throw err;
   }
+}
+
+// PowerShell이 UTF-16 base64로 내보낸 사유 문구를 한 줄로 풀어 돌려준다. 없거나 깨졌으면 빈 문자열이다.
+function decodeReason(stdout) {
+  const line = String(stdout ?? '').trim().split(/\r?\n/).at(-1) ?? '';
+  if (!/^[A-Za-z0-9+/=]+$/.test(line)) return '';
+  return Buffer.from(line, 'base64').toString('utf16le').replace(/\s+/g, ' ').trim().replace(/[.。]$/, '');
 }
 
 // 빈 폴더 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#67). 폴더마다 PowerShell을 띄우면 한 번에 1~2초씩 걸려 폴더가 많으면 몇 시간이 된다.
@@ -1027,6 +1177,8 @@ module.exports = {
   RECYCLE_FOLDERS_SCRIPT,
   bareDeviceInside,
   MAX_RECYCLE_PATH,
+  decodeReason,
+  busyInside,
   unzip,
   archiveEntries,
   archiveNames, probeArchive,
