@@ -735,6 +735,28 @@ test('zip·unzip은 OEM 코드페이지에서 바뀌는 문자를 zip·cpio 항�
   assert.strictEqual(fc.readFile(p('pax', 'tree', `a${char}.txt`)), 'T');
 });
 
+// 여러 겹 압축(#212): ANSI·OEM이 다른 환경(CI의 영어 Windows)에서 실제 tar.exe로 묶어, 안쪽이 tar면 OEM에 없는 문자도
+// 그대로 적히고 풀리는지, 안쪽이 zip·cpio면 거부하는지 확인한다. ANSI와 OEM이 같은 환경(한국어 Windows)에서는 건너뛴다.
+test('zip은 여러 겹 압축 이름의 항목 이름을 가장 안쪽 형식으로 판정해 tar 안쪽은 OEM 검사를 건너뛴다 (#212)', { skip: !isWindows }, (t) => {
+  const acp = Number(childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim());
+  const candidates = ['¹', '²', '³', '½', '€', 'é', 'ñ'].join('');
+  const inAnsi = new Set(fc.unsupportedChars(candidates, [acp]));
+  const char = fc.unsupportedChars(candidates).find((c) => !inAnsi.has(c));
+  if (char === undefined) return t.skip('ANSI와 OEM 코드페이지의 차이로 바뀌는 문자가 없는 환경이다');
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('tree', `a${char}.txt`), 'T');
+  for (const archive of ['o.tar.gz.gz', 'o.gz.xz', 'o.tgz.gz', 'o.tar.bz2.gz']) {
+    fc.zip(p(archive), [p('tree')]);
+    fc.unzip(p(archive), p(`out-${archive}`));
+    assert.strictEqual(fc.readFile(p(`out-${archive}`, 'tree', `a${char}.txt`)), 'T', archive);
+  }
+  for (const archive of ['o.cpio.gz.xz', 'o.zip.gz.gz']) {
+    assert.throws(() => fc.zip(p(archive), [p('tree')]), /처리할 수 없는 문자/, archive);
+    assert.ok(!fs.existsSync(p(archive)), archive);
+  }
+});
+
 // 코드페이지 확인(PowerShell)을 흉내 내 ANSI·OEM이 다른 환경에서 어느 이름을 OEM으로도 보는지 이 PC에서도 확인한다(#173).
 test('zip은 OEM을 거치지 않는다고 확인한 형식이 아니면(zip·cpio·.tar.zip 등) 항목 이름을 OEM으로도 보고, 경로 인자는 ANSI로만 본다 (#173)', { skip: !isWindows }, (t) => {
   const dir = tempDir();
@@ -754,13 +776,14 @@ test('zip은 OEM을 거치지 않는다고 확인한 형식이 아니면(zip·cp
   delete require.cache[id];
   const mocked = require('../src/commands');
   require.cache[id] = saved;
-  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext', 'o.cpio.gz', 'o.ZIP.XZ', 'o.cpio.Z']) {
+  // 여러 겹 이름은 가장 안쪽 형식으로 판정한다(#212). 안쪽이 zip·cpio면 바깥 겹과 상관없이 OEM으로도 본다.
+  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext', 'o.cpio.gz', 'o.ZIP.XZ', 'o.cpio.Z', 'o.cpio.gz.xz', 'o.zip.gz.gz', 'o.tar.zip.gz']) {
     assert.throws(() => mocked.zip(p(archive), [p('s¹.txt')], { dryRun: true }), /U\+00B9/, archive);
     assert.throws(() => mocked.zip(p(archive), [p('tree')], { dryRun: true }), /U\+00B9.*a¹\.txt/, archive);
     // 압축 파일 경로와 원본의 상위 폴더는 ANSI로만 본다.
     mocked.zip(p(archive), [p('d¹', 'b.txt')], { dryRun: true });
   }
-  for (const archive of ['o.tar.gz', 'o.7z', 'o.tar', 'o.jar', 'o¹.tar.gz']) {
+  for (const archive of ['o.tar.gz', 'o.7z', 'o.tar', 'o.jar', 'o¹.tar.gz', 'o.tar.gz.gz', 'O.TAR.GZ.XZ', 'o.gz.xz', 'o.tgz.gz', 'o.tar.bz2.gz', 'o.taZ.gz']) {
     mocked.zip(p(archive), [p('s¹.txt'), p('tree')], { dryRun: true });
   }
   fs.writeFileSync(p('in¹.zip'), 'x');
@@ -1062,15 +1085,42 @@ test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위
 
 // 8.3 짧은 이름(#159). 풀 볼륨이 짧은 이름을 만들면 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 된다.
 test('couldBeShortNameOf는 긴 이름의 짧은 이름이 될 수 있는 이름을 고른다 (#159)', () => {
-  const yes = [['LONGNA~1.TXT', 'longname.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html'],
+  const yes = [['LONGNA~1.TXT', 'longnames.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html'],
     // 이름이 짧으면 처음부터 해시 형식이 되고, 한글은 OEM 바이트 단위로 잘리며, OEM에 없는 글자는 빠진다(1차 리뷰에서 실측).
     ['XAD1C~1.VER', 'x.verylongext'], ['가9BAB~1.TXT', '가나다라마바사5.txt'], ['한글~1.한', '한글.한글파일'], ['ABC~1.TXT', '€abc.txt'], ['GITIGN~1', '.gitignore'],
     // ~가 든 이름(Office 잠금 파일 등)과 앞에 점만 있는 이름(2차 리뷰에서 실측).
     ['~$LONG~1.DOC', '~$longdocument.docx'], ['~$AB~1.DOC', '~$ab.docx'], ['FOO~BA~1.TXT', 'foo~bar~baz.txt'], ['FOO~1', '..foo'], ['BAR~1', '...bar'],
     ['LENAME~1.TXT', 'ﬁlename.txt']];
-  const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt']];
+  const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt'],
+    // 원래 8.3 형식인 ASCII 이름은 대소문자와 상관없이 짧은 이름을 받지 않는다(#205).
+    ['LONGNA~1.TXT', 'longname.txt'], ['photo~1.jpg', 'photo.jpg'], ['PHOTO~1.JPG', 'Photo.Jpg'], ['NOEXT~1', 'noext'], ['A-@^_~1.TXT', 'a-@^_`{}.txt']];
   for (const [name, other] of yes) assert.strictEqual(fc.couldBeShortNameOf(name, other), true, `${name} ${other}`);
   for (const [name, other] of no) assert.strictEqual(fc.couldBeShortNameOf(name, other), false, `${name} ${other}`);
+});
+
+test('원래 8.3 형식인 이름은 ~N 이름과 함께 묶고 풀어도 겹치지 않는다 (#205)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'photo~1.jpg'), 'tilde');
+  fc.writeFile(p('src', 'Photo.Jpg'), 'plain');
+  fc.writeFile(p('src', 'NOEXT~1'), 'tilde2');
+  fc.writeFile(p('src', 'noext'), 'plain2');
+  // Windows는 원래 8.3 형식인 이름에 짧은 이름을 만들지 않는다(8.3이 켜진 볼륨에서도 dir /x에 짧은 이름이 없다).
+  const listing = childProcess.execFileSync('cmd.exe', ['/c', 'dir', '/x', p('src')], { encoding: 'latin1' });
+  assert.ok(!/~\d\S*\s+Photo\.Jpg/i.test(listing), listing);
+  fc.zip(p('a.zip'), [p('src')]);
+  // 기존 폴더에 같은 이름들이 있어도 그대로 덮어쓰며 풀린다(짧은 이름으로 다른 파일을 가리키지 않는다).
+  fc.writeFile(p('out', 'src', 'photo.jpg'), 'old');
+  fc.unzip(p('a.zip'), p('out'));
+  // tar.exe는 기존 파일을 지우고 압축 안의 대소문자로 다시 만든다.
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'src')).map((n) => n.toLowerCase()).sort(), ['noext', 'noext~1', 'photo.jpg', 'photo~1.jpg']);
+  assert.strictEqual(fc.readFile(p('out', 'src', 'photo.jpg')), 'plain');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'photo~1.jpg')), 'tilde');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'noext')), 'plain2');
+  assert.strictEqual(fc.readFile(p('out', 'src', 'NOEXT~1')), 'tilde2');
+  // 짧은 이름을 받는 긴 이름과는 여전히 묶지 않는다.
+  fc.writeFile(p('src', 'photograph.jpg'), 'long');
+  assert.throws(() => fc.zip(p('b.zip'), [p('src')]), /8\.3 짧은 이름으로 겹칠 수 있는/);
 });
 
 test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름이 있으면 묶지 않는다 (#159)', { skip: !isWindows }, () => {
@@ -1234,6 +1284,34 @@ test('archiveExt는 끝에서 이어지는 압축 확장자를 모두 돌려준�
     'x.taZ': '.taZ', 'x.TGZ': '.tgz', 'gz.xz': '.xz', 'tar.gz': '.gz', '.gz': '.gz', 'x.my-file.gz': '.gz', 'x.gz.my-file': '', noext: '',
   };
   for (const [name, ext] of Object.entries(cases)) assert.strictEqual(fc.archiveExt(name), ext, name);
+});
+
+test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 수(25겹 이상)면 FcError로 거부하고 아무것도 남기지 않는다 (#213)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  for (const dryRun of [true, false]) {
+    // 마지막 확장자 하나가 아주 길면 임시 이름이 255자를 넘는다.
+    assert.throws(() => fc.zip(p(`x.${'a'.repeat(240)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /확장자가 너무 길어\(241자\).*255자를 넘습니다/.test(err.message));
+    // 25겹부터는 tar.exe가 다시 풀지 못한다(80겹은 이슈의 예).
+    for (const layers of [25, 80]) {
+      assert.throws(() => fc.zip(p(`x${'.gz'.repeat(layers)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`${layers}겹이라 tar.exe가 다시 풀 수 없습니다(24겹까지)`));
+    }
+    assert.throws(() => fc.zip(p(`x.${'tbz2.'.repeat(24)}tzst`), [p('a.txt')], { dryRun }), /25겹이라/);
+  }
+  // 경계: 임시 이름 길이 = 고정 부분 + 번호 여유 4자 + 확장자. 한도에 꼭 맞는 확장자는 묶고, 한 글자 더 길면 거부한다(1차 리뷰).
+  const fixed = `.fctl-new-${process.pid}-${Date.now()}-0`.length + 4;
+  const edge = `e.${'b'.repeat(255 - fixed - 1)}`;
+  fc.zip(p(edge), [p('a.txt')]);
+  fs.rmSync(p(edge));
+  assert.throws(() => fc.zip(p(`e.${'b'.repeat(255 - fixed)}`), [p('a.txt')], { dryRun: true }), /확장자가 너무 길어/);
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
+  // 24겹은 묶고 다시 풀 수 있다.
+  const fits = `y${'.gz'.repeat(24)}`;
+  fc.zip(p(fits), [p('a.txt')]);
+  fc.unzip(p(fits), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'a.txt')), 'A');
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'out', fits].sort());
 });
 
 test('zip은 압축 확장자가 여러 겹인 이름을 tar.exe가 그 이름으로 만들 때와 같은 겹으로 묶는다 (#193)', () => {

@@ -1462,9 +1462,16 @@ const SHORT_NAME = /^([^.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 // +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
 // OEM에 없는 글자는 빠지거나 _가 된다. 그래서 첫 글자와 확장자 앞부분만 비교하고, ASCII가 아닌 글자가 걸리면 겹칠 수 있다고 본다.
 // 실제로는 겹치지 않는 이름도 거부할 수 있다. ~N이 든 이름은 드물어서 그쪽이 안전하다(#159).
+// 원래 8.3 형식인 ASCII 이름(이름 1~8자, 확장자 0~3자, 점 하나 이하, 8.3에서 그대로 쓰는 글자만). Windows는 이런 이름에
+// 대소문자와 상관없이 따로 짧은 이름을 만들지 않으므로(빌드 26200 dir /x 실측: photo.jpg, PHOTO2.JPG, Photo3.Jpg, noext, ab~1.txt)
+// ~N 이름과 겹치지 않는다(#205). 공백, +,;=[], 점 두 개, 앞이나 끝의 점, 9자 이상, 4자 확장자에는 짧은 이름이 생긴다.
+// ASCII가 아닌 이름(é.txt, 한글한글.txt)도 OEM 바이트로 8.3에 들면 짧은 이름이 생기지 않았지만, 코드페이지마다 다르므로 넉넉하게 겹칠 수 있다고 둔다.
+const PLAIN_8DOT3 = /^[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,8}(?:\.[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,3})?$/;
+
 function couldBeShortNameOf(name, other) {
   const short = SHORT_NAME.exec(name);
   if (!short || name.toUpperCase() === other.toUpperCase()) return false;
+  if (PLAIN_8DOT3.test(other)) return false;
   // 앞쪽 점과 공백은 떼고 확장자를 나눈다(..foo는 FOO~1, .gitignore는 GITIGN~1).
   const trimmed = other.replace(/^[ .]+/, '');
   const dot = trimmed.lastIndexOf('.');
@@ -1584,10 +1591,42 @@ function existingPlaces(dest, parts) {
   return places;
 }
 
+// 항목 이름을 어떤 인코딩으로 적는지는 가장 안쪽 형식이 정하고 바깥 압축 겹은 바꾸지 않는다(#212). 그래서 archiveExt의 겹에서
+// 가장 안쪽 판정(첫 확장자, 형식·tar이면 그 뒤의 압축 하나까지)만 남겨 ANSI_ENTRY_EXT와 비교한다.
+// .tar.gz.gz -> .tar.gz, .gz.xz -> .gz, .tgz.gz -> .tgz, .cpio.gz.xz -> .cpio.gz(목록에 없어 OEM으로 본다).
+function innerEntryExt(ext) {
+  const parts = ext.split('.').filter(Boolean);
+  if (parts.length === 0) return ext;
+  const first = parts[0].toLowerCase();
+  const keep = parts.length > 1 && (FORMAT_EXT.has(first) || first === 'tar') ? 2 : 1;
+  return parts.slice(0, keep).map((part) => `.${part}`).join('');
+}
+
+// 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
+const MAX_NAME_LENGTH = 255;
+// zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
+// 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
+const TEMP_SERIAL_RESERVE = 4;
+// tar.exe는 압축 겹을 이만큼까지만 풀 수 있다. 25겹부터는 묶기는 하지만 읽을 때 "Input requires too many filters for decoding"으로
+// 실패한다(빌드 26200 실측, gzip·xz 모두). 다시 풀 수 없는 압축 파일을 만들지 않도록 함께 거부한다(#213).
+const MAX_TAR_LAYERS = 24;
+function rejectLongTempName(archive) {
+  const ext = archiveExt(archive);
+  const layers = ext.split('.').filter((part) => part !== '' && isLayerExt(part)).length;
+  if (layers > MAX_TAR_LAYERS) {
+    throw new FcError(`압축 확장자가 ${layers}겹이라 tar.exe가 다시 풀 수 없습니다(${MAX_TAR_LAYERS}겹까지). 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+  const length = `.fctl-new-${process.pid}-${Date.now()}-0`.length + TEMP_SERIAL_RESERVE + ext.length;
+  if (length > MAX_NAME_LENGTH) {
+    throw new FcError(`확장자가 너무 길어(${ext.length}자) 묶는 동안 쓸 임시 파일 이름이 ${MAX_NAME_LENGTH}자를 넘습니다. 확장자를 줄여 다시 지정하세요: ${archive}`);
+  }
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
+  rejectLongTempName(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
   [archive, ...sources].forEach(rejectStreamPath);
@@ -1611,7 +1650,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
-  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(innerEntryExt(archiveExt(archive))) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
