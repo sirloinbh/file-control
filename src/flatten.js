@@ -72,10 +72,11 @@ function informativeFolder(folder) {
   return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
 }
 
-// 이름으로 고를 폴더인지 본다(#211). 쓸 만한 이름이라도 자막 폴더(English Subs/)나 언어 이름만 있는 폴더(English/, 한국어/)는
+// 이름으로 고를 폴더인지 본다(#211). 쓸 만한 이름이라도 자막·언어 말로만 된 폴더(English Subs/, English/, 한국어/)는
 // 자막만 담는 폴더라 고르지 않는다. 고르면 Show/CD1/English/video.en.srt가 English를 받아 Show/CD1/video.mp4와 짝을 잃는다.
+// 다른 말이 함께 있는 폴더(Movie [Eng Sub]/)는 하드섭 영상의 제목일 수 있어 고른다(2차 리뷰).
 function titleFolder(folder) {
-  return informativeFolder(folder) && !subtitleFolder(folder);
+  return informativeFolder(folder) && !containerFolder(folder);
 }
 
 // 접두어 사이에 함께 붙일 가까운 폴더인지 본다(#150). 쓸 만한 이름이거나 화질·코덱만 있는 이름(1080p, WEB-DL)이면 된다.
@@ -146,9 +147,10 @@ function languageFolder(folder) {
   return folderWords.length > 0 && folderWords.every((word) => LANGUAGE_WORD.test(word));
 }
 
-// 자막 말이 든 폴더이거나 언어 이름만 있는 폴더면 true.
-function subtitleFolder(folder) {
-  return hasSubtitleWord(folder) || languageFolder(folder);
+// 자막 말과 언어 이름으로만 된 폴더(Subs/, Eng Sub/, English/)면 true.
+function containerFolder(folder) {
+  const folderWords = words(folder.normalize('NFKC'));
+  return folderWords.length > 0 && folderWords.every((word) => SUBTITLE_WORD.test(word) || LANGUAGE_WORD.test(word));
 }
 
 // 고른 폴더보다 바깥에서 붙일 제목 폴더를 가까운 쪽부터 찾는다(#211). 언어 이름만 있는 폴더는 다른 제목이 없을 때만 쓴다.
@@ -157,9 +159,10 @@ function outerTitle(stems) {
   return stems.find(titleFolder) ?? stems.find(informativeFolder);
 }
 
-// folders(가까운 폴더부터) 중 자막 말이 든 가장 바깥 폴더의 다음 위치. 그보다 가까운 폴더는 자막 폴더 안이라 제목으로 고르지 않는다(#211).
+// folders(가까운 폴더부터) 중 자막 폴더(자막 말이 들고 자막·언어 말로만 된 폴더) 가운데 가장 바깥 것의 다음 위치(#211).
+// 그보다 가까운 폴더는 자막 폴더 안이라 제목으로 고르지 않는다. Movie [Eng Sub]/처럼 제목이 든 폴더는 자막 폴더로 보지 않는다(2차 리뷰).
 function titleStart(folders) {
-  return folders.findLastIndex(hasSubtitleWord) + 1;
+  return folders.findLastIndex((folder) => hasSubtitleWord(folder) && containerFolder(folder)) + 1;
 }
 
 // chosen 뒤에 사이 폴더(between, 가까운 쪽부터) 중 붙일 이름을 바깥부터 붙인다(#150). 이미 들어 있는 이름(also 포함)은 다시 붙이지 않는다.

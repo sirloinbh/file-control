@@ -2016,6 +2016,12 @@ test('planFlatten은 자막 폴더 안의 폴더 이름을 정보 없는 자막�
   ]);
   // 바깥에 언어 폴더뿐이면 그 이름을 쓴다.
   assert.deepStrictEqual(names(['Korean/Lesson 1/video.mp4', 'Korean/Lesson 2/video.mp4']), ['Korean Lesson 1.mp4', 'Korean Lesson 2.mp4']);
+  // 자막 말과 다른 말이 함께 든 제목 폴더(하드섭 영상)는 예전처럼 이름으로 쓴다(2차 리뷰).
+  assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4']), ['Movie [Eng Sub].mp4']);
+  assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4', 'Movie [Eng Sub]/sample.mp4']), ['Movie [Eng Sub] sample.mp4', 'Movie [Eng Sub] video.mp4']);
+  assert.deepStrictEqual(names(['Movie (Eng Subs)/CD1/video.mp4', 'Movie (Eng Subs)/CD2/video.mp4']), ['Movie (Eng Subs) CD1.mp4', 'Movie (Eng Subs) CD2.mp4']);
+  // 자막·언어 말로만 된 Eng Sub/ 안의 폴더는 여전히 고르지 않는다.
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Eng Sub/Forced/video.srt']), ['Show video.mp4', 'Show video.srt']);
 });
 
 test('planFlatten은 파일 하나만 담은 바깥 폴더의 제목도 가까운 폴더 이름과 함께 남긴다 (#168)', () => {
