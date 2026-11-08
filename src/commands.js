@@ -670,6 +670,15 @@ function moveToRecycleBin(target) {
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+    const found = oddNameInside(full);
+    if (found !== undefined) {
+      // 바꿀 것은 끝이 점·공백인 첫 성분이다(dot./a.txt면 dot.).
+      const parts = found.split(path.sep);
+      const odd = parts.slice(0, parts.findIndex((part) => /[. ]$/.test(part)) + 1).join(path.sep);
+      const inner = path.join(full, odd);
+      const long = inner.startsWith('\\\\') ? `\\\\?\\UNC\\${inner.slice(2)}` : `\\\\?\\${inner}`;
+      throw new FcError(`휴지통으로 보내지 못했습니다. 안에 끝이 점이나 공백인 이름(${odd})이 있어 휴지통 이동이 폴더째 실패했습니다: ${full}. fctl rename에 \\\\?\\ 접두어 경로(${long})를 주어 이름을 바꾼 뒤 다시 지우세요.`);
+    }
     if (err.status === 77) {
       const busy = busyInside(full);
       const reason = decodeReason(err.stdout);
@@ -793,9 +802,22 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 }
 
 function bareDeviceInside(dir) {
+  return entryInside(dir, (part) => BARE_DEVICE_NAME.test(part));
+}
+
+// 폴더 안에서 끝이 점이나 공백인 이름이 든 항목을 찾는다(#190). 휴지통 이동(PowerShell 5.1)은 그런 이름을 열지 못해 폴더째
+// "지정한 파일을 찾을 수 없습니다"로 실패하고, 아무것도 옮기지 않는다(빌드 26200에서 확인). 실패했을 때만 찾아 사유로 알린다.
+// 안쪽의 259자를 넘는 경로는 실패 원인이 아니다. 274~377자 경로가 든 폴더도 그대로 휴지통으로 갔고 휴지통 안에 남았다(실측).
+function oddNameInside(dir) {
+  return entryInside(dir, (part) => /[. ]$/.test(part));
+}
+
+// 폴더 안의 항목 중 경로 성분 하나가 test를 만족하는 첫 항목의 상대 경로를 돌려준다. 폴더가 아니거나 읽지 못하면 undefined다.
+// 링크·정션은 따라가지 않는다(readdirSync recursive는 링크를 폴더로 보지 않는다).
+function entryInside(dir, test) {
   try {
     if (!fs.lstatSync(dir).isDirectory()) return undefined;
-    return fs.readdirSync(dir, { recursive: true }).find((rel) => rel.split(path.sep).some((part) => BARE_DEVICE_NAME.test(part)));
+    return fs.readdirSync(dir, { recursive: true }).find((rel) => rel.split(path.sep).some(test));
   } catch {
     return undefined;
   }
