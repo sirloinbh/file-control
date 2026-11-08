@@ -149,7 +149,8 @@ function findLowQuality(dir, options = {}) {
         continue;
       }
       const size = fileSizeInside(access.target, real);
-      const info = saneInfo(reader(access.target, real));
+      // 비트레이트를 판단에 쓰므로 표본 표·탐색 표로 길이를 맞춰 보게 한다(#207).
+      const info = saneInfo(reader(access.target, real, { verifyBitrate: true }));
       const judged = judgeQuality(info, criteria);
       if (judged.status === 'unknown') result.unreadable.push({ path: real, reason: judged.reasons.join(' ') });
       if (judged.status !== 'low') continue;

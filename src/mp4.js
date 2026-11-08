@@ -404,26 +404,28 @@ function firstTag(tags, sources) {
 // 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
 // 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
 // 받다 만 파일이거나 길이가 표본 표와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
+// bitrate와 bitrateNote는 options.verifyBitrate가 true일 때만 채운다(#207). 끄면 둘 다 null이고 트랙의 표본 표(stts, 최대 8MB)와
+// 데이터 위치표(stco·co64)를 보지 않는다. 비트레이트를 쓰지 않는 중복·제품번호 찾기의 입출력을 줄이기 위해서다.
 // width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율과 90·270도 회전을 반영한 보이는 크기다(#106, #113).
 // 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(unrotatedSize), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
 // 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
 // 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
 // 깨진 파일 판별은 checkMp4Structure가 한다. 이 함수는 moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
-function readMp4Metadata(dir, p) {
+function readMp4Metadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
-    return parseMp4(access.target, access.read(p), p);
+    return parseMp4(access.target, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
     if (err.syscall) throw new FcError(`MP4 파일을 읽을 수 없습니다: ${p} (${err.code})`);
     throw err;
   }
 }
 
-function parseMp4(target, real, p) {
-  return withOpenFile(target, real, (file) => parseOpenedMp4(file, p));
+function parseMp4(target, real, p, verifyBitrate) {
+  return withOpenFile(target, real, (file) => parseOpenedMp4(file, p, verifyBitrate));
 }
 
-function parseOpenedMp4(file, p) {
+function parseOpenedMp4(file, p, verifyBitrate) {
   const { size } = file;
   const read = makeReader(file, p);
   const moov = findMoov(read, p, size);
@@ -452,7 +454,7 @@ function parseOpenedMp4(file, p) {
   const duration = units && movie?.timescale ? units / movie.timescale : null;
   const tracks = traks.map((box) => readTrack(read, p, box, movie?.quarterTurn)).filter(Boolean);
   const video = mainVideo(tracks);
-  const bitrateNote = duration ? bitrateDoubt(read, traks, size, duration, fragmented) : null;
+  const bitrateNote = verifyBitrate && duration ? bitrateDoubt(read, traks, size, duration, fragmented) : null;
   return {
     title: firstTag(tags, TITLE_SOURCES),
     comment: firstTag(tags, COMMENT_SOURCES),
@@ -461,7 +463,7 @@ function parseOpenedMp4(file, p) {
     height: video?.height ?? null,
     displayWidth: video?.displayWidth ?? null,
     displayHeight: video?.displayHeight ?? null,
-    bitrate: duration && bitrateNote === null ? Math.round((size * 8) / duration) : null,
+    bitrate: verifyBitrate && duration && bitrateNote === null ? Math.round((size * 8) / duration) : null,
     bitrateNote,
   };
 }
