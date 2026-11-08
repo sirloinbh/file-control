@@ -510,3 +510,16 @@ test('Segment나 탐색 표가 파일 끝 너머를 가리키는 받다 만 파�
   const far = readMkvMetadata(dir, write(dir, 'far.mkv', header(), segment(cuesHead(90_000_000), info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cluster())));
   assert.match(far.bitrateNote, /받다 만 파일일 수 있어/);
 });
+
+test('탐색 항목이 하나뿐이거나 마지막 시각이 0이면 길이를 맞춰 보지 않는다 (#179, 1차 리뷰)', () => {
+  const dir = tempDir();
+  // 정지 그림 한 장을 영상 트랙으로 넣은 1시간짜리 음악 파일: 탐색 항목이 시각 0 하나다.
+  const still = readMkvMetadata(dir, write(dir, 'a.mkv', header(), segment(info({ ticks: 3600 * 1000 }), tracks(videoTrack(1920, 1080)), cues([0]), cluster(100000))));
+  assert.ok(still.bitrate > 0);
+  assert.strictEqual(still.bitrateNote, null);
+  const zero = readMkvMetadata(dir, write(dir, 'b.mkv', header(), segment(info({ ticks: 600 * 1000 }), tracks(videoTrack(1920, 1080)), cues([0], [0]), cluster(100000))));
+  assert.strictEqual(zero.bitrateNote, null);
+  // 항목이 하나면 시각이 0이 아니어도 맞춰 보지 않는다.
+  const one = readMkvMetadata(dir, write(dir, 'c.mkv', header(), segment(info({ ticks: 6000 * 1000 }), tracks(videoTrack(1920, 1080)), cues([10]), cluster(100000))));
+  assert.strictEqual(one.bitrateNote, null);
+});

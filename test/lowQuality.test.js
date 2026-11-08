@@ -62,7 +62,8 @@ function mp4({ seconds, width = 1920, height = 1080, padding = 0, rotate = 0, ti
   return Buffer.concat([box('ftyp', latin('isom'), u32(512), latin('isommp42')), box('moov', mvhd, trak), box('mdat', Buffer.alloc(64 + padding))]);
 }
 
-function mkv({ seconds, width = 1920, height = 1080 }) {
+// cueTimes를 주면 그 시각(ms)들로 탐색 표(Cues)를 넣는다(#179). padding으로 파일 크기(비트레이트)를 맞춘다.
+function mkv({ seconds, width = 1920, height = 1080, cueTimes = [], padding = 0 }) {
   const size = (length) => {
     const b = Buffer.alloc(8);
     b.writeBigUInt64BE(BigInt(length));
@@ -78,7 +79,8 @@ function mkv({ seconds, width = 1920, height = 1080 }) {
   ticks.writeDoubleBE(seconds * 1000);
   const info = el(0x1549a966, el(0x2ad7b1, u32(1000000)), el(0x4489, ticks));
   const video = el(0xae, el(0x83, Buffer.from([1])), el(0xe0, el(0xb0, u32(width)), el(0xba, u32(height))));
-  return Buffer.concat([el(0x1a45dfa3, el(0x4282, 'matroska')), el(0x18538067, info, el(0x1654ae6b, video), el(0x1f43b675, Buffer.alloc(100)))]);
+  const cues = cueTimes.length === 0 ? [] : [el(0x1c53bb6b, ...cueTimes.map((time) => el(0xbb, el(0xb3, u32(time)))))];
+  return Buffer.concat([el(0x1a45dfa3, el(0x4282, 'matroska')), el(0x18538067, info, el(0x1654ae6b, video), ...cues, el(0x1f43b675, Buffer.alloc(100 + padding)))]);
 }
 
 const info = (fields) => ({ width: 640, height: 360, displayWidth: null, displayHeight: null, duration: 60, bitrate: 1000000, ...fields });
@@ -148,9 +150,11 @@ test('읽기에서 길이를 믿지 못한 파일은 비트레이트로 저화�
   put(dir, 'partial.mp4', mp4({ seconds: 3600, dataSeconds: 3600, chunk: 1_500_000_000, padding: 100_000 }));
   // 견줄 정상 파일: 표본 표와 길이가 맞고 비트레이트가 기준 미만이면 그대로 저화질이다.
   put(dir, 'starved.mp4', mp4({ seconds: 60, dataSeconds: 60, padding: 750_000 }));
+  // MKV도 같다: 탐색 표의 마지막 시각은 58초인데 길이가 60000초로 적힌 파일(1차 리뷰)
+  put(dir, 'stretched.mkv', mkv({ seconds: 60000, cueTimes: [0, 30000, 58000], padding: 40_000_000 }));
   const result = findLowQuality(dir, { minBitrate: 500 });
   assert.deepStrictEqual(names(dir, result.low), ['starved.mp4']);
-  assert.deepStrictEqual(names(dir, result.unreadable), ['partial.mp4', 'stretched.mp4']);
+  assert.deepStrictEqual(names(dir, result.unreadable), ['partial.mp4', 'stretched.mkv', 'stretched.mp4']);
   const report = formatLowQuality(result);
   assert.match(report, /^판단 못함: stretched\.mp4 \(비트레이트를 알 수 없어 판단하지 못했습니다\. 길이 값\(60000초\)이 표본 표의 길이\(60초\)보다 훨씬 길어/m);
   assert.match(report, /^판단 못함: partial\.mp4 \(.*받다 만 파일일 수 있어/m);

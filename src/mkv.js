@@ -149,6 +149,7 @@ function parseInfo(body, found) {
 function parseCues(body, found) {
   for (const point of children(body)) {
     if (point.id !== ID.CUE_POINT) continue;
+    found.cuePoints = (found.cuePoints ?? 0) + 1;
     for (const child of children(point.body)) {
       if (child.id === ID.CUE_TIME) {
         const time = readUint(child.body);
@@ -167,10 +168,11 @@ function parseCues(body, found) {
 // - Segment의 크기나 SeekHead·탐색 표가 가리키는 위치가 파일 끝을 넘으면 받다 만 파일이다. 파일 크기가 적어 비트레이트가 낮게 나온다.
 // - 적힌 길이가 탐색 표의 마지막 시각의 2배에 60초를 더한 것보다 길면 길이가 깨졌다고 본다. 키프레임 간격은 이보다 짧다.
 //   적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
-// 탐색 표가 없으면 길이는 맞춰 보지 않는다. 마지막 Cluster를 찾으려면 영상 데이터를 훑어야 해서 보지 않는다.
+// 탐색 표가 없거나 항목이 하나뿐이거나 마지막 시각이 0이면 길이는 맞춰 보지 않는다. 키프레임을 처음에만 넣은 화면 녹화나
+// 정지 그림 한 장을 영상 트랙으로 넣은 음악 파일이 그렇다(1차 리뷰). 마지막 Cluster를 찾으려면 영상 데이터를 훑어야 해서 보지 않는다.
 function bitrateDoubt(found, beyondEnd, duration) {
   if (beyondEnd) return 'Segment 크기나 요소 위치가 파일 끝을 넘어, 받다 만 파일일 수 있어 비트레이트를 믿을 수 없습니다.';
-  if (found.lastCue == null || !found.scale) return null;
+  if (!found.lastCue || (found.cuePoints ?? 0) < 2 || !found.scale) return null;
   const cueSeconds = (found.lastCue * found.scale) / 1e9;
   if (duration > cueSeconds * 2 + 60) return `길이 값(${Math.round(duration)}초)이 탐색 표의 마지막 시각(${Math.round(cueSeconds)}초)보다 훨씬 길어 비트레이트를 믿을 수 없습니다.`;
   return null;
