@@ -525,9 +525,28 @@ function busyInside(target, limit = MAX_BUSY_PROBE) {
   }
 }
 
-function moveToRecycleBin(target) {
-  const full = path.resolve(target);
+// 휴지통 이동에 넘길 경로를 돌려준다. 보낼 수 없는 것이 확실하면 사유를 밝혀 거부한다(#129).
+// rm은 미리보기와 여러 대상 실행 전에 이것으로 모두 검사해, 미리보기와 실제 결과가 같고 일부만 지운 채 멈추지 않게 한다.
+// - \\?\D:\... 접두어: 휴지통 이동은 이 꼴을 받지 못하고 항상 실패한다. 접두어를 떼도 같은 파일을 가리킬 때만 뗀다.
+//   끝이 점이나 공백인 이름은 접두어를 떼면 Windows가 그 점·공백을 지워 다른 항목을 가리키므로 거부한다.
+//   장치 이름은 remove가 rejectBareDeviceArgs로 먼저 거부한다. \\?\UNC\·\\.\ 같은 다른 꼴은 거부한다.
+// - 259자(MAX_RECYCLE_PATH)를 넘는 경로
+function recycleTarget(target) {
+  let plain = target;
+  if (/^[\\/]{2}[?.][\\/]/.test(target)) {
+    const drive = /^[\\/]{2}\?[\\/]([A-Za-z]:[\\/].*)$/s.exec(target);
+    if (!drive) throw new FcError(`이 꼴의 경로는 휴지통으로 보낼 수 없습니다: ${target}. 드라이브 문자 경로(D:\\...)로 다시 지정하세요.`);
+    const odd = drive[1].split(/[\\/]/).find((part) => part !== '' && /[. ]$/.test(part));
+    if (odd !== undefined) throw new FcError(`끝이 점이나 공백인 이름(${odd})이 있어 휴지통으로 보낼 수 없습니다. \\\\?\\ 접두어를 떼면 다른 항목을 가리킵니다. fctl rename에 접두어 경로를 주어 이름을 바꾼 뒤 다시 지우거나, 휴지통을 거치지 않으려면 --permanent를 쓰세요: ${target}`);
+    plain = drive[1];
+  }
+  const full = path.resolve(plain);
   if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
+  return full;
+}
+
+function moveToRecycleBin(target) {
+  const full = recycleTarget(target);
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
   // 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
@@ -706,7 +725,9 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
     throw new FcError('휴지통 삭제는 Windows에서만 됩니다. 영구 삭제하려면 --permanent');
   }
   const planned = new Set();
-  return targets.map((target) => {
+  // 아무것도 지우기 전에 모든 대상을 검사한다(#129). rm a b c에서 c만 보낼 수 없으면 a와 b도 지우지 않고 사유를 알린다.
+  // 미리보기도 같은 검사를 거쳐, 실제로는 실패할 대상을 "휴지통으로 이동"으로 보여 주지 않는다.
+  const checked = targets.map((target) => {
     ensureExists(target);
     // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
     // 링크를 지우면 링크만 사라지므로 링크 자체로 비교한다. 글자 비교는 링크를 거쳐 들어온 현재 폴더(rm lnk, 현재 폴더 lnk/s)를 잡는다.
@@ -714,9 +735,16 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
       throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
     }
     if (!permanent) rejectBareDeviceArgs([target], '휴지통으로 보낼 수 없습니다');
+    // 영구 삭제는 Node(fs.rmSync)로 지우므로 휴지통 경로 검사를 하지 않는다.
+    const recycleAs = permanent ? undefined : recycleTarget(target);
     if (dryRun) claim(planned, target);
+    return { target, recycleAs };
+  });
+  return checked.map(({ target, recycleAs }) => {
+    // 앞 대상이 이 대상을 품고 있어 이미 지워졌으면(rm a a/b) 예전처럼 없다고 알린다.
+    if (!dryRun) ensureExists(target);
     if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
-    return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(target));
+    return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(recycleAs));
   });
 }
 
