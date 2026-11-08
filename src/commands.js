@@ -1449,9 +1449,16 @@ const SHORT_NAME = /^([^.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 // +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
 // OEM에 없는 글자는 빠지거나 _가 된다. 그래서 첫 글자와 확장자 앞부분만 비교하고, ASCII가 아닌 글자가 걸리면 겹칠 수 있다고 본다.
 // 실제로는 겹치지 않는 이름도 거부할 수 있다. ~N이 든 이름은 드물어서 그쪽이 안전하다(#159).
+// 원래 8.3 형식인 ASCII 이름(이름 1~8자, 확장자 0~3자, 점 하나 이하, 8.3에서 그대로 쓰는 글자만). Windows는 이런 이름에
+// 대소문자와 상관없이 따로 짧은 이름을 만들지 않으므로(빌드 26200 dir /x 실측: photo.jpg, PHOTO2.JPG, Photo3.Jpg, noext, ab~1.txt)
+// ~N 이름과 겹치지 않는다(#205). 공백, +,;=[], 점 두 개, 앞이나 끝의 점, 9자 이상, 4자 확장자에는 짧은 이름이 생긴다.
+// ASCII가 아닌 이름(é.txt, 한글한글.txt)도 OEM 바이트로 8.3에 들면 짧은 이름이 생기지 않았지만, 코드페이지마다 다르므로 넉넉하게 겹칠 수 있다고 둔다.
+const PLAIN_8DOT3 = /^[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,8}(?:\.[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,3})?$/;
+
 function couldBeShortNameOf(name, other) {
   const short = SHORT_NAME.exec(name);
   if (!short || name.toUpperCase() === other.toUpperCase()) return false;
+  if (PLAIN_8DOT3.test(other)) return false;
   // 앞쪽 점과 공백은 떼고 확장자를 나눈다(..foo는 FOO~1, .gitignore는 GITIGN~1).
   const trimmed = other.replace(/^[ .]+/, '');
   const dot = trimmed.lastIndexOf('.');
