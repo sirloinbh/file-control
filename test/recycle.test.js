@@ -289,3 +289,50 @@ test('rm은 앞 대상이 뒤 대상을 품어 이미 지웠으면 예전처럼 
   fs.writeFileSync(path.join(dir, 'c', 'd.txt'), 'd');
   assert.throws(() => fresh.remove([path.join(dir, 'c'), path.join(dir, 'c', 'd.txt')], { dryRun: true }), { message: /앞 항목과 겹칩니다/ });
 });
+
+test('rm은 폴더 안의 끝이 점·공백인 이름 때문에 휴지통 이동이 실패하면 바꿀 항목과 접두어 경로를 알린다 (#190)', { skip: !isWindows && 'Windows 이름' }, (t) => {
+  const dir = tempDir();
+  // 끝이 점인 폴더 아래 파일: 바꿀 것은 폴더(dot.)다.
+  fs.mkdirSync(path.join(dir, 'box', 'sub'), { recursive: true });
+  fs.mkdirSync(`${LONG_PREFIX}${path.join(dir, 'box', 'sub', 'dot.')}`);
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box', 'sub', 'dot.', 'a.txt')}`, 'a');
+  // 끝이 공백인 파일
+  fs.mkdirSync(path.join(dir, 'box2'));
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box2', 'sp ')}`, 's');
+  // 실측 사유 문구와 같은 꼴로 77을 낸다.
+  const { fresh } = fakeRecycle(t, () => failed(77, encode('지정한 파일을 찾을 수 없습니다.')));
+  const odd = path.join('sub', 'dot.');
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), {
+    message: `휴지통으로 보내지 못했습니다. 안에 끝이 점이나 공백인 이름(${odd})이 있어 휴지통 이동이 폴더째 실패했습니다: ${path.join(dir, 'box')}. fctl rename에 \\\\?\\ 접두어 경로(${LONG_PREFIX}${path.join(dir, 'box', odd)})를 주어 이름을 바꾼 뒤 다시 지우세요.`,
+  });
+  assert.throws(() => fresh.remove([path.join(dir, 'box2')]), { message: /안에 끝이 점이나 공백인 이름\(sp \)이 있어/ });
+  // 그런 이름이 없으면 예전처럼 Windows의 사유를 알린다.
+  fs.mkdirSync(path.join(dir, 'plain'));
+  fs.writeFileSync(path.join(dir, 'plain', 'a.txt'), 'a');
+  assert.throws(() => fresh.remove([path.join(dir, 'plain')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'plain')} (지정한 파일을 찾을 수 없습니다).` });
+});
+
+test('rm은 폴더 안의 259자를 넘는 경로는 미리 거부하지 않는다 (#190)', { skip: !isWindows && 'Windows 경로' }, (t) => {
+  // 실측(빌드 26200): 안쪽 경로가 274~377자인 폴더도 휴지통으로 갔고, 긴 경로 파일도 휴지통 안에 그대로 남았다.
+  const dir = tempDir();
+  let deep = path.join(dir, 'box');
+  while (deep.length < 270) deep = path.join(deep, 'd'.repeat(20));
+  fs.mkdirSync(`${LONG_PREFIX}${deep}`, { recursive: true });
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(deep, 'f.txt')}`, 'f');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  fresh.remove([path.join(dir, 'box')]);
+  assert.strictEqual(calls.length, 1);
+  assert.ok(!fs.existsSync(path.join(dir, 'box')));
+});
+
+test('실제 휴지통 이동은 안에 끝이 점인 이름이 든 폴더를 옮기지 않고 실패한다 (#190)', { skip: (!isWindows || process.env.CI) && '대화형 Windows에서만' }, (t) => {
+  // 이 PC에서 확인한 전제를 지킨다. 실패가 바뀌어 폴더가 휴지통으로 가도 임시 폴더라 사용자 파일은 잃지 않는다.
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'box'));
+  fs.writeFileSync(path.join(dir, 'box', 'ok.txt'), 'ok');
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box', 'dot.')}`, 'x');
+  const fresh = reload();
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: /안에 끝이 점이나 공백인 이름\(dot\.\)이 있어/ });
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'box', 'ok.txt'), 'utf8'), 'ok');
+  assert.ok(fs.existsSync(`${LONG_PREFIX}${path.join(dir, 'box', 'dot.')}`));
+});
