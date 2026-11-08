@@ -473,3 +473,18 @@ test('extract-all 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['extract-all', dir, '--force']), /--force/);
   assert.throws(() => run(['extract-all', dir, '--permanent']), /--permanent/);
 });
+
+test('extract-all은 풀린 크기가 남은 공간보다 큰 압축 파일을 미리보기와 실제 모두 풀지 않고 실패로 알린다 (#77)', () => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'huge.zip'), '#mtree\nbig type=file size=99999999999999\n');
+  fs.writeFileSync(path.join(dir, 'ok.zip'), zipBuffer({ 'a.txt': 'A' }));
+  for (const dryRun of [true, false]) {
+    const result = extractArchives(dir, { dryRun, removeArchives: true });
+    assert.deepStrictEqual(result.failed.map((item) => path.basename(item.archive)), ['huge.zip'], `dryRun ${dryRun}`);
+    assert.match(result.failed[0].reason, /풀면 약 90\.9TB가 되어/);
+    assert.deepStrictEqual(result.extracted.map((item) => item.name), ['ok']);
+    if (!dryRun) assert.strictEqual(fs.readFileSync(path.join(dir, 'ok', 'a.txt'), 'utf8'), 'A');
+  }
+  // 풀지 못한 압축 파일은 지우지 않고, 임시 폴더도 남기지 않는다.
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['huge.zip', 'ok']);
+});

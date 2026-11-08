@@ -284,8 +284,9 @@ test('--dry-run은 압축 해제 항목 수와 이미 있는 대상 폴더의 �
   const p = (...parts) => path.join(dir, ...parts);
   fc.zip(p('bundle.zip'), [p('a.txt'), p('b.txt')]);
   const fresh = preview(dir, ['unzip', p('bundle.zip')]);
-  assert.match(fresh, /항목 2개\)$/);
-  assert.match(preview(dir, ['unzip', p('bundle.zip'), p('dest')]), /항목 2개, 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀\)$/);
+  // 작은 파일 2개는 4KB 단위로 올리고 항목마다 1KB를 더해 10KB로 센다.
+  assert.match(fresh, /항목 2개, 풀린 크기 약 10\.0KB\)$/);
+  assert.match(preview(dir, ['unzip', p('bundle.zip'), p('dest')]), /항목 2개, 풀린 크기 약 10\.0KB, 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀\)$/);
 });
 
 test('--dry-run 뒤 같은 명령을 실제로 실행하면 미리보기가 말한 대로 바뀐다', () => {
