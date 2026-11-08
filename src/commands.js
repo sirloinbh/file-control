@@ -926,6 +926,46 @@ function writeArchive(archive, sources) {
   }
 }
 
+// 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자, 확장자는 0~3자다.
+const SHORT_NAME = /^([^~.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
+
+// name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 어림한다. Windows는 짧은 이름을 긴 이름의 앞 1~6자(공백과 점은 빼고
+// +,;=[] 는 _로)와 확장자 앞 3자를 대문자로 바꿔 만들고, 같은 이름이 많으면 앞 2자 뒤에 해시를 붙인다.
+// 그래서 확장자가 같고 앞 2자(그보다 짧으면 그만큼)가 같으면 겹칠 수 있다고 본다. _는 아무 글자나로 본다.
+function couldBeShortNameOf(name, other) {
+  const short = SHORT_NAME.exec(name);
+  if (!short || name.toUpperCase() === other.toUpperCase()) return false;
+  const dot = other.lastIndexOf('.');
+  const clean = (text) => text.toUpperCase().replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_');
+  const base = clean(dot > 0 ? other.slice(0, dot) : other);
+  const ext = dot > 0 ? clean(other.slice(dot + 1)).slice(0, 3) : '';
+  if (ext !== (short[3] ?? '').toUpperCase()) return false;
+  const head = short[1].toUpperCase().slice(0, 2);
+  return [...head].every((char, i) => char === '_' || base[i] === char);
+}
+
+// 풀 볼륨이 짧은 이름을 만들면, 한 폴더 안의 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 되어 한쪽이 덮어써진다(#159).
+// 원본을 짧은 이름으로 주면 tar.exe는 그 짧은 이름을 그대로 항목 이름으로 적으므로 맨 위 이름도 함께 본다. 압축 안의 폴더마다 확인한다.
+function rejectShortNameClash(sources) {
+  const levels = new Map([['', sources.map((src) => path.basename(path.resolve(src)))]]);
+  for (const src of sources) {
+    const top = path.basename(path.resolve(src));
+    for (const rel of namesInside(src)) {
+      const dir = path.join(top, path.dirname(rel));
+      if (!levels.has(dir)) levels.set(dir, []);
+      levels.get(dir).push(path.basename(rel));
+    }
+  }
+  for (const [dir, names] of levels) {
+    for (const name of names.filter((n) => SHORT_NAME.test(n))) {
+      const other = names.find((n) => couldBeShortNameOf(name, n));
+      if (other !== undefined) {
+        throw new FcError(`8.3 짧은 이름으로 겹칠 수 있는 이름이 함께 있어 묶지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${path.join(dir, name)}, ${path.join(dir, other)}`);
+      }
+    }
+  }
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   rejectNewDeviceName(archive);
@@ -946,6 +986,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
     if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
+  if (isWindows) rejectShortNameClash(sources);
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...sources.flatMap(namesInside)];
@@ -976,6 +1017,7 @@ module.exports = {
   archiveEntries,
   archiveNames, probeArchive,
   unsupportedChars,
+  couldBeShortNameOf,
   ensureRoomToExtract,
   freshPath,
   zip,

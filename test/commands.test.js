@@ -1059,3 +1059,47 @@ test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위
   // 1바이트 파일 2개를 128KB씩 올리고 항목마다 1KB를 더한다.
   assert.match(mocked.unzip(p('a.zip'), p('out'), { dryRun: true }), /풀린 크기 약 258\.0KB/);
 });
+
+// 8.3 짧은 이름(#159). 풀 볼륨이 짧은 이름을 만들면 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 된다.
+test('couldBeShortNameOf는 긴 이름의 짧은 이름이 될 수 있는 이름을 고른다 (#159)', () => {
+  const yes = [['LONGNA~1.TXT', 'longname.txt'], ['LONGER~2.TXT', 'longerXYZ.txt'], ['LO1A2B~1.TXT', 'lots of names.txt'], ['LONGFO~1', 'longfolder'], ['FILETA~1.GZ', 'file.tar.gz'], ['A_B~1.TXT', 'a+b c.txt'], ['repo~1.htm', 'report.html']];
+  const no = [['LONGNA~1.TXT', 'longname.md'], ['LONGNA~1.TXT', 'longna~1.txt'], ['foo~1.txt', 'bar.txt'], ['plain.txt', 'plainname.txt'], ['LONGFO~1', 'longfolder.txt'], ['LONGNAME~1.TXT', 'longname.txt']];
+  for (const [name, other] of yes) assert.strictEqual(fc.couldBeShortNameOf(name, other), true, `${name} ${other}`);
+  for (const [name, other] of no) assert.strictEqual(fc.couldBeShortNameOf(name, other), false, `${name} ${other}`);
+});
+
+test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름이 있으면 묶지 않는다 (#159)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  // 글자 그대로 LONGER~1.TXT인 파일을 먼저 만들면 longername.txt는 다른 짧은 이름을 받는다.
+  fc.writeFile(p('tree', 'deep', 'LONGER~1.TXT'), '1');
+  fc.writeFile(p('tree', 'deep', 'longername.txt'), '2');
+  fc.writeFile(p('top', 'LONGER~1.TXT'), '3');
+  fc.writeFile(p('longername.txt'), '4');
+  fc.writeFile(p('ok', 'foo~1.txt'), '5');
+  fc.writeFile(p('ok', 'bar.txt'), '6');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p('a.zip'), [p('tree')], { dryRun }), /8\.3 짧은 이름으로 겹칠 수 있는 이름.*LONGER~1\.TXT.*longername\.txt/);
+    assert.throws(() => fc.zip(p('a.tar.gz'), [p('top', 'LONGER~1.TXT'), p('longername.txt')], { dryRun }), /8\.3 짧은 이름으로 겹칠 수 있는/);
+  }
+  assert.ok(!fs.existsSync(p('a.zip')) && !fs.existsSync(p('a.tar.gz')));
+  // 짧은 이름처럼 생겼어도 겹칠 수 없는 이름은 그대로 묶는다.
+  fc.zip(p('ok.zip'), [p('ok')]);
+  fc.unzip(p('ok.zip'), p('out'));
+  assert.deepStrictEqual(fs.readdirSync(p('out', 'ok')).sort(), ['bar.txt', 'foo~1.txt']);
+});
+
+test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 있는 다른 원본을 함께 묶지 않는다 (#159)', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('p', 'longername.txt'), 'P');
+  fc.writeFile(p('q', 'longername.txt'), 'Q');
+  if (!fs.existsSync(p('p', 'LONGER~1.TXT'))) return t.skip('이 볼륨은 8.3 짧은 이름을 만들지 않는다');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.zip(p('a.zip'), [p('q', 'longername.txt'), p('p', 'LONGER~1.TXT')], { dryRun }), /8\.3 짧은 이름으로 겹칠 수 있는/);
+  }
+  assert.ok(!fs.existsSync(p('a.zip')));
+  // 하나만 짧은 이름으로 주면 tar.exe가 그 짧은 이름으로 적는다.
+  fc.zip(p('b.zip'), [p('p', 'LONGER~1.TXT')]);
+  assert.deepStrictEqual(fc.archiveNames(p('b.zip')), ['LONGER~1.TXT']);
+});
