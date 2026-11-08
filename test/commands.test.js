@@ -1224,11 +1224,48 @@ test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축�
   }
 });
 
+// tar.exe는 끝의 압축 확장자를 겹겹이 벗기므로 임시 파일에도 이어지는 압축 확장자를 모두 붙인다(#193).
+test('archiveExt는 끝에서 이어지는 압축 확장자를 모두 돌려준다 (#193)', () => {
+  const cases = {
+    'x.tar.gz.gz': '.tar.gz.gz', 'x.cpio.gz.xz': '.cpio.gz.xz', 'X.CPIO.GZ.XZ': '.cpio.gz.xz', 'x.gz.gz.gz': '.gz.gz.gz', 'y.tgz.gz': '.tgz.gz',
+    'y.Z.gz': '.Z.gz', 'x.cpio.Z.gz': '.cpio.Z.gz', 'x.jar.gz.xz': '.gz.xz', 'x.7z.gz.xz': '.7z.gz.xz', 'x.zip.gz.gz': '.zip.gz.gz',
+    // 겹이 아닌 이름은 예전과 같다.
+    'x.tar.gz': '.tar.gz', 'x.cpio.gz': '.cpio.gz', 'x.tar.zip': '.tar.zip', 'x.tar.tgz': '.tar.tgz', 'x.jar.gz': '.gz', 'x.zip': '.zip', 'x.cpio.z': '.z',
+    'x.taZ': '.taZ', 'x.TGZ': '.tgz', 'gz.xz': '.xz', 'tar.gz': '.gz', '.gz': '.gz', 'x.my-file.gz': '.gz', 'x.gz.my-file': '', noext: '',
+  };
+  for (const [name, ext] of Object.entries(cases)) assert.strictEqual(fc.archiveExt(name), ext, name);
+});
+
+test('zip은 압축 확장자가 여러 겹인 이름을 tar.exe가 그 이름으로 만들 때와 같은 겹으로 묶는다 (#193)', () => {
+  const zlib = require('node:zlib');
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'A');
+  const peel = (name, layers) => {
+    let data = fs.readFileSync(p(name));
+    for (let i = 0; i < layers; i += 1) data = zlib.gunzipSync(data);
+    return data;
+  };
+  // [이름, 벗길 gzip 겹 수, 안쪽 시작]. 압축 없는 tar는 첫 항목 이름(a.txt)으로 시작한다.
+  const cases = [['t.tar.gz.gz', 2, 'a.txt'], ['g.gz.gz.gz', 3, 'a.txt'], ['c.cpio.gz.gz', 2, '070707'], ['k.tgz.gz', 2, 'a.txt'], ['z.zip.gz.gz', 2, 'PK']];
+  for (const [name, layers, inner] of cases) {
+    fc.zip(p(name), [p('a.txt')]);
+    assert.strictEqual(peel(name, layers).subarray(0, inner.length).toString('latin1'), inner, name);
+    fc.unzip(p(name), p(`out-${name}`));
+    assert.strictEqual(fc.readFile(p(`out-${name}`, 'a.txt')), 'A', name);
+  }
+  // xz 겹은 Node로 벗길 수 없으므로 겉이 xz인지와 다시 풀리는지만 본다.
+  fc.zip(p('c.cpio.gz.xz'), [p('a.txt')]);
+  assert.deepStrictEqual([...fs.readFileSync(p('c.cpio.gz.xz')).subarray(0, 6)], [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
+  fc.unzip(p('c.cpio.gz.xz'), p('out-xz'));
+  assert.strictEqual(fc.readFile(p('out-xz', 'a.txt')), 'A');
+});
+
 test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 tar.exe가 풀 수 없으므로 거부한다 (#164)', () => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('a.txt'), 'A');
-  for (const name of ['s.7z.gz', 'S.7Z.XZ', 's.7z.Z']) {
+  for (const name of ['s.7z.gz', 'S.7Z.XZ', 's.7z.Z', 's.7z.gz.xz', 'S.7Z.GZ.GZ']) {
     for (const dryRun of [true, false]) {
       assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다/, name);
     }
