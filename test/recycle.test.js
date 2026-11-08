@@ -34,13 +34,17 @@ function reload() {
 }
 
 // 휴지통 호출만 fail로 바꾸고 나머지(잠금용 PowerShell 등)는 그대로 둔다. 휴지통 호출의 옵션을 calls에 모은다.
+// fail이 오류를 돌려주면 그 오류로 실패하고, 아무것도 돌려주지 않으면 대상을 지워 성공한 것처럼 한다.
 function fakeRecycle(t, fail) {
   const real = childProcess.execFileSync;
   const calls = [];
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     if (options?.env?.FC_TARGET === undefined) return real(file, args, options);
     calls.push({ script: args.at(-1), options });
-    throw fail(options.env.FC_TARGET);
+    const err = fail(options.env.FC_TARGET);
+    if (err) throw err;
+    fs.rmSync(options.env.FC_TARGET, { recursive: true });
+    return '';
   });
   return { fresh: reload(), calls };
 }
@@ -181,4 +185,107 @@ test('사용 중인 파일 찾기는 파일과 폴더를 합쳐 limit개를 보�
   } finally {
     await unlock();
   }
+});
+
+// #129: 휴지통으로 보낼 수 없는 경로를 미리보기와 여러 대상 실행 전에 알린다.
+const LONG_PREFIX = '\\\\?\\';
+const LONG =(prefix) => path.join(prefix, 'x'.repeat(120), 'y'.repeat(120), 'long-file-name.txt');
+function makeLong(dir) {
+  const file = LONG(dir);
+  fs.mkdirSync(`${LONG_PREFIX}${path.dirname(file)}`, { recursive: true });
+  fs.writeFileSync(`${LONG_PREFIX}${file}`, 'l');
+  return file;
+}
+
+test('rm은 259자를 넘는 경로를 미리보기에서도 거부하고, 여러 대상이면 아무것도 지우기 전에 거부한다 (#129)', { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
+  const long = makeLong(dir);
+  assert.ok(long.length > 259);
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  const reason = `경로가 ${long.length}자라 휴지통으로 보낼 수 없습니다(259자까지): ${long}`;
+  assert.throws(() => fresh.remove([long], { dryRun: true }), { message: reason });
+  assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt'), long]), { message: reason });
+  assert.strictEqual(calls.length, 0);
+  assert.ok(fs.existsSync(path.join(dir, 'a.txt')) && fs.existsSync(path.join(dir, 'b.txt')));
+  // 영구 삭제는 Node로 지우므로 길이 검사를 하지 않는다.
+  assert.deepStrictEqual(fresh.remove([long], { permanent: true }), [`영구 삭제: ${long}`]);
+  assert.ok(!fs.existsSync(`${LONG_PREFIX}${long}`));
+});
+
+test('rm은 \\\\?\\ 접두어를 떼도 같은 항목이면 떼고 보내고, 아니면 사유를 밝혀 거부한다 (#129)', { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  fs.mkdirSync(`${LONG_PREFIX}${path.join(dir, 'box ')}`);
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box ', 'in.txt')}`, 'i');
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'd');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  const prefixed = `${LONG_PREFIX}${path.join(dir, 'a.txt')}`;
+  assert.deepStrictEqual(fresh.remove([prefixed], { dryRun: true }), [`[미리보기] 휴지통으로 이동: ${prefixed}`]);
+  assert.deepStrictEqual(fresh.remove([prefixed]), [`휴지통으로 이동: ${prefixed}`]);
+  assert.deepStrictEqual(calls.map((call) => call.options.env.FC_TARGET), [path.join(dir, 'a.txt')]);
+  // 끝이 점·공백인 이름은 접두어를 떼면 다른 항목을 가리킨다. 위 폴더 이름이 그래도 같다.
+  for (const name of ['dot.', path.join('box ', 'in.txt')]) {
+    assert.throws(() => fresh.remove([`${LONG_PREFIX}${path.join(dir, name)}`], { dryRun: true }), { message: /^끝이 점이나 공백인 이름\((dot\.|box )\)이 있어 휴지통으로 보낼 수 없습니다\. .*fctl rename.*--permanent/ });
+  }
+  // 드라이브 문자가 아닌 꼴은 거부한다.
+  // \\.\ 꼴은 대상이 있어도 거부하고, \\?\UNC\ 꼴은 (관리 공유가 없으면 없는 경로로) 거부한다.
+  fs.writeFileSync(path.join(dir, 'keep.txt'), 'k');
+  assert.throws(() => fresh.remove([`\\\\.\\${path.join(dir, 'keep.txt')}`], { dryRun: true }), { message: /^이 꼴의 경로는 휴지통으로 보낼 수 없습니다: .*드라이브 문자 경로/ });
+  assert.throws(() => fresh.remove([`\\\\?\\UNC\\localhost\\c$\\${path.join(dir, 'dot.').slice(3)}`], { dryRun: true }), { message: /^(이 꼴의 경로는 휴지통으로 보낼 수 없습니다|경로가 없습니다)/ });
+  assert.strictEqual(calls.length, 1);
+  // 영구 삭제는 접두어 그대로 지운다.
+  assert.deepStrictEqual(fresh.remove([`${LONG_PREFIX}${path.join(dir, 'dot.')}`], { permanent: true }), [`영구 삭제: ${LONG_PREFIX}${path.join(dir, 'dot.')}`]);
+});
+
+test('rm은 접두어 없이도 끝이 점인 이름을 거부해, 점을 지운 같은 이름의 다른 파일을 휴지통으로 보내지 않는다 (#129 1차 리뷰)', { skip: !isWindows && 'Windows 이름' }, (t) => {
+  const dir = tempDir();
+  // dot.과 dot이 함께 있으면 휴지통 이동(PowerShell 5.1)은 dot.을 받아 dot을 지웠다(실측).
+  fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'DOTTED');
+  fs.writeFileSync(path.join(dir, 'dot'), 'PLAIN');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fresh.remove([path.join(dir, 'dot.')], { dryRun }), {
+      message: new RegExp(`^끝이 점이나 공백인 이름\\(dot\\.\\)이 있어 휴지통으로 보낼 수 없습니다\\. .*fctl rename에 .*--permanent`),
+    });
+  }
+  assert.strictEqual(calls.length, 0);
+  // 안내하는 접두어 경로는 드라이브 경로면 \\?\D:\…, UNC 경로면 \\?\UNC\server\share\… 꼴이다(2차 리뷰).
+  assert.throws(() => fresh.recycleTarget(path.join(dir, 'dot.')), { message: new RegExp(`\\(${`${LONG_PREFIX}${path.join(dir, 'dot.')}`.replace(/[\\.?$]/g, '\\$&')}\\)를 주세요`) });
+  assert.throws(() => fresh.recycleTarget('\\\\server\\share.\\x'), { message: /\(\\\\\?\\UNC\\server\\share\.\\x\)를 주세요/ });
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'dot'), 'utf8'), 'PLAIN');
+  assert.strictEqual(fs.readFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'utf8'), 'DOTTED');
+});
+
+test('rm은 접두어 경로를 Node가 정리한 결과와 뗀 경로가 같을 때만 떼고, 다르면 거부한다 (#129 1차 리뷰)', { skip: !isWindows && 'Windows 경로' }, (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'sub'));
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
+  const { fresh, calls } = fakeRecycle(t, () => undefined);
+  // .과 ..이 같은 곳을 가리키면 정리한 경로로 보낸다. 슬래시 꼴(//?/)도 같다.
+  fresh.remove([`${LONG_PREFIX}${path.join(dir, 'sub')}\\.\\..\\a.txt`]);
+  fresh.remove([`//?/${path.join(dir, 'b.txt').replaceAll('\\', '/')}`]);
+  assert.deepStrictEqual(calls.map((call) => call.options.env.FC_TARGET), [path.join(dir, 'a.txt'), path.join(dir, 'b.txt')]);
+  // ..이 드라이브 성분까지 빠져나가면 Node는 \\?\y로, 뗀 경로는 C:\y로 풀려 서로 다르다.
+  const depth = dir.split(path.sep).length;
+  const escape = `${LONG_PREFIX}${dir}${'\\..'.repeat(depth)}\\y`;
+  // 그런 경로는 대개 없어서 rm이 먼저 "경로가 없습니다"로 막으므로, 검사 함수를 직접 본다.
+  assert.throws(() => fresh.recycleTarget(escape), { message: /^\\\\\?\\ 접두어를 떼면 다른 곳을 가리켜 휴지통으로 보낼 수 없습니다: / });
+  assert.strictEqual(fresh.recycleTarget(`${LONG_PREFIX}${path.join(dir, 'sub')}\\..\\a.txt`), path.join(dir, 'a.txt'));
+  assert.strictEqual(calls.length, 2);
+});
+
+test('rm은 앞 대상이 뒤 대상을 품어 이미 지웠으면 예전처럼 없다고 알린다 (#129)', (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'a'));
+  fs.writeFileSync(path.join(dir, 'a', 'b.txt'), 'b');
+  const { fresh } = fakeRecycle(t, () => undefined);
+  assert.throws(() => fresh.remove([path.join(dir, 'a'), path.join(dir, 'a', 'b.txt')]), { message: `경로가 없습니다: ${path.join(dir, 'a', 'b.txt')}` });
+  assert.ok(!fs.existsSync(path.join(dir, 'a')));
+  // 미리보기는 겹친다고 알린다.
+  fs.mkdirSync(path.join(dir, 'c'));
+  fs.writeFileSync(path.join(dir, 'c', 'd.txt'), 'd');
+  assert.throws(() => fresh.remove([path.join(dir, 'c'), path.join(dir, 'c', 'd.txt')], { dryRun: true }), { message: /앞 항목과 겹칩니다/ });
 });
