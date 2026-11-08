@@ -4,15 +4,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
+const { scanTarGzSync } = require('./tarGzScan');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;
 
 // 원본을 지워도 되는지 내용으로 확인하는 형식. 나머지는 지우지 않는다.
-// .tar.gz는 본문이 변해도 tar.exe가 성공하고, .tar는 체크섬이 없다. .tar.xz와 .tar.bz2는 tar 끝 표시 뒤를 읽지 않아 무결성 검사를 건너뛸 수 있다. RAR는 확인하지 못했다.
+// .tar.gz는 본문이 변해도 tar.exe가 성공하므로 Node로 gzip CRC와 tar 구조를 따로 확인한다(#197, tarGzScan.js). .tar는 체크섬이 없다. .tar.xz와 .tar.bz2는 tar 끝 표시 뒤를 읽지 않아 무결성 검사를 건너뛸 수 있다. RAR는 확인하지 못했다.
 // tar.exe는 확장자가 아니라 내용으로 형식을 고르므로 앞 바이트도 본다.
 const ZIP = /\.zip$/i;
+const TAR_GZ = /\.(?:tar\.gz|tgz)$/i;
 const SEVEN_ZIP = /\.7z$/i;
 const ZIP_LOCAL = Buffer.from('PK\x03\x04', 'latin1');
 const SEVEN_ZIP_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
@@ -348,6 +350,14 @@ function keepReason(access, item, entryCount, dryRun) {
     const names = archiveNames(archive);
     if (names.some((name) => /[^\x00-\x7f]/.test(name))) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
     return checkEntryNames(names.map((name) => ({ name })), dest, dryRun);
+  }
+  if (TAR_GZ.test(archive)) {
+    if (head[0] !== 0x1f || head[1] !== 0x8b) return '내용이 gzip으로 시작하지 않아 남겼습니다.';
+    // gzip CRC·길이, tar 헤더 체크섬·끝 표시를 처음부터 끝까지 확인한다(#197). 항목 수는 tar.exe 목록과 같아야 한다.
+    const scan = scanTarGzSync(archive);
+    if (scan.reason !== undefined) return scan.reason;
+    if (scan.entries.length !== entryCount) return `tar 항목 수가 tar.exe 목록과 달라 남겼습니다. (${scan.entries.length}개, 목록 ${entryCount}개)`;
+    return checkEntryNames(scan.entries.map(({ name, size }) => ({ name, size: size ?? undefined })), dest, dryRun);
   }
   return '이 형식은 풀린 내용이 온전한지 확인할 수 없어 남겼습니다.';
 }
