@@ -487,29 +487,83 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
 // 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
 const MAX_RECYCLE_PATH = 259;
 
+// 휴지통 이동 한 번의 시간 제한(#97). 같은 볼륨의 휴지통 이동은 이름 바꾸기라 금방 끝나므로, 사람이 닫아야 하는 대화상자 같은
+// 경우에만 걸린다. 잠긴 파일과 잠긴 파일이 든 폴더는 대화상자 없이 1~2초 안에 실패했다(빌드 26200, 대화형 세션에서 확인).
+const RECYCLE_TIMEOUT_MS = 120 * 1000;
+
+// 파일이나 폴더 안에서 다른 프로그램이 쓰기·삭제를 막고 연 파일을 찾는다(#97). 그런 파일은 쓰기로 열면 EBUSY가 난다.
+// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 파일이 많으면 앞의 MAX_BUSY_PROBE개만 본다.
+const MAX_BUSY_PROBE = 10000;
+function busyInside(target) {
+  const busy = (file) => {
+    try {
+      fs.closeSync(fs.openSync(file, 'r+'));
+      return false;
+    } catch (err) {
+      return err.code === 'EBUSY';
+    }
+  };
+  try {
+    if (!fs.lstatSync(target).isDirectory()) return busy(target) ? path.basename(target) : undefined;
+    const files = fs.readdirSync(target, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).slice(0, MAX_BUSY_PROBE);
+    const found = files.find((entry) => busy(path.join(entry.parentPath, entry.name)));
+    return found && path.relative(target, path.join(found.parentPath, found.name));
+  } catch {
+    return undefined;
+  }
+}
+
 function moveToRecycleBin(target) {
   const full = path.resolve(target);
   if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
+  // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
+  // 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
   const script =
     'if (-not [Environment]::UserInteractive) { exit 75 }; ' +
-    'Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
+    'try { Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
     "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
-    "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }";
+    "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } } " +
+    'catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$e.Message)); exit 77 }';
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
   try {
     execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_TARGET: full },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: RECYCLE_TIMEOUT_MS,
     });
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 사유를 종료 코드로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    // 시간 제한에 걸리면 execFileSync가 PowerShell을 끝낸다. 떠 있던 대화상자도 함께 닫힌다.
+    if (err.code === 'ETIMEDOUT' || (err.signal && err.status === null)) {
+      const left = fs.existsSync(full) ? '아직 그 자리에 있습니다' : '그 자리에 없으니 휴지통을 확인하세요';
+      throw new FcError(`휴지통 이동이 ${RECYCLE_TIMEOUT_MS / 1000}초 안에 끝나지 않아 멈췄습니다(오류 대화상자 등). ${left}: ${full}`);
+    }
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+    if (err.status === 77) {
+      const busy = busyInside(full);
+      const reason = decodeReason(err.stdout);
+      const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
+      const where = isDir ? `안에 다른 프로그램이 사용 중인 파일이 있습니다: ${busy}` : '다른 프로그램이 이 파일을 사용 중입니다';
+      const note = busy === undefined ? '' : ` ${where}. 그 프로그램을 닫은 뒤 다시 지우세요.`;
+      throw new FcError(`휴지통으로 보내지 못했습니다: ${full}${reason ? ` (${reason})` : ''}.${note}`);
+    }
+    // 사유를 모르는 실패는 부른 쪽이 맥락을 붙이도록(풀었지만… 등) 원래 오류를 그대로 던진다.
+    // 다만 명령 전문과 깨진 stderr가 든 문구는 보여 주지 않도록 바꾼다(#97).
+    err.message = `휴지통으로 보내지 못했습니다: ${full} (PowerShell 종료 코드 ${err.status ?? err.code})`;
     throw err;
   }
+}
+
+// PowerShell이 UTF-16 base64로 내보낸 사유 문구를 한 줄로 풀어 돌려준다. 없거나 깨졌으면 빈 문자열이다.
+function decodeReason(stdout) {
+  const line = String(stdout ?? '').trim().split(/\r?\n/).at(-1) ?? '';
+  if (!/^[A-Za-z0-9+/=]+$/.test(line)) return '';
+  return Buffer.from(line, 'base64').toString('utf16le').replace(/\s+/g, ' ').trim().replace(/[.。]$/, '');
 }
 
 // 빈 폴더 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#67). 폴더마다 PowerShell을 띄우면 한 번에 1~2초씩 걸려 폴더가 많으면 몇 시간이 된다.
