@@ -1326,6 +1326,31 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   assert.strictEqual(fc.archiveEntries(p('deep.zip')).length, 2);
 });
 
+// tar.exe는 외부 압축 프로그램을 SearchPath로 찾아 현재 폴더의 것을 PATH보다 먼저 실행한다. fctl은 tar.exe를 System32에서 실행한다(#242).
+test('tar.exe가 현재 폴더에 심어 둔 외부 압축 프로그램(lz4.exe)을 실행하지 않는다 (#242)', { skip: !isWindows }, (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  // 가짜 lz4.exe는 cmd.exe 복사본이다. tar.exe가 실행하면 lz4 압축 파일의 내용을 표준 입력으로 받아 그 안의 명령으로 표식 파일을 만든다.
+  fs.copyFileSync(path.join(process.env.SystemRoot, 'System32', 'cmd.exe'), p('lz4.exe'));
+  const marker = p('hijacked.txt');
+  // lz4 매직과 프레임 머리(버전 01, 블록 4MB, 머리 체크섬)가 있어야 tar.exe가 lz4로 알아보고 외부 프로그램을 띄운다.
+  fs.writeFileSync(p('x.lz4'), Buffer.concat([Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9]), Buffer.from(`\r\necho hijacked> "${marker}"\r\nexit\r\n`)]));
+  // 실행되는 환경인지 먼저 확인한다: 현재 폴더를 그 폴더로 두고 tar.exe를 직접 부르면 가짜 lz4.exe가 실행된다.
+  const tar = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
+  childProcess.spawnSync(tar, ['-tf', p('x.lz4')], { cwd: dir, stdio: 'ignore', timeout: 20000 });
+  if (!fs.existsSync(marker)) return t.skip('이 환경의 tar.exe는 현재 폴더의 프로그램을 실행하지 않는다');
+  fs.rmSync(marker);
+  // fctl을 그 폴더에서 실행해도(현재 폴더 = dir) 가짜 lz4.exe는 실행되지 않는다.
+  const saved = process.cwd();
+  process.chdir(dir);
+  t.after(() => process.chdir(saved));
+  assert.throws(() => fc.archiveNames(p('x.lz4')));
+  const probe = fc.probeArchive(p('x.lz4'), { maxBuffer: 1 << 20, timeout: 20000 });
+  assert.notStrictEqual(probe.status, 0);
+  process.chdir(saved);
+  assert.ok(!fs.existsSync(marker), '현재 폴더의 가짜 lz4.exe가 실행됐다');
+});
+
 test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 그 프로그램이 PATH에 없으면 미리보기에서도 FcError로 거부한다 (#230)', (t) => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);

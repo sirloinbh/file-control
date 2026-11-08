@@ -1245,10 +1245,15 @@ function tarEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => !TAR_OPTION_ENV.has(isWindows ? name.toUpperCase() : name)));
 }
 
+// tar.exe(libarchive)는 외부 압축 프로그램(lz4, lzop 등)을 SearchPath로 찾는데, 그 순서에서 현재 폴더가 PATH보다 앞이다.
+// 그래서 fctl을 실행한 폴더에 심어 둔 lz4.exe가 실행될 수 있었다(빌드 26200 실측: 현재 폴더의 가짜 lz4.exe가 실행됨, #242).
+// tar.exe를 늘 tar.exe가 있는 폴더(System32)에서 실행한다. 인자는 모두 절대 경로이거나 -C 기준이라 해석이 바뀌지 않는다.
+const TAR_CWD = isWindows ? path.dirname(TAR) : undefined;
+
 // 0xC0000005: tar.exe가 처리하지 못하는 이름을 만나면 오류 내용 없이 이렇게 끝난다.
 function runTar(args, options) {
   try {
-    return execFileSync(TAR, args, { ...options, env: tarEnv() });
+    return execFileSync(TAR, args, { ...options, env: tarEnv(), cwd: TAR_CWD });
   } catch (err) {
     if (err.status === 0xc0000005) throw new FcError(`tar.exe가 비정상 종료했습니다. 처리할 수 없는 이름이 있을 수 있습니다. (${err.status})`);
     throw err;
@@ -1278,7 +1283,7 @@ function archiveNames(archive) {
 // 손상 문구는 종료 코드 0으로도 나오므로(Damaged tar archive) 판단은 stderr로 한다. error는 실행 실패나 한도 초과(ENOBUFS, ETIMEDOUT)다.
 function probeArchive(archive, { maxBuffer, timeout }) {
   ensureTarArgs([path.resolve(archive)]);
-  const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv() });
+  const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv(), cwd: TAR_CWD });
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
 
