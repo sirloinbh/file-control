@@ -1571,6 +1571,17 @@ function existingPlaces(dest, parts) {
   return places;
 }
 
+// 항목 이름을 어떤 인코딩으로 적는지는 가장 안쪽 형식이 정하고 바깥 압축 겹은 바꾸지 않는다(#212). 그래서 archiveExt의 겹에서
+// 가장 안쪽 판정(첫 확장자, 형식·tar이면 그 뒤의 압축 하나까지)만 남겨 ANSI_ENTRY_EXT와 비교한다.
+// .tar.gz.gz -> .tar.gz, .gz.xz -> .gz, .tgz.gz -> .tgz, .cpio.gz.xz -> .cpio.gz(목록에 없어 OEM으로 본다).
+function innerEntryExt(ext) {
+  const parts = ext.split('.').filter(Boolean);
+  if (parts.length === 0) return ext;
+  const first = parts[0].toLowerCase();
+  const keep = parts.length > 1 && (FORMAT_EXT.has(first) || first === 'tar') ? 2 : 1;
+  return parts.slice(0, keep).map((part) => `.${part}`).join('');
+}
+
 // 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
 const MAX_NAME_LENGTH = 255;
 // zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
@@ -1619,7 +1630,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
-  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(innerEntryExt(archiveExt(archive))) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
