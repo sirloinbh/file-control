@@ -1958,6 +1958,9 @@ test('planFlatten은 파일 하나만 담은 바깥 폴더의 제목도 가까�
   // 사이의 화질 폴더, 같은 확장자가 붙은 폴더 이름도 #150과 같은 규칙을 쓴다.
   assert.deepStrictEqual(names(['Show/1080p/CD1/video.mp4']), ['Show 1080p CD1.mp4']);
   assert.deepStrictEqual(names(['Show/CD1.mp4/video.mp4']), ['Show CD1.mp4']);
+  // 고른 폴더를 찾는 비교가 detailedName과 같아야 한다: NFD 폴더 이름, 대소문자가 다른 확장자(1차 리뷰).
+  assert.deepStrictEqual(names([`Show/${'씨디'.normalize('NFD')}/video.mp4`]), ['Show 씨디.mp4']);
+  assert.deepStrictEqual(names(['Show/CD1.MP4/video.mp4']), ['Show CD1.mp4']);
   // 바깥이 흔한 폴더 이름이면 붙이지 않고, 제품번호 폴더가 있으면 예전처럼 그 이름을 쓴다.
   assert.deepStrictEqual(names(['Downloads/CD1/video.mp4']), ['CD1.mp4']);
   assert.deepStrictEqual(names(['ABC-123/CD1/video.mp4']), ['ABC-123.mp4']);
