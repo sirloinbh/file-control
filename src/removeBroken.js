@@ -113,13 +113,14 @@ function checkOne(access, item) {
   if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
-  remove([real], { dryRun: true });
+  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 실제 휴지통 이동 스크립트도 지우기 직전에 다시 본다(#81).
+  remove([real], { dryRun: true, checkVolume: false });
   return { path: recycleTarget(real), stamp: item.stamp };
 }
 
 // 파일 하나를 검사하고 바로 휴지통으로 보낸다. remove-duplicates·remove-low-quality가 쓴다.
 function removeOne(access, item) {
-  remove([checkOne(access, item).path]);
+  remove([checkOne(access, item).path], { checkVolume: false });
 }
 
 // recycleFiles의 결과를 실패 사유로 바꾼다. ok면 undefined다.

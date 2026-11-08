@@ -76,8 +76,9 @@ test('휴지통 이동은 시간 제한을 두지 않고, 실패 사유를 UTF-1
   assert.strictEqual(calls[0].options.timeout, undefined);
   assert.deepStrictEqual(calls[0].options.stdio, ['ignore', 'pipe', 'ignore']);
   assert.match(calls[0].script, /catch \{ \$e = \$_\.Exception;.*ToBase64String.*exit 77 \}$/);
-  // 대화형 세션 검사는 try 밖에서 먼저 한다.
-  assert.match(calls[0].script, /^if \(-not \[Environment\]::UserInteractive\) \{ exit 75 \}; try \{/);
+  // 대화형 세션 검사는 try 밖에서 먼저 한다. 볼륨 설정과 크기 검사(#81)도 지우기 전에 한다.
+  assert.match(calls[0].script, /^if \(-not \[Environment\]::UserInteractive\) \{ exit 75 \}\n/);
+  assert.ok(calls[0].script.indexOf("Refuse 'nuke'") < calls[0].script.indexOf('DeleteFile('));
 });
 
 test('휴지통 이동이 사용 중인 파일 때문에 실패하면 Windows의 사유와 사용 중인 파일을 알린다 (#97)', { skip: !isWindows && 'Windows 잠금' }, async (t) => {
@@ -407,4 +408,131 @@ test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 W
     ['b.mp4', 'ok', ''],
   ]);
   assert.ok(fs.existsSync(a) && !fs.existsSync(b));
+});
+
+// #81: 영구 삭제될 대상은 지우기 전에 거부한다. 볼륨 설정 확인(FC_VOLUME)과 휴지통 이동(FC_TARGET)을 가짜로 바꾼다.
+function fakeVolume(t, answer) {
+  const calls = [];
+  t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    if (options?.env?.FC_VOLUME !== undefined) return typeof answer === 'function' ? answer(options.env.FC_VOLUME) : answer;
+    if (options?.env?.FC_TARGET !== undefined) {
+      calls.push(options.env.FC_TARGET);
+      fs.rmSync(options.env.FC_TARGET, { recursive: true });
+      return '';
+    }
+    throw new Error('예상하지 못한 호출');
+  });
+  return { fresh: reload(), calls };
+}
+
+for (const [name, answer, pattern] of [
+  ['바로 제거', 'True|Fixed|1|26427\r\n', /이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다\./],
+  ['최대 크기 초과', 'True|Fixed|0|0\r\n', /휴지통 최대 크기\(0MB\)보다 커서 Windows가 묻지 않고 영구 삭제하므로 지우지 않았습니다\./],
+  ['이동식 드라이브', 'True|Removable|0|26427\r\n', /휴지통이 없을 수 있는 드라이브\(Removable\)라 영구 삭제될 수 있으므로/],
+  ['네트워크 드라이브', 'True|Network||\r\n', /휴지통이 없을 수 있는 드라이브\(Network\)라/],
+  ['종류를 모름', 'True|Unknown||\r\n', /드라이브 종류를 확인하지 못해 휴지통이 있는지 알 수 없으므로/],
+  ['확인 실패', '뜻밖의 출력', /드라이브 종류를 확인하지 못해/],
+]) {
+  test(`rm은 휴지통을 거치지 않고 영구 삭제될 대상이면 미리보기에서도, 여러 대상이면 아무것도 지우기 전에 거부한다 (#81): ${name}`, { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
+    const { fresh, calls } = fakeVolume(t, (volume) => (volume.endsWith('b.txt') ? answer : 'True|Fixed|0|26427\r\n'));
+    for (const dryRun of [true, false]) {
+      assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt')], { dryRun }), (err) => {
+        assert.ok(err instanceof fresh.FcError);
+        assert.ok(err.message.startsWith(`휴지통으로 보내지 않았습니다: ${path.join(dir, 'b.txt')}. `), err.message);
+        assert.match(err.message, pattern);
+        assert.match(err.message, /휴지통을 거치지 않고 지우려면 --permanent를 쓰세요\.$/);
+        return true;
+      });
+    }
+    assert.deepStrictEqual(calls, []);
+    assert.ok(fs.existsSync(path.join(dir, 'a.txt')) && fs.existsSync(path.join(dir, 'b.txt')));
+    // --permanent는 휴지통을 거치지 않으므로 이 검사를 하지 않는다.
+    fresh.remove([path.join(dir, 'b.txt')], { permanent: true });
+    assert.ok(!fs.existsSync(path.join(dir, 'b.txt')));
+  });
+}
+
+test('rm은 폴더면 안의 파일 합계로 최대 크기를 보고, 크기 안이면 그대로 보낸다 (#81)', { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'box', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'box', 'a.bin'), Buffer.alloc(700 * 1024));
+  fs.writeFileSync(path.join(dir, 'box', 'sub', 'b.bin'), Buffer.alloc(700 * 1024));
+  // 최대 크기 1MB: 파일 하나(700KB)는 되고 합계(1400KB)는 넘는다.
+  const { fresh, calls } = fakeVolume(t, 'True|Fixed|0|1\r\n');
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), /휴지통 최대 크기\(1MB\)보다 커서/);
+  fresh.remove([path.join(dir, 'box', 'a.bin')]);
+  assert.deepStrictEqual(calls, [path.join(dir, 'box', 'a.bin')]);
+  // 최대 크기를 모르면 1GB부터 거부한다.
+  assert.strictEqual(fresh.previewRefusal(path.join(dir, 'box')), null);
+});
+
+test('sizeUpTo는 링크·정션을 따라가지 않고, 한도를 넘으면 그만 센다 (#81)', { skip: !isWindows && 'Windows 정션' }, () => {
+  const { sizeUpTo } = reload();
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'box'));
+  fs.mkdirSync(path.join(dir, 'big'));
+  fs.writeFileSync(path.join(dir, 'big', 'x.bin'), Buffer.alloc(5000));
+  fs.writeFileSync(path.join(dir, 'box', 'a.bin'), Buffer.alloc(10));
+  fs.symlinkSync(path.join(dir, 'big'), path.join(dir, 'box', 'j'), 'junction');
+  assert.strictEqual(sizeUpTo(path.join(dir, 'box'), 1e9), 10);
+  assert.strictEqual(sizeUpTo(path.join(dir, 'big'), 1e9), 5000);
+  assert.ok(sizeUpTo(path.join(dir, 'big'), 100) > 100);
+  assert.strictEqual(sizeUpTo(path.join(dir, 'box', 'a.bin'), 1e9), 10);
+});
+
+test('휴지통 이동 스크립트가 영구 삭제될 대상이라고 알리면(78) 사유를 밝혀 거부한다 (#81)', (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  // 같은 함수를 여러 번 가짜로 바꾸면 테스트 뒤에 원래대로 돌아오지 않으므로 한 번만 바꾸고 알릴 표시만 바꾼다.
+  let mark;
+  const { fresh } = fakeRecycle(t, () => failed(78, encode(mark)));
+  for (const [next, pattern] of [
+    ['nuke', /"바로 제거"라/],
+    ['cap|7164', /휴지통 최대 크기\(7164MB\)보다 커서/],
+    ['unknown', /1GB 이상이고 휴지통 최대 크기를 확인하지 못해/],
+    ['type|Removable', /드라이브\(Removable\)라/],
+    ['type|Unknown', /드라이브 종류를 확인하지 못해/],
+    ['size', /크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로/],
+  ]) {
+    mark = next;
+    assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), (err) => err instanceof fresh.FcError && pattern.test(err.message) && err.message.startsWith('휴지통으로 보내지 않았습니다: '), mark);
+  }
+  assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
+});
+
+// 실제 PowerShell로 지우기 직전 검사를 돌린다. 사용자 설정은 바꾸지 않고 스크립트 사본 안에서만 설정값을 바꾸며, 휴지통 이동은 하지 않게 한다.
+test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크기(폴더 합계, 정션 제외)를 보고 78로 거부한다 (#81)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { RECYCLE_SCRIPT } = reload();
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'box'));
+  fs.mkdirSync(path.join(dir, 'big'));
+  fs.writeFileSync(path.join(dir, 'big', 'x.bin'), Buffer.alloc(2 * 1024 * 1024));
+  fs.writeFileSync(path.join(dir, 'box', 'a.bin'), Buffer.alloc(10));
+  fs.symlinkSync(path.join(dir, 'big'), path.join(dir, 'box', 'j'), 'junction');
+  const noDelete = RECYCLE_SCRIPT.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", "'deleted-dir'").replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", "'deleted-file'");
+  assert.ok(noDelete.includes("'deleted-dir'") && noDelete.includes("'deleted-file'"), '휴지통 이동 호출을 찾아 바꿔야 한다');
+  const run = (target, setup) => {
+    const script = noDelete.replace("$u = [Text.Encoding]::Unicode", `${setup}\n$u = [Text.Encoding]::Unicode`);
+    assert.notStrictEqual(script, noDelete);
+    try {
+      return { status: 0, out: childProcess.execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, FC_TARGET: target }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() };
+    } catch (err) {
+      return { status: err.status, out: reload().decodeReason(err.stdout) };
+    }
+  };
+  // 정션 너머(2MB)는 세지 않아 최대 크기 1MB 안이다.
+  assert.deepStrictEqual(run(path.join(dir, 'box'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 0, out: 'deleted-dir' });
+  assert.deepStrictEqual(run(path.join(dir, 'big'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 78, out: 'cap|1' });
+  assert.deepStrictEqual(run(path.join(dir, 'big', 'x.bin'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 78, out: 'cap|1' });
+  assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 0, out: 'deleted-file' });
+  assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Fixed'; $nuke = '1'; $cap = '26427'"), { status: 78, out: 'nuke' });
+  assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Removable'"), { status: 78, out: 'type|Removable' });
+  assert.deepStrictEqual(run(path.join(dir, 'big'), "$type = 'Fixed'; $nuke = ''; $cap = ''"), { status: 0, out: 'deleted-dir' });
+  // 볼륨 설정 부분은 실제 값을 읽는다(사본 안에서 바꾸지 않으면).
+  const state = run(path.join(dir, 'box', 'a.bin'), '');
+  assert.ok(state.status === 0 || state.status === 78, JSON.stringify(state));
+  assert.ok(fs.existsSync(path.join(dir, 'box', 'a.bin')) && fs.existsSync(path.join(dir, 'big', 'x.bin')));
 });

@@ -651,15 +651,10 @@ function moveToRecycleBin(target) {
   // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
   // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
   // 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
-  const script =
-    'if (-not [Environment]::UserInteractive) { exit 75 }; ' +
-    'try { Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:FC_TARGET; ' +
-    "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } " +
-    "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } } " +
-    'catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$e.Message)); exit 77 }';
+  // 지우기 직전에 PowerShell 안에서 볼륨의 휴지통 설정과 크기를 보고, 영구 삭제될 것이면 지우지 않고 78로 끝낸다(#81).
   // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
   try {
-    execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_SCRIPT], {
       env: { ...process.env, FC_TARGET: full },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -667,6 +662,7 @@ function moveToRecycleBin(target) {
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
     if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    if (err.status === 78) throw new FcError(permanentRefusal(full, refusalReason(decodeReason(err.stdout))));
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
@@ -937,8 +933,8 @@ function entryInside(dir, test) {
 // 볼륨은 GetVolumePathName으로 찾아 볼륨 마운트 폴더 아래도 그 볼륨의 설정을 본다. 설정은 사용자별(HKCU)
 // BitBucket\Volume\{GUID}의 NukeOnDelete·MaxCapacity(MB)다. 정책(NoRecycleFiles)이 켜져 있으면 바로 제거로 보고,
 // 정책으로 크기를 정했으면(RecycleBinSize) 크기를 모르는 것으로 본다.
-const RECYCLE_STATE_SCRIPT = String.raw`$p = $env:FC_VOLUME
-$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
+// $p의 볼륨 종류($type)와 휴지통 설정($nuke: '0'·'1'·'', $cap: MB 또는 '')를 정한다. RECYCLE_STATE_SCRIPT와 휴지통 이동 스크립트가 함께 쓴다(#81).
+const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
 $type = 'Unknown'; $nuke = ''; $cap = ''
 try {
   Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
@@ -958,8 +954,97 @@ try {
     if ($pol -and [int]$pol.NoRecycleFiles -eq 1) { $nuke = '1' }
     if ($pol -and $pol.RecycleBinSize -ne $null) { $cap = '' }
   }
-} catch { $type = 'Unknown' }
+} catch { $type = 'Unknown' }`;
+
+const RECYCLE_STATE_SCRIPT = `$p = $env:FC_VOLUME
+${VOLUME_STATE_PS}
 [Environment]::UserInteractive.ToString() + '|' + $type + '|' + $nuke + '|' + $cap`;
+
+// moveToRecycleBin의 PowerShell 스크립트. 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 75로 끝낸다.
+// 지우기 직전에 볼륨의 휴지통 설정과 크기(폴더면 안의 합계, 링크·정션은 따라가지 않음)를 보고, 영구 삭제될 것이면 지우지 않고
+// 사유 표시를 UTF-16 base64로 내보내고 78로 끝낸다(#81). 고정 디스크가 아니거나 종류를 모르면 type|종류, 바로 제거면 nuke,
+// 최대 크기를 넘으면 cap|MB, 최대 크기를 모르는데 1GB 이상이면 unknown, 크기를 읽지 못하면 size다.
+// 휴지통 이동이 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
+// 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
+const RECYCLE_SCRIPT = `if (-not [Environment]::UserInteractive) { exit 75 }
+$p = $env:FC_TARGET
+${VOLUME_STATE_PS}
+$u = [Text.Encoding]::Unicode
+function Refuse([string]$why) { [Console]::Out.WriteLine([Convert]::ToBase64String($u.GetBytes($why))); exit 78 }
+if ($type -ne 'Fixed') { Refuse ('type|' + $type) }
+if ($nuke -ne '' -and $nuke -ne '0') { Refuse 'nuke' }
+$limit = if ($cap -ne '') { [long]$cap * 1MB } else { 1GB - 1 }
+$long = if ($p.StartsWith('\\\\')) { '\\\\?\\UNC\\' + $p.Substring(2) } else { '\\\\?\\' + $p }
+$size = [long]0
+try {
+  if ([IO.Directory]::Exists($long)) {
+    $stack = [Collections.Stack]::new(); $stack.Push($long)
+    while ($stack.Count -gt 0 -and $size -le $limit) {
+      foreach ($e in [IO.DirectoryInfo]::new($stack.Pop()).EnumerateFileSystemInfos()) {
+        if ([int]$e.Attributes -band 16) { if (-not ([int]$e.Attributes -band 1024)) { $stack.Push($e.FullName) } }
+        else { $size += $e.Length; if ($size -gt $limit) { break } }
+      }
+    }
+  } elseif ([IO.File]::Exists($long)) { $size = [IO.FileInfo]::new($long).Length }
+} catch { Refuse 'size' }
+if ($size -gt $limit) { if ($cap -ne '') { Refuse ('cap|' + $cap) } else { Refuse 'unknown' } }
+try { Add-Type -AssemblyName Microsoft.VisualBasic
+  if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }
+  else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } }
+catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; [Convert]::ToBase64String($u.GetBytes([string]$e.Message)); exit 77 }`;
+
+// RECYCLE_SCRIPT가 78로 알린 표시를 사유("…므로")로 바꾼다.
+function refusalReason(mark) {
+  const [kind, value] = mark.split('|');
+  if (kind === 'type') return volumeTypeReason(value === 'Unknown' ? null : value);
+  if (kind === 'nuke') return permanentDeleteReason({ nukeOnDelete: true }, 0);
+  if (kind === 'cap') return permanentDeleteReason({ nukeOnDelete: false, maxCapacity: Number(value) * 1024 * 1024 }, Infinity);
+  if (kind === 'unknown') return permanentDeleteReason({ nukeOnDelete: false, maxCapacity: null }, Infinity);
+  return '크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로';
+}
+
+function volumeTypeReason(driveType) {
+  return driveType === null || driveType === undefined
+    ? '드라이브 종류를 확인하지 못해 휴지통이 있는지 알 수 없으므로'
+    : `휴지통이 없을 수 있는 드라이브(${driveType})라 영구 삭제될 수 있으므로`;
+}
+
+function permanentRefusal(full, why) {
+  return `휴지통으로 보내지 않았습니다: ${full}. ${why} 지우지 않았습니다. 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요.`;
+}
+
+// 미리보기에서 RECYCLE_SCRIPT와 같은 판정을 한다(#81). 영구 삭제될 것이면 사유를, 아니면 null을 돌려준다.
+function previewRefusal(full) {
+  const state = recycleBinState(full);
+  if (state.driveType !== 'Fixed') return volumeTypeReason(state.driveType);
+  if (state.nukeOnDelete === true) return permanentDeleteReason(state, 0);
+  const limit = state.maxCapacity ?? UNKNOWN_RECYCLE_LIMIT - 1;
+  let size;
+  try {
+    size = sizeUpTo(full, limit);
+  } catch {
+    return refusalReason('size');
+  }
+  return permanentDeleteReason(state, size);
+}
+
+// 파일 크기, 폴더면 안의 파일 크기 합계. 링크·정션은 따라가지 않고, 합계가 limit를 넘으면 그만 센다.
+function sizeUpTo(full, limit) {
+  const stat = fs.lstatSync(full);
+  if (!stat.isDirectory()) return stat.isFile() ? stat.size : 0;
+  let size = 0;
+  const stack = [full];
+  while (stack.length > 0 && size <= limit) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(child);
+      else if (entry.isFile()) size += fs.lstatSync(child).size;
+      if (size > limit) break;
+    }
+  }
+  return size;
+}
 
 function recycleBinState(target) {
   const unknown = { interactive: null, driveType: null, nukeOnDelete: null, maxCapacity: null };
@@ -998,7 +1083,10 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
   return size >= fallback ? '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로' : null;
 }
 
-function remove(targets, { permanent = false, dryRun = false } = {}) {
+// checkVolume이 true면 지우기 전에(미리보기 포함) 모든 대상의 볼륨 휴지통 설정과 크기를 보고, 영구 삭제될 대상이 있으면
+// 아무것도 지우지 않고 거부한다(#81). 실제로 지울 때는 휴지통 이동 스크립트가 지우기 직전에 한 번 더 본다.
+// 이미 같은 판정을 한 쪽(remove-broken 등)은 PowerShell을 한 번 더 띄우지 않도록 false로 부른다.
+function remove(targets, { permanent = false, dryRun = false, checkVolume = true } = {}) {
   if (!permanent && !isWindows) {
     throw new FcError('휴지통 삭제는 Windows에서만 됩니다. 영구 삭제하려면 --permanent');
   }
@@ -1015,6 +1103,10 @@ function remove(targets, { permanent = false, dryRun = false } = {}) {
     if (!permanent) rejectBareDeviceArgs([target], '휴지통으로 보낼 수 없습니다');
     // 영구 삭제는 Node(fs.rmSync)로 지우므로 휴지통 경로 검사를 하지 않는다.
     const recycleAs = permanent ? undefined : recycleTarget(target);
+    if (!permanent && checkVolume) {
+      const why = previewRefusal(recycleAs);
+      if (why !== null) throw new FcError(permanentRefusal(recycleAs, why));
+    }
     if (dryRun) claim(planned, target);
     return { target, recycleAs };
   });
@@ -1512,6 +1604,9 @@ module.exports = {
   permanentDeleteReason,
   UNKNOWN_RECYCLE_LIMIT,
   RECYCLE_STATE_SCRIPT,
+  RECYCLE_SCRIPT,
+  previewRefusal,
+  sizeUpTo,
   hiddenOrSystemEntries,
   recycleEmptyFolders,
   RECYCLE_FOLDERS_SCRIPT,

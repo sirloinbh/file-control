@@ -172,7 +172,9 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
   fs.mkdirSync(path.join(dir, 'box', 'sub'), { recursive: true });
   fs.writeFileSync(literal(path.join(dir, 'box', 'sub', 'nul')), 'x');
   fs.writeFileSync(path.join(dir, 'plain.txt'), 'p');
-  t.mock.method(childProcess, 'execFileSync', () => {
+  t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    // 지우기 전 볼륨 설정 확인(#81)은 고정 디스크로 답한다.
+    if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed||\r\n';
     const err = new Error('DeleteDirectory failed');
     err.status = 1;
     throw err;
