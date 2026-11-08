@@ -390,6 +390,34 @@ test('recycleFiles의 PowerShell 스크립트는 심볼릭 링크 파일을 지�
   assert.ok(fs.lstatSync(link).isSymbolicLink() && fs.existsSync(real));
 });
 
+test('recycleFiles의 PowerShell 스크립트는 남길 파일(keep)이 바뀌었거나 없어지면 사본을 지우지 않는다 (#216)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const p = (name) => path.join(dir, name);
+  for (const name of ['keep1.mp4', 'keep2.mp4', 'keep3.mp4', 'copy1.mp4', 'copy2.mp4', 'copy3.mp4', 'plain.mp4']) fs.writeFileSync(p(name), name);
+  const stamp = (name) => fileStamp(fs.lstatSync(p(name), { bigint: true }));
+  const keep = (name) => ({ path: p(name), stamp: stamp(name) });
+  const items = [
+    { path: p('copy1.mp4'), stamp: stamp('copy1.mp4'), keep: keep('keep1.mp4') },
+    { path: p('copy2.mp4'), stamp: stamp('copy2.mp4'), keep: keep('keep2.mp4') },
+    { path: p('copy3.mp4'), stamp: stamp('copy3.mp4'), keep: keep('keep3.mp4') },
+    { path: p('plain.mp4'), stamp: stamp('plain.mp4') },
+  ];
+  fs.appendFileSync(p('keep2.mp4'), '+');
+  fs.rmSync(p('keep3.mp4'));
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.notStrictEqual(swapped, script);
+  const results = reload().recycleFiles(items, { script: swapped });
+  assert.deepStrictEqual(results.map((item) => [path.basename(item.path), item.status]), [
+    ['copy1.mp4', 'ok'],
+    ['copy2.mp4', 'keepchanged'],
+    ['copy3.mp4', 'keepchanged'],
+    ['plain.mp4', 'ok'],
+  ]);
+  assert.ok(!fs.existsSync(p('copy1.mp4')) && fs.existsSync(p('copy2.mp4')) && fs.existsSync(p('copy3.mp4')) && fs.existsSync(p('keep1.mp4')));
+});
+
 test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 Windows 사유를 UTF-16으로 알리고 다음 파일을 계속한다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
