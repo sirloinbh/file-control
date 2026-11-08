@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
+const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, oemCodePage, MAX_TAR_DIR } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { scanTarGzSync } = require('./tarGzScan');
 const { readSevenZip } = require('./sevenZip');
@@ -84,10 +84,22 @@ function planExtractions(dir) {
   return plan;
 }
 
+// 압축 파일 옆에 만들 임시 폴더(.fctl-new-<pid>-<시각>-<번호>)를 tar.exe에 -C로 넘기므로, 그 경로가 MAX_TAR_DIR(258자)를 넘으면
+// unzip이 거부한다(#228). 미리보기는 unzip을 부르지 않으므로 여기서 같은 판정을 하고, 임시 경로가 아닌 압축 파일 기준으로 알린다(#238).
+// 번호가 늘어날 자리로 몇 글자를 남긴다.
+const TEMP_SERIAL_RESERVE = 4;
+function rejectLongTempDir(archive) {
+  const length = path.join(path.dirname(path.resolve(archive)), `.fctl-new-${process.pid}-${Date.now()}-0`).length + TEMP_SERIAL_RESERVE;
+  if (length > MAX_TAR_DIR) {
+    throw new FcError(`압축 파일이 있는 폴더의 경로가 길어, 풀 때 쓰는 임시 폴더(약 ${length}자)로 tar.exe가 옮겨 갈 수 없습니다(${MAX_TAR_DIR}자까지). 압축 파일을 더 짧은 경로로 옮긴 뒤 다시 실행하세요.`);
+  }
+}
+
 // 항목 수와 파일 수를 돌려준다. 끝까지 받지 못한 파일은 오류 없이 항목 0개로 읽히므로 실패로 본다.
 // 링크와 장치 항목은 풀기 전에 거부한다. 링크를 따라 쓰는 것을 tar.exe에만 맡기지 않는다.
 // 풀린 크기가 남은 공간에 들어가는지도 본다(#77). dest는 풀 폴더이고, 임시 폴더도 같은 폴더 안에 만든다.
 function inspectArchive(archive, dest) {
+  rejectLongTempDir(archive);
   const entries = archiveEntries(archive);
   if (entries.length === 0) throw new FcError('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.');
   const special = entries.find((entry) => !'-hd'.includes(entry[0]));

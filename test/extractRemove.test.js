@@ -242,6 +242,27 @@ test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 �
   assert.deepStrictEqual(tree(dir), [`n/sub/${name}`]);
 });
 
+test('extract-all은 임시 폴더 경로가 tar.exe 한도를 넘는 압축 파일을 미리보기에서도 같은 사유로 알린다 (#238)', () => {
+  const dir = tempDir();
+  // 압축 파일 폴더가 230자: 최종 풀 폴더(…\a)는 258자 안이지만 임시 폴더(…\.fctl-new-<pid>-<시각>-0)는 넘는다.
+  let folder = dir;
+  while (folder.length < 220) folder = path.join(folder, 'x'.repeat(9));
+  folder = path.join(folder, 'y'.repeat(230 - folder.length - 1));
+  assert.strictEqual(folder.length, 230);
+  makeZip(folder, 'a.zip', { 'x.txt': 'x' });
+  const reasons = [];
+  for (const dryRun of [true, false]) {
+    const result = extractArchives(dir, { removeArchives: true, dryRun });
+    assert.deepStrictEqual(recycled, []);
+    assert.strictEqual(result.failed.length, 1, String(dryRun));
+    reasons.push(result.failed[0].reason);
+  }
+  assert.strictEqual(reasons[0], reasons[1]);
+  assert.match(reasons[0], /임시 폴더\(약 \d+자\)로 tar\.exe가 옮겨 갈 수 없습니다\(258자까지\)/);
+  assert.ok(!reasons[0].includes('.fctl-new'), reasons[0]);
+  assert.deepStrictEqual(fs.readdirSync(folder), ['a.zip']);
+});
+
 test('extract-all은 외부 프로그램이 필요한 압축 내용(lz4)을 풀지 못하면 프로그램 이름을 사유로 알리고 원본을 남긴다 (#241)', (t) => {
   const dir = tempDir();
   // 이름은 .tar.gz지만 내용은 lz4다. tar.exe는 내용으로 판별해 lz4를 실행하려 한다.
