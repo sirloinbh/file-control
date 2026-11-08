@@ -586,6 +586,26 @@ test('남길 파일이나 지울 파일이 방금 바뀌었으면 남긴다', ()
   assert.strictEqual(result.kept[0].reason, '남길 파일이 방금 바뀌었거나 시각이 미래라 받는 중일 수 있어 남겼습니다.');
 });
 
+test('휴지통 설정상 영구 삭제될 사본(바로 제거, 최대 크기 초과)은 남기고, 크기 안이면 1GB가 넘어도 지울 목록에 둔다 (#100)', () => {
+  const dir = tempDir();
+  make(dir, { 'ABC-123.mp4': mp4({ seconds: 600 }), 'ABC-123 (1).mp4': mp4({ seconds: 600 }) });
+  try {
+    volume = () => 'True|Fixed|1|7164\r\n';
+    const nuke = removeDuplicates(dir);
+    assert.deepStrictEqual(nuke.removals, []);
+    assert.match(nuke.kept[0].reason, /^이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로 남겼습니다\.$/);
+    volume = () => 'True|Fixed|0|0\r\n';
+    const full = removeDuplicates(dir);
+    assert.deepStrictEqual(full.removals, []);
+    assert.match(full.kept[0].reason, /^휴지통 최대 크기\(0MB\)보다 커서 Windows가 묻지 않고 영구 삭제하므로 남겼습니다\.$/);
+    // 최대 크기를 알면 용량을 모를 때의 한도(maxSize)는 쓰지 않는다.
+    volume = () => 'True|Fixed|0|7164\r\n';
+    assert.strictEqual(removeDuplicates(dir, { maxSize: 10 }).removals.length, 1);
+  } finally {
+    volume = () => 'True|Fixed\r\n';
+  }
+});
+
 test('고정 디스크가 아니거나 1GB 이상(maxSize)인 사본은 남긴다', () => {
   const dir = tempDir();
   make(dir, { 'ABC-123.mp4': mp4({ seconds: 600 }), 'ABC-123 (1).mp4': mp4({ seconds: 600 }) });

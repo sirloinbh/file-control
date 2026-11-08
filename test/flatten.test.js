@@ -2076,7 +2076,13 @@ test('flatten은 고정 디스크가 아니거나 종류를 모르는 드라이�
   t.after(() => {
     volumeState = 'True|Fixed\r\n';
   });
-  for (const [state, pattern] of [['True|Removable\r\n', /드라이브\(Removable\)/], ['', /종류를 알 수 없음/], ['False|Fixed\r\n', /대화형 세션이 아니면/]]) {
+  for (const [state, pattern] of [
+    ['True|Removable\r\n', /드라이브\(Removable\)/],
+    ['', /종류를 알 수 없음/],
+    ['False|Fixed\r\n', /대화형 세션이 아니면/],
+    // 휴지통 설정이 "바로 제거"면 빈 폴더도 영구 삭제된다(#81).
+    ['True|Fixed|1|26427\r\n', /휴지통 설정이 "바로 제거"라 빈 폴더도/],
+  ]) {
     const dir = tempDir();
     make(dir, ['a/x.txt', 'b/y.txt']);
     volumeState = state;
