@@ -501,6 +501,22 @@ test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트
   }
   const on = readBytes({ verifyBitrate: true });
   assert.match(on.result.bitrateNote, /탐색 표의 마지막 시각/);
+  // 첫 Cluster 앞에 있어 순서대로 만나는 탐색 표도 끄면 본문을 읽지 않는다(1차 리뷰).
+  const before = write(dir, 'b.mkv', header(), segment(info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cues(...points), cluster()));
+  const sizeOf = (options) => {
+    const readSync = t.mock.method(fs, 'readSync');
+    const result = readMkvMetadata(dir, before, options);
+    const bytes = readSync.mock.calls.reduce((sum, call) => sum + call.result, 0);
+    readSync.mock.restore();
+    return { result, bytes };
+  };
+  const off = sizeOf(undefined);
+  assert.strictEqual(off.result.duration, 60000);
+  assert.strictEqual(off.result.bitrateNote, null);
+  assert.ok(off.bytes < 64 * 1024, `${off.bytes}바이트를 읽음`);
+  const onBefore = sizeOf({ verifyBitrate: true });
+  assert.match(onBefore.result.bitrateNote, /탐색 표의 마지막 시각/);
+  assert.ok(onBefore.bytes > cues(...points).length, `${onBefore.bytes}바이트를 읽음`);
   assert.ok(on.positions.some((at) => at >= cuesAt), '켜면 탐색 표를 읽는다');
   assert.ok(on.bytes > cues(...points).length, `${on.bytes}바이트를 읽음`);
 });

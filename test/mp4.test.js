@@ -878,6 +878,22 @@ test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(cut));
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').bitrateNote, null);
   assert.match(readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true }).bitrateNote, /받다 만 파일일 수 있어/);
+  // 끄면 stts·stco 박스의 머리글 뒤(항목 수와 항목)를 한 번도 읽지 않는다(1차 리뷰). 켜면 읽는다.
+  const bytes = Buffer.concat(cut);
+  const payloads = ['stts', 'stco'].map((type) => {
+    const at = bytes.indexOf(type) - 4;
+    return [at + 8, at + bytes.readUInt32BE(at)];
+  });
+  const touched = (options) => {
+    const readSync = t.mock.method(fs, 'readSync');
+    readMp4Metadata(dir, 'v.mp4', options);
+    const positions = readSync.mock.calls.map((call) => call.arguments[4]);
+    readSync.mock.restore();
+    return payloads.map(([start, end]) => positions.some((at) => at >= start && at < end));
+  };
+  assert.deepStrictEqual(touched(undefined), [false, false]);
+  // 켜면 위치표에서 받다 만 파일임을 알고 멈추므로 stts까지는 가지 않는다. stts를 읽는 것은 위의 큰 표 시험이 본다.
+  assert.deepStrictEqual(touched({ verifyBitrate: true }), [false, true]);
 });
 
 test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (#179, 1차 리뷰)', () => {
