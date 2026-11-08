@@ -127,7 +127,15 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
   const access = grant(plan.target, ['delete']);
   const total = plan.removals.length;
   const relative = (p) => path.relative(plan.target, p) || '.';
-  onProgress?.(`휴지통으로 보내는 중: ${total}개 (파일당 0.5초 안팎)`);
+  // 진행 표시가 던져도 집계와 다음 파일 처리는 그대로 간다(1차 리뷰). 이미 휴지통으로 간 파일을 실패로 세지 않는다.
+  const report = (line) => {
+    try {
+      onProgress?.(line);
+    } catch {
+      // 진행 표시는 결과에 영향을 주지 않는다.
+    }
+  };
+  report(`휴지통으로 보내는 중: ${total}개 (파일당 0.5초 안팎)`);
   plan.removals.forEach((item, index) => {
     const step = `${index + 1}/${total}`;
     try {
@@ -135,11 +143,11 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
       if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
       removeOne(access, item);
       result.removed.push(item);
-      onProgress?.(`${step} 휴지통으로 이동: ${relative(item.path)}`);
+      report(`${step} 휴지통으로 이동: ${relative(item.path)}`);
     } catch (err) {
       const reason = recycleFailure(err);
       result.failed.push({ path: item.path, reason });
-      onProgress?.(`${step} 실패: ${relative(item.path)} (${reason})`);
+      report(`${step} 실패: ${relative(item.path)} (${reason})`);
     }
   });
   return result;

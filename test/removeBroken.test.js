@@ -465,6 +465,23 @@ test('remove-broken은 실제로 지울 때 파일마다 몇 번째인지와 결
   ]);
 });
 
+test('remove-broken은 진행 표시가 던져도 집계와 남은 파일 처리를 그대로 한다 (#99 1차 리뷰)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN });
+  onRecycle = (target) => {
+    if (target.endsWith('b.mp4')) throw Object.assign(new Error('recycle'), { status: 3 });
+  };
+  const code = removeBroken(dir).code;
+  const result = removeBroken(dir, {
+    confirm: code,
+    onProgress: () => {
+      throw new Error('진행 표시 실패');
+    },
+  });
+  assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)), ['a.mp4', 'c.mp4']);
+  assert.deepStrictEqual(result.failed.map((item) => path.basename(item.path)), ['b.mp4']);
+});
+
 test('fctl remove-broken은 진행 줄을 progress로 넘긴다 (#99)', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN });
