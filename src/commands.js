@@ -1778,5 +1778,6 @@ module.exports = {
   freshPath,
   MAX_TAR_DIR,
   TEMP_SERIAL_RESERVE,
+  missingProgram,
   zip,
 };
