@@ -152,8 +152,8 @@ function extraField(extra, id) {
 
 const safeNumber = (big) => (big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : null);
 
-// UTF-8 표시가 없는 이름을 tar.exe처럼 OEM 코드페이지로 읽는다(#83). 그 코드페이지를 읽을 수 없으면 null이다.
-// 잘못 읽었더라도 풀린 결과에 그 이름이 없으면 남기므로, 여기서 틀려도 지우지는 않는다.
+// UTF-8 표시가 없는 이름을 tar.exe처럼 OEM 코드페이지로 읽는다(#83). Node가 그 코드페이지를 모르거나 바이트가 맞지 않으면 null이다.
+// Node의 CP949는 확장 영역(UHC) 글자를 오류 없이 다른 글자로 읽는다. 이렇게 잘못 읽어도 풀린 결과에 그 이름이 없어 남기므로 지우지는 않는다.
 function decodeOemName(bytes) {
   const cp = oemCodePage();
   const label = { 949: 'euc-kr', 932: 'shift_jis', 936: 'gbk', 950: 'big5', 866: 'ibm866' }[cp] ?? (cp >= 1250 && cp <= 1258 ? `windows-${cp}` : null);

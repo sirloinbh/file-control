@@ -716,3 +716,13 @@ test('구조가 어긋난 Zip64·데이터 설명자·겹친 항목 zip은 지�
   };
   for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
 });
+
+test('1MB를 넘는 항목 뒤의 숨은 데이터도 잡고, 정상이면 지운다 (#83)', () => {
+  const dir = tempDir();
+  const big = 'b'.repeat(1.5 * 1024 * 1024);
+  const good = makeZip(dir, 'good.zip', { 'big.bin': big, 'small.txt': 's', 'big2.bin': big });
+  makeZip(dir, 'hidden.zip', { 'big.bin': big, 'secret.txt': 'hidden', 'small.txt': 's' }, { hide: ['secret.txt'] });
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, [good]);
+  assert.match(result.kept.find((item) => path.basename(item.archive) === 'hidden.zip').reason, /항목 사이에 목록에 없는 데이터/);
+});
