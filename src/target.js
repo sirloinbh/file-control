@@ -1,5 +1,6 @@
 'use strict';
 
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -348,6 +349,40 @@ function fileStamp(stat) {
   return [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
 }
 
+// 변경 시각(ctime)을 적지 않는 파일 시스템. exFAT에서는 모든 파일의 변경 시각이 같은 값으로 나와(#120)
+// 같은 크기로 다시 쓰고 수정 시각을 되돌린 파일을 fileStamp와 5분 보호로 알아보지 못한다(#184).
+const NO_CHANGE_TIME = new Set(['FAT', 'FAT12', 'FAT16', 'FAT32', 'EXFAT']);
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+// 타겟이 있는 볼륨의 파일 시스템 이름(NTFS, ReFS, exFAT 등). 확인하지 못하면 null이다.
+// 드라이브 문자의 볼륨을 본다. 볼륨 마운트 폴더 아래는 그 폴더가 있는 드라이브의 값이 나온다.
+function volumeFormat(target) {
+  if (process.platform !== 'win32') return null;
+  const script = '[IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:FC_FORMAT_VOLUME)).DriveFormat';
+  try {
+    // 테스트가 가로챌 수 있게 부를 때마다 모듈에서 찾는다.
+    const output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_FORMAT_VOLUME: path.resolve(target) },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60 * 1000,
+    });
+    const found = /^(\w+)\s*$/.exec(String(output));
+    return found ? found[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// fileStamp로 바꿔치기를 알아볼 수 없는 볼륨이면 지우지 않는 사유를, 알아볼 수 있으면 null을 돌려준다.
+// 파일 시스템을 확인하지 못해도 지우지 않는다.
+function stampVolumeReason(target) {
+  const format = volumeFormat(target);
+  if (format === null) return '파일 시스템을 확인하지 못해, 확인한 뒤 바뀐 파일을 알아볼 수 있는지 몰라 남겼습니다.';
+  if (NO_CHANGE_TIME.has(format.toUpperCase())) return `${format} 볼륨은 변경 시각을 적지 않아, 확인한 뒤 같은 크기로 바뀐 파일을 알아볼 수 없어 남겼습니다.`;
+  return null;
+}
+
 // 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
 // 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
 // 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
@@ -422,4 +457,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, volumeFormat, stampVolumeReason, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason };

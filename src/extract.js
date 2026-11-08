@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
-const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames } = require('./target');
+const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
@@ -385,6 +385,8 @@ function extractArchives(dir, options = {}) {
 function applyExtractions(plan, { dryRun = false, removeArchives = false } = {}) {
   const result = { target: plan.target, dryRun, removeArchives, extracted: [], skipped: plan.skipped, removed: [], kept: [], failed: [] };
   const access = grant(plan.target, removeArchives ? ['read', 'write', 'delete'] : ['read', 'write']);
+  // 변경 시각이 없는 볼륨(exFAT 등)에서는 푼 뒤 같은 크기로 바뀐 압축 파일을 알아보지 못해 지우지 않는다(#184).
+  const volumeReason = removeArchives && plan.extractions.length > 0 ? stampVolumeReason(plan.target) : null;
   for (const item of plan.extractions) {
     let before;
     let entries;
@@ -399,7 +401,7 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
     }
     if (!removeArchives) continue;
     try {
-      const reason = keepReason(access, item, entries, dryRun);
+      const reason = volumeReason ?? keepReason(access, item, entries, dryRun);
       if (reason !== null) {
         result.kept.push({ archive: item.archive, reason });
         continue;
