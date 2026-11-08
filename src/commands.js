@@ -1070,8 +1070,8 @@ const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu)$/i;
 // tar.exe는 끝의 압축 확장자를 겹겹이 벗긴다(#193, 빌드 26200 실측: x.tar.gz.gz는 gzip 두 겹 안의 tar, x.cpio.gz.xz는 xz 안의 gzip 안의 cpio,
 // y.tgz.gz는 gzip 두 겹 안의 tar, y.Z.gz는 gzip 안의 compress). 그래서 끝에서부터 이어지는 압축 확장자(tar와 압축을 함께 뜻하는 .tgz 등 포함)를
 // 모두 임시 파일에 옮겨, tar.exe가 원래 이름(소문자로 바꾼 것)에서 정할 형식을 그대로 정하게 한다. 벗기는 규칙을 따로 흉내 내지 않는다.
-// x.cpio.Z.gz처럼 tar.exe가 이름과 다르게(gzip 안의 tar) 만드는 이름도 원래 이름으로 묶을 때와 같아진다.
-const LAYER_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu|tgz|tbz|tbz2|txz|tlz|tzst|taz)$/i;
+// 확장자는 영숫자만 받으므로 임시 이름에 --exclude 패턴 문자가 들어가지 않는다.
+const LAYER_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu|tgz|tbz|tbz2|txz|tlz|tzst|taz|tz2|tzo)$/i;
 const isLayerExt = (part) => LAYER_EXT.test(part) || KEEP_CASE_EXT.has(part);
 function archiveExt(archive) {
   const parts = path.basename(path.resolve(archive)).split('.');

@@ -1228,7 +1228,7 @@ test('zip은 형식+압축 겹 확장자(.cpio.gz 등)를 그 형식과 압축�
 test('archiveExt는 끝에서 이어지는 압축 확장자를 모두 돌려준다 (#193)', () => {
   const cases = {
     'x.tar.gz.gz': '.tar.gz.gz', 'x.cpio.gz.xz': '.cpio.gz.xz', 'X.CPIO.GZ.XZ': '.cpio.gz.xz', 'x.gz.gz.gz': '.gz.gz.gz', 'y.tgz.gz': '.tgz.gz',
-    'y.Z.gz': '.Z.gz', 'x.cpio.Z.gz': '.cpio.Z.gz', 'x.jar.gz.xz': '.gz.xz', 'x.7z.gz.xz': '.7z.gz.xz', 'x.zip.gz.gz': '.zip.gz.gz',
+    'y.Z.gz': '.Z.gz', 'x.cpio.Z.gz': '.cpio.Z.gz', 'y.tz2.gz': '.tz2.gz', 'y.tzo.gz': '.tzo.gz', 'x.jar.gz.xz': '.gz.xz', 'x.7z.gz.xz': '.7z.gz.xz', 'x.zip.gz.gz': '.zip.gz.gz',
     // 겹이 아닌 이름은 예전과 같다.
     'x.tar.gz': '.tar.gz', 'x.cpio.gz': '.cpio.gz', 'x.tar.zip': '.tar.zip', 'x.tar.tgz': '.tar.tgz', 'x.jar.gz': '.gz', 'x.zip': '.zip', 'x.cpio.z': '.z',
     'x.taZ': '.taZ', 'x.TGZ': '.tgz', 'gz.xz': '.xz', 'tar.gz': '.gz', '.gz': '.gz', 'x.my-file.gz': '.gz', 'x.gz.my-file': '', noext: '',
@@ -1259,6 +1259,13 @@ test('zip은 압축 확장자가 여러 겹인 이름을 tar.exe가 그 이름�
   assert.deepStrictEqual([...fs.readFileSync(p('c.cpio.gz.xz')).subarray(0, 6)], [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
   fc.unzip(p('c.cpio.gz.xz'), p('out-xz'));
   assert.strictEqual(fc.readFile(p('out-xz', 'a.txt')), 'A');
+  // gzip 한 겹 안이 compress(.Z)나 bzip2(.tz2는 .tar.bz2의 별칭)인지 본다(1차 리뷰).
+  for (const [name, magic] of [['q.cpio.Z.gz', [0x1f, 0x9d, 0x90]], ['b.tz2.gz', [0x42, 0x5a, 0x68]]]) {
+    fc.zip(p(name), [p('a.txt')]);
+    assert.deepStrictEqual([...peel(name, 1).subarray(0, 3)], magic, name);
+    fc.unzip(p(name), p(`out-${name}`));
+    assert.strictEqual(fc.readFile(p(`out-${name}`, 'a.txt')), 'A', name);
+  }
 });
 
 test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 tar.exe가 풀 수 없으므로 거부한다 (#164)', () => {
