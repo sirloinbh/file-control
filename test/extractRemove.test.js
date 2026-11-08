@@ -40,6 +40,8 @@ const { FcError } = require('../src/commands');
 const { fileStamp } = require('../src/target');
 const { planExtractions, applyExtractions, extractArchives, formatExtractions } = require('../src/extract');
 const { run } = require('../bin/fctl');
+const { sevenZipBuffer } = require('./sevenZipBuffer');
+const SYSTEM_TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-extract-rm-'));
@@ -223,6 +225,42 @@ test('뒤에 데이터가 붙거나 이어 붙은 .7z는 지우지 않고, 온�
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['whole.7z']);
   assert.deepStrictEqual(result.kept.map((item) => path.basename(item.archive)).sort(), ['joined.7z', 'tail.7z']);
   for (const item of result.kept) assert.match(item.reason, /7z 끝 뒤에/);
+});
+
+// 7z 헤더(압축된 헤더 포함)를 읽어 UTF-16 이름과 CRC를 확인한다(#198).
+test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 확인하고 지운다 (#198)', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  // tar.exe는 ANSI에 없는 이름에서 비정상 종료하므로 코드페이지에 있는 글자를 쓴다.
+  const name = require('../src/commands').oemCodePage() === 949 ? '한글 이름.txt' : 'café.txt';
+  fs.mkdirSync(path.join(source, 'sub'));
+  fs.writeFileSync(path.join(source, 'sub', name), 'x');
+  realExecFileSync(SYSTEM_TAR, ['-a', '-cf', path.join(dir, 'n.7z'), '-C', source, 'sub']);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.kept, []);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['n.7z']);
+  assert.deepStrictEqual(tree(dir), [`n/sub/${name}`]);
+});
+
+test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CRC가 있는 같은 구조는 지운다 (#198)', () => {
+  const dir = tempDir();
+  const files = [{ name: 'dir', folder: true }, { name: 'dir/x.txt', data: 'hello' }, { name: 'y.txt', data: 'world' }];
+  fs.writeFileSync(path.join(dir, 'with-crc.7z'), sevenZipBuffer(files));
+  fs.writeFileSync(path.join(dir, 'no-crc.7z'), sevenZipBuffer(files, { crc: false }));
+  const changed = sevenZipBuffer(files, { crc: false });
+  changed[changed.indexOf('hello')] = 0x4a;
+  fs.writeFileSync(path.join(dir, 'changed.7z'), changed);
+  fs.writeFileSync(path.join(dir, 'gap.7z'), sevenZipBuffer(files, { gap: 3 }));
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(result.failed, []);
+  assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['with-crc.7z']);
+  const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
+  assert.match(kept['no-crc.7z'], /CRC가 없어/);
+  assert.match(kept['changed.7z'], /CRC가 없어/);
+  assert.match(kept['gap.7z'], /목록에 없는 데이터/);
+  // 본문이 바뀐 CRC 없는 7z도 tar.exe는 성공으로 푼다(지우지 않는 이유).
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'changed', 'dir', 'x.txt'), 'utf8'), 'Jello');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'with-crc', 'y.txt'), 'utf8'), 'world');
 });
 
 test('너무 짧은 .7z와 .zip은 지우지 않는다', () => {
@@ -453,7 +491,6 @@ function tarBuffer(files, { end = true, after = Buffer.alloc(0) } = {}) {
   return Buffer.concat(parts);
 }
 
-const SYSTEM_TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
 
 test('tar.exe로 만든 .tar.gz·.tgz는 gzip CRC와 tar 구조, 풀린 이름을 확인하고 지운다 (#197)', () => {
   const dir = tempDir();

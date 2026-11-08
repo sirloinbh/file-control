@@ -2,9 +2,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, unzip, remove, archiveEntries, archiveNames, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
+const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, oemCodePage } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { scanTarGzSync } = require('./tarGzScan');
+const { readSevenZip } = require('./sevenZip');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
 // tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
@@ -344,12 +345,13 @@ function keepReason(access, item, entryCount, dryRun) {
   }
   if (SEVEN_ZIP.test(archive)) {
     if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return '내용이 7z로 시작하지 않아 남겼습니다.';
-    // tar.exe는 첫 7z만 읽으므로, 머리글이 가리키는 끝이 파일 끝과 맞는지 본다. 어긋나면 뒤에 붙은 내용을 풀지 못했을 수 있다.
-    const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
-    if (end !== BigInt(fileSizeInside(access.target, archive))) return '7z 끝 뒤에 다른 데이터가 있어 남겼습니다.';
-    const names = archiveNames(archive);
-    if (names.some((name) => /[^\x00-\x7f]/.test(name))) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
-    return checkEntryNames(names.map((name) => ({ name })), dest, dryRun);
+    // 헤더(압축된 헤더 포함)를 읽어 UTF-16 이름과 크기, 항목마다 CRC가 있는지 본다(#198). tar.exe는 첫 7z만 읽으므로
+    // 머리글이 가리키는 끝이 파일 끝과 맞는지, 본문 사이에 목록에 없는 데이터가 없는지도 본다.
+    const size = fileSizeInside(access.target, archive);
+    const scan = readSevenZip((offset, length) => readRange(access.target, archive, { offset, length }), size);
+    if (scan.reason !== undefined) return scan.reason;
+    if (scan.entries.length !== entryCount) return `7z 항목 수가 tar.exe 목록과 달라 남겼습니다. (${scan.entries.length}개, 목록 ${entryCount}개)`;
+    return checkEntryNames(scan.entries.map(({ name, size: entrySize, folder }) => ({ name: folder ? `${name}/` : name, size: entrySize })), dest, dryRun);
   }
   if (TAR_GZ.test(archive)) {
     if (head[0] !== 0x1f || head[1] !== 0x8b) return '내용이 gzip으로 시작하지 않아 남겼습니다.';
