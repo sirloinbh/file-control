@@ -1376,6 +1376,13 @@ test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 
   fs.writeFileSync(p('bin', 'lz4.exe'), '');
   process.env.PATH = p('bin');
   assert.match(fc.zip(p('y.tar.lz4'), [p('a.txt')], { dryRun: true }), /\[미리보기\] 압축/);
+  // PATH의 상대 경로 항목은 tar.exe가 System32 기준으로 풀므로 보지 않는다(#242 1차 리뷰).
+  const saved = process.cwd();
+  process.chdir(p('bin'));
+  t.after(() => process.chdir(saved));
+  process.env.PATH = '.';
+  assert.throws(() => fc.zip(p('z.tar.lz4'), [p('a.txt')], { dryRun: true }), /외부 프로그램 lz4이 필요한데/);
+  process.chdir(saved);
 });
 
 test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 수(25겹 이상)면 FcError로 거부하고 아무것도 남기지 않는다 (#213)', () => {

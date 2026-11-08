@@ -1614,16 +1614,17 @@ function innerEntryExt(ext) {
 // .tzo는 .tar.lzo의 별칭이다(1차 리뷰).
 const EXTERNAL_COMPRESSORS = { lz4: 'lz4', lzo: 'lzop', tzo: 'lzop', lrz: 'lrzip', grz: 'grzip' };
 // tar.exe(libarchive filter_fork_windows.c)는 SearchPath(NULL, 이름, ".exe")로 찾으므로 .exe만 실행한다. PATHEXT의 .cmd·.bat은 보지 않는다(1차 리뷰).
-// SearchPath는 tar.exe 폴더·시스템 폴더·현재 폴더도 찾지만, PATH만 보아 그곳에만 있는 프로그램이면 넉넉하게 거부한다.
+// SearchPath는 tar.exe 폴더·시스템 폴더·현재 폴더(fctl은 System32로 고정, #242)도 찾지만, PATH만 보아 그곳에만 있는 프로그램이면 넉넉하게 거부한다.
+// PATH의 상대 경로 항목(., bin 등)은 tar.exe가 System32 기준으로 풀어 fctl의 현재 폴더와 다르므로 보지 않는다(#242 1차 리뷰).
 function findOnPath(program) {
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
-    for (const ext of ['.exe']) {
-      const candidate = path.join(dir.replace(/^"|"$/g, ''), `${program}${ext}`);
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch {
-        // 없거나 읽을 수 없는 자리는 건너뛴다.
-      }
+  for (const raw of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
+    const dir = raw.replace(/^"|"$/g, '');
+    if (!path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, `${program}.exe`);
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // 없거나 읽을 수 없는 자리는 건너뛴다.
     }
   }
   return null;
