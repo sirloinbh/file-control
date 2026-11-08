@@ -186,13 +186,27 @@ function readZip64End(target, archive, locatorAt) {
 
 // 항목이 파일 처음부터 중앙 디렉터리 앞까지 빈틈없이 이어지는지 본다. 목록에 없는 항목이 사이에 끼면
 // tar.exe는 풀지 않는데 원본을 지우게 된다(#83). 항목의 끝은 로컬 헤더, 압축된 본문, 데이터 설명자를 더한 자리다.
+// 앞에서부터 차례로 읽을 때 항목마다 파일을 다시 열지 않도록 1MB씩 읽어 둔다(항목이 수만 개인 zip).
+function chunkReader(target, archive, chunk = 1 << 20) {
+  let start = 0;
+  let data = Buffer.alloc(0);
+  return (offset, length) => {
+    if (offset < start || offset + length > start + data.length) {
+      start = offset;
+      data = readRange(target, archive, { offset, length: Math.max(length, chunk) });
+    }
+    return data.subarray(offset - start, offset - start + length);
+  };
+}
+
 function checkZipLayout(target, archive, entries, directoryOffset) {
+  const read = chunkReader(target, archive);
   const sorted = [...entries].sort((a, b) => a.offset - b.offset);
   // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
   if (sorted.length > 0 && sorted[0].offset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
   for (const [i, entry] of sorted.entries()) {
     const expected = i + 1 < sorted.length ? sorted[i + 1].offset : directoryOffset;
-    const local = readRange(target, archive, { offset: entry.offset, length: ZIP_LOCAL_SIZE });
+    const local = read(entry.offset, ZIP_LOCAL_SIZE);
     if (local.length < ZIP_LOCAL_SIZE || !local.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'zip 구조를 읽지 못해 남겼습니다.';
     const dataEnd = entry.offset + ZIP_LOCAL_SIZE + local.readUInt16LE(26) + local.readUInt16LE(28) + entry.compressed;
     const gap = expected - dataEnd;
@@ -200,16 +214,17 @@ function checkZipLayout(target, archive, entries, directoryOffset) {
       if (gap !== 0) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
       continue;
     }
+    if (gap === 0) return 'zip 항목에 데이터 설명자 표시가 있는데 설명자가 없어 남겼습니다.';
     // 데이터 설명자는 서명(4바이트)이 있을 수도 없을 수도 있고, 크기 칸이 4바이트나 8바이트다(tar.exe의 Zip64는 8바이트).
     // 그래서 길이는 다음 항목까지의 거리로 정하고, CRC와 압축된 크기가 중앙 디렉터리와 같은지 본다.
     const layout = { 12: [false, false], 16: [true, false], 20: [false, true], 24: [true, true] }[gap];
     if (!layout) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
     const [signed, wide] = layout;
-    const descriptor = readRange(target, archive, { offset: dataEnd, length: gap });
+    const descriptor = read(dataEnd, gap);
     if (descriptor.length !== gap || (signed && descriptor.readUInt32LE(0) !== ZIP_DESCRIPTOR)) return 'zip 구조를 읽지 못해 남겼습니다.';
     const at = signed ? 4 : 0;
     const compressed = wide ? safeNumber(descriptor.readBigUInt64LE(at + 4)) : descriptor.readUInt32LE(at + 4);
-    if (descriptor.readUInt32LE(at) !== entry.crc || compressed !== entry.compressed) return 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+    if (descriptor.readUInt32LE(at) !== entry.crc || compressed !== entry.compressed) return 'zip 데이터 설명자가 중앙 디렉터리와 달라 남겼습니다. 항목 사이에 다른 데이터가 끼었을 수 있습니다.';
   }
   if (sorted.length === 0 && directoryOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
   return null;
@@ -228,6 +243,8 @@ function readZipEntries(target, archive, entryCount) {
   if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'zip 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.';
   const disk = tail.readUInt16LE(at + 4);
   const directoryDisk = tail.readUInt16LE(at + 6);
+  // 이 디스크의 항목 수와 전체 항목 수가 다르면 tar.exe는 중앙 디렉터리 대신 로컬 헤더를 차례로 읽는다(1차 리뷰에서 실측).
+  if (tail.readUInt16LE(at + 8) !== tail.readUInt16LE(at + 10)) return '분할 압축의 조각일 수 있어 남겼습니다.';
   let total = tail.readUInt16LE(at + 10);
   let directorySize = tail.readUInt32LE(at + 12);
   let directoryOffset = tail.readUInt32LE(at + 16);

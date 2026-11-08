@@ -654,3 +654,65 @@ test('fctl zip으로 묶은 한글 이름의 zip도 OEM 코드페이지로 확�
   assert.strictEqual(result.removed.length, 1);
   assert.deepStrictEqual(tree(dir), ['a/사진/여름.txt']);
 });
+
+// 손상 샘플(#83 1차 리뷰). 모두 지우지 않아야 한다. tar.exe가 풀지 못해 실패로 끝나도 된다.
+test('구조가 어긋난 Zip64·데이터 설명자·겹친 항목 zip은 지우지 않는다 (#83)', () => {
+  const dir = tempDir();
+  const source = tempDir();
+  const endOf = (buf) => buf.lastIndexOf(Buffer.from('PK\x05\x06', 'latin1'));
+  // 중앙 디렉터리의 n번째 항목 위치를 찾는다(32비트 zip).
+  const centralAt = (buf, n) => {
+    let pos = buf.readUInt32LE(endOf(buf) + 16);
+    for (let i = 0; i < n; i += 1) pos += 46 + buf.readUInt16LE(pos + 28) + buf.readUInt16LE(pos + 30) + buf.readUInt16LE(pos + 32);
+    return pos;
+  };
+  const cases = {};
+  // 두 항목이 같은 로컬 헤더를 가리킨다.
+  const same = zipBuffer({ 'a.txt': 'a', 'b.txt': 'b' });
+  same.writeUInt32LE(0, centralAt(same, 1) + 42);
+  cases['same-offset.zip'] = same;
+  // 데이터 설명자의 CRC가 중앙 디렉터리와 다르다.
+  fs.writeFileSync(path.join(source, 'x.txt'), 'x'.repeat(100));
+  run(['zip', path.join(source, 'desc.zip'), path.join(source, 'x.txt')]);
+  const desc = fs.readFileSync(path.join(source, 'desc.zip'));
+  const signature = desc.indexOf(Buffer.from('PK\x07\x08', 'latin1'));
+  assert.notStrictEqual(signature, -1);
+  desc[signature + 4] ^= 0xff;
+  cases['descriptor-crc.zip'] = desc;
+  // Zip64 extra 필드의 칸이 모자란다(로컬 헤더 위치가 빠짐).
+  const shortExtra = zip64Buffer({ 'x.txt': 'x' });
+  const extraAt = shortExtra.indexOf(Buffer.from('PK\x01\x02', 'latin1')) + 46 + 'x.txt'.length;
+  shortExtra.writeUInt16LE(16, extraAt + 2);
+  cases['zip64-short-extra.zip'] = shortExtra;
+  // Zip64 위치 표시가 끝 레코드가 아닌 곳을 가리킨다.
+  const noRecord = zip64Buffer({ 'x.txt': 'x' });
+  noRecord.writeBigUInt64LE(0n, endOf(noRecord) - 20 + 8);
+  cases['zip64-no-record.zip'] = noRecord;
+  // 32비트 끝 레코드의 중앙 디렉터리 크기가 표시값도 아니고 Zip64 값과도 다르다.
+  const mismatch = zip64Buffer({ 'x.txt': 'x' });
+  mismatch.writeUInt32LE(5, endOf(mismatch) + 12);
+  cases['zip64-mismatch.zip'] = mismatch;
+  // 이 디스크의 항목 수와 전체 항목 수가 다르다.
+  const counts = zipBuffer({ 'a.txt': 'a', 'b.txt': 'b' });
+  counts.writeUInt16LE(1, endOf(counts) + 8);
+  cases['disk-count.zip'] = counts;
+  for (const [name, data] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), data);
+  const result = extractArchives(dir, { removeArchives: true });
+  assert.deepStrictEqual(recycled, []);
+  assert.deepStrictEqual(result.removed, []);
+  const reasons = Object.fromEntries([...result.kept, ...result.failed].map((item) => [path.basename(item.archive), item.reason]));
+  for (const name of Object.keys(cases)) {
+    assert.ok(reasons[name] !== undefined, name);
+    assert.ok(fs.existsSync(path.join(dir, name)), name);
+  }
+  const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
+  const expect = {
+    'same-offset.zip': /겹쳐|항목 수가 풀린 목록과 달라/,
+    'descriptor-crc.zip': /데이터 설명자가 중앙 디렉터리와 달라/,
+    'zip64-short-extra.zip': /Zip64 구조를 읽지 못해/,
+    'zip64-no-record.zip': /Zip64 구조를 읽지 못해/,
+    'zip64-mismatch.zip': /구조가 파일 크기와 맞지 않아/,
+    'disk-count.zip': /분할 압축/,
+  };
+  for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
+});
