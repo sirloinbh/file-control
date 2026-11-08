@@ -12,6 +12,7 @@ test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'f
 
 // 시험 파일이 실제 휴지통으로 가지 않도록 휴지통 호출과 볼륨 확인을 가로챈다. commands.js가 불러올 때 함수를 받아 두므로 require보다 먼저 바꿔 둔다.
 const realExecFileSync = childProcess.execFileSync;
+const { fakeRecycleFiles } = require('./fakeRecycleFiles');
 const recycled = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
@@ -24,6 +25,13 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     return format();
   }
   if (options?.env?.FC_VOLUME !== undefined) return volume();
+  // 묶음 휴지통 이동(#216)도 사용자 휴지통을 건드리지 않게 흉내 낸다.
+  if (options?.env?.FC_RECYCLE_FILES !== undefined) {
+    return fakeRecycleFiles(options, (target) => {
+      recycled.push(target);
+      onRecycle(target);
+    });
+  }
   if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
@@ -227,8 +235,10 @@ test('remove-low-quality는 휴지통 이동이 실패한 파일을 보고하고
   const { code } = removeLowQuality(dir);
   const result = removeLowQuality(dir, { confirm: code });
   assert.deepStrictEqual(names(dir, result.removed), ['b.mp4']);
-  assert.deepStrictEqual(result.failed.map((item) => [path.basename(item.path), item.reason]), [['a.mp4', '휴지통으로 보내지 못했습니다. (종료 코드 1)']]);
-  assert.match(formatRemoveLowQuality(result), /^실패: a\.mp4 \(휴지통으로 보내지 못했습니다\. \(종료 코드 1\)\)$/m);
+  // 묶어 보내므로(#216) 그 파일만 Windows가 준 사유로 실패한다.
+  const reason = `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.mp4')} (locked).`;
+  assert.deepStrictEqual(result.failed.map((item) => [path.basename(item.path), item.reason]), [['a.mp4', reason]]);
+  assert.ok(formatRemoveLowQuality(result).split(/\r?\n/).includes(`실패: a.mp4 (${reason})`));
 });
 
 test('remove-low-quality 명령은 기준 옵션과 --yes를 받고, 실패나 틀린 확인값은 오류로 끝낸다 (#31)', () => {

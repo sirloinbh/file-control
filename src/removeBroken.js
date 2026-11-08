@@ -113,21 +113,19 @@ function checkOne(access, item) {
   if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
-  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 실제 휴지통 이동 스크립트도 지우기 직전에 다시 본다(#81).
+  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 묶음 스크립트(recycleFiles)는 지우기 직전에 이 설정을 다시 보지 않는다.
   remove([real], { dryRun: true, checkVolume: false });
   return { path: recycleTarget(real), stamp: item.stamp };
 }
 
-// 파일 하나를 검사하고 바로 휴지통으로 보낸다. remove-duplicates·remove-low-quality가 쓴다.
-function removeOne(access, item) {
-  remove([checkOne(access, item).path], { checkVolume: false });
-}
 
 // recycleFiles의 결과를 실패 사유로 바꾼다. ok면 undefined다.
-function batchFailure(file, { status, reason }) {
+function batchFailure(file, { status, reason }, keep) {
   switch (status) {
     case 'ok':
       return undefined;
+    case 'keepchanged':
+      return `남길 파일이 바뀌었거나 없어져 지우지 않았습니다: ${keep}`;
     case 'moved':
       return `판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${file}`;
     case 'notfile':
@@ -184,21 +182,36 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
     }
   };
   report(`휴지통으로 보내는 중: ${total}개 (${FILE_BATCH}개씩 묶어 보냅니다)`);
-  const fail = (step, item, reason) => {
-    result.failed.push({ path: item.path, reason });
-    report(`${step} 실패: ${relative(item.path)} (${reason})`);
-  };
+  recycleInBatches(plan.removals, log, (item) => checkOne(access, item), {
+    removed: (item, step) => {
+      result.removed.push(item);
+      report(`${step} 휴지통으로 이동: ${relative(item.path)}`);
+    },
+    failed: (item, reason, step) => {
+      result.failed.push({ path: item.path, reason });
+      report(`${step} 실패: ${relative(item.path)} (${reason})`);
+    },
+  });
+  return result;
+}
+
+// 지울 목록(removals)을 FILE_BATCH개씩 묶어 휴지통으로 보낸다(#194, #216). remove-broken·remove-duplicates·remove-low-quality가 쓴다.
+// 묶음을 보내기 직전에 파일마다 기록 경로를 맞춰 보고 prepare(item)로 Node 검사를 한다. prepare는 recycleFiles에 넘길
+// { path, stamp, keep? }를 돌려주고, 문제가 있으면 던진다. PowerShell도 파일마다 지우기 직전에 다시 본다(recycleFiles).
+// 결과는 파일마다 on.removed(item, step) 또는 on.failed(item, reason, step)로 알린다. step은 "3/120" 꼴이다.
+function recycleInBatches(removals, log, prepare, on) {
+  const total = removals.length;
   for (let start = 0; start < total; start += FILE_BATCH) {
     const batch = [];
-    plan.removals.slice(start, start + FILE_BATCH).forEach((item, offset) => {
+    removals.slice(start, start + FILE_BATCH).forEach((item, offset) => {
       const index = start + offset;
       const step = `${index + 1}/${total}`;
       try {
         const logged = log.items[index].path;
         if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
-        batch.push({ item, step, send: checkOne(access, item) });
+        batch.push({ item, step, send: prepare(item) });
       } catch (err) {
-        fail(step, item, recycleFailure(err));
+        on.failed(item, recycleFailure(err), step);
       }
     });
     let outcomes;
@@ -206,17 +219,15 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
       outcomes = recycleFiles(batch.map((entry) => entry.send));
     } catch (err) {
       // 묶음을 시작하지 못하면(비대화형 등) 이 묶음의 파일은 아무것도 지우지 않았다.
-      for (const entry of batch) fail(entry.step, entry.item, recycleFailure(err));
+      for (const entry of batch) on.failed(entry.item, recycleFailure(err), entry.step);
       continue;
     }
     batch.forEach((entry, i) => {
-      const reason = batchFailure(entry.item.path, outcomes[i]);
-      if (reason !== undefined) return fail(entry.step, entry.item, reason);
-      result.removed.push(entry.item);
-      report(`${entry.step} 휴지통으로 이동: ${relative(entry.item.path)}`);
+      const reason = batchFailure(entry.item.path, outcomes[i], entry.send.keep?.path);
+      if (reason !== undefined) on.failed(entry.item, reason, entry.step);
+      else on.removed(entry.item, entry.step);
     });
   }
-  return result;
 }
 
 function formatRemoveBroken(result) {
@@ -243,4 +254,4 @@ function formatRemoveBroken(result) {
   return lines.join('\n');
 }
 
-module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, holdReason, recycleFailure, removeOne, MAX_RECYCLE_SIZE };
+module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, holdReason, recycleFailure, checkOne, recycleInBatches, MAX_RECYCLE_SIZE };
