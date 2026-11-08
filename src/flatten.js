@@ -735,7 +735,7 @@ function checkFolder(folder, access, { dryRun }) {
     if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
     if (real.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${real.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${real}`);
     // 현재 폴더와 그 상위, 장치 이름 같은 rm의 검사를 지우지 않고(미리보기로) 그대로 거친다.
-    remove([real], { dryRun: true });
+    remove([real], { dryRun: true, checkVolume: false });
   }
   return real;
 }
@@ -757,6 +757,8 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   let blocked;
   if (state.interactive === false) blocked = '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.';
   else if (state.driveType !== 'Fixed') blocked = `휴지통이 없어 영구 삭제될 수 있는 드라이브(${state.driveType ?? '종류를 알 수 없음'})라 빈 폴더를 지우지 않았습니다.`;
+  // 빈 폴더라 크기는 문제가 되지 않지만, 휴지통 설정이 "바로 제거"면 영구 삭제된다(#81, 빌드 26200에서 확인).
+  else if (state.nukeOnDelete === true) blocked = '이 볼륨은 휴지통 설정이 "바로 제거"라 빈 폴더도 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다.';
   const failure = (err) => (err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
   if (dryRun) {
     for (const folder of folders) {
@@ -765,7 +767,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
         continue;
       }
       try {
-        remove([checkFolder(folder, access, { dryRun })], { dryRun });
+        remove([checkFolder(folder, access, { dryRun })], { dryRun, checkVolume: false });
         done(folder);
       } catch (err) {
         done(folder, failure(err));
