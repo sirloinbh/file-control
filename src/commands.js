@@ -1076,6 +1076,59 @@ function writeArchive(archive, sources) {
   }
 }
 
+// 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자이고 ~가 들어갈 수 있다(~$LONG~1.DOC). 확장자는 0~3자다.
+const SHORT_NAME = /^([^.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
+
+// name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 넉넉하게 어림한다. Windows는 긴 이름을 대문자로 바꾸고(공백과 점은 빼고
+// +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
+// OEM에 없는 글자는 빠지거나 _가 된다. 그래서 첫 글자와 확장자 앞부분만 비교하고, ASCII가 아닌 글자가 걸리면 겹칠 수 있다고 본다.
+// 실제로는 겹치지 않는 이름도 거부할 수 있다. ~N이 든 이름은 드물어서 그쪽이 안전하다(#159).
+function couldBeShortNameOf(name, other) {
+  const short = SHORT_NAME.exec(name);
+  if (!short || name.toUpperCase() === other.toUpperCase()) return false;
+  // 앞쪽 점과 공백은 떼고 확장자를 나눈다(..foo는 FOO~1, .gitignore는 GITIGN~1).
+  const trimmed = other.replace(/^[ .]+/, '');
+  const dot = trimmed.lastIndexOf('.');
+  const rawBase = dot >= 0 ? trimmed.slice(0, dot) : trimmed;
+  const rawExt = dot >= 0 ? trimmed.slice(dot + 1) : '';
+  const clean = (text) => text.toUpperCase().replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_');
+  // 대문자로 바꾸면 ASCII가 되는 글자(ﬁ -> FI)도 있어 ASCII인지는 바꾸기 전 글자로 본다.
+  const nonAscii = (text) => /[^\x00-\x7f]/.test(text);
+  // OEM에 없는 글자는 빠져 뒤 글자가 앞으로 오므로 이름 어디에든 있으면 겹칠 수 있다고 본다.
+  const base = nonAscii(rawBase) ? '\u0080' : clean(rawBase);
+  const ext = nonAscii(rawExt) ? '\u0080' : clean(rawExt);
+  // 짧은 쪽 확장자는 긴 이름 확장자의 앞부분이다. 확장자가 없으면 긴 이름에도 없다.
+  const shortExt = (short[3] ?? '').toUpperCase();
+  const extMatches = nonAscii(ext) || nonAscii(shortExt) || (shortExt === '' ? ext === '' : [...shortExt].every((char, i) => char === '_' || ext[i] === char));
+  if (!extMatches) return false;
+  const head = short[1].toUpperCase()[0];
+  return head === '_' || nonAscii(head) || nonAscii(base.slice(0, 6)) || base[0] === head;
+}
+
+// 풀 볼륨이 짧은 이름을 만들면, 한 폴더 안의 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 되어 한쪽이 덮어써진다(#159).
+// 원본을 짧은 이름으로 주면 tar.exe는 그 짧은 이름을 그대로 항목 이름으로 적으므로 맨 위 이름도 함께 본다. 압축 안의 폴더마다 확인한다.
+// inside는 원본마다 namesInside의 결과다.
+function rejectShortNameClash(sources, inside) {
+  const top = sources.map((src) => path.basename(path.resolve(src)));
+  // 맨 위에서 겹치면 어느 원본인지 보이도록 원본 경로로 알린다.
+  const levels = new Map([['', top.map((name, i) => ({ name, shown: sources[i] }))]]);
+  sources.forEach((src, i) => {
+    for (const rel of inside[i]) {
+      const dir = path.join(top[i], path.dirname(rel));
+      if (!levels.has(dir)) levels.set(dir, []);
+      levels.get(dir).push({ name: path.basename(rel), shown: path.join(dir, path.basename(rel)) });
+    }
+  });
+  for (const items of levels.values()) {
+    for (const item of items.filter(({ name }) => SHORT_NAME.test(name))) {
+      const other = items.find(({ name }) => couldBeShortNameOf(item.name, name));
+      if (other !== undefined) {
+        throw new FcError(`8.3 짧은 이름으로 겹칠 수 있는 이름이 함께 있어 묶지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${item.shown}, ${other.shown}`);
+      }
+    }
+  }
+}
+
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   rejectNewDeviceName(archive);
@@ -1096,9 +1149,11 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
     if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
+  const inside = sources.map(namesInside);
+  if (isWindows) rejectShortNameClash(sources, inside);
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
-  const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...sources.flatMap(namesInside)];
+  const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
@@ -1128,6 +1183,7 @@ module.exports = {
   archiveEntries,
   archiveNames, probeArchive,
   unsupportedChars,
+  couldBeShortNameOf,
   ensureRoomToExtract,
   freshPath,
   zip,
