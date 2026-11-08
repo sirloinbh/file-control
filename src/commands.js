@@ -718,7 +718,7 @@ function ensureTarCanUse(paths, oemNames = []) {
 }
 
 // args는 tar.exe에 인자로 넘기는 경로, entries는 압축 안에 적힐 이름(원본 이름과 묶을 폴더 안의 이름)이다.
-// 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135). oemEntries는 항목 이름을 OEM으로 적는 형식(zip·cpio)인지다.
+// 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135). oemEntries는 항목 이름을 OEM으로 적는 형식(zip·cpio와 확인하지 않은 형식)인지다.
 function ensureTarArgs(args, entries = [], { oemEntries = false } = {}) {
   if (oemEntries) ensureTarCanUse(args, entries);
   else ensureTarCanUse([...args, ...entries]);
@@ -849,8 +849,9 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
 // tar.exe는 확장자를 대소문자 구분해서 보아 X.ZIP·x.TAR.GZ를 압축 없는 tar로 만든다. 그래서 임시 파일에는 소문자 확장자를 붙인다.
 // 다만 compress 형식인 .Z, .taZ, .tZ는 대소문자로 갈리므로(.z는 압축 없는 tar, .taz는 gzip, .tz는 압축 없는 tar) 그대로 둔다.
 const KEEP_CASE_EXT = new Set(['Z', 'taZ', 'tZ']);
-// tar.exe가 항목 이름을 OEM 코드페이지로 적는 형식의 확장자(#173). 나머지는 UTF-8이나 UTF-16으로 적는다.
-const OEM_ENTRY_EXT = new Set(['.zip', '.cpio']);
+// tar.exe가 항목 이름을 OEM 코드페이지를 거치지 않고(UTF-8이나 UTF-16으로) 적는다고 CI의 영어 Windows에서 확인한 확장자(#173).
+// archiveExt가 돌려주는 값으로 비교한다. .zip·.cpio(.tar.zip·.tar.cpio 포함)는 OEM으로 적고, 확인하지 않은 확장자도 OEM으로 적는다고 본다.
+const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.gz', '.taZ', '.7z', '.jar', '.iso', '.xar', '.mtree', '.warc']);
 function archiveExt(archive) {
   const match = /\.tar\.[a-z0-9]+$|\.[a-z0-9]+$/i.exec(path.basename(path.resolve(archive)));
   if (!match) return '';
@@ -948,7 +949,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...sources.flatMap(namesInside)];
-  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: OEM_ENTRY_EXT.has(archiveExt(archive)) });
+  ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(archiveExt(archive)) });
   return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 

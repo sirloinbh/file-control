@@ -736,7 +736,7 @@ test('zip·unzip은 OEM 코드페이지에서 바뀌는 문자를 zip·cpio 항�
 });
 
 // 코드페이지 확인(PowerShell)을 흉내 내 ANSI·OEM이 다른 환경에서 어느 이름을 OEM으로도 보는지 이 PC에서도 확인한다(#173).
-test('zip은 zip·cpio로 묶을 때만 항목 이름을 OEM으로도 보고, 경로 인자는 ANSI로만 본다 (#173)', { skip: !isWindows }, (t) => {
+test('zip은 OEM을 거치지 않는다고 확인한 형식이 아니면(zip·cpio·.tar.zip 등) 항목 이름을 OEM으로도 보고, 경로 인자는 ANSI로만 본다 (#173)', { skip: !isWindows }, (t) => {
   const dir = tempDir();
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('s¹.txt'), 'S');
@@ -754,7 +754,7 @@ test('zip은 zip·cpio로 묶을 때만 항목 이름을 OEM으로도 보고, �
   delete require.cache[id];
   const mocked = require('../src/commands');
   require.cache[id] = saved;
-  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip']) {
+  for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext']) {
     assert.throws(() => mocked.zip(p(archive), [p('s¹.txt')], { dryRun: true }), /U\+00B9/, archive);
     assert.throws(() => mocked.zip(p(archive), [p('tree')], { dryRun: true }), /U\+00B9.*a¹\.txt/, archive);
     // 압축 파일 경로와 원본의 상위 폴더는 ANSI로만 본다.
