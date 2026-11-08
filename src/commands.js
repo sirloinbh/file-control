@@ -1256,8 +1256,30 @@ function runTar(args, options) {
     return execFileSync(TAR, args, { ...options, env: tarEnv(), cwd: TAR_CWD });
   } catch (err) {
     if (err.status === 0xc0000005) throw new FcError(`tar.exe가 비정상 종료했습니다. 처리할 수 없는 이름이 있을 수 있습니다. (${err.status})`);
+    const program = missingProgram(err.stderr);
+    if (program !== null) {
+      throw new FcError(`이 압축은 tar.exe에 들어 있지 않아 외부 프로그램 ${program}이 필요한데 실행하지 못했습니다. ${program}.exe를 PATH에 두거나 다른 압축(.zip, .tar.gz 등)으로 받으세요.`);
+    }
     throw err;
   }
+}
+
+// tar.exe가 외부 압축 프로그램을 찾지 못했을 때의 stderr(빌드 26200 실측). 풀 때(목록 읽기 포함)는
+// `Can't initialize filter; unable to run program "lz4 -d -q"`, 묶을 때는 `Can't launch external program: lz4 -z …`다(#241).
+// 압축은 이름이 아니라 내용으로 판별되므로 확장자로 미리 알 수 없어, 실패한 뒤 이 문구로 알아본다. 프로그램 이름을 돌려준다.
+// 항목 오류 줄(`<항목 이름>: <사유>`)은 이름을 그대로 찍어 이 문구를 흉내 낼 수 있으므로, tar.exe 줄 전체가 맞고
+// 프로그램이 알려진 외부 압축 프로그램일 때만 받는다(1차 리뷰: `../unable to run program "lz4 x"` 같은 항목 이름이 다른 실패를 가렸다).
+const MISSING_PROGRAM = [
+  /^[ \t]*\S*tar(?:\.exe)?: Error opening archive: Can't initialize filter; unable to run program "(lz4|lzop|lrzip|grzip)(?: [^"\r\n]*)?"\r?$/m,
+  /^[ \t]*\S*tar(?:\.exe)?: Can't launch external program: (lz4|lzop|lrzip|grzip)(?: [^\r\n]*)?\r?$/m,
+];
+function missingProgram(stderr) {
+  const text = Buffer.isBuffer(stderr) ? stderr.toString('latin1') : String(stderr ?? '');
+  for (const pattern of MISSING_PROGRAM) {
+    const match = pattern.exec(text);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 // 암호가 걸린 압축 파일에서 tar.exe가 콘솔에 암호를 물어 멈추지 않도록 아무 값이나 미리 준다. 틀린 암호로 실패한다.

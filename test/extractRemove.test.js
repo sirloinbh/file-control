@@ -242,6 +242,22 @@ test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 �
   assert.deepStrictEqual(tree(dir), [`n/sub/${name}`]);
 });
 
+test('extract-all은 외부 프로그램이 필요한 압축 내용(lz4)을 풀지 못하면 프로그램 이름을 사유로 알리고 원본을 남긴다 (#241)', (t) => {
+  const dir = tempDir();
+  // 이름은 .tar.gz지만 내용은 lz4다. tar.exe는 내용으로 판별해 lz4를 실행하려 한다.
+  fs.writeFileSync(path.join(dir, 'a.tar.gz'), Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9, 1, 2, 3, 4]));
+  const savedPath = process.env.PATH;
+  t.after(() => { process.env.PATH = savedPath; });
+  process.env.PATH = path.join(dir, 'nothing');
+  for (const dryRun of [true, false]) {
+    const result = extractArchives(dir, { removeArchives: true, dryRun });
+    assert.deepStrictEqual(recycled, []);
+    assert.strictEqual(result.failed.length, 1);
+    assert.match(result.failed[0].reason, /외부 프로그램 lz4이 필요한데 실행하지 못했습니다/);
+  }
+  assert.deepStrictEqual(tree(dir), ['a.tar.gz']);
+});
+
 test('헤더가 LZMA2로 압축된 .7z도 헤더를 읽어 확인하고 지운다 (#222)', () => {
   const dir = tempDir();
   const source = tempDir();
