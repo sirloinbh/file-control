@@ -807,6 +807,8 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 // 묶으면 50개에 1.6초였다(빌드 26200에서 실측). 묶어 보내면 Node의 검사와 실제 삭제 사이가 길어지므로 PowerShell이 파일마다 지우기 직전에 다시 본다.
 // - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다(moved).
 // - 아직 파일인지(폴더·링크가 아닌지, notfile)와 판별한 때의 fileStamp(파일 ID, 크기, 수정·변경 시각 ns)와 같은지(changed).
+//   링크는 Node처럼 재분석 태그가 심볼릭 링크·정션·앱 실행 링크일 때만 본다. OneDrive 폴더의 파일은 내려받은 것도 재분석 속성이
+//   붙어 있어(클라우드 파일 태그), 속성만 보면 모두 지우지 못한다(1차 리뷰).
 //   PowerShell이 만든 값은 C:(NTFS)·D:(ReFS)에서 Node의 fileStamp와 글자 그대로 같았다(실측).
 // 휴지통 이동을 도중에 끊으면 파일을 잃을 수 있어 시간 제한을 두지 않는다(#97). 파일마다 끝나는 대로 결과를 한 줄씩 내보낸다.
 // items는 { path, stamp } 목록이고 path는 recycleTarget을 거친 경로다. 결과는 넘긴 순서대로 { path, status, reason } 목록이다.
@@ -823,8 +825,10 @@ public static class FcFileCheck {
   [StructLayout(LayoutKind.Sequential)] struct Basic { public long Creation, Access, Write, Change; public uint Attr; }
   [StructLayout(LayoutKind.Sequential)] struct Standard { public long Alloc, End; public uint Links; public byte Del, Dir; }
   [StructLayout(LayoutKind.Sequential)] struct ById { public uint Attr, C1, C2, A1, A2, W1, W2, Vol, SizeHigh, SizeLow, Links, IdHigh, IdLow; }
+  [StructLayout(LayoutKind.Sequential)] struct Tag { public uint Attr, ReparseTag; }
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Basic b, uint n);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Standard b, uint n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Tag b, uint n);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandle(SafeFileHandle h, out ById b);
   static string Ns(long ft) { return ((System.Numerics.BigInteger)(ft - 116444736000000000L) * 100).ToString(); }
   public static string Final(string p) {
@@ -837,11 +841,13 @@ public static class FcFileCheck {
   public static string Stamp(string p) {
     using (SafeFileHandle h = CreateFileW(p, 0x80, 7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero)) {
       if (h.IsInvalid) return null;
-      Basic b; Standard s; ById i;
+      Basic b; Standard s; ById i; Tag t;
       if (!GetFileInformationByHandleEx(h, 0, out b, (uint)Marshal.SizeOf(typeof(Basic)))) return null;
       if (!GetFileInformationByHandleEx(h, 1, out s, (uint)Marshal.SizeOf(typeof(Standard)))) return null;
+      if (!GetFileInformationByHandleEx(h, 9, out t, (uint)Marshal.SizeOf(typeof(Tag)))) return null;
       if (!GetFileInformationByHandle(h, out i)) return null;
-      if ((b.Attr & 0x410) != 0) return "notfile";
+      if ((b.Attr & 0x10) != 0) return "notfile";
+      if ((b.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003 || t.ReparseTag == 0x8000001B)) return "notfile";
       ulong id = ((ulong)i.IdHigh << 32) | i.IdLow;
       return id + ":" + s.End + ":" + Ns(b.Write) + ":" + Ns(b.Change);
     }
@@ -889,7 +895,7 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
     if (err.status === 76) throw new FcError('PowerShell에서 파일 확인용 형식을 만들 수 없어(잠금 환경 등) 휴지통으로 보내지 못했습니다.');
     // 도중에 끝났어도 이미 보고한 파일의 결과는 쓴다. 보고하지 않은 파일은 결과를 모른다.
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
-    failure = `PowerShell 종료 코드 ${err.status ?? err.code}`;
+    failure = err.status == null && err.signal ? `PowerShell이 ${err.signal}로 끝남` : `PowerShell 종료 코드 ${err.status ?? err.code}`;
   }
   const done = new Map();
   for (const line of output.split(/\r?\n/)) {

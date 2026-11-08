@@ -367,6 +367,28 @@ test('recycleFiles의 PowerShell 스크립트는 파일마다 지우기 직전�
   assert.ok(fs.existsSync(p('changed.mp4')) && fs.existsSync(p('real', 'x.mp4')) && fs.existsSync(p('dir.mp4')));
 });
 
+test('recycleFiles의 PowerShell 스크립트는 심볼릭 링크 파일을 지우지 않는다 (#194 1차 리뷰)', { skip: !isWindows && 'PowerShell' }, (t) => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const real = path.join(dir, 'real.mp4');
+  const link = path.join(dir, 'link.mp4');
+  fs.writeFileSync(real, 'r');
+  try {
+    fs.symlinkSync(real, link, 'file');
+  } catch (err) {
+    if (err.code === 'EPERM') return t.skip('심볼릭 링크를 만들 권한이 없음');
+    throw err;
+  }
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  // 링크 자신의 stamp를 주어도, 대상 파일의 stamp를 주어도 지우지 않는다.
+  for (const stamp of [fileStamp(fs.lstatSync(link, { bigint: true })), fileStamp(fs.lstatSync(real, { bigint: true }))]) {
+    const [result] = reload().recycleFiles([{ path: link, stamp }], { script: swapped });
+    assert.notStrictEqual(result.status, 'ok');
+  }
+  assert.ok(fs.lstatSync(link).isSymbolicLink() && fs.existsSync(real));
+});
+
 test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 Windows 사유를 UTF-16으로 알리고 다음 파일을 계속한다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
