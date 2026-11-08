@@ -180,5 +180,5 @@ test('find-low-quality 명령은 기준 옵션을 받고, 잘못된 값과 다�
   // -- 뒤의 --min-height=720은 옵션이 아니라 이름이라 타겟이 둘이 된다.
   assert.throws(() => run(['find-low-quality', dir, '--', '--min-height=720']), /타겟은 하나만 받습니다/);
   assert.throws(() => run(['find-low-quality', dir, '--min-height']), /--min-height에는 값을/);
-  assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height는 find-low-quality에서만/);
+  assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height는 find-low-quality, remove-low-quality에서만/);
 });
