@@ -255,7 +255,7 @@ test('fctl find-duplicates: 목록을 내고, 타겟 검사와 옵션 검사를 
   assert.throws(() => run(['find-duplicates']), /사용법: fctl find-duplicates <타겟>/);
   assert.throws(() => run(['find-duplicates', dir, 'extra']), /타겟은 하나만/);
   assert.throws(() => run(['find-duplicates', dir, '--force']), /--force, --permanent를 쓸 수 없습니다/);
-  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes는 remove-broken, remove-duplicates에서만/);
+  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes는 remove-broken, remove-duplicates, remove-low-quality에서만/);
   assert.match(run(['--help']), /find-duplicates <타겟>/);
 });
 
