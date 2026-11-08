@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { FcError, probeArchive } = require('./commands');
+const { FcError, probeArchive, missingProgram } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { REMOVAL_LOG } = require('./removalLog');
@@ -156,6 +156,12 @@ function checkTarListing(real) {
   if (error) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (${error.code})`);
   if (TAR_DAMAGED.test(stderr)) return broken('tar가 파일이 잘렸거나 손상됐다고 알렸습니다.');
   if (TAR_UNRECOGNIZED.test(stderr)) return suspect('tar로 읽을 수 없는 형식입니다. tar가 아닌 파일이거나 앞부분이 손상됐을 수 있습니다.');
+  // lz4·lzop 등으로 압축된 파일은 tar.exe가 외부 프로그램으로 푼다(#241). 프로그램이 없으면 파일 탓이 아니므로 판단 못함으로 두고 이름을 밝힌다(#245).
+  const program = missingProgram(stderr);
+  if (program !== null) throw new FcError(`압축을 풀 외부 프로그램 ${program}이 없어 판단하지 않았습니다. ${program}.exe를 PATH에 두면 확인할 수 있습니다.`);
+  // 프로그램은 있는데 실패하면 파일 손상인지 프로그램 문제인지 가를 수 없으므로 깨짐으로 보지 않는다(remove-broken이 지우지 않게).
+  const child = /^[ \t]*\S*tar(?:\.exe)?: Error opening archive: Child process exited with status (\d+)\r?$/m.exec(stderr);
+  if (child) throw new FcError(`압축을 푸는 외부 프로그램이 실패해(종료 코드 ${child[1]}) 판단하지 않았습니다. 파일이 손상됐거나 프로그램에 문제가 있을 수 있습니다.`);
   if (status !== 0) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (종료 코드 ${status}: ${stderr.split(/\r?\n/)[0].replace(/[^\x00-\x7f]+/g, '?')})`);
   return entries === 0 ? suspect('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.') : null;
 }
