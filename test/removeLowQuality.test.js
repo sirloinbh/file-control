@@ -149,9 +149,35 @@ test('remove-low-quality는 확인값을 만든 뒤 파일이 바뀌면 지우�
   // 방금 바뀐 파일: 시계를 옮기지 않은 지금 시각을 주면 방금 만든 파일의 생성·변경 시각이 5분 안이다.
   const fresh = removeLowQuality(dir, { now: realNow() });
   assert.deepStrictEqual(fresh.kept.map((item) => item.reason), ['방금 바뀐 파일이라 받는 중일 수 있어 남겼습니다.']);
+  // 휴지통 최대 크기를 모르면 1GB(여기서는 maxSize)부터 남긴다(#219).
   const big = removeLowQuality(dir, { maxSize: 10 });
-  assert.deepStrictEqual(big.kept.map((item) => item.reason), ['1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.']);
+  assert.deepStrictEqual(big.kept.map((item) => item.reason), ['1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로 남겼습니다.']);
   assert.deepStrictEqual(big.removals, []);
+});
+
+test('remove-low-quality는 휴지통 설정상 영구 삭제될 파일(바로 제거, 최대 크기 초과)과 그 하드링크 이름을 남긴다 (#219)', (t) => {
+  const dir = tempDir();
+  put(dir, 'small.mp4', mp4({ width: 480, height: 270 }));
+  const big = put(dir, 'big.mp4', mp4({ width: 480, height: 270, padding: 2 * 1024 * 1024 }));
+  fs.linkSync(big, path.join(dir, 'big-link.mp4'));
+  fs.utimesSync(big, OLD, OLD);
+  t.after(() => {
+    volume = () => 'True|Fixed\r\n';
+  });
+  volume = () => 'True|Fixed|1|26427\r\n';
+  const nuke = removeLowQuality(dir);
+  assert.deepStrictEqual(nuke.removals, []);
+  assert.ok(nuke.kept.length === 3 && nuke.kept.every((item) => /^이 볼륨은 휴지통 설정이 "바로 제거"라 .*남겼습니다\.$/.test(item.reason)), JSON.stringify(nuke.kept.map((item) => item.reason)));
+  // 최대 크기 1MB: big.mp4(2MB 넘음)와 그 하드링크만 남기고 small.mp4는 지울 목록에 둔다.
+  volume = () => 'True|Fixed|0|1\r\n';
+  const plan = removeLowQuality(dir);
+  assert.deepStrictEqual(plan.removals.map((item) => path.basename(item.path)), ['small.mp4']);
+  const kept = Object.fromEntries(plan.kept.map((item) => [path.basename(item.path), item.reason]));
+  assert.strictEqual(kept['big.mp4'], '휴지통 최대 크기(1MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로 남겼습니다.');
+  assert.strictEqual(kept['big-link.mp4'], kept['big.mp4']);
+  // 최대 크기를 알면 용량을 모를 때의 한도(maxSize)는 쓰지 않는다.
+  volume = () => 'True|Fixed|0|26427\r\n';
+  assert.strictEqual(removeLowQuality(dir, { maxSize: 10 }).removals.length, 2);
 });
 
 test('remove-low-quality는 exFAT 볼륨이면 고정 디스크여도 지우지 않는다 (#184)', (t) => {
