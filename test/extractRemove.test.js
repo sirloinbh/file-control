@@ -501,6 +501,8 @@ test('손상되거나 tar.exe가 일부만 푸는 .tar.gz는 지우지 않는다
     'concat.tar.gz': Buffer.concat([good, other]),
     // gzip 뒤에 다른 데이터
     'junk.tgz': Buffer.concat([good, Buffer.from('garbage')]),
+    // 멤버 뒤가 0x00으로 시작하면 Node도 tar.exe도 오류 없이 뒤를 버린다(1차 리뷰에서 지워지던 경우).
+    'zero-gap.tar.gz': Buffer.concat([good, Buffer.alloc(1), other]),
     // 끝 표시 뒤의 항목
     'after-end.tar.gz': zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }, { after: tarBuffer({ 'z.txt': 'hidden' }) })),
     // 끝 표시가 없다(항목 경계에서 잘린 tar를 다시 gzip으로 싼 것)
@@ -523,13 +525,14 @@ test('손상되거나 tar.exe가 일부만 푸는 .tar.gz는 지우지 않는다
     'cut.tar.gz': /gzip이 손상됐거나 잘렸거나/,
     'concat.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
     'junk.tgz': /gzip이 손상됐거나 잘렸거나 뒤에 다른 데이터/,
+    'zero-gap.tar.gz': /gzip 끝 뒤에 다른 데이터/,
     'after-end.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
     'no-end.tar.gz': /tar 끝 표시가 없어/,
     'plain.tar.gz': /gzip으로 시작하지 않아/,
   };
   for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
   // 이어 붙인 gzip과 끝 표시 뒤의 항목은 tar.exe가 성공으로 풀므로 반드시 확인 단계에서 걸려야 한다.
-  for (const name of ['concat.tar.gz', 'after-end.tar.gz', 'junk.tgz']) assert.ok(kept[name] !== undefined, `${name}: ${reasons[name]}`);
+  for (const name of ['concat.tar.gz', 'after-end.tar.gz', 'junk.tgz', 'zero-gap.tar.gz']) assert.ok(kept[name] !== undefined, `${name}: ${reasons[name]}`);
 });
 
 test('tar.gz 본문이 변해 성공으로 풀려도 지우지 않는다', () => {

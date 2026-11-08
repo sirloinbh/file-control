@@ -109,6 +109,8 @@ function tarChecker() {
     }
     let name;
     const paxPath = pax?.get('path');
+    // 빈 pax path는 tar.exe가 헤더 이름으로 풀어 이름이 갈린다(1차 리뷰).
+    if (paxPath !== undefined && paxPath.length === 0) return fail('tar 확장 헤더의 이름이 비어 있어 남겼습니다.');
     if (paxPath !== undefined) {
       if (!isUtf8(paxPath)) return fail('tar 항목 이름이 UTF-8이 아니라 남겼습니다.');
       name = paxPath.toString('utf8');
@@ -131,6 +133,8 @@ function tarChecker() {
     const dataLength = Math.ceil(Number(entrySize) / BLOCK) * BLOCK;
     if (type === '0' || type === '\0' || type === '7') entries.push({ name, size: Number(entrySize) });
     else if (type === '5') entries.push({ name: name.endsWith('/') ? name : `${name}/`, size: Number(entrySize) });
+    // 크기가 있는 하드링크는 tar.exe가 뒤 블록을 다음 항목으로 읽을 수 있어 스캔과 갈린다(1차 리뷰).
+    else if (type === '1' && entrySize > 0n) return fail('내용이 있는 하드링크 항목이 있어 남겼습니다.');
     else if (type === '1') entries.push({ name, size: null });
     else return fail(`풀린 결과로 확인할 수 없는 tar 항목 종류가 있어 남겼습니다. (종류 ${JSON.stringify(type)})`);
     skip = dataLength;
@@ -199,7 +203,19 @@ function scanTarGz(file) {
     input.on('error', (err) => end({ reason: `압축 파일을 다시 읽지 못해 남겼습니다. (${err.code})` }));
     gunzip.on('error', (err) => end({ reason: `gzip이 손상됐거나 잘렸거나 뒤에 다른 데이터가 있어 남겼습니다. (${err.code})` }));
     gunzip.on('data', (chunk) => checker.push(chunk));
-    gunzip.on('end', () => end(checker.finish()));
+    // 멤버 뒤의 다음 바이트가 0x00이면 Node는 오류 없이 거기서 멈추고 나머지를 버린다(tar.exe도 읽지 않는다, 1차 리뷰).
+    // 그래서 gzip이 실제로 읽은 바이트 수가 파일 크기와 같아야 한다.
+    gunzip.on('end', () => {
+      let size;
+      try {
+        size = fs.statSync(file).size;
+      } catch (err) {
+        end({ reason: `압축 파일을 다시 읽지 못해 남겼습니다. (${err.code})` });
+        return;
+      }
+      if (gunzip.bytesWritten !== size) end({ reason: 'gzip 끝 뒤에 다른 데이터가 있어 남겼습니다.' });
+      else end(checker.finish());
+    });
     input.pipe(gunzip);
   });
 }
