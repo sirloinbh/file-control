@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, recycleBinState } = require('./commands');
+const { FcError, recycleBinState, recycleTarget } = require('./commands');
 const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
 const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
@@ -87,6 +87,11 @@ function keeperStamp(access, keeper, now, markerOf) {
 // - lengthOnly: 지우지 않은 길이만 같은 묶음 수
 // - interactive: 휴지통으로 보낼 수 있는 세션인지. 지울 파일이 없으면 확인하지 않아 null이다.
 // 그 밖의 값(conflicts, unreadable, skipped 등)은 findDuplicateNames의 것이다.
+// 휴지통으로 보내다 실패할 것이 확실하거나 지워도 소용없는 사본은 미리 남긴다(#127).
+// - 휴지통으로 보낼 수 없는 경로(259자 초과, 끝이 점·공백인 이름). rm과 같은 검사(recycleTarget)다.
+// - 남길 파일과 같은 파일(하드링크)의 다른 이름. 지워도 공간이 줄지 않고, 지우면 남길 파일의 변경 시각이 바뀌어
+//   같은 묶음의 다음 사본이 "남길 파일이 바뀌었다"로 실패한다.
+// - 이번에 지울 다른 사본과 같은 파일인 사본. 한 이름을 지우면 이 이름의 변경 시각이 바뀌어 판별한 파일과 달라 보인다(remove-broken과 같다).
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
   rejectRepository(access.target, walk(access.target));
@@ -95,6 +100,9 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const checkedAt = now ?? Date.now();
   const plan = { ...found, sets: [], removals: [], kept: [], lengthOnly: found.metadataGroups.filter((group) => !group.alsoNamed).length, interactive: null };
   const markerOf = markerFinder();
+  const fileId = (stat) => `${stat.dev}:${stat.ino}`;
+  // 이번에 지울 사본 중 링크 수가 2 이상인 파일 { 파일 ID -> 경로 }
+  const linked = new Map();
   found.groups.forEach((group, set) => {
     const keeper = group.files.find((file) => file.path === group.keep.path);
     const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
@@ -108,6 +116,14 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       }
     }
     plan.sets.push({ label: groupLabel(group), keep: { ...keeper, reason: group.keep.reason, stamp }, doubt: group.keep.doubt });
+    let keeperId = null;
+    if (keeperProblem === null) {
+      try {
+        keeperId = fileId(fs.lstatSync(keeper.path, { bigint: true }));
+      } catch (err) {
+        keeperProblem = reasonOf(err);
+      }
+    }
     for (const file of group.files) {
       if (file === keeper) continue;
       const reason = keeperProblem ?? sameVideoReason(keeper, file, group);
@@ -125,7 +141,13 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
         else if (hold !== null) keep(file, hold);
         else if (marker !== null) keep(file, marker);
         else if (Number(stat.size) >= maxSize) keep(file, '1GB 이상이라 휴지통을 거치지 않고 영구 삭제될 수 있어 남겼습니다.');
-        else {
+        else if (fileId(stat) === keeperId) keep(file, '남길 파일과 같은 파일(하드링크)의 다른 이름이라 지워도 공간이 줄지 않아 남겼습니다. 지우면 남길 파일의 변경 시각이 바뀝니다.');
+        else if (stat.nlink > 1n && linked.has(fileId(stat))) {
+          keep(file, `같은 파일의 다른 이름(하드링크: ${path.relative(access.target, linked.get(fileId(stat)))})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`);
+        } else {
+          // 휴지통으로 보낼 수 없는 경로면 사유를 그대로 남긴다.
+          recycleTarget(real);
+          if (stat.nlink > 1n) linked.set(fileId(stat), real);
           plan.removals.push({
             path: real,
             size: Number(stat.size),

@@ -146,6 +146,53 @@ test('확인값이 맞으면 기록을 먼저 남기고 남길 파일과 길이�
   assert.match(report.split('\n').at(-1), /^묶음 1개, 휴지통 2개, 실패 0개, 남김 1개, 길이만 같은 묶음 1개/);
 });
 
+// #127: 휴지통으로 보내다 실패할 것이 확실한 사본은 계획 단계에서 남긴다.
+test('남길 파일의 하드링크인 사본은 같은 파일의 다른 이름이라 지우지 않고, 사본끼리 하드링크면 이번에 하나만 지운다 (#127)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }), 'x/ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
+  // 남길 파일의 다른 이름. 지워도 공간이 줄지 않고, 지우면 남길 파일의 변경 시각이 바뀐다.
+  const keeperLink = path.join(dir, 'a', 'ABC-123 - 복사본.mp4');
+  fs.mkdirSync(path.dirname(keeperLink));
+  fs.linkSync(f['ABC-123.mp4'], keeperLink);
+  // 사본끼리 같은 파일. 한 이름을 지우면 다른 이름의 변경 시각이 바뀐다.
+  const copyLink = path.join(dir, 'y', 'ABC-123 (2).mp4');
+  fs.mkdirSync(path.dirname(copyLink));
+  fs.linkSync(f['x/ABC-123 copy.mp4'], copyLink);
+  const plan = removeDuplicates(dir);
+  const keeper = plan.sets[0].keep.path;
+  const keeperName = path.relative(dir, keeper);
+  const removed = plan.removals.map((item) => path.relative(dir, item.path));
+  const kept = Object.fromEntries(plan.kept.map((item) => [path.relative(dir, item.path), item.reason]));
+  // 남길 파일과 같은 파일의 이름은 어느 쪽이 남길 파일이 되든 지우지 않는다.
+  const keeperTwins = [path.relative(dir, f['ABC-123.mp4']), path.relative(dir, keeperLink)].filter((name) => name !== keeperName);
+  for (const name of keeperTwins) assert.match(kept[name] ?? '', /^남길 파일과 같은 파일\(하드링크\)의 다른 이름이라 지워도 공간이 줄지 않아 남겼습니다\./, name);
+  // 사본끼리 같은 파일이면 하나만 지우고 하나는 다음 실행으로 미룬다.
+  const copyTwins = [path.relative(dir, f['x/ABC-123 copy.mp4']), path.relative(dir, copyLink)];
+  assert.strictEqual(copyTwins.filter((name) => removed.includes(name)).length, 1);
+  const later = copyTwins.find((name) => !removed.includes(name));
+  assert.match(kept[later], /^같은 파일의 다른 이름\(하드링크: .+\)을 이번에 먼저 지우므로/);
+  assert.ok(!removed.some((name) => keeperTwins.includes(name)));
+  // 실제로 지워도 남길 파일이 바뀌었다는 실패가 나지 않는다.
+  const result = confirmed(dir);
+  assert.deepStrictEqual(result.failed, []);
+  assert.strictEqual(result.removed.length, 1);
+  assert.ok(fs.existsSync(keeper));
+});
+
+test('전체 경로가 259자를 넘는 사본은 휴지통으로 보낼 수 없어 계획에서 남긴다 (#127)', () => {
+  const dir = tempDir();
+  const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }) });
+  const long = path.join(dir, 'x'.repeat(120), 'y'.repeat(120), 'ABC-123 copy.mp4');
+  fs.mkdirSync(path.dirname(long), { recursive: true });
+  fs.writeFileSync(long, mp4({ seconds: 3600 }));
+  fs.utimesSync(long, OLD, OLD);
+  assert.ok(long.length > 259);
+  const plan = removeDuplicates(dir);
+  assert.strictEqual(plan.sets[0].keep.path, f['ABC-123.mp4']);
+  assert.deepStrictEqual(plan.removals, []);
+  assert.deepStrictEqual(plan.kept.map((item) => [item.path, item.reason]), [[long, `경로가 ${long.length}자라 휴지통으로 보낼 수 없습니다(259자까지): ${long}`]]);
+});
+
 test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 제목)은 길이나 화면 비율이 다르면 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   make(dir, {
