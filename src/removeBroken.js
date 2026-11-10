@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
+const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentRefusal, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
@@ -113,7 +113,7 @@ function checkOne(access, item) {
   if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
   if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
-  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 묶음 스크립트(recycleFiles)는 지우기 직전에 이 설정을 다시 보지 않는다.
+  // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 여기서 다시 보지 않고, 묶음 스크립트(recycleFiles)가 지우기 직전에 다시 본다(#236).
   remove([real], { dryRun: true, checkVolume: false });
   return { path: recycleTarget(real), stamp: item.stamp };
 }
@@ -133,6 +133,8 @@ function batchFailure(file, { status, reason }, keep) {
       return `판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${file}`;
     case 'gone':
       return `판별한 뒤 파일이 사라져 지우지 않았습니다: ${file}`;
+    case 'permanent':
+      return permanentRefusal(file, reason);
     case 'error':
       return recycleFailureMessage(file, reason);
     default:

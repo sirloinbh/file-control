@@ -441,6 +441,80 @@ test('recycleFiles의 PowerShell 스크립트는 경로가 긴 남길 파일도 
   assert.ok(fs.existsSync(odd));
 });
 
+// #236: 지우기 직전에 볼륨 휴지통 설정을 다시 본다. 사용자 설정은 바꾸지 않고, 스크립트 사본 안에서 폴더마다 읽은 설정값만 바꾼다.
+test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설정이 바로 제거·최대 크기 초과·고정 디스크 아님이면 지우지 않는다 (#236)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const p = (...xs) => path.join(dir, ...xs);
+  const names = [['ok', 'a.mp4'], ['ok', 'b.mp4'], ['nuke', 'a.mp4'], ['cap', 'big.mp4'], ['cap', 'small.mp4'], ['removable', 'a.mp4']];
+  for (const [folder, name] of names) {
+    fs.mkdirSync(p(folder), { recursive: true });
+    fs.writeFileSync(p(folder, name), name === 'big.mp4' ? Buffer.alloc(1024 * 1024 + 1) : name);
+  }
+  const items = names.map((parts) => ({ path: p(...parts), stamp: fileStamp(fs.lstatSync(p(...parts), { bigint: true })) }));
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  // 폴더 이름에 따라 설정을 바꾸고, 폴더마다 설정을 몇 번 읽었는지 stderr 대신 파일에 남긴다.
+  const reads = p('reads.txt');
+  const override = `[IO.File]::AppendAllText('${reads}', $p + "\`n")
+  if ($p.EndsWith('nuke')) { $nuke = '1' }
+  if ($p.EndsWith('cap')) { $nuke = '0'; $cap = '1' }
+  if ($p.EndsWith('removable')) { $type = 'Removable' }
+  $root = $p
+  return @($type, $nuke, $cap, $root)`;
+  const swapped = script
+    .replace('  return @($type, $nuke, $cap, $root)', override)
+    .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.ok(swapped.includes('AppendAllText') && swapped.includes('[IO.File]::Delete($long)'), '설정 읽기와 휴지통 이동 호출을 찾아 바꿔야 한다');
+  const results = reload().recycleFiles(items, { script: swapped });
+  assert.deepStrictEqual(results.map((item) => [path.relative(dir, item.path), item.status, item.reason]), [
+    [path.join('ok', 'a.mp4'), 'ok', ''],
+    [path.join('ok', 'b.mp4'), 'ok', ''],
+    [path.join('nuke', 'a.mp4'), 'permanent', '이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로'],
+    [path.join('cap', 'big.mp4'), 'permanent', '휴지통 최대 크기(1MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로'],
+    [path.join('cap', 'small.mp4'), 'ok', ''],
+    [path.join('removable', 'a.mp4'), 'permanent', '휴지통이 없을 수 있는 드라이브(Removable)라 영구 삭제될 수 있으므로'],
+  ]);
+  assert.ok(!fs.existsSync(p('ok', 'a.mp4')) && !fs.existsSync(p('cap', 'small.mp4')));
+  assert.ok(fs.existsSync(p('nuke', 'a.mp4')) && fs.existsSync(p('cap', 'big.mp4')) && fs.existsSync(p('removable', 'a.mp4')));
+  // 설정은 폴더마다 한 번만 읽는다.
+  assert.deepStrictEqual(fs.readFileSync(reads, 'utf8').trim().split('\n').map((line) => path.relative(dir, line)), ['ok', 'nuke', 'cap', 'removable']);
+});
+
+test('recycleFiles의 PowerShell 스크립트는 같은 볼륨의 다른 폴더에서는 휴지통 설정을 다시 읽지 않는다 (#236 1차 리뷰)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const files = ['a', 'b', 'c'].map((folder) => path.join(dir, folder, 'x.mp4'));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, 'x');
+  }
+  const reads = path.join(dir, 'reads.txt');
+  const swapped = reload().RECYCLE_FILES_SCRIPT
+    .replace('  return @($type, $nuke, $cap, $root)', `[IO.File]::AppendAllText('${reads}', $p + "\`n")\n  return @($type, $nuke, $cap, $root)`)
+    .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.ok(swapped.includes('AppendAllText') && swapped.includes('[IO.File]::Delete($long)'));
+  const results = reload().recycleFiles(files.map((file) => ({ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) })), { script: swapped });
+  assert.deepStrictEqual(results.map((item) => item.status), ['ok', 'ok', 'ok']);
+  assert.deepStrictEqual(fs.readFileSync(reads, 'utf8').trim().split('\n').map((line) => path.relative(dir, line)), ['a']);
+});
+
+test('recycleFiles의 PowerShell 스크립트는 휴지통 최대 크기를 모르면 1GB 이상 파일을 지우지 않는다 (#236)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const file = path.join(dir, 'a.mp4');
+  fs.writeFileSync(file, 'a');
+  // 크기를 바꾸는 대신 기준(1GB - 1)을 0으로 낮춘 사본으로 같은 판정 줄을 탄다.
+  const script = reload().RECYCLE_FILES_SCRIPT;
+  const swapped = script
+    .replace('  return @($type, $nuke, $cap, $root)', "  return @($type, $nuke, '', $root)")
+    .replace('{ 1GB - 1 }', '{ 0 }')
+    .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.ok(swapped.includes("@($type, $nuke, '', $root)") && swapped.includes('{ 0 }'));
+  const [result] = reload().recycleFiles([{ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) }], { script: swapped });
+  assert.deepStrictEqual([result.status, result.reason], ['permanent', '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로']);
+  assert.ok(fs.existsSync(file));
+});
+
 test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 Windows 사유를 UTF-16으로 알리고 다음 파일을 계속한다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
