@@ -175,7 +175,13 @@ function list(dir = '.') {
     .readdirSync(dir, { withFileTypes: true })
     .map((entry) => {
       const full = path.join(dir, entry.name);
-      const stat = fs.statSync(full, { throwIfNoEntry: false });
+      // 잠긴 시스템 파일(C:\DumpStack.log.tmp, pagefile.sys)은 정보를 읽지 못한다(EPERM·EBUSY). 목록 전체를 실패시키지 않고 크기·시각만 비운다(#254).
+      let stat;
+      try {
+        stat = fs.statSync(full, { throwIfNoEntry: false });
+      } catch {
+        stat = undefined;
+      }
       return {
         name: entry.name,
         type: entry.isDirectory() ? 'dir' : 'file',

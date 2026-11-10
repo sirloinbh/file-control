@@ -39,6 +39,22 @@ test('ls는 폴더를 먼저, 이름순으로 보여준다', () => {
   );
 });
 
+test('ls는 정보를 읽을 수 없는 잠긴 항목이 있어도 목록을 보여주고 그 항목의 크기만 비운다 (#254)', (t) => {
+  const dir = tempDir();
+  fc.writeFile(path.join(dir, 'locked.tmp'), '123');
+  fc.writeFile(path.join(dir, 'ok.txt'), '1');
+  const statSync = fs.statSync;
+  // C:\DumpStack.log.tmp처럼 stat이 EPERM으로 실패하는 파일을 흉내 낸다.
+  t.mock.method(fs, 'statSync', (p, ...rest) => {
+    if (path.basename(String(p)) === 'locked.tmp') throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    return statSync(p, ...rest);
+  });
+  assert.deepStrictEqual(
+    fc.list(dir).map((e) => [e.name, e.type, e.size, e.modified === null]),
+    [['locked.tmp', 'file', null, true], ['ok.txt', 'file', 1, false]],
+  );
+});
+
 test('rename은 같은 폴더 안에서만 이름을 바꾼다', () => {
   const dir = tempDir();
   const file = path.join(dir, 'old.txt');
