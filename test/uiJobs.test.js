@@ -8,7 +8,7 @@ const path = require('node:path');
 const { execute } = require('../src/execute');
 const { toPlain } = require('../src/ui/serialize');
 const { runOnce } = require('../src/ui/worker');
-const { createJobs, BusyError } = require('../src/ui/jobs');
+const { createJobs, BusyError, formatElapsed } = require('../src/ui/jobs');
 const fc = require('../src/commands');
 const { run } = require('../bin/fctl');
 
@@ -208,4 +208,24 @@ test('createJobs는 작업 프로세스를 띄우지 못하면 사유를 밝혀 
   assert.strictEqual(jobs.running(), null);
   assert.throws(() => jobs.start(['ls']), /띄우기 실패/);
   assert.strictEqual(calls, 2);
+});
+
+test('formatElapsed는 경과 시간을 시간·분·초로 보여 준다', () => {
+  assert.strictEqual(formatElapsed(-5), '0초');
+  assert.strictEqual(formatElapsed(999), '0초');
+  assert.strictEqual(formatElapsed(12_345), '12초');
+  assert.strictEqual(formatElapsed(65_000), '1분 5초');
+  assert.strictEqual(formatElapsed(3_723_000), '1시간 2분 3초');
+});
+
+test('createJobs는 진행 줄이 아주 많으면 앞부분과 최근 줄만 남기고 버린 수를 센다', async () => {
+  const jobs = createJobs({ workerPath: FAKE_WORKER });
+  const job = jobs.start(['progress', '2100']);
+  await settled(jobs, job);
+  assert.strictEqual(job.status, 'done', JSON.stringify(job.error));
+  assert.strictEqual(job.lines.length, 2000);
+  assert.strictEqual(job.droppedLines, 100);
+  assert.strictEqual(job.lines[99], '줄 100');
+  assert.strictEqual(job.lines[100], '줄 201');
+  assert.strictEqual(job.lines.at(-1), '줄 2100');
 });

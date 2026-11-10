@@ -90,7 +90,8 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       forget();
     };
     // 결과 메시지를 받아도 프로세스가 끝날 때까지는 다음 작업을 받지 않는다.
-    child.on('exit', (code, signal) => settle(code, signal));
+    // exit는 아직 읽지 않은 메시지보다 먼저 올 수 있으므로, IPC 채널과 표준 오류까지 닫힌 뒤의 close에서 마무리한다.
+    child.on('close', (code, signal) => settle(code, signal));
     child.on('error', (err) => settle(null, null, err));
     child.send({ argv: job.argv });
     return job;
@@ -113,4 +114,15 @@ function addLine(job, line) {
   }
 }
 
-module.exports = { createJobs, BusyError };
+// 경과 시간을 '1시간 2분 3초'처럼 보여 준다. 1초 미만은 0초다.
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}시간 ${minutes}분 ${seconds}초`;
+  if (minutes > 0) return `${minutes}분 ${seconds}초`;
+  return `${seconds}초`;
+}
+
+module.exports = { createJobs, BusyError, formatElapsed };
