@@ -158,3 +158,32 @@ test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 �
   // 등록된 분류는 메뉴와 첫 화면에서 링크가 된다.
   assert.ok(home.body.includes('<a href="/files">기본 파일 작업</a>'));
 });
+
+test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)로 듣고 있어도 실패한다 (#251 1차 리뷰)', async (t) => {
+  const busy = http.createServer();
+  await new Promise((resolve) => busy.listen(0, '0.0.0.0', resolve));
+  t.after(() => busy.close());
+  const { port } = busy.address();
+  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`));
+});
+
+test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 정하며, 비동기 예외도 500으로 답한다 (#251 1차 리뷰)', async (t) => {
+  const routes = new Map([
+    ['/files', async () => ({ body: html`<p>${'<a>'}</p>` })],
+    ['/organize', { GET: () => ({ body: 'get' }), POST: async () => ({ status: 201, body: 'posted' }) }],
+    ['/archive', async () => { throw new Error('<later>'); }],
+  ]);
+  const server = http.createServer(createHandler(routes));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const files = await request(`${base}/files`);
+  assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);
+  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, { method: 'POST' })).status], ['get', 201]);
+  const put = await request(`${base}/organize`, { method: 'PUT' });
+  assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
+  const failed = await request(`${base}/archive`);
+  assert.strictEqual(failed.status, 500);
+  assert.ok(failed.body.includes('화면을 만들지 못했습니다: &lt;later&gt;'));
+  assert.strictEqual((await request(`${base}/`)).status, 200);
+});
