@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
-const { describeArchiveFormat, extractAllView } = require('../src/ui/archive');
+const { describeArchiveFormat, extractAllView, unzipDest, unzipSpace } = require('../src/ui/archive');
 const { toPlain } = require('../src/ui/serialize');
 
 test('describeArchiveFormat는 tar.exe -a가 확장자로 정할 형식을 설명한다 (#258)', () => {
@@ -97,4 +97,24 @@ test('extractAllView 미리보기는 "풀 예정"으로 쓰고, --remove-archive
 test('extractAllView는 --remove-archives가 없으면 원본을 "그대로 둠"으로 보인다 (#258)', () => {
   const body = String(extractAllView(outcome({ removeArchives: false, removed: [], kept: [], failed: [] })));
   assert.deepStrictEqual(rows(body).slice(0, 3).map((cells) => cells[4]), ['그대로 둠', '그대로 둠', '그대로 둠']);
+});
+
+test('unzipDest·unzipSpace는 풀 폴더와 그 볼륨의 남은 공간을 알려 주고, 확인하지 못하면 사유를 밝힌다 (#258)', () => {
+  const archive = path.join('D:\\', 'dl', 'movie.tar.gz');
+  assert.strictEqual(unzipDest(archive), path.join('D:\\', 'dl', 'movie.tar'));
+  assert.strictEqual(unzipDest(archive, 'E:\\out'), 'E:\\out');
+
+  const seen = [];
+  const ok = unzipSpace(archive, undefined, { freeSpace: (dir) => (seen.push(dir), { free: 5n * 1024n ** 3n, block: 4096n }) });
+  assert.deepStrictEqual(seen, [path.join('D:\\', 'dl', 'movie.tar')]);
+  assert.strictEqual(ok.free, 5 * 1024 ** 3);
+  assert.match(ok.text, /^남은 공간 5(\.0)? ?GB\. 풀고 나서 1(\.0)? ?GB보다 적게 남으면 풀지 않습니다\.$/);
+
+  const failed = unzipSpace(archive, 'Q:\\none', { freeSpace: () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); } });
+  assert.strictEqual(failed.free, null);
+  assert.match(failed.text, /남은 공간을 확인하지 못했습니다\(ENOENT\)/);
+
+  // 실제 볼륨에서도 숫자를 돌려준다.
+  const real = unzipSpace(path.join(__dirname, 'none.zip'));
+  assert.ok(real.free > 0, real.text);
 });

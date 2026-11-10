@@ -4,7 +4,9 @@
 // 형식은 tar.exe -a가 압축 파일 이름의 확장자로 정한다. 어떤 확장자를 옮기는지는 commands.archiveExt를 그대로 쓴다.
 
 const path = require('node:path');
-const { archiveExt } = require('../commands');
+const commands = require('../commands');
+
+const { archiveExt } = commands;
 const { html } = require('./html');
 const { summaryCards, badge, table } = require('./layout');
 
@@ -104,4 +106,22 @@ ${summaryCards(cards)}
 ${table([{ label: '압축 파일', width: '28%' }, { label: '결과', width: '14%' }, { label: '풀린 폴더', width: '24%' }, { label: '항목', width: '8%' }, { label: '원본·사유' }], rows, { empty: '압축 파일이 없습니다.' })}`;
 }
 
-module.exports = { describeArchiveFormat, extractAllView };
+// unzip의 풀 폴더. 지정하지 않으면 압축 파일 옆에 압축 파일 이름(확장자 하나 뺀 것)의 폴더다(commands.unzip과 같음).
+function unzipDest(archive, destDir) {
+  return destDir || path.join(path.dirname(archive), path.parse(archive).name);
+}
+
+// 풀 폴더가 들어갈 볼륨의 남은 공간(#77). 풀린 크기는 미리보기(unzip --dry-run)의 보고에 나온다.
+// { dest, free, text } 또는 확인하지 못하면 { dest, free: null, text }. freeSpace는 테스트에서 바꿔 넣는다.
+function unzipSpace(archive, destDir, { freeSpace = commands.freeSpace } = {}) {
+  const dest = unzipDest(archive, destDir);
+  const reserve = commands.formatSize(Number(commands.SPACE_RESERVE));
+  try {
+    const free = Number(freeSpace(dest).free);
+    return { dest, free, text: `남은 공간 ${commands.formatSize(free)}. 풀고 나서 ${reserve}보다 적게 남으면 풀지 않습니다.` };
+  } catch (err) {
+    return { dest, free: null, text: `남은 공간을 확인하지 못했습니다(${err.code ?? err.message}). 실행할 때 다시 확인하고, 확인하지 못하면 풀지 않습니다.` };
+  }
+}
+
+module.exports = { describeArchiveFormat, extractAllView, unzipDest, unzipSpace };
