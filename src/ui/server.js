@@ -185,7 +185,8 @@ function openBrowser(url) {
 function defaultRoutes() {
   const { createJobs } = require('./jobs');
   const { jobRoutes } = require('./jobPages');
-  return jobRoutes(createJobs());
+  const { pickRoutes } = require('./pickPage');
+  return new Map([...jobRoutes(createJobs()), ...pickRoutes()]);
 }
 
 // fctl ui 명령. out은 안내 줄을 쓰는 함수다.
