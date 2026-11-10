@@ -14,15 +14,15 @@ const { FcError } = require('../src/commands');
 
 const FCTL = path.join(__dirname, '..', 'bin', 'fctl.js');
 
-function request(url, { method = 'GET' } = {}) {
+function request(url, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request(url, { method }, (res) => {
+    const req = http.request(url, { method, headers }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
@@ -173,13 +173,15 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
     ['/organize', { GET: () => ({ body: 'get' }), POST: async () => ({ status: 201, body: 'posted' }) }],
     ['/archive', async () => { throw new Error('<later>'); }],
   ]);
-  const server = http.createServer(createHandler(routes));
+  const server = http.createServer(createHandler(routes, { token: 'tok' }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
+  // POST는 폼 형식과 토큰이 있어야 처리기까지 간다(#252).
+  const post = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'token=tok' };
   const files = await request(`${base}/files`);
   assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);
-  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, { method: 'POST' })).status], ['get', 201]);
+  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, post)).status], ['get', 201]);
   const put = await request(`${base}/organize`, { method: 'PUT' });
   assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
   const failed = await request(`${base}/archive`);
