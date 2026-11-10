@@ -421,34 +421,43 @@ function folderKey(parts) {
 // 자막 파일 확장자(#233). 자막 폴더 안의 이 파일은 영상 쪽 폴더 구조에 맞춰 이름을 고른다.
 const SUBTITLE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.sub', '.idx', '.vtt', '.smi', '.sami', '.sup']);
 
-// 영상 파일이 하위까지 든 폴더의 키 Set(#233). 영상이 든 언어 폴더(Show/English/video.mp4)는 자막 폴더가 아니라 더빙판 폴더로 본다.
+// 영상 파일이 하위까지 든 폴더의 키와 그 폴더의 실제 이름 Map(#233). 영상이 든 언어 폴더(Show/English/video.mp4)는 자막 폴더가 아니라 더빙판 폴더로 본다.
 function videoFolders(entries) {
   // productName이 이 모듈을 불러오므로 쓸 때 불러온다.
   const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
-  const folders = new Set();
+  const folders = new Map();
   for (const entry of entries) {
     if (entry.type !== 'file') continue;
     const ext = path.extname(entry.relative).toLowerCase();
     if (!VIDEO_EXTENSIONS.has(ext) && !TRANSPORT_EXTENSIONS.has(ext)) continue;
     const parts = entry.relative.split(path.sep).slice(0, -1);
-    for (let depth = 1; depth <= parts.length; depth++) folders.add(folderKey(parts.slice(0, depth)));
+    for (let depth = 1; depth <= parts.length; depth++) if (!folders.has(folderKey(parts.slice(0, depth)))) folders.set(folderKey(parts.slice(0, depth)), parts[depth - 1]);
   }
   return folders;
 }
 
 // 자막 파일의 이름을 고를 폴더들(바깥 폴더부터)과 이름 뒤에 붙일 구분 폴더 이름을 돌려준다(#233).
-// 가장 바깥 자막 폴더(Subs/, English Subs/, 영상 없는 언어 폴더 English/)를 빼고, 그 안의 폴더는 영상 쪽에 같은 경로의 폴더가 있는 데까지 쓴다.
-// Show/Subtitles/Season 1/video.srt는 Show/Season 1/이 있으면 Show/Season 1/video.srt처럼 이름을 고른다.
+// 가장 바깥 자막 폴더(Subs/, English Subs/, 영상 없는 언어 폴더 English/)를 빼고, 그 안의 폴더는 영상이 든 같은 경로의 폴더가 영상 쪽에 있는 데까지 쓴다.
+// Show/Subtitles/Season 1/video.srt는 Show/Season 1/에 영상이 있으면 Show/Season 1/video.srt처럼 이름을 고른다.
+// 맞춘 폴더 이름은 영상 쪽 폴더의 표기(videos의 값)를 써서, 대소문자가 달라도(1080P/cd1) 영상과 같은 접두어를 받는다(1차 리뷰).
+// 영상이 없는 폴더(Show/Extras/poster.jpg)에는 맞추지 않는다. 맞추면 영상(Show video.mp4)과 접두어가 달라진다(1차 리뷰).
 // 그보다 안쪽 폴더 중 쓸 만한 이름(Forced/, Full/)은 이름 뒤에 점으로 붙여(Show video.Forced.srt) 영상과 짝을 지키며 서로 구분한다.
-// 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 붙이지 않는다. 자막 폴더가 없으면 폴더를 그대로 돌려준다.
-function subtitlePlacement(parts, folderSet, videos) {
+// 제품번호 폴더(Subs/ABC-123/)는 붙이지 않고 폴더로 남겨 예전처럼 먼저 고른다(1차 리뷰). 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 붙이지 않는다.
+// 자막 폴더가 없으면 폴더를 그대로 돌려준다.
+function subtitlePlacement(parts, videos) {
   const container = parts.findIndex((part, index) => subtitleFolder(part) || (languageFolder(part) && !videos.has(folderKey(parts.slice(0, index + 1)))));
   if (container === -1) return { parts, tags: [] };
-  const outside = parts.slice(0, container);
+  const mirrored = parts.slice(0, container);
   let end = container + 1;
-  while (end < parts.length && folderSet.has(folderKey([...outside, ...parts.slice(container + 1, end + 1)]))) end++;
-  const tags = parts.slice(end).filter((part) => !part.startsWith('.') && informativeFolder(part) && !containerFolder(part));
-  return { parts: [...outside, ...parts.slice(container + 1, end)], tags };
+  for (; end < parts.length; end++) {
+    const name = videos.get(folderKey([...mirrored, parts[end]]));
+    if (name === undefined) break;
+    mirrored.push(name);
+  }
+  const inner = parts.slice(end).filter((part) => !part.startsWith('.'));
+  const products = inner.filter((part) => extractProductNumbers(part).length > 0);
+  const tags = inner.filter((part) => !products.includes(part) && informativeFolder(part) && !containerFolder(part));
+  return { parts: [...mirrored, ...products], tags };
 }
 
 // 고른 이름에 구분 폴더 이름(tags)을 첫 점 앞부분 뒤에 점으로 붙인다(#233). Show video.en.srt → Show video.Forced.en.srt
@@ -524,14 +533,13 @@ function planFlatten(dir) {
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
   // 자막 파일은 자막 폴더를 뺀 영상 쪽 폴더로 이름을 고르고 센다(#233).
-  const folderSet = new Set(entries.filter((entry) => entry.type === 'dir').map((entry) => folderKey(entry.relative.split(path.sep))));
   const videos = videoFolders(entries);
   const placements = new Map();
   const placementOf = (entry) => {
     let place = placements.get(entry);
     if (!place) {
       const parts = entry.relative.split(path.sep).slice(0, -1);
-      place = SUBTITLE_EXTENSIONS.has(path.extname(entry.relative).toLowerCase()) ? subtitlePlacement(parts, folderSet, videos) : { parts, tags: [] };
+      place = SUBTITLE_EXTENSIONS.has(path.extname(entry.relative).toLowerCase()) ? subtitlePlacement(parts, videos) : { parts, tags: [] };
       placements.set(entry, place);
     }
     return place;
