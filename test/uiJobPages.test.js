@@ -27,14 +27,18 @@ async function settled(jobs, job, timeoutMs = 20000) {
   }
 }
 
-// 테스트용 서버: 작업 페이지에 POST /start(본문 없이 argv를 정해 둠)를 더한다.
+// 테스트용 서버: 작업 페이지에 POST /start(argv는 정해 둠)를 더한다.
+// POST는 서버 토큰을 폼으로 보내야 처리기까지 간다(#252). 토큰은 GET /token 화면의 숨은 필드에서 읽는다.
 async function serve(t, jobs, argvForStart) {
   const routes = jobRoutes(jobs);
   routes.set('/start', { POST: (req, { available }) => startJobResponse(jobs, argvForStart(), { available }) });
+  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
   const { server, url } = await startServer({ port: 0, routes });
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
-  return { get };
+  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
+  const post = (p) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `token=${token}` });
+  return { get, post };
 }
 
 // 끝난 작업 객체(서버 없이 화면만 볼 때 쓴다).
@@ -53,9 +57,9 @@ test('작업 시작 → 상태 페이지(진행·경과·새로 고침) → 동�
   const dir = tempDir();
   const flag = path.join(dir, 'go');
   const jobs = createJobs({ workerPath: FAKE_WORKER });
-  const { get } = await serve(t, jobs, () => ['wait', flag]);
+  const { get, post } = await serve(t, jobs, () => ['wait', flag]);
 
-  const started = await get('/start', { method: 'POST' });
+  const started = await post('/start');
   assert.strictEqual(started.status, 303);
   const location = started.headers.get('location');
   assert.match(location, /^\/job\?id=[0-9a-f]{24}$/);
@@ -73,7 +77,7 @@ test('작업 시작 → 상태 페이지(진행·경과·새로 고침) → 동�
   const early = await get(`/job/result?id=${job.id}`);
   assert.strictEqual(early.status, 303);
   assert.strictEqual(early.headers.get('location'), location);
-  const busy = await get('/start', { method: 'POST' });
+  const busy = await post('/start');
   assert.strictEqual(busy.status, 409);
   const busyHtml = await busy.text();
   assert.match(busyHtml, /이미 실행 중인 작업이 있습니다/);
@@ -97,8 +101,8 @@ test('작업 시작 → 상태 페이지(진행·경과·새로 고침) → 동�
 
 test('결과 페이지는 진행 줄을 접어 보이고, 없는 작업은 404로 답한다 (#253)', async (t) => {
   const jobs = createJobs({ workerPath: FAKE_WORKER });
-  const { get } = await serve(t, jobs, () => ['progress', '3']);
-  const started = await get('/start', { method: 'POST' });
+  const { get, post } = await serve(t, jobs, () => ['progress', '3']);
+  const started = await post('/start');
   const job = jobs.get(new URL(started.headers.get('location'), 'http://x').searchParams.get('id'));
   await settled(jobs, job);
   const resultHtml = await (await get(`/job/result?id=${job.id}`)).text();
