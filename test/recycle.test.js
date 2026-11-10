@@ -459,9 +459,10 @@ test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설�
   if ($p.EndsWith('nuke')) { $nuke = '1' }
   if ($p.EndsWith('cap')) { $nuke = '0'; $cap = '1' }
   if ($p.EndsWith('removable')) { $type = 'Removable' }
-  return @($type, $nuke, $cap)`;
+  $root = $p
+  return @($type, $nuke, $cap, $root)`;
   const swapped = script
-    .replace('  return @($type, $nuke, $cap)', override)
+    .replace('  return @($type, $nuke, $cap, $root)', override)
     .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
   assert.ok(swapped.includes('AppendAllText') && swapped.includes('[IO.File]::Delete($long)'), '설정 읽기와 휴지통 이동 호출을 찾아 바꿔야 한다');
   const results = reload().recycleFiles(items, { script: swapped });
@@ -479,6 +480,24 @@ test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설�
   assert.deepStrictEqual(fs.readFileSync(reads, 'utf8').trim().split('\n').map((line) => path.relative(dir, line)), ['ok', 'nuke', 'cap', 'removable']);
 });
 
+test('recycleFiles의 PowerShell 스크립트는 같은 볼륨의 다른 폴더에서는 휴지통 설정을 다시 읽지 않는다 (#236 1차 리뷰)', { skip: !isWindows && 'PowerShell' }, () => {
+  const { fileStamp } = require('../src/target');
+  const dir = tempDir();
+  const files = ['a', 'b', 'c'].map((folder) => path.join(dir, folder, 'x.mp4'));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, 'x');
+  }
+  const reads = path.join(dir, 'reads.txt');
+  const swapped = reload().RECYCLE_FILES_SCRIPT
+    .replace('  return @($type, $nuke, $cap, $root)', `[IO.File]::AppendAllText('${reads}', $p + "\`n")\n  return @($type, $nuke, $cap, $root)`)
+    .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
+  assert.ok(swapped.includes('AppendAllText') && swapped.includes('[IO.File]::Delete($long)'));
+  const results = reload().recycleFiles(files.map((file) => ({ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) })), { script: swapped });
+  assert.deepStrictEqual(results.map((item) => item.status), ['ok', 'ok', 'ok']);
+  assert.deepStrictEqual(fs.readFileSync(reads, 'utf8').trim().split('\n').map((line) => path.relative(dir, line)), ['a']);
+});
+
 test('recycleFiles의 PowerShell 스크립트는 휴지통 최대 크기를 모르면 1GB 이상 파일을 지우지 않는다 (#236)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
@@ -487,10 +506,10 @@ test('recycleFiles의 PowerShell 스크립트는 휴지통 최대 크기를 모�
   // 크기를 바꾸는 대신 기준(1GB - 1)을 0으로 낮춘 사본으로 같은 판정 줄을 탄다.
   const script = reload().RECYCLE_FILES_SCRIPT;
   const swapped = script
-    .replace('  return @($type, $nuke, $cap)', "  return @($type, $nuke, '')")
+    .replace('  return @($type, $nuke, $cap, $root)', "  return @($type, $nuke, '', $root)")
     .replace('{ 1GB - 1 }', '{ 0 }')
     .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
-  assert.ok(swapped.includes("@($type, $nuke, '')") && swapped.includes('{ 0 }'));
+  assert.ok(swapped.includes("@($type, $nuke, '', $root)") && swapped.includes('{ 0 }'));
   const [result] = reload().recycleFiles([{ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) }], { script: swapped });
   assert.deepStrictEqual([result.status, result.reason], ['permanent', '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로']);
   assert.ok(fs.existsSync(file));

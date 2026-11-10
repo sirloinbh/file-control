@@ -907,17 +907,27 @@ function Same([string]$k, [string]$stamp) {
   if (($f -eq $null) -or -not [string]::Equals((Plain $f), $k, [StringComparison]::OrdinalIgnoreCase)) { return $false }
   return ([FcFileCheck]::Stamp($kl) -eq $stamp)
 }
-# 볼륨의 휴지통 설정을 읽는다(#236). 같은 폴더의 파일은 같은 볼륨이므로 폴더마다 묶음에서 처음 한 번만 읽는다.
+# 볼륨의 휴지통 설정을 읽는다(#236). 같은 폴더의 파일은 같은 볼륨이므로 폴더마다 묶음에서 처음 한 번만 본다.
+# 레지스트리 읽기는 폴더 하나에 40ms쯤 걸려(1차 리뷰 실측), 볼륨 루트(GetVolumePathName)가 같으면 읽은 설정을 다시 쓴다.
 function VolumeState([string]$p) {
 ${VOLUME_STATE_PS}
-  return @($type, $nuke, $cap)
+  return @($type, $nuke, $cap, $root)
 }
-$volumes = @{}
+$volumes = @{}; $roots = @{}
+function VolumeOf([string]$dir) {
+  if ('FcVolume.Native' -as [type]) {
+    $b = New-Object Text.StringBuilder 1024
+    if ([FcVolume.Native]::GetVolumePathNameW($dir, $b, 1024) -and $roots.ContainsKey($b.ToString())) { return $roots[$b.ToString()] }
+  }
+  $state = VolumeState $dir
+  if ($state[3] -and $state[0] -ne 'Unknown') { $roots[$state[3]] = $state }
+  return $state
+}
 # 지우면 영구 삭제될 것이면 RECYCLE_SCRIPT와 같은 표시(type|종류, nuke, cap|MB, unknown)를, 아니면 $null을 돌려준다.
 function PermanentMark([string]$p, [long]$size) {
   $dir = [IO.Path]::GetDirectoryName($p)
-  if (-not $volumes.ContainsKey($dir)) { $volumes[$dir] = VolumeState $dir }
-  $type, $nuke, $cap = $volumes[$dir]
+  if (-not $volumes.ContainsKey($dir)) { $volumes[$dir] = VolumeOf $dir }
+  $type, $nuke, $cap, $root = $volumes[$dir]
   if ($type -ne 'Fixed') { return 'type|' + $type }
   if ($nuke -ne '' -and $nuke -ne '0') { return 'nuke' }
   $limit = if ($cap -ne '') { [long]$cap * 1MB } else { 1GB - 1 }
