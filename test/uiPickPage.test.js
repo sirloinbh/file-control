@@ -97,7 +97,7 @@ test('보호 폴더는 들어가 볼 수 있지만 고를 수 없고 사유를 �
   // 사용자 폴더 자체는 고를 수 없다.
   assert.match(res.body, /고를 수 없음/);
   assert.ok(!res.body.includes(`${href(back(home))}>`));
-  assert.match(res.body, /사용자 폴더 .*를 포함라 이 폴더는 고를 수 없습니다/);
+  assert.match(res.body, /이 폴더는 고를 수 없습니다\(사유: 사용자 폴더 .*를 포함\)/);
   // AppData·.ssh는 들어가기 링크만 있고 고르기 링크가 없다. Downloads는 고를 수 있다.
   for (const name of ['AppData', '.ssh']) {
     assert.ok(res.body.includes(href(returning(path.join(home, name)))), name);
@@ -158,4 +158,30 @@ test('fctl ui의 기본 주소에 폴더 고르기 화면이 있다 (#254)', asy
   const res = await fetch(new URL('/pick', url));
   assert.strictEqual(res.status, 200);
   assert.match(await res.text(), /<h2>드라이브<\/h2>/);
+});
+
+test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워크 경로도 열지 않는다 (#254 1차 리뷰)', async (t) => {
+  const { server, url } = await startServer({ port: 0, routes: pickRoutes(SOURCES) });
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  const dir = fs.mkdtempSync(path.join(base, 'cross-'));
+  fs.mkdirSync(path.join(dir, 'inner'));
+  const query = `/pick?${new URLSearchParams({ dir, return: '/organize', field: 'target' })}`;
+  for (const site of ['cross-site', 'same-site']) {
+    const res = await fetch(new URL(query, url), { headers: { 'sec-fetch-site': site } });
+    const body = await res.text();
+    assert.strictEqual(res.status, 200, site);
+    assert.match(body, /다른 사이트에서 연 주소라 폴더를 열지 않았습니다/, site);
+    assert.ok(!body.includes('>inner</a>'), site);
+    assert.match(body, /<h2>드라이브<\/h2>/, site);
+  }
+  // 이 화면에서 누른 링크(same-origin)는 연다.
+  const same = await (await fetch(new URL(query, url), { headers: { 'sec-fetch-site': 'same-origin' } })).text();
+  assert.ok(same.includes('>inner</a>'));
+  if (process.platform === 'win32') {
+    const unc = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir: '\\\\attacker\\share', return: '/organize', field: 'target' })}`, url))).text();
+    assert.match(unc, /네트워크·장치 경로는 열지 않습니다/);
+  }
 });

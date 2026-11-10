@@ -66,7 +66,7 @@ function folderBody(query, folder) {
   const up = folder.parent === null ? link(undefined, '드라이브 목록') : link(folder.parent, '위로');
   const canReturn = query.returnTo !== null;
   const choose = folder.protected !== null
-    ? html`<p>${badge('warning', '고를 수 없음')} ${folder.protected}라 이 폴더는 고를 수 없습니다. 안의 다른 폴더를 고르세요.</p>`
+    ? html`<p>${badge('warning', '고를 수 없음')} 이 폴더는 고를 수 없습니다(사유: ${folder.protected}). 안의 다른 폴더를 고르세요.</p>`
     : canReturn
       ? html`<p><a href="${chosenUrl({ ...query, dir: folder.path })}"><strong>이 폴더 고르기</strong></a></p>`
       : '';
@@ -78,7 +78,8 @@ function folderBody(query, folder) {
 <p>${up}</p>
 ${choose}
 ${summaryCards([{ label: '폴더', value: folder.folders.length }, { label: '파일', value: folder.files }, { label: '파일 크기', value: formatSize(folder.size) }])}
-${table([{ label: '폴더', width: '60%' }, { label: '' }], rows, { empty: '하위 폴더가 없습니다.' })}`;
+${table([{ label: '폴더', width: '60%' }, { label: '' }], rows, { empty: '하위 폴더가 없습니다.' })}
+${folder.hiddenFolders > 0 ? html`<p class="muted">폴더가 많아 앞의 ${folder.folders.length}개만 보여 줍니다(나머지 ${folder.hiddenFolders}개).</p>` : ''}`;
 }
 
 // GET /pick 처리기. sources는 시험에서 드라이브·위치·폴더 읽기를 바꿔 끼운다.
@@ -86,6 +87,12 @@ function pickPage(req, { available }, sources = { listDrives, commonPlaces, brow
   const query = readPickQuery(req.url);
   const alerts = [];
   if (query.returnTo === null) alerts.push({ kind: 'info', message: '둘러보기만 합니다. 다른 화면의 "폴더 고르기"에서 열면 고른 폴더가 그 화면에 채워집니다.' });
+  // 폴더 열기는 이 화면에서 누른 링크로만 받는다. 다른 사이트의 링크·이미지가 폴더를 열게 하지 않는다(1차 리뷰).
+  const site = req.headers['sec-fetch-site'];
+  if (query.dir !== null && (site === 'cross-site' || site === 'same-site')) {
+    alerts.push({ kind: 'error', message: '다른 사이트에서 연 주소라 폴더를 열지 않았습니다. 아래에서 다시 고르세요.' });
+    query.dir = null;
+  }
   if (query.dir !== null) {
     try {
       const folder = sources.browseFolder(query.dir);
