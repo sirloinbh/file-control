@@ -6,7 +6,7 @@
 
 const { html } = require('./html');
 const { page, alertBox } = require('./layout');
-const { BusyError, formatElapsed } = require('./jobs');
+const { BusyError, formatElapsed, KEPT_HEAD_LINES: KEPT_HEAD } = require('./jobs');
 
 const STATUS_PATH = '/job';
 const RESULT_PATH = '/job/result';
@@ -22,9 +22,18 @@ function commandLine(job) {
   return html`<p>명령: <code>fctl ${job.argv.join(' ')}</code></p>`;
 }
 
+// 상태 페이지: 최근 줄만 보이므로 앞에서 생략한 줄 수를 알린다.
 function linesBlock(lines, skipped) {
   if (lines.length === 0) return html`<p class="muted">아직 진행 줄이 없습니다.</p>`;
   return html`${skipped > 0 ? html`<p class="muted">앞의 진행 줄 ${skipped}개는 생략했습니다.</p>` : ''}<pre class="report">${lines.join('\n')}</pre>`;
+}
+
+// 결과 페이지: jobs.js는 줄이 많으면 처음 KEPT_HEAD_LINES줄 뒤의 중간 줄을 버린다. 그 자리에 생략 표시를 넣는다.
+function allLinesBlock(lines, dropped) {
+  if (dropped === 0) return html`<pre class="report">${lines.join('\n')}</pre>`;
+  return html`<pre class="report">${lines.slice(0, KEPT_HEAD).join('\n')}</pre>
+<p class="muted">중간의 진행 줄 ${dropped}개는 생략했습니다.</p>
+<pre class="report">${lines.slice(KEPT_HEAD).join('\n')}</pre>`;
 }
 
 function jobFromRequest(jobs, req) {
@@ -91,7 +100,7 @@ function resultPage(jobs, job, { available, views = {} } = {}) {
     else content = html`<p class="muted">보고할 내용이 없습니다.</p>`;
   }
   const lines = job.lines.length > 0 || job.droppedLines > 0
-    ? html`<details><summary>진행 줄 ${job.lines.length + job.droppedLines}개</summary>${linesBlock(job.lines, job.droppedLines)}</details>`
+    ? html`<details><summary>진행 줄 ${job.lines.length + job.droppedLines}개</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`
     : '';
   return page({
     title: job.status === 'error' ? '작업 실패' : '작업 결과',

@@ -229,3 +229,49 @@ test('createJobs는 진행 줄이 아주 많으면 앞부분과 최근 줄만 �
   assert.strictEqual(job.lines[100], '줄 201');
   assert.strictEqual(job.lines.at(-1), '줄 2100');
 });
+
+test('worker의 runOnce는 실제 명령(flatten)의 진행 줄을 결과보다 먼저 progress 메시지로 보낸다 (#253 1차 리뷰)', (t) => {
+  t.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'sub'));
+  fs.writeFileSync(path.join(dir, 'sub', 'a.txt'), 'A');
+  // 숨김 파일이 남아 sub 폴더는 휴지통으로 가지 않는다.
+  fs.writeFileSync(path.join(dir, 'sub', 'h.txt'), 'H');
+  require('node:child_process').execFileSync('attrib', ['+h', path.join(dir, 'sub', 'h.txt')]);
+  const sent = [];
+  runOnce(['flatten', dir], (msg) => sent.push(msg));
+  assert.deepStrictEqual(sent.map((m) => m.type), ['progress', 'done']);
+  assert.strictEqual(sent[0].line, `이동: ${path.join('sub', 'a.txt')} -> a.txt`);
+  assert.strictEqual(sent[1].outcome.command, 'flatten');
+  assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
+  assert.ok(fs.existsSync(path.join(dir, 'sub', 'h.txt')));
+});
+
+// child_process.fork 대신 쓰는 가짜 자식. pid가 없으면 띄우기에 실패한 것이다.
+function fakeChild(pid) {
+  const { EventEmitter } = require('node:events');
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.send = () => true;
+  return child;
+}
+
+test('createJobs는 살아 있는 자식의 error에서는 풀지 않고 close를 기다리며, 띄우기 실패(pid 없음)는 바로 푼다 (#253 1차 리뷰)', () => {
+  let child = fakeChild(1234);
+  const jobs = createJobs({ fork: () => child });
+  const job = jobs.start(['ls']);
+  child.emit('error', new Error('메시지 보내기 실패'));
+  assert.strictEqual(jobs.running(), job);
+  assert.strictEqual(job.status, 'running');
+  assert.throws(() => jobs.start(['ls']), BusyError);
+  child.emit('close', 1, null);
+  assert.strictEqual(jobs.running(), null);
+  assert.strictEqual(job.status, 'error');
+  assert.match(job.error.message, /결과 없이 끝났습니다\(메시지 보내기 실패\)/);
+
+  child = fakeChild(undefined);
+  const failed = jobs.start(['ls']);
+  child.emit('error', new Error('spawn ENOENT'));
+  assert.strictEqual(jobs.running(), null);
+  assert.match(failed.error.message, /spawn ENOENT/);
+});

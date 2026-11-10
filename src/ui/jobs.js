@@ -12,6 +12,8 @@ const WORKER = path.join(__dirname, 'worker.js');
 const KEEP_FINISHED = 20;
 // 진행 줄이 아주 많아도 메모리를 다 쓰지 않게 앞뒤 일부만 남긴다.
 const MAX_LINES = 2000;
+// 줄을 버릴 때도 처음 이만큼은 남긴다(무엇을 시작했는지 보이게). 결과 페이지가 생략 표시 자리로 쓴다.
+const KEPT_HEAD_LINES = 100;
 // 자식이 결과 없이 죽었을 때 사유로 보여 줄 표준 오류의 끝부분 길이.
 const MAX_STDERR = 4000;
 
@@ -91,8 +93,14 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     };
     // 결과 메시지를 받아도 프로세스가 끝날 때까지는 다음 작업을 받지 않는다.
     // exit는 아직 읽지 않은 메시지보다 먼저 올 수 있으므로, IPC 채널과 표준 오류까지 닫힌 뒤의 close에서 마무리한다.
-    child.on('close', (code, signal) => settle(code, signal));
-    child.on('error', (err) => settle(null, null, err));
+    let childError = null;
+    child.on('close', (code, signal) => settle(code, signal, childError));
+    // error는 프로세스가 살아 있어도(메시지 보내기 실패 등) 올 수 있다. 그때 풀면 두 작업이 함께 돌 수 있으므로,
+    // 띄우기 자체가 실패해 pid가 없을 때만 바로 정리하고, 그 밖에는 사유만 두고 close를 기다린다.
+    child.on('error', (err) => {
+      childError = err;
+      if (child.pid === undefined) settle(null, null, err);
+    });
     child.send({ argv: job.argv });
     return job;
   }
@@ -109,7 +117,7 @@ function addLine(job, line) {
   job.lines.push(String(line));
   if (job.lines.length > MAX_LINES) {
     // 처음 몇 줄은 무엇을 시작했는지 보여 주므로 남기고, 그 뒤를 버린다.
-    job.lines.splice(100, 1);
+    job.lines.splice(KEPT_HEAD_LINES, 1);
     job.droppedLines += 1;
   }
 }
@@ -125,4 +133,4 @@ function formatElapsed(ms) {
   return `${seconds}초`;
 }
 
-module.exports = { createJobs, BusyError, formatElapsed };
+module.exports = { createJobs, BusyError, formatElapsed, KEPT_HEAD_LINES };

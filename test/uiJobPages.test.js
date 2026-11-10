@@ -142,3 +142,12 @@ test('상태 페이지는 최근 진행 줄만 보이고 생략한 줄 수를 �
   assert.doesNotMatch(body, /줄 50\n/);
   assert.match(body, /줄 51\n/);
 });
+
+test('결과 페이지는 버린 중간 진행 줄 자리에 생략 표시를 넣는다 (#253 1차 리뷰)', () => {
+  // jobs.js는 처음 100줄을 남기고 그 뒤의 오래된 줄부터 버린다.
+  const lines = [...Array.from({ length: 100 }, (_, i) => `줄 ${i + 1}`), '줄 201', '줄 202'];
+  const body = resultPage(clock, finished({ lines, droppedLines: 100, outcome: { command: 'flatten', report: '끝' } }));
+  assert.match(body, /<summary>진행 줄 202개<\/summary>/);
+  assert.match(body, /줄 100<\/pre>\n<p class="muted">중간의 진행 줄 100개는 생략했습니다\.<\/p>\n<pre class="report">줄 201\n줄 202<\/pre>/);
+  assert.doesNotMatch(body, /앞의 진행 줄/);
+});
