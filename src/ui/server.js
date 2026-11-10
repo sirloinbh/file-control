@@ -155,6 +155,12 @@ function openBrowser(url) {
   }
 }
 
+function defaultRoutes() {
+  const { createJobs } = require('./jobs');
+  const { jobRoutes } = require('./jobPages');
+  return jobRoutes(createJobs());
+}
+
 // fctl ui 명령. out은 안내 줄을 쓰는 함수다.
 async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
   const options = parseUiArgs(argv);
@@ -162,7 +168,8 @@ async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
     out(UI_HELP);
     return null;
   }
-  const { server, url } = await startServer({ port: options.port, routes });
+  // 화면별 주소를 따로 주지 않으면 작업 상태·결과 페이지(#253)를 붙인다. 명령은 자식 프로세스로 실행한다.
+  const { server, url } = await startServer({ port: options.port, routes: routes ?? defaultRoutes() });
   out(`fctl 화면: ${url}`);
   out('끝내려면 Ctrl+C를 누르세요.');
   if (options.open) openBrowser(url);
