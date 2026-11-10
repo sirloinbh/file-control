@@ -1965,32 +1965,40 @@ test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 �
   // 자막 폴더와 그 아래 폴더, 자막 말이 든 폴더는 붙이지 않는다(1차 리뷰).
   assert.strictEqual(prefixedName('video.en.srt', ['English', 'Subs', 'ABC-123']), 'ABC-123 video.en.srt');
   assert.strictEqual(prefixedName('video.en.srt', ['English Subs', 'ABC-123']), 'ABC-123 video.en.srt');
-  // 언어 이름만 있는 폴더도 자막 폴더처럼 붙이지 않는다(2차 리뷰).
-  for (const folder of ['English', '한국어', 'KOR']) assert.strictEqual(prefixedName('video.ko.srt', [folder, 'ABC-123']), 'ABC-123 video.ko.srt', folder);
+  // 영상 없이 자막만 담은 언어 폴더도 자막 폴더처럼 붙이지 않는다(2차 리뷰). planFlatten이 자막의 폴더 목록에서 미리 뺀다(#233).
+  for (const folder of ['English', '한국어', 'KOR']) {
+    const dir = tempDir();
+    make(dir, ['ABC-123/video.mp4', `ABC-123/${folder}/video.ko.srt`]);
+    assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 video.ko.srt', 'ABC-123 video.mp4'], folder);
+  }
   // 사이 폴더까지 붙이면 길이 한도를 넘을 때는 고른 바깥 폴더만 붙인다(2차 리뷰).
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['T'.repeat(240), 'ABC-123']), 'ABC-123 CD1.mp4');
   assert.strictEqual(prefixedName('video.ko.srt', ['한국어', '자막', '1080p', 'ABC-123']), 'ABC-123 1080p video.ko.srt');
 });
 
 test('자막·언어 폴더는 접두어로 고르지 않아 영상과 자막이 같은 접두어를 받는다 (#211)', () => {
-  // 이슈의 사례: English가 아니라 CD1을 고르고 바깥 Show도 붙여 영상과 같다.
-  assert.strictEqual(prefixedName('video.en.srt', ['English', 'CD1', 'Show']), 'Show CD1 video.en.srt');
-  assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show']), 'Show CD1 video.mp4');
-  // 자막 말이 든 폴더, 한국어 언어 폴더, 전각 글자도 같다.
-  for (const folder of ['English Subs', '한국어', 'ＥＮＧＬＩＳＨ', 'Subs']) {
-    assert.strictEqual(prefixedName('video.ko.srt', [folder, 'CD1', 'Show']), 'Show CD1 video.ko.srt', folder);
+  const names = (files) => {
+    const dir = tempDir();
+    make(dir, files);
+    return planFlatten(dir).moves.map((move) => move.name).sort();
+  };
+  // 이슈의 사례: English가 아니라 CD1을 고르고 바깥 Show도 붙여 영상과 같다. 자막 말이 든 폴더, 한국어 언어 폴더, 전각 글자도 같다.
+  for (const folder of ['English', 'English Subs', '한국어', 'ＥＮＧＬＩＳＨ', 'Subs']) {
+    assert.deepStrictEqual(names(['Show/CD1/video.mp4', `Show/CD1/${folder}/video.ko.srt`]), ['Show CD1 video.ko.srt', 'Show CD1 video.mp4'], folder);
   }
+  // 자막 말이 든 폴더는 폴더 목록만 받는 prefixedName에서도 고르지 않는다.
+  for (const folder of ['English Subs', 'Subs']) assert.strictEqual(prefixedName('video.ko.srt', [folder, 'CD1', 'Show']), 'Show CD1 video.ko.srt', folder);
+  assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show']), 'Show CD1 video.mp4');
   // 자막 폴더 아래의 폴더(Subs/Forced/)도 고르지 않는다.
   assert.strictEqual(prefixedName('video.en.srt', ['Forced', 'Subs', 'Show']), 'Show video.en.srt');
-  // 바깥 제목은 언어 폴더가 아닌 것을 먼저 고르고, 없으면 언어 폴더도 쓴다(1차 리뷰). 강의 폴더의 제목을 잃지 않는다.
+  // 언어 이름만 있는 폴더는 영상 폴더(더빙판, 강의)로 보고 붙인다(#233). 바깥 제목은 언어 폴더가 아닌 것을 먼저 고르고, 없으면 언어 폴더도 쓴다(1차 리뷰).
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'English']), 'English CD1 video.mp4');
-  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['English', 'Show']), 'Show CD1.mp4');
+  assert.strictEqual(prefixedName('video.mp4', ['CD1', 'English', 'Show']), 'Show English CD1 video.mp4');
+  assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['English', 'Show']), 'Show English CD1.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['English']), 'English CD1.mp4');
-  // 언어 폴더 아래의 폴더(CD1)는 사이 폴더로 붙인다. 언어 폴더만 건너뛴다(1차 리뷰).
-  assert.strictEqual(prefixedName('video.mp4', ['CD1', 'English', 'Show']), 'Show CD1 video.mp4');
-  // 파일 하나뿐인 언어 폴더의 이름으로 바꾸지 않는다(detailedName의 정보 없는 파일명 경로).
-  assert.strictEqual(detailedName('video.srt', ['English']), 'video.srt');
-  assert.strictEqual(detailedName('video.srt', ['English', 'Show']), 'Show.srt');
+  // 파일 하나뿐인 자막 언어 폴더의 이름으로 바꾸지 않는다(detailedName의 정보 없는 파일명 경로).
+  assert.deepStrictEqual(names(['English/video.srt']), ['video.srt']);
+  assert.deepStrictEqual(names(['Show/English/video.srt']), ['Show.srt']);
   // 언어 말이 아닌 단어가 함께 있으면 예전처럼 쓴다.
   assert.strictEqual(prefixedName('video.mp4', ['English Lesson']), 'English Lesson video.mp4');
 });
@@ -2007,12 +2015,12 @@ test('planFlatten은 자막 폴더 안의 폴더 이름을 정보 없는 자막�
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 파일 하나뿐인 Forced/를 자막의 새 이름으로 고르지 않는다.
-  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Forced/video.srt']), ['Show video.mp4', 'Show video.srt']);
-  assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/Subs/Forced/video.srt']), ['Show CD1 video.mp4', 'Show CD1 video.srt']);
-  // 언어 폴더 아래의 CD 폴더 이름은 남아 서로 구분된다.
+  // 파일 하나뿐인 Forced/를 자막의 새 이름으로 고르지 않고, 영상과 같은 접두어 뒤에 구분 이름으로 붙인다(#233).
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Forced/video.srt']), ['Show video.Forced.srt', 'Show video.mp4']);
+  assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/Subs/Forced/video.srt']), ['Show CD1 video.Forced.srt', 'Show CD1 video.mp4']);
+  // 언어 폴더 아래의 CD 폴더 이름은 남아 서로 구분된다. 영상이 든 언어 폴더 이름도 남는다(#233).
   assert.deepStrictEqual(names(['Show/English/CD1/video.mp4', 'Show/English/CD1/sample.mp4', 'Show/English/CD2/video.mp4', 'Show/English/CD2/sample.mp4']), [
-    'Show CD1 sample.mp4', 'Show CD1 video.mp4', 'Show CD2 sample.mp4', 'Show CD2 video.mp4',
+    'Show English CD1 sample.mp4', 'Show English CD1 video.mp4', 'Show English CD2 sample.mp4', 'Show English CD2 video.mp4',
   ]);
   // 바깥에 언어 폴더뿐이면 그 이름을 쓴다.
   assert.deepStrictEqual(names(['Korean/Lesson 1/video.mp4', 'Korean/Lesson 2/video.mp4']), ['Korean Lesson 1.mp4', 'Korean Lesson 2.mp4']);
@@ -2020,8 +2028,55 @@ test('planFlatten은 자막 폴더 안의 폴더 이름을 정보 없는 자막�
   assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4']), ['Movie [Eng Sub].mp4']);
   assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4', 'Movie [Eng Sub]/sample.mp4']), ['Movie [Eng Sub] sample.mp4', 'Movie [Eng Sub] video.mp4']);
   assert.deepStrictEqual(names(['Movie (Eng Subs)/CD1/video.mp4', 'Movie (Eng Subs)/CD2/video.mp4']), ['Movie (Eng Subs) CD1.mp4', 'Movie (Eng Subs) CD2.mp4']);
-  // 자막·언어 말로만 된 Eng Sub/ 안의 폴더는 여전히 고르지 않는다.
-  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Eng Sub/Forced/video.srt']), ['Show video.mp4', 'Show video.srt']);
+  // 자막·언어 말로만 된 Eng Sub/ 안의 폴더는 여전히 새 이름으로 고르지 않고 구분 이름으로만 붙인다(#233).
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Eng Sub/Forced/video.srt']), ['Show video.Forced.srt', 'Show video.mp4']);
+});
+
+test('planFlatten은 자막 폴더 안의 구조를 영상 쪽 폴더와 맞춰 보고, 영상이 든 언어 폴더는 이름으로 쓴다 (#233)', () => {
+  const names = (files) => {
+    const dir = tempDir();
+    make(dir, files);
+    return planFlatten(dir).moves.map((move) => move.name).sort();
+  };
+  // 1. 자막 폴더 안을 영상과 같은 구조로 나누면 자막 폴더를 빼고 같은 폴더의 파일로 본다. 영상과 자막이 같은 접두어를 받는다.
+  assert.deepStrictEqual(names(['Show/Season 1/video.mp4', 'Show/Season 2/video.mp4', 'Show/Subtitles/Season 1/video.srt', 'Show/Subtitles/Season 2/video.srt']), [
+    'Show Season 1 video.mp4', 'Show Season 1 video.srt', 'Show Season 2 video.mp4', 'Show Season 2 video.srt',
+  ]);
+  assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD2/video.mp4', 'Subs/Show/CD1/video.srt', 'Subs/Show/CD2/video.srt']), [
+    'Show CD1 video.mp4', 'Show CD1 video.srt', 'Show CD2 video.mp4', 'Show CD2 video.srt',
+  ]);
+  // 사이의 화질 폴더도 영상과 같게 붙고, 대소문자가 달라도 같은 폴더로 보고 영상 쪽 표기를 쓴다(1차 리뷰).
+  assert.deepStrictEqual(names(['Show/1080p/CD1/video.mp4', 'Show/Subtitles/1080P/cd1/video.srt']), ['Show 1080p CD1 video.mp4', 'Show 1080p CD1 video.srt']);
+  // 같은 경로의 폴더가 있어도 영상이 없으면 맞추지 않는다(1차 리뷰). 영상과 같은 접두어를 받는다.
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/English/notes.txt', 'Show/Subs/English/video.en.srt']), ['Show video.en.srt', 'Show video.mp4', 'notes.txt']);
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Extras/poster.jpg', 'Show/Subs/Extras/video.srt']), ['Show video.Extras.srt', 'Show video.mp4', 'poster.jpg']);
+  // 자막 폴더 안의 제품번호 폴더는 구분 이름으로 붙이지 않고 예전처럼 먼저 고른다(1차 리뷰).
+  assert.deepStrictEqual(names(['Subs/ABC-123/video.en.srt', 'Subs/ABC-123/video.ko.srt']), ['ABC-123 video.en.srt', 'ABC-123 video.ko.srt']);
+  assert.deepStrictEqual(names(['Subs/ABC-123/video.srt']), ['ABC-123.srt']);
+  assert.deepStrictEqual(names(['Pack/video.mp4', 'Pack/Subs/ABC-123/video.srt']), ['ABC-123.srt', 'Pack video.mp4']);
+  // 영상 쪽에 없는 안쪽 폴더(Forced/, Full/)는 첫 점 앞부분 뒤에 구분 이름으로 붙어 서로 구분되고 영상과 짝을 지킨다.
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Forced/video.srt', 'Show/Subs/Full/video.srt']), ['Show video.Forced.srt', 'Show video.Full.srt', 'Show video.mp4']);
+  assert.deepStrictEqual(names(['Show/Season 1/video.mp4', 'Show/Subtitles/Season 1/Forced/video.en.srt', 'Show/Subtitles/Season 1/video.en.srt']), [
+    'Show Season 1 video.Forced.en.srt', 'Show Season 1 video.en.srt', 'Show Season 1 video.mp4',
+  ]);
+  // 구분 이름을 붙이면 255자를 넘을 때는 붙이지 않고 번호로 구분한다. 영상과 같은 접두어는 지킨다(1차 리뷰).
+  const long = 'T'.repeat(215);
+  assert.deepStrictEqual(names([`${long}/video.mp4`, `${long}/Subs/${'F'.repeat(40)}/video.srt`, `${long}/Subs/${'G'.repeat(40)}/video.srt`]), [
+    `${long} video (2).srt`, `${long} video.mp4`, `${long} video.srt`,
+  ]);
+  // 영상 없는 언어 폴더 안의 하위 폴더도 구분 이름으로 붙는다(예전에는 Show Ep1.srt).
+  assert.deepStrictEqual(names(['Show/English/Ep1/video.srt', 'Show/English/Ep2/video.srt']), ['Show video.Ep1.srt', 'Show video.Ep2.srt']);
+  // 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 구분 이름으로 붙이지 않는다.
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/English/video.en.srt']), ['Show video.en.srt', 'Show video.mp4']);
+  // 2. 영상이 든 언어 폴더(더빙판)는 언어 이름으로 구분한다. 그 안의 자막도 같은 접두어를 받는다.
+  assert.deepStrictEqual(names(['Show/English/video.mp4', 'Show/Korean/video.mp4']), ['Show English.mp4', 'Show Korean.mp4']);
+  assert.deepStrictEqual(names(['Show/English/video.mp4', 'Show/English/video.en.srt', 'Show/Korean/video.mp4', 'Show/Korean/Subs/video.ko.srt']), [
+    'Show English video.en.srt', 'Show English video.mp4', 'Show Korean video.ko.srt', 'Show Korean video.mp4',
+  ]);
+  // 3. 자막만 담은 언어 폴더 아래의 자막 하위 폴더도 영상과 같은 접두어 뒤에 구분 이름으로 붙는다.
+  assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/English/Forced/video.srt']), ['Show CD1 video.Forced.srt', 'Show CD1 video.mp4']);
+  // 자막이 아닌 파일(Subs/Fonts/font.ttf)은 예전처럼 자막 폴더 안의 폴더 이름을 고르지 않는다.
+  assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Fonts/video.ttf']), ['Show video.mp4', 'Show video.ttf']);
 });
 
 test('planFlatten은 파일 하나만 담은 바깥 폴더의 제목도 가까운 폴더 이름과 함께 남긴다 (#168)', () => {
