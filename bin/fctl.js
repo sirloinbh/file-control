@@ -29,6 +29,7 @@ const HELP = `fctl - 파일 컨트롤
   remove-duplicates <타겟>      중복 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
   find-low-quality <타겟>       해상도·비트레이트가 기준 미만인 저화질 영상 찾기 (파일은 건드리지 않음)
   remove-low-quality <타겟>     저화질 영상 중 지울 파일 목록과 확인값 보기 (--yes=확인값을 주면 기록을 남기고 휴지통으로)
+  ui [--port=번호] [--no-open]  로컬 웹 화면 띄우기 (127.0.0.1, 기본 포트 8109, Ctrl+C로 끝냄)
 
 옵션:
   --force       이미 있는 파일을 덮어씀
@@ -57,7 +58,13 @@ function run(argv, { progress } = {}) {
   return outcome.report;
 }
 
-if (require.main === module) {
+// ui는 끝나지 않고 계속 도는 서버라 run(결과 문자열을 돌려줌)과 따로 띄운다(#251).
+if (require.main === module && process.argv[2] === 'ui') {
+  require('../src/ui/server').runUi(process.argv.slice(3)).catch((err) => {
+    console.error(`오류: ${err.message}`);
+    process.exit(1);
+  });
+} else if (require.main === module) {
   try {
     // 진행 줄은 표준 오류로 낸다. 표준 출력의 마지막 보고는 그대로 두고, 중간에 끊겨도 이미 한 일이 화면에 남는다.
     const output = run(process.argv.slice(2), { progress: (line) => process.stderr.write(`진행: ${line}\n`) });
