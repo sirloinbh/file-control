@@ -1,0 +1,143 @@
+'use strict';
+
+// 공통 화면 틀과 부품(#251). 서버가 HTML을 만들어 보내고, 클라이언트 JS는 쓰지 않는다(#250).
+// CSS는 문서 안에 넣는다. 색은 :root 변수로 정하고 어두운 화면(prefers-color-scheme: dark)에서 바꾼다.
+// 좁은 창에서도 가로 스크롤이 생기지 않도록 표는 폭을 고정하고 긴 경로를 아무 데서나 줄바꿈한다.
+
+const { html, raw } = require('./html');
+
+// 머리글 메뉴의 명령 분류. 각 화면은 뒤 이슈(#256~#259)가 만든다. 서버에 그 주소가 없으면 메뉴에 "준비 중"으로 보인다.
+const CATEGORIES = [
+  { path: '/files', label: '기본 파일 작업', detail: '보기, 만들기, 이름 바꾸기, 옮기기, 복사, 휴지통으로 보내기' },
+  { path: '/organize', label: '폴더 정리', detail: '평탄화, 연속 폴더 접기, 제품번호 넣기, 이름 정규화' },
+  { path: '/archive', label: '압축', detail: '압축하기, 압축 풀기, 압축 파일 모두 풀기' },
+  { path: '/cleanup', label: '찾기·지우기', detail: '깨진 파일, 중복 영상, 저화질 영상 찾기와 지우기' },
+];
+
+const CSS = `
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5; --surface: #ffffff; --text: #1d1f23; --muted: #5d636e; --border: #d9dbe0;
+  --accent: #2f5bd3; --accent-text: #ffffff;
+  --ok-bg: #e6f4ea; --ok-text: #1e6b34; --warn-bg: #fff4dc; --warn-text: #7a5300;
+  --error-bg: #fde8e8; --error-text: #a12121; --info-bg: #e8effd; --info-text: #23439a;
+  --skip-bg: #eceef2; --skip-text: #4a505b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b; --surface: #1e2127; --text: #e6e8ec; --muted: #a0a6b1; --border: #343944;
+    --accent: #7b9cf5; --accent-text: #10131a;
+    --ok-bg: #173b24; --ok-text: #8fe0a8; --warn-bg: #3e3113; --warn-text: #f3cf7a;
+    --error-bg: #461b1b; --error-text: #ffaaaa; --info-bg: #1c2a4d; --info-text: #a9c1ff;
+    --skip-bg: #2a2e36; --skip-text: #c3c8d1;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 "Segoe UI", "Malgun Gothic", system-ui, sans-serif; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+header { background: var(--surface); border-bottom: 1px solid var(--border); }
+.bar { max-width: 1100px; margin: 0 auto; padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }
+.brand { font-weight: 700; text-decoration: none; color: var(--text); margin-right: 8px; }
+nav ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+nav a, nav span { display: inline-block; padding: 4px 10px; border-radius: 6px; text-decoration: none; }
+nav a[aria-current="page"] { background: var(--accent); color: var(--accent-text); }
+nav span { color: var(--muted); }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+h1 { font-size: 1.4rem; margin: 0 0 16px; }
+h2 { font-size: 1.1rem; margin: 24px 0 10px; }
+.alert { border-radius: 8px; padding: 10px 14px; margin: 0 0 12px; border: 1px solid transparent; }
+.alert-success { background: var(--ok-bg); color: var(--ok-text); }
+.alert-warning { background: var(--warn-bg); color: var(--warn-text); }
+.alert-error { background: var(--error-bg); color: var(--error-text); }
+.alert-info { background: var(--info-bg); color: var(--info-text); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0 0 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 0; }
+.card .value { font-size: 1.5rem; font-weight: 700; }
+.card .label { color: var(--muted); font-size: 0.9rem; }
+.card-ok .value { color: var(--ok-text); } .card-warning .value { color: var(--warn-text); } .card-error .value { color: var(--error-text); }
+table { width: 100%; table-layout: fixed; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; word-break: break-word; }
+th { font-weight: 600; color: var(--muted); font-size: 0.9rem; }
+tr:last-child td { border-bottom: 0; }
+.empty { color: var(--muted); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.85rem; white-space: nowrap; }
+.badge-ok { background: var(--ok-bg); color: var(--ok-text); }
+.badge-skip { background: var(--skip-bg); color: var(--skip-text); }
+.badge-warning { background: var(--warn-bg); color: var(--warn-text); }
+.badge-error { background: var(--error-bg); color: var(--error-text); }
+.menu { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 0; list-style: none; }
+.menu li { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.menu .detail { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; }
+.muted { color: var(--muted); }
+code { font-family: Consolas, "Cascadia Mono", monospace; }
+pre.report { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
+`;
+
+// 알림 상자. kind: success(성공), warning(경고), error(오류), info(안내)
+const ALERT_KINDS = new Set(['success', 'warning', 'error', 'info']);
+function alertBox(kind, message) {
+  if (!ALERT_KINDS.has(kind)) throw new Error(`알 수 없는 알림 종류: ${kind}`);
+  const role = kind === 'error' || kind === 'warning' ? 'alert' : 'status';
+  return html`<div class="alert alert-${kind}" role="${role}">${message}</div>`;
+}
+
+// 요약 숫자 카드. items: [{ label, value, tone? }], tone은 ok·warning·error 중 하나.
+function summaryCards(items) {
+  return html`<div class="cards">${items.map(({ label, value, tone }) => html`<div class="card${tone ? ` card-${tone}` : ''}"><div class="value">${value}</div><div class="label">${label}</div></div>`)}</div>`;
+}
+
+// 상태 배지. 명령 결과의 상태를 색으로 나눈다.
+const BADGES = {
+  moved: ['ok', '이동'],
+  done: ['ok', '완료'],
+  skipped: ['skip', '건너뜀'],
+  kept: ['skip', '남김'],
+  warning: ['warning', '확인 필요'],
+  failed: ['error', '실패'],
+};
+function badge(status, text) {
+  const [tone, label] = BADGES[status] ?? ['skip', status];
+  return html`<span class="badge badge-${tone}">${text ?? label}</span>`;
+}
+
+// 표. columns: [{ label, width? }], rows: 칸 값 배열의 배열(문자열은 이스케이프, html``·badge()는 그대로).
+// width는 '40%'처럼 CSS 폭이다. 긴 경로는 칸 안에서 줄바꿈한다.
+function table(columns, rows, { empty = '항목이 없습니다.' } = {}) {
+  const head = html`<colgroup>${columns.map((column) => (column.width ? html`<col style="width: ${column.width}">` : html`<col>`))}</colgroup><thead><tr>${columns.map((column) => html`<th scope="col">${column.label}</th>`)}</tr></thead>`;
+  const body = rows.length === 0
+    ? html`<tr><td class="empty" colspan="${columns.length}">${empty}</td></tr>`
+    : rows.map((cells) => html`<tr>${cells.map((cell) => html`<td>${cell}</td>`)}</tr>`);
+  return html`<table>${head}<tbody>${body}</tbody></table>`;
+}
+
+// 문서 전체. current는 지금 화면의 분류 경로, available은 서버에 있는 경로 목록(없는 분류는 "준비 중").
+// refresh: { seconds, url? }를 주면 <meta http-equiv=refresh>로 그 시간 뒤에 url(없으면 같은 주소)을 다시 연다(#253 진행 표시).
+function page({ title, current = null, alerts = [], body = '', available = new Set(), refresh = null }) {
+  const nav = CATEGORIES.map((category) => {
+    if (!available.has(category.path)) return html`<li><span title="준비 중">${category.label}</span></li>`;
+    return category.path === current
+      ? html`<li><a href="${category.path}" aria-current="page">${category.label}</a></li>`
+      : html`<li><a href="${category.path}">${category.label}</a></li>`;
+  });
+  return html`<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${refresh ? html`<meta http-equiv="refresh" content="${Math.max(0, Math.floor(refresh.seconds))}${refresh.url ? `; url=${refresh.url}` : ''}">\n` : ''}<title>${title} - fctl</title>
+<style>${raw(CSS)}</style>
+</head>
+<body>
+<header><div class="bar"><a class="brand" href="/">fctl</a><nav aria-label="명령 분류"><ul>${nav}</ul></nav></div></header>
+<main>
+<h1>${title}</h1>
+${alerts.map(({ kind, message }) => alertBox(kind, message))}
+${body}
+</main>
+</body>
+</html>
+`.text;
+}
+
+module.exports = { CATEGORIES, page, alertBox, summaryCards, badge, table };
