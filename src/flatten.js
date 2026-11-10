@@ -72,11 +72,11 @@ function informativeFolder(folder) {
   return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
 }
 
-// 이름으로 고를 폴더인지 본다(#211). 쓸 만한 이름이라도 자막·언어 말로만 된 폴더(English Subs/, English/, 한국어/)는
-// 자막만 담는 폴더라 고르지 않는다. 고르면 Show/CD1/English/video.en.srt가 English를 받아 Show/CD1/video.mp4와 짝을 잃는다.
+// 이름으로 고를 폴더인지 본다(#211). 쓸 만한 이름이라도 자막 폴더(English Subs/, Eng Sub/)는 자막만 담는 폴더라 고르지 않는다.
 // 다른 말이 함께 있는 폴더(Movie [Eng Sub]/)는 하드섭 영상의 제목일 수 있어 고른다(2차 리뷰).
+// 언어 이름만 있는 폴더(English/)는 여기서 고른다(#233). 자막만 담은 언어 폴더는 planFlatten이 자막의 폴더 목록에서 미리 뺀다.
 function titleFolder(folder) {
-  return informativeFolder(folder) && !containerFolder(folder);
+  return informativeFolder(folder) && !subtitleFolder(folder);
 }
 
 // 접두어 사이에 함께 붙일 가까운 폴더인지 본다(#150). 쓸 만한 이름이거나 화질·코덱만 있는 이름(1080p, WEB-DL)이면 된다.
@@ -133,7 +133,7 @@ function folderStems(folders, ext) {
 // 자막 폴더 이름에 들어가는 말. English Subs/처럼 다른 말과 함께 있어도 자막 폴더로 본다.
 const SUBTITLE_WORD = /^(?:SUBS?|SUBTITLES?|자막)$/;
 
-// 언어 이름. 이 말만 있는 폴더(English/, 한국어/)는 자막을 언어별로 나눠 담는 폴더로 보고 자막 폴더처럼 다룬다(2차 리뷰).
+// 언어 이름. 이 말만 있고 영상이 없는 폴더(English/, 한국어/)는 자막을 언어별로 나눠 담는 폴더로 보고 자막 폴더처럼 다룬다(2차 리뷰, #233).
 const LANGUAGE_WORD = /^(?:ENGLISH|ENG|EN|KOREAN|KOR|KO|JAPANESE|JPN|JA|CHINESE|CHS|CHT|CHI|ZH|SPANISH|SPA|ES|FRENCH|FRE|FRA|FR|GERMAN|GER|DEU|DE|한국어|한글|영어|일본어|중국어)$/;
 
 // 자막 말이 든 폴더(Subs/, English Subs/, 자막/)면 true. 이 폴더와 그 안의 폴더는 자막만 담는다고 본다.
@@ -141,7 +141,7 @@ function hasSubtitleWord(folder) {
   return words(folder.normalize('NFKC')).some((word) => SUBTITLE_WORD.test(word));
 }
 
-// 언어 이름만 있는 폴더(English/, 한국어/)면 true. 자막을 언어별로 나눠 담는 폴더일 수 있다.
+// 언어 이름만 있는 폴더(English/, 한국어/)면 true. 자막을 언어별로 나눠 담는 폴더이거나 언어별 영상(더빙판) 폴더다.
 function languageFolder(folder) {
   const folderWords = words(folder.normalize('NFKC'));
   return folderWords.length > 0 && folderWords.every((word) => LANGUAGE_WORD.test(word));
@@ -153,27 +153,32 @@ function containerFolder(folder) {
   return folderWords.length > 0 && folderWords.every((word) => SUBTITLE_WORD.test(word) || LANGUAGE_WORD.test(word));
 }
 
-// 고른 폴더보다 바깥에서 붙일 제목 폴더를 가까운 쪽부터 찾는다(#211). 언어 이름만 있는 폴더는 다른 제목이 없을 때만 쓴다.
-// Show/English/CD1/video.mp4는 Show를, English/CD1/video.mp4는 English를 붙인다. 자막 짝은 바깥 폴더가 같으니 깨지지 않는다.
-function outerTitle(stems) {
-  return stems.find(titleFolder) ?? stems.find(informativeFolder);
+// 자막 말이 들고 자막·언어 말로만 된 폴더(Subs/, English Subs/, 자막/)면 true. Movie [Eng Sub]/처럼 제목이 든 폴더는 자막 폴더로 보지 않는다(2차 리뷰).
+function subtitleFolder(folder) {
+  return hasSubtitleWord(folder) && containerFolder(folder);
 }
 
-// folders(가까운 폴더부터) 중 자막 폴더(자막 말이 들고 자막·언어 말로만 된 폴더) 가운데 가장 바깥 것의 다음 위치(#211).
-// 그보다 가까운 폴더는 자막 폴더 안이라 제목으로 고르지 않는다. Movie [Eng Sub]/처럼 제목이 든 폴더는 자막 폴더로 보지 않는다(2차 리뷰).
+// 고른 폴더보다 바깥에서 붙일 제목 폴더를 가까운 쪽부터 찾는다(#211). 언어 이름만 있는 폴더와 자막 폴더(English Subs/)는 다른 제목이 없을 때만 쓴다.
+// Show/English/CD1/video.mp4는 Show를 고르고, 사이의 English는 joinBetween이 붙여 Show English CD1이 된다(#233). English/CD1/video.mp4는 English를 붙인다.
+function outerTitle(stems) {
+  return stems.find((stem) => titleFolder(stem) && !languageFolder(stem)) ?? stems.find(titleFolder) ?? stems.find(informativeFolder);
+}
+
+// folders(가까운 폴더부터) 중 자막 폴더 가운데 가장 바깥 것의 다음 위치(#211). 그보다 가까운 폴더는 자막 폴더 안이라 제목으로 고르지 않는다.
+// 자막 파일은 planFlatten이 자막 폴더를 미리 빼므로, 이 위치는 자막 폴더 안의 다른 파일(Subs/Fonts/font.ttf)에 쓰인다.
 function titleStart(folders) {
-  return folders.findLastIndex((folder) => hasSubtitleWord(folder) && containerFolder(folder)) + 1;
+  return folders.findLastIndex(subtitleFolder) + 1;
 }
 
 // chosen 뒤에 사이 폴더(between, 가까운 쪽부터) 중 붙일 이름을 바깥부터 붙인다(#150). 이미 들어 있는 이름(also 포함)은 다시 붙이지 않는다.
 // 자막 말이 든 폴더와 그 아래 폴더(Subs/English/)는 붙이지 않는다. 붙이면 ABC-123/Subs/English/video.en.srt가 영상과 접두어가 달라진다(1차 리뷰).
-// 언어 이름만 있는 폴더는 그 폴더만 건너뛴다(#211). Show/CD1/English/video.en.srt도, Show/English/CD1/video.mp4의 CD1도 지킨다.
+// 언어 이름만 있는 폴더(Show/English/CD1/)는 언어별 영상 폴더일 수 있어 붙인다(#233). 자막만 담은 언어 폴더는 planFlatten이 미리 뺀다.
 function joinBetween(chosen, between, also = '') {
   let prefix = chosen.normalize('NFC');
   for (const stem of [...between].reverse()) {
     const stemWords = words(stem);
     if (hasSubtitleWord(stem)) break;
-    if (languageFolder(stem) || !distinguishingFolder(stem) || containsWords(words(`${prefix} ${also}`), stemWords.join(''))) continue;
+    if (!distinguishingFolder(stem) || containsWords(words(`${prefix} ${also}`), stemWords.join(''))) continue;
     prefix = `${prefix} ${stem.normalize('NFC')}`;
   }
   return prefix;
@@ -246,7 +251,6 @@ function prefixedName(fileName, folders) {
   const stems = folderStems([folders].flat().filter((folder) => folder !== undefined), ext);
   // detailedName처럼 제품번호 폴더를 먼저 찾아, ABC-123/Extras/video.mp4가 Extras 대신 ABC-123을 붙이게 한다(2차 리뷰).
   // 제목 폴더는 자막 말이 든 폴더보다 바깥에서만 고른다(#211). Show/Subs/Forced/video.en.srt가 Forced를 받으면 영상과 짝을 잃는다.
-  // 언어 이름만 있는 폴더는 그 자신만 건너뛴다. English/CD1/video.mp4 같은 강의 폴더가 CD1을 잃지 않게 한다.
   const titles = stems.slice(titleStart(stems));
   const chosen = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? (GENERIC_WORD.test(b) ? titles.find(titleFolder) : undefined);
   if (chosen === undefined) return fileName;
@@ -399,24 +403,75 @@ function guardOf(relative, guarded) {
 }
 
 // 파일이 그 폴더(하위 포함)의 유일한 항목일 때만 폴더 이름을 쓸 수 있다. 여럿이면 ep1, ep2 같은 구분을 잃는다.
-function soleFolders(entry, fileCounts) {
-  const parts = entry.relative.split(path.sep).slice(0, -1);
+// parts는 이름을 고를 때 보는 폴더들(바깥 폴더부터)이다. 자막 파일은 subtitlePlacement가 정한 폴더들이다(#233).
+function soleFolders(parts, fileCounts) {
   const folders = [];
   for (let depth = parts.length; depth > 0; depth--) {
-    if (fileCounts.get(parts.slice(0, depth).join(path.sep)) !== 1) break;
+    if (fileCounts.get(folderKey(parts.slice(0, depth))) !== 1) break;
     folders.push(parts[depth - 1]);
   }
   return folders;
 }
 
+// 폴더 경로 비교용 키. Windows처럼 대소문자와 NFC/NFD 차이를 같은 폴더로 본다.
+function folderKey(parts) {
+  return parts.join(path.sep).normalize('NFC').toUpperCase();
+}
+
+// 자막 파일 확장자(#233). 자막 폴더 안의 이 파일은 영상 쪽 폴더 구조에 맞춰 이름을 고른다.
+const SUBTITLE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.sub', '.idx', '.vtt', '.smi', '.sami', '.sup']);
+
+// 영상 파일이 하위까지 든 폴더의 키 Set(#233). 영상이 든 언어 폴더(Show/English/video.mp4)는 자막 폴더가 아니라 더빙판 폴더로 본다.
+function videoFolders(entries) {
+  // productName이 이 모듈을 불러오므로 쓸 때 불러온다.
+  const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
+  const folders = new Set();
+  for (const entry of entries) {
+    if (entry.type !== 'file') continue;
+    const ext = path.extname(entry.relative).toLowerCase();
+    if (!VIDEO_EXTENSIONS.has(ext) && !TRANSPORT_EXTENSIONS.has(ext)) continue;
+    const parts = entry.relative.split(path.sep).slice(0, -1);
+    for (let depth = 1; depth <= parts.length; depth++) folders.add(folderKey(parts.slice(0, depth)));
+  }
+  return folders;
+}
+
+// 자막 파일의 이름을 고를 폴더들(바깥 폴더부터)과 이름 뒤에 붙일 구분 폴더 이름을 돌려준다(#233).
+// 가장 바깥 자막 폴더(Subs/, English Subs/, 영상 없는 언어 폴더 English/)를 빼고, 그 안의 폴더는 영상 쪽에 같은 경로의 폴더가 있는 데까지 쓴다.
+// Show/Subtitles/Season 1/video.srt는 Show/Season 1/이 있으면 Show/Season 1/video.srt처럼 이름을 고른다.
+// 그보다 안쪽 폴더 중 쓸 만한 이름(Forced/, Full/)은 이름 뒤에 점으로 붙여(Show video.Forced.srt) 영상과 짝을 지키며 서로 구분한다.
+// 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 붙이지 않는다. 자막 폴더가 없으면 폴더를 그대로 돌려준다.
+function subtitlePlacement(parts, folderSet, videos) {
+  const container = parts.findIndex((part, index) => subtitleFolder(part) || (languageFolder(part) && !videos.has(folderKey(parts.slice(0, index + 1)))));
+  if (container === -1) return { parts, tags: [] };
+  const outside = parts.slice(0, container);
+  let end = container + 1;
+  while (end < parts.length && folderSet.has(folderKey([...outside, ...parts.slice(container + 1, end + 1)]))) end++;
+  const tags = parts.slice(end).filter((part) => !part.startsWith('.') && informativeFolder(part) && !containerFolder(part));
+  return { parts: [...outside, ...parts.slice(container + 1, end)], tags };
+}
+
+// 고른 이름에 구분 폴더 이름(tags)을 첫 점 앞부분 뒤에 점으로 붙인다(#233). Show video.en.srt → Show video.Forced.en.srt
+// 폴더 이름으로 바꾼 이름(Show Season 1.srt)은 확장자 앞에 붙인다.
+function withTags(detailed, original, tags) {
+  const label = tags.map((tag) => tag.normalize('NFC')).join('.');
+  if (detailed.endsWith(original)) {
+    const dot = original.indexOf('.');
+    return `${detailed.slice(0, detailed.length - original.length)}${original.slice(0, dot)}.${label}${original.slice(dot)}`;
+  }
+  const ext = path.extname(original);
+  return `${detailed.slice(0, detailed.length - ext.length)}.${label}${ext}`;
+}
+
 // 폴더마다 안에 든 파일과 링크 수를 하위까지 합쳐 센다. 폴더 설정·미리보기 파일(desktop.ini 등)은 세지 않는다.
-function countFiles(entries) {
+// placeOf는 항목을 셀 폴더들(바깥 폴더부터)을 돌려준다. 자막은 영상 쪽 폴더로 옮겨 세어, 짝인 영상과 같은 폴더의 파일로 본다(#233).
+function countFiles(entries, placeOf) {
   const counts = new Map();
   for (const entry of entries) {
     if (entry.type === 'dir' || isFolderMetadata(entry)) continue;
-    const parts = entry.relative.split(path.sep).slice(0, -1);
+    const parts = placeOf(entry);
     for (let depth = 1; depth <= parts.length; depth++) {
-      const key = parts.slice(0, depth).join(path.sep);
+      const key = folderKey(parts.slice(0, depth));
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
   }
@@ -468,7 +523,20 @@ function planFlatten(dir) {
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
-  const fileCounts = countFiles(entries);
+  // 자막 파일은 자막 폴더를 뺀 영상 쪽 폴더로 이름을 고르고 센다(#233).
+  const folderSet = new Set(entries.filter((entry) => entry.type === 'dir').map((entry) => folderKey(entry.relative.split(path.sep))));
+  const videos = videoFolders(entries);
+  const placements = new Map();
+  const placementOf = (entry) => {
+    let place = placements.get(entry);
+    if (!place) {
+      const parts = entry.relative.split(path.sep).slice(0, -1);
+      place = SUBTITLE_EXTENSIONS.has(path.extname(entry.relative).toLowerCase()) ? subtitlePlacement(parts, folderSet, videos) : { parts, tags: [] };
+      placements.set(entry, place);
+    }
+    return place;
+  };
+  const fileCounts = countFiles(entries, (entry) => placementOf(entry).parts);
   const plan = { target: access.target, moves: [], stay: [], skipped: [], guarded: new Set(guarded.keys()) };
   // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름(번호가 붙었을 수도 있다)이 있다(#73).
   const topFiles = new Map();
@@ -522,8 +590,9 @@ function planFlatten(dir) {
     try {
       const from = access.read(entry.path);
       // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
-      const sole = soleFolders(entry, fileCounts);
-      const ancestors = parts.slice(0, -1).reverse();
+      const place = placementOf(entry);
+      const sole = soleFolders(place.parts, fileCounts);
+      const ancestors = [...place.parts].reverse();
       let detailed = detailedName(original, sole, titleStart(ancestors));
       if (detailed === original) detailed = prefixedName(original, ancestors);
       else detailed = withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
@@ -533,7 +602,10 @@ function planFlatten(dir) {
       // 이름은 아래에서 한꺼번에 배정한다. 실패하면 이 자리에 사유를 채워 건너뜀 순서를 유지한다.
       const slot = { path: entry.path, reason: null };
       plan.skipped.push(slot);
-      candidates.push({ from, original, desired: detailed.length > MAX_NAME ? original : detailed, slot });
+      if (detailed.length > MAX_NAME) detailed = original;
+      // 구분 폴더 이름을 붙인 이름이 한도를 넘으면 붙이지 않는다. 짝은 붙이기 전 이름으로 묶는다.
+      const tagged = place.tags.length > 0 && detailed !== original ? withTags(detailed, original, place.tags) : detailed;
+      candidates.push({ from, original, desired: tagged.length > MAX_NAME ? detailed : tagged, pairName: detailed, slot });
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
       plan.skipped.push({ path: entry.path, reason: err.message });
@@ -545,9 +617,10 @@ function planFlatten(dir) {
   // 원래 이름 파일(z/ABC-123 video.mp4)과 겹쳐도 짝 중 하나에만 번호가 붙어 짝이 깨지지 않게 한다(1차 리뷰).
   // 키는 붙인 접두어 + 원래 이름의 첫 점 앞부분이다. 접두어 폴더 이름의 점(ABC-123 v1.5)에서 자르지 않고,
   // 하위 폴더에 나뉜 짝(ABC-123/video.mp4, ABC-123/Subs/video.en.srt)도 묶는다(2차 리뷰).
+  // 구분 폴더 이름을 붙인 자막(Show video.Forced.srt)은 붙이기 전 이름(pairName)으로 영상과 묶는다(#233).
   const pairKey = (c) => {
-    if (!c.desired.endsWith(c.original)) return nameKey(c.desired);
-    return nameKey(c.desired.slice(0, c.desired.length - c.original.length) + c.original.split('.')[0]);
+    if (!c.pairName.endsWith(c.original)) return nameKey(c.pairName);
+    return nameKey(c.pairName.slice(0, c.pairName.length - c.original.length) + c.original.split('.')[0]);
   };
   const pairSizes = new Map();
   for (const c of candidates) if (c.desired !== c.original) pairSizes.set(pairKey(c), (pairSizes.get(pairKey(c)) ?? 0) + 1);
