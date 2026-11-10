@@ -7,7 +7,8 @@ const http = require('node:http');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { FcError } = require('../commands');
-const { html } = require('./html');
+const { html, raw } = require('./html');
+const { SECURITY_HEADERS, RequestError, createToken, checkRequest, readForm, tokenField } = require('./security');
 const { CATEGORIES, page, table } = require('./layout');
 
 const HOST = '127.0.0.1';
@@ -38,8 +39,11 @@ ${table([{ label: '분류', width: '30%' }, { label: '하는 일' }], rows)}`,
 
 // routes: Map<경로, 처리기 또는 { GET?, POST? }>. 함수 하나만 주면 GET 처리기다. HEAD는 GET 처리기로 답하고 본문만 뺀다.
 // 처리기: (req, context) => { status?, body, headers? } 또는 그 Promise. body는 문자열이나 html``(SafeHtml)이다.
-// POST 본문 읽기와 요청 검사(Host·Origin·토큰)는 #252가 더한다. context.available은 메뉴에 보일 경로 목록이다.
-function createHandler(routes = new Map()) {
+// context.available은 메뉴에 보일 경로 목록, context.tokenField는 폼에 넣을 숨은 토큰 필드(SafeHtml)다.
+// 요청 검사(#252): 모든 요청은 Host가 이 서버 주소여야 한다(DNS 재바인딩 방지). GET·HEAD가 아닌 요청은 Origin·폼 형식·본문 크기·토큰을
+// 모두 확인한 뒤에만 처리기를 부르고, 읽은 폼 값을 context.form(URLSearchParams)으로 넘긴다. 파일을 바꾸는 처리기는 POST에만 둔다.
+// token은 서버 시작 때 만든 무작위 값이다. 시험에서는 정해 줄 수 있다.
+function createHandler(routes = new Map(), { token = createToken() } = {}) {
   const all = new Map([['/', () => ({ body: homePage(available) })], ...routes]);
   const available = new Set(all.keys());
   const send = (res, status, body, headers = {}) => {
@@ -48,15 +52,25 @@ function createHandler(routes = new Map()) {
       res.destroy();
       return;
     }
-    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
+    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...headers, ...SECURITY_HEADERS });
     res.end(res.req.method === 'HEAD' ? undefined : String(body ?? ''));
   };
   const fail = (res, err) => {
     // 화면 코드의 예외는 스택 없이 문구만 보여 준다. 서버는 계속 돈다.
     send(res, 500, page({ title: '오류', available, alerts: [{ kind: 'error', message: err instanceof FcError ? err.message : `화면을 만들지 못했습니다: ${err.message}` }] }));
   };
+  const context = { available, tokenField: raw(tokenField(token)) };
   return async (req, res) => {
     try {
+      // 서버가 실제로 받는 포트로 Host를 본다. 빈 포트(0)로 띄워도 맞는 값이다.
+      const port = req.socket.localPort;
+      try {
+        checkRequest(req, { port });
+      } catch (err) {
+        if (!(err instanceof RequestError)) throw err;
+        send(res, err.status, page({ title: '받지 않는 요청', available, alerts: [{ kind: 'error', message: err.message }] }));
+        return;
+      }
       let pathname;
       try {
         pathname = new URL(req.url, `http://${HOST}`).pathname;
@@ -75,7 +89,19 @@ function createHandler(routes = new Map()) {
         send(res, 405, page({ title: '허용하지 않는 요청', available, alerts: [{ kind: 'error', message: `이 주소는 ${req.method} 요청을 받지 않습니다.` }] }), { Allow: allow });
         return;
       }
-      const result = await handler(req, { available });
+      let form;
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        try {
+          form = await readForm(req, { port, token });
+        } catch (err) {
+          if (!(err instanceof RequestError)) throw err;
+          // 읽지 않은 본문이 남아 있으면 응답 뒤 연결을 닫아 다음 요청과 섞이지 않게 한다.
+          res.setHeader('Connection', 'close');
+          send(res, err.status, page({ title: '받지 않는 요청', available, alerts: [{ kind: 'error', message: err.message }] }));
+          return;
+        }
+      }
+      const result = await handler(req, { ...context, form });
       send(res, result.status ?? 200, result.body, result.headers);
     } catch (err) {
       try {
