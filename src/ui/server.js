@@ -88,15 +88,21 @@ function createHandler(routes = new Map()) {
 }
 
 // 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0, ::)로 듣고 있으면 Windows는 127.0.0.1로 listen해도 성공시킨다(1차 리뷰 실측).
-// 그러면 127.0.0.1로 오는 요청을 fctl이 가로채므로, 모든 주소에 잠깐 bind해 보아 쓰는 중인지 먼저 확인한다.
-// 그 주소 종류를 이 PC가 지원하지 않는 등 다른 오류는 무시한다.
+// 그러면 127.0.0.1로 오는 요청을 fctl이 가로채므로, 먼저 127.0.0.1:포트로 연결해 보아 받는 프로그램이 있으면 쓰는 중으로 본다.
+// 모든 주소에 bind해 보는 방식은 방화벽 허용 창을 띄우고 잠깐 LAN에 포트를 열 수 있어 쓰지 않는다(2차 리뷰).
+// 연결이 거부되거나(ECONNREFUSED) 2초 안에 답이 없으면 비어 있는 것으로 본다. 127.0.0.1에서 듣는 경우는 listen이 다시 잡는다.
 function checkPortFree(port) {
-  const probe = (host) => new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', (err) => (err.code === 'EADDRINUSE' || err.code === 'EACCES' ? reject(err) : resolve()));
-    server.listen({ port, host, exclusive: true }, () => server.close(() => resolve()));
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ port, host: HOST });
+    const done = (busy) => {
+      socket.destroy();
+      if (busy) reject(Object.assign(new Error(`포트 ${port} 사용 중`), { code: 'EADDRINUSE' }));
+      else resolve();
+    };
+    socket.setTimeout(2000, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
   });
-  return probe('0.0.0.0').then(() => probe('::'));
 }
 
 function parsePort(text) {
