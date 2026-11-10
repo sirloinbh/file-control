@@ -185,3 +185,15 @@ test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워
     assert.match(unc, /네트워크·장치 경로는 열지 않습니다/);
   }
 });
+
+test('하위 폴더가 한도로 잘리면 요약 카드는 전체 폴더 수를, 아래에는 뺀 수를 보여 준다 (#254 2차 리뷰)', async (t) => {
+  const many = { path: 'D:\\many', parent: 'D:\\', protected: null, folders: [{ name: 'a', path: 'D:\\many\\a', protected: null }], hiddenFolders: 4, files: 0, size: 0 };
+  const { server, url } = await startServer({ port: 0, routes: pickRoutes({ ...SOURCES, browseFolder: () => many }) });
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  const body = await (await fetch(new URL('/pick?dir=D%3A%5Cmany&return=%2Forganize&field=target', url))).text();
+  assert.match(body, /<div class="value">5<\/div><div class="label">폴더<\/div>/);
+  assert.match(body, /앞의 1개만 보여 줍니다\(나머지 4개\)/);
+});

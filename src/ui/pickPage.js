@@ -77,7 +77,7 @@ function folderBody(query, folder) {
   return html`<p><code>${folder.path}</code></p>
 <p>${up}</p>
 ${choose}
-${summaryCards([{ label: '폴더', value: folder.folders.length }, { label: '파일', value: folder.files }, { label: '파일 크기', value: formatSize(folder.size) }])}
+${summaryCards([{ label: '폴더', value: folder.folders.length + (folder.hiddenFolders ?? 0) }, { label: '파일', value: folder.files }, { label: '파일 크기', value: formatSize(folder.size) }])}
 ${table([{ label: '폴더', width: '60%' }, { label: '' }], rows, { empty: '하위 폴더가 없습니다.' })}
 ${folder.hiddenFolders > 0 ? html`<p class="muted">폴더가 많아 앞의 ${folder.folders.length}개만 보여 줍니다(나머지 ${folder.hiddenFolders}개).</p>` : ''}`;
 }
