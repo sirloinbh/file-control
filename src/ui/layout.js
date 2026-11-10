@@ -71,6 +71,7 @@ tr:last-child td { border-bottom: 0; }
 .menu .detail { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; }
 .muted { color: var(--muted); }
 code { font-family: Consolas, "Cascadia Mono", monospace; }
+pre.report { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
 `;
 
 // 알림 상자. kind: success(성공), warning(경고), error(오류), info(안내)
@@ -111,7 +112,8 @@ function table(columns, rows, { empty = '항목이 없습니다.' } = {}) {
 }
 
 // 문서 전체. current는 지금 화면의 분류 경로, available은 서버에 있는 경로 목록(없는 분류는 "준비 중").
-function page({ title, current = null, alerts = [], body = '', available = new Set() }) {
+// refresh: { seconds, url? }를 주면 <meta http-equiv=refresh>로 그 시간 뒤에 url(없으면 같은 주소)을 다시 연다(#253 진행 표시).
+function page({ title, current = null, alerts = [], body = '', available = new Set(), refresh = null }) {
   const nav = CATEGORIES.map((category) => {
     if (!available.has(category.path)) return html`<li><span title="준비 중">${category.label}</span></li>`;
     return category.path === current
@@ -123,7 +125,7 @@ function page({ title, current = null, alerts = [], body = '', available = new S
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} - fctl</title>
+${refresh ? html`<meta http-equiv="refresh" content="${Math.max(0, Math.floor(refresh.seconds))}${refresh.url ? `; url=${refresh.url}` : ''}">\n` : ''}<title>${title} - fctl</title>
 <style>${raw(CSS)}</style>
 </head>
 <body>
