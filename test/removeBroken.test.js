@@ -663,6 +663,29 @@ test('remove-broken은 묶음 안에서 PowerShell이 다시 본 결과(경로·
   }
 });
 
+test('remove-broken은 지우기 직전에 볼륨 설정으로 영구 삭제될 것이라 남긴 파일(permanent)을 사유와 함께 실패로 알린다 (#236)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN });
+  const listed = removeBroken(dir);
+  const b64 = (text) => Buffer.from(text, 'utf16le').toString('base64');
+  const mark = { 'a.mp4': 'nuke', 'b.mp4': 'cap|7164', 'c.mp4': 'type|Removable' };
+  batchHook = (options) => options.input.split('\n').filter(Boolean).map((line) => {
+    const [encoded] = line.split(' ');
+    return `permanent ${encoded} ${b64(mark[path.basename(Buffer.from(encoded, 'base64').toString('utf16le'))])}`;
+  }).join('\r\n');
+  try {
+    const result = removeBroken(dir, { confirm: listed.code });
+    assert.strictEqual(result.removed.length, 0);
+    const reasons = Object.fromEntries(result.failed.map((item) => [path.basename(item.path), item.reason]));
+    assert.strictEqual(reasons['a.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'a.mp4')}. 이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다.`);
+    assert.strictEqual(reasons['b.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'b.mp4')}. 휴지통 최대 크기(7164MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로 지우지 않았습니다.`);
+    assert.strictEqual(reasons['c.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'c.mp4')}. 휴지통이 없을 수 있는 드라이브(Removable)라 영구 삭제될 수 있으므로 지우지 않았습니다.`);
+    assert.ok(['a.mp4', 'b.mp4', 'c.mp4'].every((name) => fs.existsSync(path.join(dir, name))));
+  } finally {
+    batchHook = null;
+  }
+});
+
 test('remove-broken은 묶음을 시작하지 못하면(비대화형) 그 묶음을 모두 실패로 알린다 (#194)', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });

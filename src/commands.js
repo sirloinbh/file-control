@@ -799,6 +799,50 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
   });
 }
 
+// 휴지통을 거칠 수 있는지 미리 본다. 실패하면 알 수 없음(null)으로 돌려주어 호출한 쪽이 지우지 않게 한다.
+// 돌려주는 값: { interactive, driveType }. driveType은 Fixed, Removable, Network 같은 .NET DriveType 이름이다.
+// 돌려주는 값에는 그 볼륨의 휴지통 설정도 들어 있다(#100). nukeOnDelete는 "파일을 휴지통으로 이동하지 않고 바로 제거"가 켜졌는지,
+// maxCapacity는 휴지통 최대 크기(바이트)다. 읽지 못하면 null이다.
+// 실측(빌드 26200, 대화형): 항목 하나(파일, 폴더면 안의 합계)가 maxCapacity를 넘거나 nukeOnDelete가 켜진 볼륨이면
+// 휴지통 이동이 묻지 않고 영구 삭제하면서 성공으로 끝났다(D: 용량 7164MB에서 7100MB는 휴지통, 7200MB는 영구 삭제).
+// 휴지통에 이미 든 양은 상관없었다(합계가 용량을 넘어도 기존 항목을 비우거나 새 항목을 지우지 않았다).
+// 볼륨은 GetVolumePathName으로 찾아 볼륨 마운트 폴더 아래도 그 볼륨의 설정을 본다. 설정은 사용자별(HKCU)
+// BitBucket\Volume\{GUID}의 NukeOnDelete·MaxCapacity(MB)다. 정책(NoRecycleFiles)이 켜져 있으면 바로 제거로 보고,
+// 정책으로 크기를 정했으면(RecycleBinSize) 크기를 모르는 것으로 본다.
+// $p의 볼륨 종류($type)와 휴지통 설정($nuke: '0'·'1'·'', $cap: MB 또는 '')를 정한다. RECYCLE_STATE_SCRIPT와 휴지통 이동 스크립트가 함께 쓴다(#81).
+const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
+$type = 'Unknown'; $nuke = ''; $cap = ''
+try {
+  Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
+[StructLayout(LayoutKind.Sequential)] struct TagInfo { public uint Attr, ReparseTag; }
+[DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle h, int c, out TagInfo b, uint n);
+public static bool IsLink(string p) {
+  using (var h = CreateFileW(p, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+    if (h.IsInvalid) return false;
+    TagInfo t;
+    if (!GetFileInformationByHandleEx(h, 9, out t, 8)) return false;
+    return (t.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003);
+  }
+}'
+  $b = New-Object Text.StringBuilder 1024
+  $root = if ([FcVolume.Native]::GetVolumePathNameW($p, $b, 1024)) { $b.ToString() } else { [IO.Path]::GetPathRoot($p) }
+  $type = $names[[int][FcVolume.Native]::GetDriveTypeW($root)]
+  $g = New-Object Text.StringBuilder 1024
+  if ([FcVolume.Native]::GetVolumeNameForVolumeMountPointW($root, $g, 1024) -and ($g.ToString() -match '(\{[0-9A-Fa-f-]+\})')) {
+    $k = Get-ItemProperty -LiteralPath ('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\' + $matches[1]) -ErrorAction SilentlyContinue
+    if ($k -and $k.NukeOnDelete -ne $null) { $nuke = [string][int]$k.NukeOnDelete }
+    if ($k -and $k.MaxCapacity -ne $null) { $cap = [string][long]$k.MaxCapacity }
+  }
+  foreach ($hive in 'HKLM:', 'HKCU:') {
+    $pol = Get-ItemProperty -LiteralPath ($hive + '\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer') -ErrorAction SilentlyContinue
+    if ($pol -and [int]$pol.NoRecycleFiles -eq 1) { $nuke = '1' }
+    if ($pol -and $pol.RecycleBinSize -ne $null) { $cap = '' }
+  }
+} catch { $type = 'Unknown' }`;
+
 // 파일 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#194). 파일마다 PowerShell을 띄우면 파일당 0.5~0.6초가 걸리지만
 // 묶으면 50개에 1.6초였다(빌드 26200에서 실측). 묶어 보내면 Node의 검사와 실제 삭제 사이가 길어지므로 PowerShell이 파일마다 지우기 직전에 다시 본다.
 // - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다(moved).
@@ -811,7 +855,9 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 // keep({ path, stamp })을 주면 그 파일(remove-duplicates의 남길 파일)도 지우기 직전에 실제 경로·파일 여부·fileStamp가 그대로인지 보고,
 // 다르면 지우지 않는다(keepchanged, #216). 묶음 도중 남길 파일이 바뀌어도 사본을 지우지 않게 한다.
 // status: ok(휴지통으로 보냄), moved, notfile, changed, gone, keepchanged, error(reason에 Windows의 사유), unknown(PowerShell이 도중에 끝나 결과를 모름)
-const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'keepchanged', 'error']);
+// permanent: 지우기 직전에 볼륨 휴지통 설정을 다시 보니 영구 삭제될 것이라 지우지 않음(#236). reason은 RECYCLE_SCRIPT와 같은 판정의 사유("…므로")다.
+// 계획 단계에서 판정한 뒤 실행 전에 "바로 제거"를 켜거나 최대 크기를 줄여도 지우지 않게 한다. 설정은 폴더마다 묶음에서 처음 만날 때 한 번 읽는다.
+const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'keepchanged', 'permanent', 'error']);
 
 const RECYCLE_FILES_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 if (-not [Environment]::UserInteractive) { exit 75 }
@@ -861,6 +907,23 @@ function Same([string]$k, [string]$stamp) {
   if (($f -eq $null) -or -not [string]::Equals((Plain $f), $k, [StringComparison]::OrdinalIgnoreCase)) { return $false }
   return ([FcFileCheck]::Stamp($kl) -eq $stamp)
 }
+# 볼륨의 휴지통 설정을 읽는다(#236). 같은 폴더의 파일은 같은 볼륨이므로 폴더마다 묶음에서 처음 한 번만 읽는다.
+function VolumeState([string]$p) {
+${VOLUME_STATE_PS}
+  return @($type, $nuke, $cap)
+}
+$volumes = @{}
+# 지우면 영구 삭제될 것이면 RECYCLE_SCRIPT와 같은 표시(type|종류, nuke, cap|MB, unknown)를, 아니면 $null을 돌려준다.
+function PermanentMark([string]$p, [long]$size) {
+  $dir = [IO.Path]::GetDirectoryName($p)
+  if (-not $volumes.ContainsKey($dir)) { $volumes[$dir] = VolumeState $dir }
+  $type, $nuke, $cap = $volumes[$dir]
+  if ($type -ne 'Fixed') { return 'type|' + $type }
+  if ($nuke -ne '' -and $nuke -ne '0') { return 'nuke' }
+  $limit = if ($cap -ne '') { [long]$cap * 1MB } else { 1GB - 1 }
+  if ($size -gt $limit) { if ($cap -ne '') { return 'cap|' + $cap } else { return 'unknown' } }
+  return $null
+}
 foreach ($line in $input) {
   if (-not $line) { continue }
   $parts = $line.Split(' ')
@@ -878,6 +941,7 @@ foreach ($line in $input) {
       elseif ($now -eq 'notfile') { $status = 'notfile' }
       elseif ($now -ne $parts[1]) { $status = 'changed' }
       elseif (($parts.Length -ge 4) -and -not (Same ($u.GetString([Convert]::FromBase64String($parts[2]))) $parts[3])) { $status = 'keepchanged' }
+      elseif (($mark = PermanentMark $p ([long]$now.Split(':')[1])) -ne $null) { $status = 'permanent'; $reason = [Convert]::ToBase64String($u.GetBytes($mark)) }
       else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin'); $status = 'ok' }
     }
   } catch { $status = 'error'; $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; $reason = [Convert]::ToBase64String($u.GetBytes([string]$e.Message)) }
@@ -909,7 +973,9 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
   const done = new Map();
   for (const line of output.split(/\r?\n/)) {
     const match = /^(\w+) ([A-Za-z0-9+/=]+) ?([A-Za-z0-9+/=]*)$/.exec(line.trim());
-    if (match && FILE_BATCH_STATUS.has(match[1])) done.set(Buffer.from(match[2], 'base64').toString('utf16le'), { status: match[1], reason: decodeReason(match[3]) });
+    if (!match || !FILE_BATCH_STATUS.has(match[1])) continue;
+    const reason = decodeReason(match[3]);
+    done.set(Buffer.from(match[2], 'base64').toString('utf16le'), { status: match[1], reason: match[1] === 'permanent' ? refusalReason(reason) : reason });
   }
   return items.map((item) => ({ path: item.path, ...(done.get(item.path) ?? { status: 'unknown', reason: failure ?? 'PowerShell이 결과를 알리지 않았습니다' }) }));
 }
@@ -935,50 +1001,6 @@ function entryInside(dir, test) {
     return undefined;
   }
 }
-
-// 휴지통을 거칠 수 있는지 미리 본다. 실패하면 알 수 없음(null)으로 돌려주어 호출한 쪽이 지우지 않게 한다.
-// 돌려주는 값: { interactive, driveType }. driveType은 Fixed, Removable, Network 같은 .NET DriveType 이름이다.
-// 돌려주는 값에는 그 볼륨의 휴지통 설정도 들어 있다(#100). nukeOnDelete는 "파일을 휴지통으로 이동하지 않고 바로 제거"가 켜졌는지,
-// maxCapacity는 휴지통 최대 크기(바이트)다. 읽지 못하면 null이다.
-// 실측(빌드 26200, 대화형): 항목 하나(파일, 폴더면 안의 합계)가 maxCapacity를 넘거나 nukeOnDelete가 켜진 볼륨이면
-// 휴지통 이동이 묻지 않고 영구 삭제하면서 성공으로 끝났다(D: 용량 7164MB에서 7100MB는 휴지통, 7200MB는 영구 삭제).
-// 휴지통에 이미 든 양은 상관없었다(합계가 용량을 넘어도 기존 항목을 비우거나 새 항목을 지우지 않았다).
-// 볼륨은 GetVolumePathName으로 찾아 볼륨 마운트 폴더 아래도 그 볼륨의 설정을 본다. 설정은 사용자별(HKCU)
-// BitBucket\Volume\{GUID}의 NukeOnDelete·MaxCapacity(MB)다. 정책(NoRecycleFiles)이 켜져 있으면 바로 제거로 보고,
-// 정책으로 크기를 정했으면(RecycleBinSize) 크기를 모르는 것으로 본다.
-// $p의 볼륨 종류($type)와 휴지통 설정($nuke: '0'·'1'·'', $cap: MB 또는 '')를 정한다. RECYCLE_STATE_SCRIPT와 휴지통 이동 스크립트가 함께 쓴다(#81).
-const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
-$type = 'Unknown'; $nuke = ''; $cap = ''
-try {
-  Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);
-[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
-[StructLayout(LayoutKind.Sequential)] struct TagInfo { public uint Attr, ReparseTag; }
-[DllImport("kernel32.dll", SetLastError = true)] static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle h, int c, out TagInfo b, uint n);
-public static bool IsLink(string p) {
-  using (var h = CreateFileW(p, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
-    if (h.IsInvalid) return false;
-    TagInfo t;
-    if (!GetFileInformationByHandleEx(h, 9, out t, 8)) return false;
-    return (t.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003);
-  }
-}'
-  $b = New-Object Text.StringBuilder 1024
-  $root = if ([FcVolume.Native]::GetVolumePathNameW($p, $b, 1024)) { $b.ToString() } else { [IO.Path]::GetPathRoot($p) }
-  $type = $names[[int][FcVolume.Native]::GetDriveTypeW($root)]
-  $g = New-Object Text.StringBuilder 1024
-  if ([FcVolume.Native]::GetVolumeNameForVolumeMountPointW($root, $g, 1024) -and ($g.ToString() -match '(\{[0-9A-Fa-f-]+\})')) {
-    $k = Get-ItemProperty -LiteralPath ('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\' + $matches[1]) -ErrorAction SilentlyContinue
-    if ($k -and $k.NukeOnDelete -ne $null) { $nuke = [string][int]$k.NukeOnDelete }
-    if ($k -and $k.MaxCapacity -ne $null) { $cap = [string][long]$k.MaxCapacity }
-  }
-  foreach ($hive in 'HKLM:', 'HKCU:') {
-    $pol = Get-ItemProperty -LiteralPath ($hive + '\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer') -ErrorAction SilentlyContinue
-    if ($pol -and [int]$pol.NoRecycleFiles -eq 1) { $nuke = '1' }
-    if ($pol -and $pol.RecycleBinSize -ne $null) { $cap = '' }
-  }
-} catch { $type = 'Unknown' }`;
 
 const RECYCLE_STATE_SCRIPT = `$p = $env:FC_VOLUME
 ${VOLUME_STATE_PS}
@@ -1761,6 +1783,7 @@ module.exports = {
   RECYCLE_FOLDERS_SCRIPT,
   recycleFiles,
   RECYCLE_FILES_SCRIPT,
+  permanentRefusal,
   recycleFailureMessage,
   bareDeviceInside,
   MAX_RECYCLE_PATH,

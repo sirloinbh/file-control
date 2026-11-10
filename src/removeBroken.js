@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
+const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentRefusal, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
@@ -133,6 +133,8 @@ function batchFailure(file, { status, reason }, keep) {
       return `판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${file}`;
     case 'gone':
       return `판별한 뒤 파일이 사라져 지우지 않았습니다: ${file}`;
+    case 'permanent':
+      return permanentRefusal(file, reason);
     case 'error':
       return recycleFailureMessage(file, reason);
     default:
