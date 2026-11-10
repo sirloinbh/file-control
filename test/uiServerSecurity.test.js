@@ -25,6 +25,19 @@ function request(url, { method = 'GET', headers = {}, body } = {}) {
   });
 }
 
+// Content-Length 없이 본문을 여러 조각으로 보낸다(Transfer-Encoding: chunked).
+function chunked(url, parts) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }));
+    });
+    req.on('error', reject);
+    for (const part of parts) req.write(part);
+    req.end();
+  });
+}
+
 // 화면 하나(/form, 토큰이 든 폼)와 파일을 쓰는 POST 주소(/write)를 둔 서버를 띄운다.
 async function serve(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-ui-security-'));
@@ -95,8 +108,12 @@ test('다른 Origin·다른 사이트에서 보낸 POST, 토큰 없음·틀림�
   assert.strictEqual((await post({}, `token=${token.slice(1)}&text=x`)).status, 403);
   // 폼 형식이 아니거나 한도를 넘는 본문도 거부한다.
   assert.strictEqual((await post({ 'content-type': 'text/plain' }, `token=${token}&text=x`)).status, 415);
-  const big = await post({}, `token=${token}&text=${'x'.repeat(MAX_BODY)}`);
-  assert.ok(big.status === 413 || big.status === 'reset', String(big.status));
+  assert.strictEqual((await post({}, `token=${token}&text=${'x'.repeat(MAX_BODY)}`)).status, 413);
+  // Content-Length 없이 조각(chunked)으로 보내도 읽는 중에 한도로 막는다(1차 리뷰).
+  assert.strictEqual((await chunked(`${url}write`, [`token=${token}&text=`, 'x'.repeat(MAX_BODY / 2), 'x'.repeat(MAX_BODY / 2)])).status, 413);
+  // 같은 PC의 다른 포트(same-site)에서 보냈다는 표시, 토큰 필드 중복도 거부한다.
+  assert.strictEqual((await post({ 'sec-fetch-site': 'same-site' }, `token=${token}&text=x`)).status, 403);
+  assert.strictEqual((await post({}, `token=${token}&token=${token}x&text=x`)).status, 403);
   assert.strictEqual(fs.existsSync(target), false);
 });
 

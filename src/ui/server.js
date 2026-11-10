@@ -39,7 +39,8 @@ ${table([{ label: '분류', width: '30%' }, { label: '하는 일' }], rows)}`,
 
 // routes: Map<경로, 처리기 또는 { GET?, POST? }>. 함수 하나만 주면 GET 처리기다. HEAD는 GET 처리기로 답하고 본문만 뺀다.
 // 처리기: (req, context) => { status?, body, headers? } 또는 그 Promise. body는 문자열이나 html``(SafeHtml)이다.
-// context.available은 메뉴에 보일 경로 목록, context.tokenField는 폼에 넣을 숨은 토큰 필드(SafeHtml)다.
+// context.available은 메뉴에 보일 경로 목록, context.tokenField는 숨은 토큰 필드(SafeHtml)다. tokenField는 method="post" 폼에만 넣는다.
+// GET 폼이나 링크에 넣으면 토큰이 주소에 실려 브라우저 기록에 남는다(1차 리뷰).
 // 요청 검사(#252): 모든 요청은 Host가 이 서버 주소여야 한다(DNS 재바인딩 방지). GET·HEAD가 아닌 요청은 Origin·폼 형식·본문 크기·토큰을
 // 모두 확인한 뒤에만 처리기를 부르고, 읽은 폼 값을 context.form(URLSearchParams)으로 넘긴다. 파일을 바꾸는 처리기는 POST에만 둔다.
 // token은 서버 시작 때 만든 무작위 값이다. 시험에서는 정해 줄 수 있다.

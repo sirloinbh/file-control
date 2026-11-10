@@ -31,7 +31,8 @@ class RequestError extends Error {
   }
 }
 
-// 서버 시작 때 한 번 만드는 무작위 토큰(256비트). 폼 값과 주소에 그대로 넣을 수 있게 base64url로 만든다.
+// 서버 시작 때 한 번 만드는 무작위 토큰(256비트). 이스케이프 없이 폼 값에 넣을 수 있게 base64url로 만든다.
+// 토큰은 POST 폼에만 넣는다. GET 폼이나 링크 주소에 넣으면 브라우저 기록과 주소창에 남는다(1차 리뷰).
 function createToken() {
   return crypto.randomBytes(32).toString('base64url');
 }
