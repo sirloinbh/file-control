@@ -34,7 +34,7 @@ function parse(argv) {
     else if (arg.startsWith('--') && VALUE_FLAGS.has(arg.slice(2).split('=')[0])) {
       const [name, ...rest] = arg.slice(2).split('=');
       flags.add(name);
-      if (rest.length === 0) throw new fc.FcError(`--${name}에는 값을 --${name}=값처럼 붙이세요.`);
+      if (rest.length === 0) throw new fc.FcError(`Attach a value to --${name}, like --${name}=VALUE.`);
       values.set(name, rest.join('='));
     }
     else if (arg.startsWith('--')) flags.add(arg.slice(2));
@@ -50,25 +50,25 @@ function parse(argv) {
 // write·append의 내용은 '- 항목'처럼 -로 시작할 수 있으니 파일 경로만 본다.
 function rejectUnknownOptions(command, args, flags) {
   const unknownFlag = [...flags].find((flag) => !KNOWN_FLAGS.has(flag));
-  if (unknownFlag !== undefined) throw new fc.FcError(`알 수 없는 옵션: --${unknownFlag}`);
+  if (unknownFlag !== undefined) throw new fc.FcError(`Unknown option: --${unknownFlag}`);
   const names = command === 'write' || command === 'append' ? args.slice(0, 1) : args;
   // –(en 대시)와 —(em 대시)는 --가 자동 변환된 오타일 때가 많아 함께 거부한다.
   const dashed = names.find((arg) => /^[-–—]/.test(arg));
-  if (dashed !== undefined) throw new fc.FcError(`알 수 없는 옵션: ${dashed} (-로 시작하는 이름은 ./${dashed}처럼 쓰거나 -- 뒤에 쓰세요)`);
+  if (dashed !== undefined) throw new fc.FcError(`Unknown option: ${dashed} (write names that start with - as ./${dashed} or after --)`);
 }
 
 function need(args, count, usage) {
-  if (args.length < count) throw new fc.FcError(`사용법: fctl ${usage}`);
+  if (args.length < count) throw new fc.FcError(`Usage: fctl ${usage}`);
 }
 
 // 타겟 전체를 바꾸는 명령의 공통 검사.
 function checkWholeTarget(command, args, flags) {
-  need(args, 1, `${command} <타겟>`);
+  need(args, 1, `${command} <target>`);
   // 되돌릴 수 없는 명령이다. 따옴표 없는 공백 경로의 앞부분만 받아 더 넓은 폴더를 다루지 않게 남는 인자를 거부한다.
-  if (args.length > 1) throw new fc.FcError(`타겟은 하나만 받습니다. 공백이 든 경로는 따옴표로 감싸세요: ${args.join(' ')}`);
+  if (args.length > 1) throw new fc.FcError(`Only one target is accepted. Wrap paths that contain spaces in quotes: ${args.join(' ')}`);
   // C:는 드라이브 루트가 아니라 그 드라이브의 현재 폴더를 뜻해서, 뜻과 다른 폴더를 다룰 수 있다.
-  if (/^[A-Za-z]:(?![\\/])/.test(args[0])) throw new fc.FcError(`드라이브 문자 뒤에 경로를 쓰세요: ${args[0]}`);
-  if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command}은 덮어쓰거나 영구 삭제하지 않으므로 --force, --permanent를 쓸 수 없습니다.`);
+  if (/^[A-Za-z]:(?![\\/])/.test(args[0])) throw new fc.FcError(`Write a path after the drive letter: ${args[0]}`);
+  if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command} never overwrites or permanently deletes, so --force and --permanent cannot be used.`);
 }
 
 function defaultReadStdin() {
@@ -77,7 +77,7 @@ function defaultReadStdin() {
 
 function formatList(entries) {
   return entries
-    .map((e) => `${e.type === 'dir' ? '[폴더]' : '      '}  ${(e.size === null ? '' : fc.formatSize(e.size)).padStart(8)}  ${e.name}`)
+    .map((e) => `${e.type === 'dir' ? '[dir]' : '     '}  ${(e.size === null ? '' : fc.formatSize(e.size)).padStart(8)}  ${e.name}`)
     .join('\n');
 }
 
@@ -96,12 +96,12 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
   rejectUnknownOptions(command, unchecked, flags);
   if (!command || flags.has('help')) return { help: true };
   // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
-  if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives는 extract-all에서만 쓸 수 있습니다.');
+  if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives can be used only with extract-all.');
   const removing = command === 'remove-broken' || command === 'remove-duplicates' || command === 'remove-low-quality';
-  if (flags.has('yes') && !removing) throw new fc.FcError('--yes는 remove-broken, remove-duplicates, remove-low-quality에서만 쓸 수 있습니다.');
-  if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase는 normalize에서만 쓸 수 있습니다.');
+  if (flags.has('yes') && !removing) throw new fc.FcError('--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality.');
+  if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase can be used only with normalize.');
   for (const name of VALUE_FLAGS) {
-    if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name}는 find-low-quality, remove-low-quality에서만 쓸 수 있습니다.`);
+    if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name} can be used only with find-low-quality and remove-low-quality.`);
   }
 
   const done = (result, report = result, failure = undefined) => ({ command, result, report, failure });
@@ -114,11 +114,11 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       return done(entries, formatList(entries));
     }
     case 'mkdir':
-      need(args, 1, 'mkdir <폴더>');
+      need(args, 1, 'mkdir <folder>');
       return done(fc.makeDir(args[0], { dryRun }));
     case 'write':
     case 'append':
-      need(args, 1, `${command} <파일> [내용]`);
+      need(args, 1, `${command} <file> [content]`);
       // 미리보기는 내용을 쓰지 않으므로 표준 입력을 기다리지 않는다.
       return done(fc.writeFile(args[0], args.length > 1 ? args.slice(1).join(' ') : dryRun ? '' : readStdin(), {
         append: command === 'append',
@@ -126,31 +126,31 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
         dryRun,
       }));
     case 'cat':
-      need(args, 1, 'cat <파일>');
+      need(args, 1, 'cat <file>');
       return done(fc.readFile(args[0]));
     case 'rename':
-      need(args, 2, 'rename <경로> <새이름>');
+      need(args, 2, 'rename <path> <new-name>');
       return done(fc.rename(args[0], args[1], { force, dryRun }));
     case 'mv': {
-      need(args, 2, 'mv <원본...> <대상>');
+      need(args, 2, 'mv <source...> <dest>');
       const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun });
       return done(lines, lines.join('\n'));
     }
     case 'cp': {
-      need(args, 2, 'cp <원본...> <대상>');
+      need(args, 2, 'cp <source...> <dest>');
       const lines = fc.copy(args.slice(0, -1), args[args.length - 1], { force, dryRun });
       return done(lines, lines.join('\n'));
     }
     case 'rm': {
-      need(args, 1, 'rm <경로...>');
+      need(args, 1, 'rm <path...>');
       const lines = fc.remove(args, { permanent: flags.has('permanent'), dryRun, permanentHint: true });
       return done(lines, lines.join('\n'));
     }
     case 'unzip':
-      need(args, 1, 'unzip <압축파일> [폴더]');
+      need(args, 1, 'unzip <archive> [folder]');
       return done(fc.unzip(args[0], args[1], { dryRun }));
     case 'zip':
-      need(args, 2, 'zip <압축파일> <원본...>');
+      need(args, 2, 'zip <archive> <source...>');
       return done(fc.zip(args[0], args.slice(1), { force, dryRun }));
     case 'flatten': {
       checkWholeTarget(command, args, flags);
@@ -202,9 +202,9 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       const report = format(result);
       // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
       const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
-      if (result.failed.length > 0) return fail(`휴지통으로 보내지 못한 파일이 ${result.failed.length}개 있습니다.`);
-      if (result.mismatch) return fail('목록이 확인값을 만든 때와 달라 아무것도 지우지 않았습니다. 새 목록을 확인하세요.');
-      if (flags.has('yes') && confirm === undefined && !dryRun && result.removals.length > 0) return fail('--yes에는 목록에 나온 확인값을 붙이세요. 아무것도 지우지 않았습니다.');
+      if (result.failed.length > 0) return fail(`${result.failed.length} files could not be sent to the Recycle Bin.`);
+      if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted. Check the new list.');
+      if (flags.has('yes') && confirm === undefined && !dryRun && result.removals.length > 0) return fail('Give --yes the confirmation value shown in the list. Nothing was deleted.');
       return done(result, report);
     }
     case 'find-duplicates': {
@@ -221,7 +221,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       return done(result, formatLowQuality(result));
     }
     default:
-      throw Object.assign(new fc.FcError(`알 수 없는 명령: ${command}`), { unknownCommand: true });
+      throw Object.assign(new fc.FcError(`Unknown command: ${command}`), { unknownCommand: true });
   }
 }
 

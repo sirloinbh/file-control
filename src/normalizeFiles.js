@@ -14,8 +14,8 @@ const nameKey = (p) => p.toUpperCase();
 
 function skipReason(entry) {
   const parts = entry.relative.split(path.sep);
-  if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 바꾸지 않습니다.';
-  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.';
+  if (parts.some((part) => LEFTOVER.test(part))) return 'Not renamed because it is a leftover from an earlier job.';
+  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Not renamed because it is inside a Windows system folder.';
   return null;
 }
 
@@ -27,12 +27,12 @@ const WEB_PAGE = /^(.+)\.(?:html?|xhtml|shtml)$/i;
 function downloadReason(entry, findMarker) {
   const name = path.basename(entry.path);
   const own = DOWNLOAD_MARKER.exec(name);
-  if (own) return `받는 중인 파일의 이름(${name.slice(own[1].length)})이라 바꾸지 않습니다.`;
+  if (own) return `Not renamed because it is the name of a file being downloaded (${name.slice(own[1].length)}).`;
   const found = findMarker(entry.path);
   if (found === null) return null;
-  if (found.folder !== undefined) return `받기 도구의 표시 폴더(${found.folder}) 안에 있어 받는 중일 수 있어 바꾸지 않습니다.`;
-  if (found.error !== undefined) return `받기 도구의 표시 파일을 확인하려고 폴더를 읽지 못해 바꾸지 않습니다. (${found.error})`;
-  return `받기 도구의 표시 파일(${found.marker})이 옆에 있어 받는 중일 수 있어 바꾸지 않습니다.`;
+  if (found.folder !== undefined) return `Not renamed because it is inside the download tool's marker folder (${found.folder}) and may still be downloading.`;
+  if (found.error !== undefined) return `Not renamed because the folder could not be read to check for the download tool's marker file. (${found.error})`;
+  return `Not renamed because the download tool's marker file (${found.marker}) is next to it and it may still be downloading.`;
 }
 
 // 안의 파일 이름을 바꾸지 않을 폴더를 { guarded: { 상대경로 -> 사유 }, pages: { 웹 페이지 상대경로 -> 자료 폴더 이름 }, dirs }로 돌려준다(#94). flatten의 #65 정책과 같게 프로그램 폴더(node_modules 등),
@@ -41,7 +41,7 @@ function downloadReason(entry, findMarker) {
 // 숨김 속성 폴더는 PowerShell을 불러야 알 수 있어 바뀔 파일이 있을 때 addHiddenFolders로 따로 더한다(1차 리뷰).
 function guardedFolders(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
-    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
+    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`Not handled because it is inside a program folder: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
   // 위 폴더가 프로젝트·프로그램 폴더면 타겟 안의 이름도 프로그램이 찾는 이름일 수 있다. flatten과 같은 기준으로 거부한다(#167).
@@ -57,18 +57,18 @@ function guardedFolders(target, entries) {
     const name = path.basename(entry.relative);
     const parent = path.dirname(entry.relative);
     if (entry.type === 'dir') {
-      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `프로그램 폴더(${name})`);
+      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `program folder (${name})`);
       continue;
     }
     if (entry.type !== 'file') continue;
     if (PROJECT_FILE.test(name)) {
-      if (parent === '.') throw new FcError(`타겟이 프로젝트 폴더로 보여(${name} 있음) 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
-      add(parent, `프로젝트 폴더(${name} 있음)`);
+      if (parent === '.') throw new FcError(`Not handled because the target looks like a project folder (contains ${name}). Choose a folder below it as the target: ${target}`);
+      add(parent, `project folder (contains ${name})`);
     }
     const page = WEB_PAGE.exec(name);
     const files = page && dirs.get(nameKey(path.join(parent, `${page[1]}_files`)));
     if (files) {
-      add(files, `웹 페이지(${name})의 자료 폴더`);
+      add(files, `resource folder of the web page (${name})`);
       pages.set(entry.relative, path.basename(files));
     }
     const ext = path.extname(name).toLowerCase();
@@ -76,8 +76,8 @@ function guardedFolders(target, entries) {
   }
   for (const [parent, kinds] of programs) {
     if (kinds.size < 2) continue;
-    if (parent === '.') throw new FcError(`타겟에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
-    add(parent, '실행 파일과 DLL이 함께 든 프로그램 폴더');
+    if (parent === '.') throw new FcError(`Not handled because the target holds both executables and DLLs, so it is treated as a program folder. Choose a folder below it as the target: ${target}`);
+    add(parent, 'program folder holding both executables and DLLs');
   }
   return { guarded, pages, dirs };
 }
@@ -89,7 +89,7 @@ function addHiddenFolders(target, { guarded, dirs }) {
   // 시험에서 바꿔 끼울 수 있게 모듈을 거쳐 부른다.
   for (const [relative, bits] of commands.hiddenOrSystemEntries(target, folders)) {
     const folder = dirs.get(nameKey(relative));
-    if (bits & 2 && folder !== undefined && !guarded.has(folder)) guarded.set(folder, '숨김 속성 폴더');
+    if (bits & 2 && folder !== undefined && !guarded.has(folder)) guarded.set(folder, 'folder with the hidden attribute');
   }
 }
 
@@ -115,7 +115,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   // ref와 객체 이름이 곧 내용이라 이름을 바꾸면 저장소가 깨진다. 이름이 .git이 아닌 베어 저장소도 같다.
   rejectRepository(access.target, entries);
   const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
-  if (bare) throw new FcError(`저장소가 들어 있어 다루지 않습니다: ${bare.path}`);
+  if (bare) throw new FcError(`Not handled because it contains a repository: ${bare.path}`);
   const existing = new Set(entries.map((entry) => nameKey(entry.path)));
   const guards = guardedFolders(access.target, entries);
   const { guarded, pages } = guards;
@@ -127,7 +127,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   for (const entry of entries) {
     if (entry.type === 'dir') continue;
     if (entry.type === 'link') {
-      plan.skipped.push({ path: entry.path, reason: '링크는 바꾸지 않습니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Links are not renamed.' });
       continue;
     }
     const reason = skipReason(entry);
@@ -138,7 +138,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     const result = normalizeName(path.basename(entry.path));
     const changes = result.reason === null && result.name !== path.basename(entry.path);
     // 바뀌거나 보고할 파일(번호가 여럿 등)이 처음 나오면 숨김 속성 폴더를 확인한다. 순서에 따라 보고가 달라지지 않게 한다(2차 리뷰).
-    const reported = result.reason !== null && (result.number !== null || /번호가 여럿/.test(result.reason));
+    const reported = result.reason !== null && (result.number !== null || /Several numbers/.test(result.reason));
     let guard = guardOf(entry.relative, guarded);
     if (guard === null && (changes || reported) && !hiddenChecked) {
       hiddenChecked = true;
@@ -148,13 +148,13 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     if (guard !== null) {
       if (changes && !reportedGuards.has(guard)) {
         reportedGuards.add(guard);
-        plan.skipped.push({ path: path.join(access.target, guard), reason: `${guarded.get(guard)}라 안의 파일 이름을 바꾸지 않습니다.` });
+        plan.skipped.push({ path: path.join(access.target, guard), reason: `Names inside are not changed because the folder is a ${guarded.get(guard)}.` });
       }
       continue;
     }
     const pageFiles = pages.get(entry.relative);
     if (changes && pageFiles !== undefined) {
-      plan.skipped.push({ path: entry.path, reason: `자료 폴더(${pageFiles})와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.` });
+      plan.skipped.push({ path: entry.path, reason: `Not renamed because it is a web page linked by name to the resource folder (${pageFiles}).` });
       continue;
     }
     const downloading = changes ? downloadReason(entry, findMarker) : null;
@@ -186,17 +186,17 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     const key = nameKey(to);
     const conflict = (reason) => plan.conflicts.push({ path: entry.path, name: result.name, reason });
     if (targets.get(key) > 1) {
-      conflict('다른 파일도 같은 이름이 됩니다.');
+      conflict('Another file would get the same name.');
     } else if (key !== nameKey(entry.path) && existing.has(key)) {
       // 이전 실행이 중간에 멈춘 흔적(같은 파일의 다른 이름, 빈 파일)이면 그 사실을 덧붙인다(#73).
-      conflict(`같은 이름이 이미 있습니다.${leftoverNote(entry.path, to)}`);
+      conflict(`The name already exists.${leftoverNote(entry.path, to)}`);
     } else {
       try {
         const from = access.read(entry.path);
         // 대소문자만 바뀌면 access.write가 지금 파일의 실제 표기를 돌려주므로, 원본 폴더에 새 이름을 붙여 쓴다.
         const dest = key === nameKey(entry.path) ? path.join(path.dirname(from), result.name) : access.write(to);
         // 다른 파일의 8.3 짧은 이름과 겹치면 access.write가 그 파일의 긴 경로를 돌려준다.
-        if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('같은 이름이 이미 있습니다.');
+        if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('The name already exists.');
         else plan.renames.push({ from, to: dest, name: result.name, number: result.number });
       } catch (err) {
         if (!(err instanceof FcError)) throw err;
@@ -216,7 +216,7 @@ function renameCaseOnly(from, to, name) {
   try {
     // 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생기므로 먼저 본다.
     if (!fs.lstatSync(to, { throwIfNoEntry: false }) && moveWithoutOverwrite(middle, to)) return;
-    cause = new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${name}`);
+    cause = new FcError(`Not renamed because the name already exists: ${name}`);
   } catch (err) {
     cause = err;
   }
@@ -232,23 +232,23 @@ function restoreCaseOnly(middle, from, cause) {
   } catch (err) {
     reason = err.code ?? err.message;
   }
-  if (!restored) throw new FcError(`이름을 바꾸지 못했고 되돌리지도 못했습니다. 파일은 ${middle}에 있습니다. (${cause.code ?? cause.message}, ${reason})`);
+  if (!restored) throw new FcError(`Could not rename and could not restore it either. The file is at ${middle}. (${cause.code ?? cause.message}, ${reason})`);
 }
 
 // 계획과 실행 사이에 원본이 링크로 바뀌었거나 이름이 찼으면 바꾸지 않는다. 덮어쓰지 않는다.
 function applyRename(rename, access) {
   const from = access.delete(rename.from);
-  if (from !== rename.from) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.from} -> ${from}`);
-  if (!fs.lstatSync(from).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${from}`);
+  if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
+  if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
   if (nameKey(rename.from) === nameKey(rename.to)) {
     renameCaseOnly(from, rename.to, rename.name);
     return;
   }
-  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}${leftoverNote(from, rename.to)}`);
+  const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
   // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
   const to = access.write(rename.to);
-  if (to !== rename.to) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.to} -> ${to}`);
+  if (to !== rename.to) throw new FcError(`The path changed after planning: ${rename.to} -> ${to}`);
   if (!moveWithoutOverwrite(from, to)) throw taken();
 }
 
@@ -268,7 +268,7 @@ function applyNormalize(plan, { dryRun = false } = {}) {
       applyRename(rename, access);
       result.renamed.push(rename);
     } catch (err) {
-      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `이름을 바꾸지 못했습니다. (${err.code})` });
+      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `Could not rename. (${err.code})` });
     }
   }
   return result;
@@ -276,15 +276,15 @@ function applyNormalize(plan, { dryRun = false } = {}) {
 
 function formatNormalize(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.renamed) lines.push(`${prefix}이름 변경: ${relative(item.from)} -> ${item.name}`);
-  for (const item of result.inferred) lines.push(`${prefix}소문자 말이라 그대로 둠: ${relative(item.path)} -> ${item.name}`);
-  for (const item of result.conflicts) lines.push(`${prefix}이름이 겹침: ${relative(item.path)} -> ${item.name} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
+  for (const item of result.renamed) lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name}`);
+  for (const item of result.inferred) lines.push(`${prefix}Left as is because it is a lowercase word: ${relative(item.path)} -> ${item.name}`);
+  for (const item of result.conflicts) lines.push(`${prefix}Name conflict: ${relative(item.path)} -> ${item.name} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.from)} (${item.reason})`);
   lines.push(
-    `${prefix}이름 변경 ${result.renamed.length}개, 소문자 말 ${result.inferred.length}개, 겹침 ${result.conflicts.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`,
+    `${prefix}Rename ${result.renamed.length}, lowercase words ${result.inferred.length}, conflicts ${result.conflicts.length}, skipped ${result.skipped.length}, failed ${result.failed.length}`,
   );
   return lines.join('\n');
 }

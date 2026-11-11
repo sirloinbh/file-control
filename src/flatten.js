@@ -23,7 +23,7 @@ function isTaken(name, target, taken) {
   try {
     return Boolean(fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }));
   } catch (err) {
-    throw new FcError(`경로를 확인할 수 없습니다: ${name} (${err.code})`);
+    throw new FcError(`Cannot check the path: ${name} (${err.code})`);
   }
 }
 
@@ -301,7 +301,7 @@ const PROJECT_FILE = /^(?:package\.json|pyvenv\.cfg|pyproject\.toml|setup\.py|Ca
 // 타겟 자신이 이런 폴더이거나 프로그램 폴더 안이면 모든 하위 폴더가 프로그램의 일부라 거부한다.
 function guardedFolders(target, entries, attributes) {
   for (let dir = target; ; dir = path.dirname(dir)) {
-    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`프로그램 폴더 안이라 다루지 않습니다: ${dir}`);
+    if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`Not handled because it is inside a program folder: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
   rejectProjectAncestor(target);
@@ -314,22 +314,22 @@ function guardedFolders(target, entries, attributes) {
     const name = path.basename(entry.relative);
     const parent = path.dirname(entry.relative);
     if (entry.type === 'dir') {
-      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `프로그램 폴더(${name})`);
-      else if ((attributes.get(entry.relative) ?? 0) & 2) add(entry.relative, '숨김 속성 폴더');
+      if (PROGRAM_FOLDER.test(name)) add(entry.relative, `program folder (${name})`);
+      else if ((attributes.get(entry.relative) ?? 0) & 2) add(entry.relative, 'folder with the hidden attribute');
       continue;
     }
     if (entry.type !== 'file') continue;
     if (PROJECT_FILE.test(name)) {
-      if (parent === '.') throw new FcError(`타겟이 프로젝트 폴더로 보여(${name} 있음) 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
-      add(parent, `프로젝트 폴더(${name} 있음)`);
+      if (parent === '.') throw new FcError(`Not handled because the target looks like a project folder (contains ${name}). Choose a folder below it as the target: ${target}`);
+      add(parent, `project folder (contains ${name})`);
     }
     const ext = path.extname(name).toLowerCase();
     if (ext === '.exe' || ext === '.dll') programs.set(parent, new Set([...(programs.get(parent) ?? []), ext]));
   }
   for (const [parent, kinds] of programs) {
     if (kinds.size < 2) continue;
-    if (parent === '.') throw new FcError(`타겟에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다. 그 아래 폴더를 타겟으로 고르세요: ${target}`);
-    add(parent, '실행 파일과 DLL이 함께 든 프로그램 폴더');
+    if (parent === '.') throw new FcError(`Not handled because the target holds both executables and DLLs, so it is treated as a program folder. Choose a folder below it as the target: ${target}`);
+    add(parent, 'program folder holding both executables and DLLs');
   }
   return guarded;
 }
@@ -381,12 +381,12 @@ function rejectProjectAncestor(target) {
       try {
         names = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name);
       } catch (err) {
-        throw new FcError(`위 폴더가 프로젝트 폴더인지 확인할 수 없습니다: ${dir} (${err.code})`);
+        throw new FcError(`Cannot check whether a parent folder is a project folder: ${dir} (${err.code})`);
       }
       const marker = names.find((name) => PROJECT_FILE.test(name));
-      if (marker) throw new FcError(`위 폴더가 프로젝트 폴더로 보여(${marker} 있음) 다루지 않습니다: ${dir}`);
+      if (marker) throw new FcError(`Not handled because a parent folder looks like a project folder (contains ${marker}): ${dir}`);
       const exts = new Set(names.map((name) => path.extname(name).toLowerCase()));
-      if (exts.has('.exe') && exts.has('.dll')) throw new FcError(`위 폴더에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다: ${dir}`);
+      if (exts.has('.exe') && exts.has('.dll')) throw new FcError(`Not handled because a parent folder holds both executables and DLLs, so it is treated as a program folder: ${dir}`);
     }
     if (dir === path.dirname(dir)) break;
   }
@@ -496,7 +496,7 @@ function looksLikeGitDir(dir) {
   try {
     return Boolean(stat('HEAD')?.isFile() && stat('objects')?.isDirectory() && stat('refs')?.isDirectory());
   } catch (err) {
-    throw new FcError(`저장소인지 확인할 수 없습니다: ${dir} (${err.code})`);
+    throw new FcError(`Cannot check whether it is a repository: ${dir} (${err.code})`);
   }
 }
 
@@ -504,13 +504,13 @@ function looksLikeGitDir(dir) {
 // 타겟이 저장소의 일반 하위 폴더(r/src)면 저장소는 망가지지 않고 git으로 되돌릴 수 있으므로 막지 않는다.
 function rejectRepository(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
-    if (REPOSITORY_FOLDER.test(path.basename(dir)) || looksLikeGitDir(dir)) throw new FcError(`저장소 내부 폴더라 다루지 않습니다: ${dir}`);
+    if (REPOSITORY_FOLDER.test(path.basename(dir)) || looksLikeGitDir(dir)) throw new FcError(`Not handled because it is inside a repository: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
   const folder = entries.find((entry) => entry.relative.split(path.sep).some((part) => REPOSITORY_FOLDER.test(part)));
-  if (folder) throw new FcError(`저장소가 들어 있어 다루지 않습니다: ${folder.path}`);
+  if (folder) throw new FcError(`Not handled because it contains a repository: ${folder.path}`);
   const bare = entries.find((entry) => entry.type === 'file' && path.basename(entry.path) === 'HEAD' && looksLikeGitDir(path.dirname(entry.path)));
-  if (bare) throw new FcError(`저장소가 들어 있어 다루지 않습니다: ${path.dirname(bare.path)}`);
+  if (bare) throw new FcError(`Not handled because it contains a repository: ${path.dirname(bare.path)}`);
 }
 
 // 타겟 아래 모든 파일을 타겟 바로 아래로 옮기는 계획을 만든다. 파일은 건드리지 않는다.
@@ -562,11 +562,11 @@ function planFlatten(dir) {
     }
     const parts = entry.relative.split(path.sep);
     if (entry.type !== 'dir' && parts.some((part) => LEFTOVER.test(part))) {
-      plan.skipped.push({ path: entry.path, reason: '이전 작업의 잔여물이라 옮기지 않습니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is a leftover from an earlier job.' });
       continue;
     }
     if (entry.type !== 'dir' && parts.some((part) => SYSTEM_FOLDER.test(part))) {
-      plan.skipped.push({ path: entry.path, reason: 'Windows 시스템 폴더 안의 파일이라 옮기지 않습니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is inside a Windows system folder.' });
       continue;
     }
     const guard = guardOf(entry.relative, guarded);
@@ -583,15 +583,15 @@ function planFlatten(dir) {
     }
     if (entry.type === 'dir') continue;
     if (entry.type === 'link') {
-      plan.skipped.push({ path: entry.path, reason: '링크는 옮기지 않습니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Links are not moved.' });
       continue;
     }
     if (isFolderMetadata(entry)) {
-      plan.skipped.push({ path: entry.path, reason: '폴더 설정·미리보기 파일이라 옮기지 않습니다. 폴더가 비면 폴더와 함께 휴지통으로 갑니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is a folder settings or preview file. If the folder becomes empty, it goes to the Recycle Bin with the folder.' });
       continue;
     }
     if (attributes.has(entry.relative)) {
-      plan.skipped.push({ path: entry.path, reason: '숨김·시스템 속성 파일이라 옮기지 않습니다.' });
+      plan.skipped.push({ path: entry.path, reason: 'Not moved because it has the hidden or system attribute.' });
       continue;
     }
     const original = path.basename(entry.path);
@@ -606,7 +606,7 @@ function planFlatten(dir) {
       else detailed = withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
       // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
       const twin = topFiles.get(fileKey(from));
-      if (twin) throw new FcError(`타겟 바로 아래에 이미 있는 이름이라 옮기지 않습니다: ${path.basename(twin)}${leftoverNote(from, twin)}`);
+      if (twin) throw new FcError(`Not moved because the name already exists directly under the target: ${path.basename(twin)}${leftoverNote(from, twin)}`);
       // 이름은 아래에서 한꺼번에 배정한다. 실패하면 이 자리에 사유를 채워 건너뜀 순서를 유지한다.
       const slot = { path: entry.path, reason: null };
       plan.skipped.push(slot);
@@ -646,7 +646,7 @@ function planFlatten(dir) {
         desired = original;
         name = freeName(desired, access.target, taken, nextNumber);
       }
-      if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
+      if (name.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${name}`);
       candidate.move = { from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired };
       taken.add(nameKey(name));
     } catch (err) {
@@ -658,13 +658,13 @@ function planFlatten(dir) {
   const slots = new Set(candidates.map((c) => c.slot));
   plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
   for (const item of guardItems.values()) {
-    item.reason = `${item.label}라 안의 항목 ${item.count}개를 옮기지 않고 폴더째 남깁니다.`;
+    item.reason = `Not moving the ${item.count} items inside; the folder is left whole because it is a ${item.label}.`;
     delete item.label;
     delete item.count;
   }
   // 파일이 없는 남길 폴더도 지우지 않는다는 것을 알린다. 다른 남길 폴더 안에 든 것은 바깥 폴더로 이미 알렸다.
   for (const [relative, label] of guarded) {
-    if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `${label}라 폴더째 남깁니다.` });
+    if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `Folder left whole because it is a ${label}.` });
   }
   return plan;
 }
@@ -734,26 +734,26 @@ function removeNewName(from, to, cause) {
   try {
     ours = sameFile(from, to);
   } catch (err) {
-    throw new FcError(`옮기지 못했고 새 이름도 확인하지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+    throw new FcError(`Could not move, and could not check the new name either: ${to} (${cause.code}, ${err.code})`);
   }
   if (!ours) {
     if (!fs.lstatSync(to, { throwIfNoEntry: false })) return;
-    throw new FcError(`옮기지 못했고 새 이름이 그사이 다른 파일로 바뀌어 지우지 않았습니다: ${to} (${cause.code})`);
+    throw new FcError(`Could not move, and the new name was turned into a different file in the meantime, so it was not deleted: ${to} (${cause.code})`);
   }
   try {
     fs.unlinkSync(to);
   } catch (err) {
-    throw new FcError(`옮기지 못했고 새 이름도 지우지 못해 같은 파일이 두 이름으로 남았습니다: ${from}, ${to} (${cause.code}, ${err.code})`);
+    throw new FcError(`Could not move, and could not delete the new name either, so the same file remains under two names: ${from}, ${to} (${cause.code}, ${err.code})`);
   }
 }
 
 // 대상 이름이 이미 있을 때, 이전 실행이 중간에 멈춰 남긴 것으로 보이면 그 사실을 알리는 문구를 돌려준다(#73).
 function leftoverNote(from, to) {
   try {
-    if (sameFile(from, to)) return ' (원본과 같은 파일의 다른 이름(하드링크)입니다. 이전 실행이 중간에 멈춘 흔적일 수 있어 한쪽 이름을 지우면 됩니다)';
+    if (sameFile(from, to)) return ' (another name of the same file as the source (a hard link). It may be a trace of an earlier run that stopped midway; delete one of the names)';
     const target = fs.lstatSync(to, { throwIfNoEntry: false });
     if (target?.isFile() && target.size === 0 && fs.lstatSync(from).size > 0) {
-      return ' (그 이름은 빈 파일입니다. 이전 실행이 중간에 멈추며 남긴 자리표시일 수 있으니 확인한 뒤 지우고 다시 실행하세요)';
+      return ' (that name is an empty file. It may be a placeholder left when an earlier run stopped midway; check it, delete it, and run again)';
     }
   } catch {
     // 알림 문구만 빠진다.
@@ -767,14 +767,14 @@ function removePlaceholder(to, cause) {
   try {
     stat = fs.lstatSync(to, { throwIfNoEntry: false });
   } catch (err) {
-    throw new FcError(`옮기지 못했고 자리표시 파일도 확인하지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+    throw new FcError(`Could not move, and could not check the placeholder file either: ${to} (${cause.code}, ${err.code})`);
   }
   if (!stat) return;
-  if (!stat.isFile() || stat.size !== 0) throw new FcError(`옮기지 못했고 자리표시 파일에 다른 내용이 생겨 지우지 않았습니다: ${to} (${cause.code})`);
+  if (!stat.isFile() || stat.size !== 0) throw new FcError(`Could not move, and the placeholder file now has other content, so it was not deleted: ${to} (${cause.code})`);
   try {
     fs.rmSync(to, { force: true, maxRetries: 3 });
   } catch (err) {
-    throw new FcError(`옮기지 못했고 빈 자리표시 파일도 지우지 못했습니다: ${to} (${cause.code}, ${err.code})`);
+    throw new FcError(`Could not move, and could not delete the empty placeholder file either: ${to} (${cause.code}, ${err.code})`);
   }
 }
 
@@ -786,11 +786,11 @@ function applyMove(move, access, taken, nextNumber) {
   // 계획과 실행 사이에 원본이 링크로 바뀌었거나 타겟 밖을 가리키면 여기서 거부된다.
   const from = access.delete(move.from);
   // 부모가 안쪽을 가리키는 정션으로 바뀌었거나 파일이 폴더로 바뀌면 계획과 다른 항목을 옮기게 된다.
-  if (from !== move.from) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${move.from} -> ${from}`);
-  if (!fs.lstatSync(from).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${from}`);
+  if (from !== move.from) throw new FcError(`The path changed after planning: ${move.from} -> ${from}`);
+  if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
   let name = move.name;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    if (name.length > MAX_NAME) throw new FcError(`번호를 붙이면 이름이 너무 깁니다: ${name}`);
+    if (name.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${name}`);
     const to = path.join(access.target, name);
     // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
     if (!fs.lstatSync(to, { throwIfNoEntry: false })) {
@@ -800,7 +800,7 @@ function applyMove(move, access, taken, nextNumber) {
     name = freeName(move.desired, access.target, taken, nextNumber);
     taken.add(nameKey(name));
   }
-  throw new FcError(`비어 있는 이름을 찾지 못했습니다: ${move.desired}`);
+  throw new FcError(`Could not find a free name: ${move.desired}`);
 }
 
 // 경로의 상위 폴더를 타겟 기준 상대경로로 돌려준다. 자신이 폴더면 자신도 넣는다.
@@ -840,23 +840,23 @@ const FOLDER_BATCH = 100;
 
 // 휴지통 일괄 이동의 결과를 사유로 바꾼다.
 const FOLDER_STATUS_REASON = {
-  moved: '검사 뒤에 경로가 바뀌었습니다(정션 등). 지우지 않았습니다.',
-  notdir: '검사 뒤에 폴더가 아니게 됐습니다.',
-  filled: '폴더에 파일이 생겨 지우지 않았습니다.',
-  gone: '폴더가 이미 없습니다.',
-  timeout: '시간 제한에 걸려 처리하지 못했습니다(오류 대화상자가 떴을 수 있습니다). 탐색기로 지워 보며 원인을 확인하세요.',
+  moved: 'The path changed after the check (junction, etc.). Not deleted.',
+  notdir: 'No longer a folder after the check.',
+  filled: 'Not deleted because a file appeared in the folder.',
+  gone: 'The folder no longer exists.',
+  timeout: 'Not processed because the time limit was hit (an error dialog may have appeared). Try deleting it in Explorer to find the cause.',
 };
 
 // 지우기 전에 Node에서 하는 검사. 통과하면 실제 경로를, 아니면 FcError를 낸다.
 function checkFolder(folder, access, { dryRun }) {
   const real = access.delete(folder);
   // 안쪽을 가리키는 정션으로 바뀌었으면 다른 폴더를 지우게 된다.
-  if (real !== folder) throw new FcError(`검사 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
+  if (real !== folder) throw new FcError(`The path changed after the check: ${folder} -> ${real}`);
   if (!dryRun) {
-    if (!fs.lstatSync(real).isDirectory()) throw new FcError(`검사 뒤에 폴더가 아니게 됐습니다: ${real}`);
+    if (!fs.lstatSync(real).isDirectory()) throw new FcError(`No longer a folder after the check: ${real}`);
     const filled = walk(real).find((entry) => entry.type !== 'dir' && !isFolderMetadata(entry));
-    if (filled) throw new FcError(`폴더에 파일이 생겨 지우지 않았습니다: ${filled.path}`);
-    if (real.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${real.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${real}`);
+    if (filled) throw new FcError(`Not deleted because a file appeared in the folder: ${filled.path}`);
+    if (real.length > MAX_RECYCLE_PATH) throw new FcError(`The path is ${real.length} characters, so it cannot be sent to the Recycle Bin (up to ${MAX_RECYCLE_PATH}): ${real}`);
     // 현재 폴더와 그 상위, 장치 이름 같은 rm의 검사를 지우지 않고(미리보기로) 그대로 거친다.
     remove([real], { dryRun: true, checkVolume: false });
   }
@@ -878,11 +878,11 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   // 미리보기도 실제 실행과 같은 사유로 남기도록 드라이브와 세션을 먼저 본다(1차 리뷰).
   const state = recycleBinState(access.target);
   let blocked;
-  if (state.interactive === false) blocked = '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.';
-  else if (state.driveType !== 'Fixed') blocked = `휴지통이 없어 영구 삭제될 수 있는 드라이브(${state.driveType ?? '종류를 알 수 없음'})라 빈 폴더를 지우지 않았습니다.`;
+  if (state.interactive === false) blocked = 'Cannot send to the Recycle Bin outside an interactive session.';
+  else if (state.driveType !== 'Fixed') blocked = `Empty folders were not deleted because the drive (${state.driveType ?? 'unknown type'}) may have no Recycle Bin and they could be permanently deleted.`;
   // 빈 폴더라 크기는 문제가 되지 않지만, 휴지통 설정이 "바로 제거"면 영구 삭제된다(#81, 빌드 26200에서 확인).
-  else if (state.nukeOnDelete === true) blocked = '이 볼륨은 휴지통 설정이 "바로 제거"라 빈 폴더도 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다.';
-  const failure = (err) => (err instanceof FcError ? err.message : `휴지통으로 보낼 수 없습니다. (${err.code ?? err.status})`);
+  else if (state.nukeOnDelete === true) blocked = 'Empty folders were not deleted because this volume is set to remove files immediately, so they would be permanently deleted without using the Recycle Bin.';
+  const failure = (err) => (err instanceof FcError ? err.message : `Cannot send to the Recycle Bin. (${err.code ?? err.status})`);
   if (dryRun) {
     for (const folder of folders) {
       if (blocked) {
@@ -922,7 +922,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       results = recycleEmptyFolders(batch, { allowedNames: FOLDER_METADATA_NAMES });
     } catch (err) {
       // 휴지통 호출의 실패 메시지에는 스크립트 전문이 들어가므로 쓰지 않는다.
-      const reason = err instanceof FcError ? err.message : `휴지통으로 보내지 못했습니다. (${err.code ?? err.status})`;
+      const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status})`;
       // 비대화형 세션, 잠금 환경처럼 묶음마다 똑같이 실패할 사유면 나머지도 보내지 않는다.
       if (err instanceof FcError) blocked = reason;
       for (const folder of batch) done(folder, reason);
@@ -935,13 +935,13 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       else if (status === 'error') {
         // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135).
         const inside = bareDeviceInside(folder);
-        done(folder, inside === undefined ? '휴지통으로 보내지 못했습니다.' : `휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+        done(folder, inside === undefined ? 'Could not send to the Recycle Bin.' : `Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}). Rename that item with fctl rename and delete again.`);
       } else done(folder, FOLDER_STATUS_REASON[status]);
     }
     queue.unshift(...pending);
     if (results[0]?.status === 'timeout') stalls += 1;
     else stalls = 0;
-    if (stalls >= MAX_STALLS) blocked = `묶음의 첫 폴더에서 시간 제한에 ${MAX_STALLS}번 연속 걸려 나머지 빈 폴더를 지우지 않았습니다(오류 대화상자가 떴을 수 있습니다). 원인을 확인한 뒤 다시 실행하세요.`;
+    if (stalls >= MAX_STALLS) blocked = `The time limit was hit ${MAX_STALLS} times in a row on the first folder of the batch, so the remaining empty folders were not deleted (an error dialog may have appeared). Check the cause and run again.`;
   }
   return report;
 }
@@ -979,10 +979,10 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
       report(moveLine(moved, relative, ''));
     } catch (err) {
       result.failed.push({ from: move.from, reason: err.message });
-      report(`실패: ${relative(move.from)} (${err.message})`);
+      report(`Failed: ${relative(move.from)} (${err.message})`);
     }
   }
-  const onFolder = (folder, reason) => report(reason === undefined ? `빈 폴더를 휴지통으로: ${relative(folder)}` : `폴더 남김: ${relative(folder)} (${reason})`);
+  const onFolder = (folder, reason) => report(reason === undefined ? `Empty folder to the Recycle Bin: ${relative(folder)}` : `Folder kept: ${relative(folder)} (${reason})`);
   // 계획이 아니라 이동이 끝난 실제 상태로 판단한다. 실패한 파일이나 그사이 생긴 파일이 있는 폴더는 남는다.
   try {
     const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target), plan.guarded), access, { dryRun, onFolder });
@@ -995,21 +995,21 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
 }
 
 function moveLine(move, relative, prefix) {
-  const notes = [move.fromFolder && '폴더명 사용', move.numbered && '번호 붙임'].filter(Boolean);
-  return `${prefix}이동: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
+  const notes = [move.fromFolder && 'folder name used', move.numbered && 'number added'].filter(Boolean);
+  return `${prefix}Move: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
 }
 
 // 결과를 사람이 읽을 수 있게 줄로 만든다. 자세한 보고 형식은 #19에서 다듬는다.
 function formatFlatten(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
   for (const move of result.moved) lines.push(moveLine(move, relative, prefix));
-  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
-  for (const folder of result.removedFolders) lines.push(`${prefix}빈 폴더를 휴지통으로: ${relative(folder)}`);
-  for (const item of result.keptFolders) lines.push(`${prefix}폴더 남김: ${relative(item.path)} (${item.reason})`);
-  lines.push(`${prefix}이동 ${result.moved.length}개, 그대로 ${result.stay.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개, 빈 폴더 제거 ${result.removedFolders.length}개`);
+  for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.from)} (${item.reason})`);
+  for (const folder of result.removedFolders) lines.push(`${prefix}Empty folder to the Recycle Bin: ${relative(folder)}`);
+  for (const item of result.keptFolders) lines.push(`${prefix}Folder kept: ${relative(item.path)} (${item.reason})`);
+  lines.push(`${prefix}Move ${result.moved.length}, stay ${result.stay.length}, skipped ${result.skipped.length}, failed ${result.failed.length}, empty folders removed ${result.removedFolders.length}`);
   return lines.join('\n');
 }
 

@@ -28,18 +28,18 @@ function localTime(now) {
 
 // 지울 수 있는 일반 파일만 받는다. 기록과 실제 제거 대상이 어긋나지 않게 grant.delete로 확인하고 그 실제 경로를 적는다.
 function describeItem(access, item) {
-  if (typeof item?.path !== 'string') throw new FcError(`기록할 경로가 올바르지 않습니다: (${typeof item?.path})`);
+  if (typeof item?.path !== 'string') throw new FcError(`The path to record is invalid: (${typeof item?.path})`);
   const label = item.path;
-  if (typeof item.reason !== 'string' || item.reason.trim() === '') throw new FcError(`제거 사유가 없습니다: ${label}`);
+  if (typeof item.reason !== 'string' || item.reason.trim() === '') throw new FcError(`No removal reason: ${label}`);
   const real = access.delete(item.path);
   let stat;
   try {
     stat = fs.lstatSync(real);
   } catch (err) {
-    throw new FcError(`파일을 확인할 수 없습니다: ${label} (${err.code})`);
+    throw new FcError(`Cannot check the file: ${label} (${err.code})`);
   }
-  if (!stat.isFile()) throw new FcError(`파일이 아니라 기록할 수 없습니다: ${label}`);
-  if (REMOVAL_LOG.test(path.basename(real))) throw new FcError(`제거 기록은 제거 대상이 될 수 없습니다: ${label}`);
+  if (!stat.isFile()) throw new FcError(`Cannot record it because it is not a file: ${label}`);
+  if (REMOVAL_LOG.test(path.basename(real))) throw new FcError(`A removal log cannot be a removal target: ${label}`);
   return { path: real, size: stat.size, reason: item.reason, ...(item.details === undefined ? {} : { details: item.details }) };
 }
 
@@ -49,7 +49,7 @@ function describeItems(access, items) {
   // map과 달리 for...of는 배열의 빈 칸도 들러 검사한다.
   for (const item of items) {
     const entry = describeItem(access, item);
-    if (seen.has(entry.path)) throw new FcError(`같은 파일이 두 번 있습니다: ${entry.path}`);
+    if (seen.has(entry.path)) throw new FcError(`The same file appears twice: ${entry.path}`);
     seen.add(entry.path);
     described.push(entry);
   }
@@ -69,10 +69,10 @@ function claimName(access, stamp, dryRun) {
     } catch (err) {
       if (err.code === 'EEXIST') continue;
       if (err instanceof FcError) throw err;
-      throw new FcError(`기록 파일을 만들지 못했습니다: ${candidate} (${err.code})`);
+      throw new FcError(`Could not create the log file: ${candidate} (${err.code})`);
     }
   }
-  throw new FcError(`기록 파일 이름을 정하지 못했습니다: fctl-removed-${stamp}`);
+  throw new FcError(`Could not choose a log file name: fctl-removed-${stamp}`);
 }
 
 // 파일을 건드리기 전에 직렬화해 입력 오류를 디스크 오류와 구분하고, 미리보기에서도 잡는다.
@@ -80,7 +80,7 @@ function serialize(log) {
   try {
     return `${JSON.stringify(log, null, 2)}\n`;
   } catch (err) {
-    throw new FcError(`details를 기록할 수 없습니다: ${err.message}`);
+    throw new FcError(`Cannot record details: ${err.message}`);
   }
 }
 
@@ -88,9 +88,9 @@ function removePartial(file, cause) {
   try {
     fs.rmSync(file);
   } catch (err) {
-    throw new FcError(`기록 파일을 끝까지 쓰지 못했고 지우지도 못했습니다: ${file} (${cause.code}, ${err.code})`);
+    throw new FcError(`Could not finish writing the log file and could not delete it either: ${file} (${cause.code}, ${err.code})`);
   }
-  throw new FcError(`기록 파일을 쓰지 못했습니다: ${file} (${cause.code})`);
+  throw new FcError(`Could not write the log file: ${file} (${cause.code})`);
 }
 
 // 제거 전에 대상의 경로·크기·사유를 타겟 폴더의 날짜가 붙은 JSON 파일로 남긴다. 파일은 지우지 않는다.
@@ -104,9 +104,9 @@ function removePartial(file, cause) {
 // 대상이 없으면 파일을 만들지 않고 null을 돌려준다.
 // 대상 하나라도 지울 수 없는 항목이면 FcError를 내고 아무것도 남기지 않는다. 오류 없이 돌아온 뒤에 제거한다.
 function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } = {}) {
-  if (typeof kind !== 'string' || kind.trim() === '') throw new FcError('제거 종류를 지정하세요.');
-  if (!Array.isArray(items)) throw new FcError('제거 대상은 목록이어야 합니다.');
-  if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new FcError('기록 시각이 올바르지 않습니다.');
+  if (typeof kind !== 'string' || kind.trim() === '') throw new FcError('Specify the removal kind.');
+  if (!Array.isArray(items)) throw new FcError('Removal targets must be a list.');
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new FcError('The record time is invalid.');
   const access = grant(dir, ['write', 'delete']);
   if (items.length === 0) return null;
   const described = describeItems(access, items);

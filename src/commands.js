@@ -17,11 +17,11 @@ function exists(p) {
 }
 
 function ensureExists(p) {
-  if (!exists(p)) throw new FcError(`경로가 없습니다: ${p}`);
+  if (!exists(p)) throw new FcError(`Path does not exist: ${p}`);
 }
 
 function ensureFree(p, force) {
-  if (exists(p) && !force) throw new FcError(`이미 있습니다: ${p} (덮어쓰려면 --force)`);
+  if (exists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
 }
 
 // Node는 nul.mp4·con.txt 같은 이름을 글자 그대로 만들지만 PowerShell·탐색기는 장치로 열어, 만든 파일을 다른 프로그램에서 열거나 지울 수 없다(#135).
@@ -38,7 +38,7 @@ function rejectNewDeviceName(p) {
     existing = parent;
   }
   const part = created.find((name) => isDeviceName(name));
-  if (part !== undefined) throw new FcError(`Windows가 장치로 여는 이름이라 만들지 않습니다: ${JSON.stringify(part)} (${p})`);
+  if (part !== undefined) throw new FcError(`Not created because Windows opens this name as a device: ${JSON.stringify(part)} (${p})`);
 }
 
 // 하드링크(링크 수 2 이상)의 내용을 바꾸면 같은 파일의 다른 이름도 함께 바뀐다. 다른 이름은 타겟 밖일 수 있어 내용은 쓰지 않는다(#48).
@@ -48,7 +48,7 @@ function rejectNewDeviceName(p) {
 function rejectHardLinkedWrite(p) {
   const stat = fs.statSync(p, { throwIfNoEntry: false });
   if (stat && stat.isFile() && stat.nlink > 1) {
-    throw new FcError(`하드링크라 내용을 바꾸면 같은 파일의 다른 이름 ${stat.nlink - 1}개도 함께 바뀌어 쓰지 않았습니다: ${p}. 먼저 지우거나 다른 이름으로 쓰세요.`);
+    throw new FcError(`Not written because changing the content of a hard link would also change ${stat.nlink - 1} other name(s) of the same file: ${p}. Delete it first or write to another name.`);
   }
 }
 
@@ -61,9 +61,9 @@ function checkOverwrite(src, target, { hardLinks = true } = {}) {
   const there = fs.lstatSync(target, { throwIfNoEntry: false });
   if (!there) return;
   const here = fs.lstatSync(src);
-  if (there.isSymbolicLink()) throw new FcError(`덮어쓸 대상이 링크라 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${target}`);
-  if (here.isSymbolicLink()) throw new FcError(`원본의 링크를 이미 있는 항목 위에 복사할 수 없습니다. 아무것도 복사하지 않았습니다: ${src} -> ${target}`);
-  if (here.isDirectory() !== there.isDirectory()) throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
+  if (there.isSymbolicLink()) throw new FcError(`The destination to overwrite is a link, so this could write to where the link points. Nothing was copied: ${target}`);
+  if (here.isSymbolicLink()) throw new FcError(`Cannot copy a source link over an existing item. Nothing was copied: ${src} -> ${target}`);
+  if (here.isDirectory() !== there.isDirectory()) throw new FcError(`A file and a folder cannot overwrite each other: ${src} -> ${target}`);
   if (!here.isDirectory()) {
     if (hardLinks) rejectHardLinkedWrite(target);
     return;
@@ -73,10 +73,10 @@ function checkOverwrite(src, target, { hardLinks = true } = {}) {
     const to = path.join(target, entry.name);
     const stat = fs.lstatSync(to, { throwIfNoEntry: false });
     if (!stat) continue;
-    if (stat.isSymbolicLink()) throw new FcError(`합칠 대상 안에 링크가 있어 링크가 가리키는 곳에 쓸 수 있습니다. 아무것도 복사하지 않았습니다: ${to}`);
-    if (entry.isSymbolicLink()) throw new FcError(`합칠 폴더 안에서 원본의 링크가 이미 있는 항목 자리에 있어 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${from} -> ${to}`);
+    if (stat.isSymbolicLink()) throw new FcError(`The folder to merge into contains a link, so this could write to where the link points. Nothing was copied: ${to}`);
+    if (entry.isSymbolicLink()) throw new FcError(`A source link sits where an item already exists in the folder to merge, so it cannot be overwritten. Nothing was copied: ${from} -> ${to}`);
     if (entry.isDirectory() !== stat.isDirectory()) {
-      throw new FcError(`합칠 폴더 안에서 파일과 폴더가 어긋나 덮어쓸 수 없습니다. 아무것도 복사하지 않았습니다: ${from} -> ${to}`);
+      throw new FcError(`A file and a folder do not match inside the folder to merge, so it cannot be overwritten. Nothing was copied: ${from} -> ${to}`);
     }
     if (entry.isDirectory()) checkOverwrite(from, to, { hardLinks });
     else if (hardLinks) rejectHardLinkedWrite(to);
@@ -91,18 +91,18 @@ function bareDeviceName(p) {
 
 function rejectBareDeviceArgs(paths, what) {
   const found = paths.find((p) => bareDeviceName(p) !== undefined);
-  if (found !== undefined) throw new FcError(`장치 이름(${JSON.stringify(bareDeviceName(found))})이 든 경로는 ${what}: ${found}. fctl rename으로 이름을 바꾼 뒤 다시 실행하세요.`);
+  if (found !== undefined) throw new FcError(`A path containing the device name (${JSON.stringify(bareDeviceName(found))}) ${what}: ${found}. Rename it with fctl rename and run again.`);
 }
 
 // 미리보기면 작업을 실행하지 않고 할 일만 알려 준다. 모든 변경 명령이 이 함수를 거친다.
 function perform(message, dryRun, action) {
-  if (dryRun) return `[미리보기] ${message}`;
+  if (dryRun) return `[Preview] ${message}`;
   action();
   return message;
 }
 
 function overwriteNote(p, dryRun) {
-  return dryRun && exists(p) ? ' (덮어씀)' : '';
+  return dryRun && exists(p) ? ' (overwrites)' : '';
 }
 
 function pathKey(p) {
@@ -119,7 +119,7 @@ function isSameOrUnder(parentKey, key) {
 function claim(planned, p) {
   const key = pathKey(p);
   for (const earlier of planned) {
-    if (isSameOrUnder(earlier, key)) throw new FcError(`앞 항목과 겹칩니다: ${p} (실제로 실행하면 앞 항목을 처리한 뒤 실패합니다)`);
+    if (isSameOrUnder(earlier, key)) throw new FcError(`Overlaps an earlier item: ${p} (a real run would fail after handling the earlier item)`);
   }
   planned.add(key);
 }
@@ -128,17 +128,17 @@ function claim(planned, p) {
 function targetNote(planned, target, force, dirNote) {
   const key = pathKey(target);
   if (planned.has(key)) {
-    if (!force) throw new FcError(`이미 있습니다: ${target} (앞 항목이 같은 이름으로 처리됨)`);
-    return ' (덮어씀: 앞 항목)';
+    if (!force) throw new FcError(`Already exists: ${target} (an earlier item is handled under the same name)`);
+    return ' (overwrites: earlier item)';
   }
   planned.add(key);
   if (!exists(target)) return '';
-  return fs.statSync(target).isDirectory() ? dirNote : ' (덮어씀)';
+  return fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
 }
 
 // 미리보기용: 폴더를 자기 안으로, 파일을 자기 자신으로 옮기거나 복사하면 실제 실행에서 실패한다.
 function ensureNotIntoSelf(src, target) {
-  if (isSameOrUnder(pathKey(src), pathKey(target))) throw new FcError(`자기 자신이나 그 안으로는 옮기거나 복사할 수 없습니다: ${src} -> ${target}`);
+  if (isSameOrUnder(pathKey(src), pathKey(target))) throw new FcError(`Cannot move or copy onto itself or into itself: ${src} -> ${target}`);
 }
 
 // 미리보기용 검사: 만들려는 폴더 경로 위에 파일이 있으면 실제 실행에서 실패한다.
@@ -146,16 +146,16 @@ function ensureCanMakeDir(dir) {
   let current = path.resolve(dir);
   while (!exists(current)) {
     const parent = path.dirname(current);
-    if (parent === current) throw new FcError(`경로가 없습니다: ${current}`);
+    if (parent === current) throw new FcError(`Path does not exist: ${current}`);
     current = parent;
   }
-  if (!fs.statSync(current).isDirectory()) throw new FcError(`파일 아래에는 만들 수 없습니다: ${dir} (${current})`);
+  if (!fs.statSync(current).isDirectory()) throw new FcError(`Cannot create below a file: ${dir} (${current})`);
 }
 
 // 미리보기용 검사: 부모 폴더를 만들어 주지 않는 명령(mv, zip)은 부모가 있어야 한다.
 function ensureParentDir(p) {
   const parent = path.dirname(path.resolve(p));
-  if (!exists(parent) || !fs.statSync(parent).isDirectory()) throw new FcError(`대상의 부모 폴더가 없습니다: ${parent}`);
+  if (!exists(parent) || !fs.statSync(parent).isDirectory()) throw new FcError(`The parent folder of the destination does not exist: ${parent}`);
 }
 
 function formatSize(bytes) {
@@ -195,8 +195,8 @@ function list(dir = '.') {
 function makeDir(dir, { dryRun = false } = {}) {
   rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
-  const note = dryRun && exists(dir) ? ' (이미 있음)' : '';
-  return perform(`폴더 생성: ${dir}${note}`, dryRun, () => fs.mkdirSync(dir, { recursive: true }));
+  const note = dryRun && exists(dir) ? ' (already exists)' : '';
+  return perform(`Create folder: ${dir}${note}`, dryRun, () => fs.mkdirSync(dir, { recursive: true }));
 }
 
 function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
@@ -205,10 +205,10 @@ function writeFile(file, content, { append = false, force = false, dryRun = fals
   rejectHardLinkedWrite(file);
   if (dryRun) {
     ensureCanMakeDir(path.dirname(file));
-    if (exists(file) && fs.statSync(file).isDirectory()) throw new FcError(`폴더에는 쓸 수 없습니다: ${file}`);
+    if (exists(file) && fs.statSync(file).isDirectory()) throw new FcError(`Cannot write to a folder: ${file}`);
   }
   const note = append ? '' : overwriteNote(file, dryRun);
-  return perform(`${append ? '내용 추가' : '파일 작성'}: ${file}${note}`, dryRun, () => {
+  return perform(`${append ? 'Append to file' : 'Write file'}: ${file}${note}`, dryRun, () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (append) fs.appendFileSync(file, content);
     else fs.writeFileSync(file, content);
@@ -223,14 +223,14 @@ function readFile(file) {
 function rename(target, newName, { force = false, dryRun = false } = {}) {
   ensureExists(target);
   if (newName.includes('/') || newName.includes('\\')) {
-    throw new FcError('새 이름에는 경로를 넣을 수 없습니다. 옮기려면 mv를 쓰세요.');
+    throw new FcError('The new name cannot contain a path. Use mv to move.');
   }
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
   rejectNewDeviceName(dest);
   // 자기 자신의 대소문자만 바꾸는 경우는 덮어쓰기가 아니다.
-  if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${dest}`);
-  return perform(`이름 변경: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
+  if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
+  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
 function moveOne(src, dest) {
@@ -275,18 +275,18 @@ function moveReplacing(src, target) {
     moveOne(src, target);
   } catch (err) {
     // 복사가 끝나 대상이 생겼다면 원본 정리만 실패한 것이므로 되돌리지 않는다.
-    if (exists(target)) throw new FcError(`옮겼지만 원본을 다 지우지 못했습니다: ${src} (${err.code}). 이전 대상은 ${aside}에 있습니다.`);
+    if (exists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
     try {
       fs.renameSync(aside, target);
     } catch (restoreErr) {
-      throw new FcError(`옮기지 못했고 이전 대상도 되돌리지 못했습니다: ${src} (${err.code}, ${restoreErr.code}). 이전 대상은 ${aside}에 있습니다.`);
+      throw new FcError(`Could not move, and could not restore the previous destination either: ${src} (${err.code}, ${restoreErr.code}). The previous destination is at ${aside}.`);
     }
     throw err;
   }
   try {
     fs.rmSync(aside, { recursive: true, force: true });
   } catch (err) {
-    throw new FcError(`옮겼지만 이전 대상을 지우지 못했습니다: ${aside} (${err.code})`);
+    throw new FcError(`Moved, but could not delete the previous destination: ${aside} (${err.code})`);
   }
 }
 
@@ -296,7 +296,7 @@ function realKey(p) {
   try {
     return pathKey(fs.realpathSync.native(full));
   } catch (err) {
-    if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw new FcError(`실제 경로를 확인할 수 없습니다: ${full} (${err.code})`);
+    if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw new FcError(`Cannot check the real path: ${full} (${err.code})`);
     const parent = path.dirname(full);
     return parent === full ? pathKey(full) : pathKey(path.join(realKey(parent), path.basename(full)));
   }
@@ -352,7 +352,7 @@ function rejectLoopingLinks(src, target) {
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
-      throw new FcError(`원본 안의 폴더를 읽을 수 없어 복사가 끝나는지 확인하지 못했습니다. 아무것도 복사하지 않았습니다: ${dir} (${err.code})`);
+      throw new FcError(`Cannot read a folder inside the source, so it could not be confirmed that the copy will finish. Nothing was copied: ${dir} (${err.code})`);
     }
     for (const entry of entries) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -370,7 +370,7 @@ function rejectLoopingLinks(src, target) {
         if (id === null) continue;
         const reached = selfAndAncestorIds(real);
         if (onPath.has(id) || (destId !== null && reached.includes(destId))) {
-          throw new FcError(`원본 안의 링크가 원본이나 대상, 또는 그 위 폴더를 가리켜 복사가 끝나지 않을 수 있습니다. 아무것도 복사하지 않았습니다: ${full} -> ${real}`);
+          throw new FcError(`A link inside the source points to the source, the destination, or a folder above them, so the copy might never finish. Nothing was copied: ${full} -> ${real}`);
         }
         if (walked.has(id)) continue;
         walked.add(id);
@@ -413,19 +413,19 @@ function selfAndAncestorIds(p) {
 // UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
 // 링크는 링크 자체만 옮기거나 복사하므로 가리키는 곳으로 따지지 않는다.
 function rejectCopyIntoSelf(src, target) {
-  if (!fs.lstatSync(src).isSymbolicLink() && hasAncestorSameAs(src, target)) throw new FcError(`자기 안으로 옮기거나 복사할 수 없습니다: ${src} -> ${target}`);
+  if (!fs.lstatSync(src).isSymbolicLink() && hasAncestorSameAs(src, target)) throw new FcError(`Cannot move or copy into itself: ${src} -> ${target}`);
 }
 
 // Windows의 대체 데이터 스트림(a.txt:st)은 파일 안의 일부라, 대상 파일을 치우면 원본도 함께 움직인다.
 function rejectStreamPath(p) {
   if (!isWindows) return;
   const full = path.resolve(p);
-  if (full.slice(path.parse(full).root.length).includes(':')) throw new FcError(`대체 데이터 스트림은 다룰 수 없습니다: ${p}`);
+  if (full.slice(path.parse(full).root.length).includes(':')) throw new FcError(`Alternate data streams are not supported: ${p}`);
 }
 
 // 현재 폴더나 그 상위는 옮기거나 치울 수 없어 실패하거나 일부만 처리된다.
 function rejectCurrentDir(p) {
-  if (isSameOrUnder(realKey(p), realKey(process.cwd()))) throw new FcError(`현재 폴더나 그 상위는 옮길 수 없습니다: ${p}`);
+  if (isSameOrUnder(realKey(p), realKey(process.cwd()))) throw new FcError(`Cannot move the current folder or its parents: ${p}`);
 }
 
 // 대상과 원본이 겹치면 대상을 치우면서 원본도 함께 움직이거나, 원본을 옮겨 대상을 망가뜨린다.
@@ -435,13 +435,13 @@ function rejectMoveOverlap(src, target) {
   const targetKey = entryKey(target);
   const stat = fs.statSync(src, { bigint: true, throwIfNoEntry: false });
   // 하드링크끼리는 같은 파일 번호여도 서로 다른 항목이라 이동해도 내용을 잃지 않는다.
-  if (srcKey === targetKey || (exists(target) && isSameFile(src, target) && stat.nlink === 1n)) throw new FcError(`원본과 대상이 같습니다: ${src} -> ${target}`);
-  if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`자기 안으로 옮길 수 없습니다: ${src} -> ${target}`);
+  if (srcKey === targetKey || (exists(target) && isSameFile(src, target) && stat.nlink === 1n)) throw new FcError(`The source and destination are the same: ${src} -> ${target}`);
+  if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`Cannot move into itself: ${src} -> ${target}`);
   rejectCopyIntoSelf(src, target);
   const targetIsLink = exists(target) && fs.lstatSync(target).isSymbolicLink();
-  if (isSameOrUnder(targetKey, srcKey) || (exists(target) && !targetIsLink && hasAncestorSameAs(target, src))) throw new FcError(`대상이 원본을 품고 있어 옮길 수 없습니다: ${src} -> ${target}`);
+  if (isSameOrUnder(targetKey, srcKey) || (exists(target) && !targetIsLink && hasAncestorSameAs(target, src))) throw new FcError(`Cannot move because the destination contains the source: ${src} -> ${target}`);
   // 링크를 자기가 가리키는 곳 위로 옮기면, 대상을 지우는 순간 링크가 가리키던 내용이 사라진다.
-  if (fs.lstatSync(src).isSymbolicLink() && isSameOrUnder(targetKey, realKey(src))) throw new FcError(`링크가 가리키는 곳을 덮어쓸 수 없습니다: ${src} -> ${target}`);
+  if (fs.lstatSync(src).isSymbolicLink() && isSameOrUnder(targetKey, realKey(src))) throw new FcError(`Cannot overwrite where the link points: ${src} -> ${target}`);
 }
 
 // 앞 항목을 처리한 뒤 뒤 항목이 망가지는 조합을 아무것도 옮기기 전에 찾는다.
@@ -451,9 +451,9 @@ function rejectBatchOverlap(items) {
     keys.forEach((b, j) => {
       if (i === j) return;
       const pair = `${items[i].src}, ${items[j].src}`;
-      if (a.target === b.target) throw new FcError(`여러 원본이 같은 대상으로 모입니다: ${items[i].target} (${pair})`);
-      if (isSameOrUnder(a.target, b.src)) throw new FcError(`한 항목의 대상이 다른 항목의 원본과 겹칩니다: ${pair}`);
-      if (i < j && (isSameOrUnder(a.src, b.src) || isSameOrUnder(a.src, b.target))) throw new FcError(`앞 항목을 옮기면 뒤 항목이 사라집니다: ${pair}`);
+      if (a.target === b.target) throw new FcError(`Several sources go to the same destination: ${items[i].target} (${pair})`);
+      if (isSameOrUnder(a.target, b.src)) throw new FcError(`The destination of one item overlaps the source of another: ${pair}`);
+      if (i < j && (isSameOrUnder(a.src, b.src) || isSameOrUnder(a.src, b.target))) throw new FcError(`Moving an earlier item would remove a later item: ${pair}`);
     });
   });
 }
@@ -465,7 +465,7 @@ function resolveDest(src, dest) {
 
 function move(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
-    throw new FcError(`여러 개를 옮기려면 대상이 있는 폴더여야 합니다: ${dest}`);
+    throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
   // 전체를 검사한 뒤에 실행해서, 실패하면 아무것도 옮겨지지 않게 한다.
   const items = sources.map((src) => {
@@ -486,13 +486,13 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   const planned = new Set();
   const done = [];
   for (const { src, target } of items) {
-    const note = dryRun ? targetNote(planned, target, force, ' (기존 폴더 전체를 교체함)') : '';
+    const note = dryRun ? targetNote(planned, target, force, ' (replaces the whole existing folder)') : '';
     try {
-      done.push(perform(`이동: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
+      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
     } catch (err) {
       // 앞 항목은 이미 옮겨졌으니, 오류만 내면 무엇이 옮겨졌는지 알 수 없다.
       if (done.length === 0) throw err;
-      throw new FcError(`${err.message}\n이미 처리한 항목:\n${done.join('\n')}`);
+      throw new FcError(`${err.message}\nItems already handled:\n${done.join('\n')}`);
     }
   }
   return done;
@@ -500,7 +500,7 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
 
 function copy(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
-    throw new FcError(`여러 개를 복사하려면 대상이 있는 폴더여야 합니다: ${dest}`);
+    throw new FcError(`To copy several items, the destination must be an existing folder: ${dest}`);
   }
   // 덮어쓰기·합치기(--force일 때만 일어난다)는 여러 원본 중 하나에만 문제가 있어도 아무것도 복사하지 않도록 먼저 모두 본다(#48, #140).
   // 같은 대상으로 모이는 원본은 앞 원본이 복사된 뒤의 대상과도 합쳐지므로, 앞 원본을 대상으로 보고도 확인한다.
@@ -534,11 +534,11 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       ensureCanMakeDir(path.dirname(target));
       ensureNotIntoSelf(src, target);
       if (exists(target) && fs.statSync(src).isDirectory() !== fs.statSync(target).isDirectory()) {
-        throw new FcError(`파일과 폴더는 서로 덮어쓸 수 없습니다: ${src} -> ${target}`);
+        throw new FcError(`A file and a folder cannot overwrite each other: ${src} -> ${target}`);
       }
-      note = targetNote(planned, target, force, ' (폴더에 합침, 같은 이름 파일은 덮어씀)');
+      note = targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)');
     }
-    return perform(`복사: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
+    return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
   });
 }
 
@@ -569,7 +569,7 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
       maxBuffer: 256 * 1024 * 1024,
     });
   } catch (err) {
-    throw new FcError(`숨김·시스템 속성을 확인할 수 없습니다: ${full} (${err.code ?? err.status})`);
+    throw new FcError(`Cannot check hidden and system attributes: ${full} (${err.code ?? err.status})`);
   }
   const found = new Map();
   for (const line of output.split(/\r?\n/)) {
@@ -634,10 +634,10 @@ function recycleTarget(target) {
   const prefixed = /^[\\/]{2}[?.][\\/]/.test(target);
   if (prefixed) {
     const drive = /^[\\/]{2}\?[\\/]([A-Za-z]:[\\/].*)$/s.exec(target);
-    if (!drive) throw new FcError(`이 꼴의 경로는 휴지통으로 보낼 수 없습니다: ${target}. 드라이브 문자 경로(D:\\...)로 다시 지정하세요.`);
+    if (!drive) throw new FcError(`A path of this form cannot be sent to the Recycle Bin: ${target}. Specify it again as a drive-letter path (D:\\...).`);
     plain = drive[1];
     if (path.resolve(target).toUpperCase() !== `\\\\?\\${path.resolve(plain)}`.toUpperCase()) {
-      throw new FcError(`\\\\?\\ 접두어를 떼면 다른 곳을 가리켜 휴지통으로 보낼 수 없습니다: ${target}. .이나 ..이 없는 경로로 다시 지정하세요.`);
+      throw new FcError(`Removing the \\\\?\\ prefix would point somewhere else, so it cannot be sent to the Recycle Bin: ${target}. Specify it again as a path without . or ..`);
     }
   }
   const full = path.resolve(plain);
@@ -645,10 +645,10 @@ function recycleTarget(target) {
   if (odd !== undefined) {
     // UNC 경로(\\server\share)는 \\?\UNC\server\share 꼴이 접두어 경로다(2차 리뷰).
     const long = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
-    const how = prefixed ? '' : ` 이름을 바꾸려면 fctl rename에 \\\\?\\ 접두어 경로(${long})를 주세요.`;
-    throw new FcError(`끝이 점이나 공백인 이름(${odd})이 있어 휴지통으로 보낼 수 없습니다. 휴지통 이동은 끝의 점·공백을 지운 다른 이름을 가리킵니다.${how || ' fctl rename에 이 접두어 경로를 주어 이름을 바꾼 뒤 다시 지우세요.'} 휴지통을 거치지 않으려면 --permanent를 쓰세요: ${target}`);
+    const how = prefixed ? '' : ` To rename it, give fctl rename the \\\\?\\ prefixed path (${long}).`;
+    throw new FcError(`It cannot be sent to the Recycle Bin because of a name ending with a dot or space (${odd}). Sending to the Recycle Bin points to another name with the trailing dot or space removed.${how || ' Give fctl rename this prefixed path, rename it, and delete again.'} To skip the Recycle Bin, use --permanent: ${target}`);
   }
-  if (full.length > MAX_RECYCLE_PATH) throw new FcError(`경로가 ${full.length}자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${full}`);
+  if (full.length > MAX_RECYCLE_PATH) throw new FcError(`The path is ${full.length} characters, so it cannot be sent to the Recycle Bin (up to ${MAX_RECYCLE_PATH}): ${full}`);
   return full;
 }
 
@@ -667,11 +667,11 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
     });
   } catch (err) {
     // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
-    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
     if (err.status === 78) throw new FcError(permanentRefusal(full, refusalReason(decodeReason(err.stdout)), permanentHint));
     // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
     const inside = bareDeviceInside(full);
-    if (inside !== undefined) throw new FcError(`휴지통으로 보내지 못했습니다. 안에 장치 이름 항목(${inside})이 있어 실패했을 수 있습니다: ${full}. 그 항목을 fctl rename으로 바꾼 뒤 다시 지우세요.`);
+    if (inside !== undefined) throw new FcError(`Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}): ${full}. Rename that item with fctl rename and delete again.`);
     const found = oddNameInside(full);
     if (found !== undefined) {
       // 바꿀 것은 끝이 점·공백인 첫 성분이다(dot./a.txt면 dot.).
@@ -679,12 +679,12 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
       const odd = parts.slice(0, parts.findIndex((part) => /[. ]$/.test(part)) + 1).join(path.sep);
       const inner = path.join(full, odd);
       const long = inner.startsWith('\\\\') ? `\\\\?\\UNC\\${inner.slice(2)}` : `\\\\?\\${inner}`;
-      throw new FcError(`휴지통으로 보내지 못했습니다. 안에 끝이 점이나 공백인 이름(${odd})이 있어 휴지통 이동이 폴더째 실패했습니다: ${full}. fctl rename에 \\\\?\\ 접두어 경로(${long})를 주어 이름을 바꾼 뒤 다시 지우세요.`);
+      throw new FcError(`Could not send to the Recycle Bin. A name ending with a dot or space inside (${odd}) made the whole folder fail: ${full}. Give fctl rename the \\\\?\\ prefixed path (${long}), rename it, and delete again.`);
     }
     if (err.status === 77) throw new FcError(recycleFailureMessage(full, decodeReason(err.stdout)));
     // 사유를 모르는 실패는 부른 쪽이 맥락을 붙이도록(풀었지만… 등) 원래 오류를 그대로 던진다.
     // 다만 명령 전문과 깨진 stderr가 든 문구는 보여 주지 않도록 바꾼다(#97).
-    err.message = `휴지통으로 보내지 못했습니다: ${full} (PowerShell 종료 코드 ${err.status ?? err.code})`;
+    err.message = `Could not send to the Recycle Bin: ${full} (PowerShell exit code ${err.status ?? err.code})`;
     throw err;
   }
 }
@@ -693,9 +693,9 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
 function recycleFailureMessage(full, reason) {
   const busy = busyInside(full);
   const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
-  const where = isDir ? `안에 다른 프로그램이 사용 중인 파일이 있습니다: ${busy}` : '다른 프로그램이 이 파일을 사용 중입니다';
-  const note = busy === undefined ? '' : ` ${where}. 그 프로그램을 닫은 뒤 다시 지우세요.`;
-  return `휴지통으로 보내지 못했습니다: ${full}${reason ? ` (${reason})` : ''}.${note}`;
+  const where = isDir ? `A file inside is in use by another program: ${busy}` : 'Another program is using this file';
+  const note = busy === undefined ? '' : ` ${where}. Close that program and delete again.`;
+  return `Could not send to the Recycle Bin: ${full}${reason ? ` (${reason})` : ''}.${note}`;
 }
 
 // PowerShell이 UTF-16 base64로 내보낸 사유 문구를 한 줄로 풀어 돌려준다. 없거나 깨졌으면 빈 문자열이다.
@@ -782,9 +782,9 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
+    if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
     // 잠금 환경(Constrained Language Mode, AppLocker)에서는 C# 형식을 만들 수 없다(1차 리뷰).
-    if (err.status === 76) throw new FcError('PowerShell에서 경로 확인용 형식을 만들 수 없어(잠금 환경 등) 빈 폴더를 휴지통으로 보내지 못했습니다.');
+    if (err.status === 76) throw new FcError('PowerShell could not create the type used to check paths (locked-down environment, etc.), so the empty folder was not sent to the Recycle Bin.');
     // 시간 제한(오류 대화상자에서 멈춘 경우 등)이나 도중 실패여도 이미 보고한 폴더의 결과는 쓴다.
     timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM';
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
@@ -980,11 +980,11 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    if (err.status === 75) throw new FcError('대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.');
-    if (err.status === 76) throw new FcError('PowerShell에서 파일 확인용 형식을 만들 수 없어(잠금 환경 등) 휴지통으로 보내지 못했습니다.');
+    if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
+    if (err.status === 76) throw new FcError('PowerShell could not create the type used to check files (locked-down environment, etc.), so they were not sent to the Recycle Bin.');
     // 도중에 끝났어도 이미 보고한 파일의 결과는 쓴다. 보고하지 않은 파일은 결과를 모른다.
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
-    failure = err.status == null && err.signal ? `PowerShell이 ${err.signal}로 끝남` : `PowerShell 종료 코드 ${err.status ?? err.code}`;
+    failure = err.status == null && err.signal ? `PowerShell ended with ${err.signal}` : `PowerShell exit code ${err.status ?? err.code}`;
   }
   const done = new Map();
   for (const line of output.split(/\r?\n/)) {
@@ -993,7 +993,7 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
     const reason = decodeReason(match[3]);
     done.set(Buffer.from(match[2], 'base64').toString('utf16le'), { status: match[1], reason: match[1] === 'permanent' ? refusalReason(reason) : reason });
   }
-  return items.map((item) => ({ path: item.path, ...(done.get(item.path) ?? { status: 'unknown', reason: failure ?? 'PowerShell이 결과를 알리지 않았습니다' }) }));
+  return items.map((item) => ({ path: item.path, ...(done.get(item.path) ?? { status: 'unknown', reason: failure ?? 'PowerShell did not report a result' }) }));
 }
 
 function bareDeviceInside(dir) {
@@ -1063,19 +1063,19 @@ function refusalReason(mark) {
   if (kind === 'nuke') return permanentDeleteReason({ nukeOnDelete: true }, 0);
   if (kind === 'cap') return permanentDeleteReason({ nukeOnDelete: false, maxCapacity: Number(value) * 1024 * 1024 }, Infinity);
   if (kind === 'unknown') return permanentDeleteReason({ nukeOnDelete: false, maxCapacity: null }, Infinity);
-  return '크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로';
+  return 'because the size could not be checked, so it is unknown whether it exceeds the Recycle Bin maximum size';
 }
 
 function volumeTypeReason(driveType) {
   return driveType === null || driveType === undefined
-    ? '드라이브 종류를 확인하지 못해 휴지통이 있는지 알 수 없으므로'
-    : `휴지통이 없을 수 있는 드라이브(${driveType})라 영구 삭제될 수 있으므로`;
+    ? 'because the drive type could not be checked, so it is unknown whether a Recycle Bin exists'
+    : `because the drive (${driveType}) may have no Recycle Bin and the file could be permanently deleted`;
 }
 
 // hint는 rm처럼 --permanent를 받는 명령에서만 켠다. extract-all·collapse는 --permanent를 받지 않는다(1차 리뷰).
 function permanentRefusal(full, why, hint = false) {
-  const tail = hint ? ' 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요.' : '';
-  return `휴지통으로 보내지 않았습니다: ${full}. ${why} 지우지 않았습니다.${tail}`;
+  const tail = hint ? ' To delete without the Recycle Bin, use --permanent.' : '';
+  return `Not sent to the Recycle Bin: ${full}. It was not deleted ${why}.${tail}`;
 }
 
 // 미리보기에서 RECYCLE_SCRIPT와 같은 판정을 한다(#81). 영구 삭제될 것이면 사유를, 아니면 null을 돌려준다.
@@ -1140,12 +1140,12 @@ const UNKNOWN_RECYCLE_LIMIT = 1024 * 1024 * 1024;
 // 영구 삭제되면 사유("…라 영구 삭제되므로")를, 아니면 null을 돌려준다. 용량을 모르면 UNKNOWN_RECYCLE_LIMIT부터 영구 삭제로 본다.
 // fallback은 용량을 모를 때의 한도로, 테스트에서만 바꾼다.
 function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
-  if (state.nukeOnDelete === true) return '이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로';
+  if (state.nukeOnDelete === true) return 'because this volume is set to remove files immediately instead of using the Recycle Bin, so it would be permanently deleted';
   const mb = (bytes) => `${Math.floor(bytes / (1024 * 1024))}MB`;
   if (state.maxCapacity !== null && state.maxCapacity !== undefined) {
-    return size > state.maxCapacity ? `휴지통 최대 크기(${mb(state.maxCapacity)})보다 커서 Windows가 묻지 않고 영구 삭제하므로` : null;
+    return size > state.maxCapacity ? `because it is larger than the Recycle Bin maximum size (${mb(state.maxCapacity)}), so Windows would permanently delete it without asking` : null;
   }
-  return size >= fallback ? '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로' : null;
+  return size >= fallback ? 'because it is 1GB or larger and the Recycle Bin maximum size could not be checked, so it could be permanently deleted' : null;
 }
 
 // checkVolume이 true면 지우기 전에(미리보기 포함) 모든 대상의 볼륨 휴지통 설정과 크기를 보고, 영구 삭제될 대상이 있으면
@@ -1154,7 +1154,7 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
 // permanentHint는 거부 사유에 --permanent 안내를 붙일지다(rm 명령만 켬).
 function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false } = {}) {
   if (!permanent && !isWindows) {
-    throw new FcError('휴지통 삭제는 Windows에서만 됩니다. 영구 삭제하려면 --permanent');
+    throw new FcError('Deleting to the Recycle Bin works only on Windows. To delete permanently, use --permanent');
   }
   const planned = new Set();
   // 아무것도 지우기 전에 모든 대상을 검사한다(#129). rm a b c에서 c만 보낼 수 없으면 a와 b도 지우지 않고 사유를 알린다.
@@ -1164,9 +1164,9 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
     // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
     // 링크를 지우면 링크만 사라지므로 링크 자체로 비교한다. 글자 비교는 링크를 거쳐 들어온 현재 폴더(rm lnk, 현재 폴더 lnk/s)를 잡는다.
     if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
-      throw new FcError(`현재 폴더나 그 상위는 지울 수 없습니다: ${target}`);
+      throw new FcError(`Cannot delete the current folder or its parents: ${target}`);
     }
-    if (!permanent) rejectBareDeviceArgs([target], '휴지통으로 보낼 수 없습니다');
+    if (!permanent) rejectBareDeviceArgs([target], 'cannot be sent to the Recycle Bin');
     // 영구 삭제는 Node(fs.rmSync)로 지우므로 휴지통 경로 검사를 하지 않는다.
     const recycleAs = permanent ? undefined : recycleTarget(target);
     if (!permanent && checkVolume) {
@@ -1179,8 +1179,8 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   return checked.map(({ target, recycleAs }) => {
     // 앞 대상이 이 대상을 품고 있어 이미 지워졌으면(rm a a/b) 예전처럼 없다고 알린다.
     if (!dryRun) ensureExists(target);
-    if (permanent) return perform(`영구 삭제: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
-    return perform(`휴지통으로 이동: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
+    if (permanent) return perform(`Delete permanently: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
+    return perform(`Move to the Recycle Bin: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });
 }
 
@@ -1231,7 +1231,7 @@ function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
       encoding: 'utf8',
     });
   } catch (err) {
-    throw new FcError(`시스템 코드페이지를 확인하지 못해 tar.exe를 실행하지 않았습니다. (${err.status ?? err.code})`);
+    throw new FcError(`Could not check the system code page, so tar.exe was not run. (${err.status ?? err.code})`);
   }
   return output.split(/\s+/).filter(Boolean).map((code) => String.fromCodePoint(Number(code)));
 }
@@ -1247,7 +1247,7 @@ function ensureTarCanUse(paths, oemNames = []) {
   const all = [...paths, ...oemNames];
   const trailing = all.find(trailingDotOrSpaceName);
   // 끝 공백이 눈에 보이도록 이름을 따옴표로 감싼다.
-  if (trailing !== undefined) throw new FcError(`끝이 점이나 공백인 이름은 tar.exe로 다룰 수 없습니다: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
+  if (trailing !== undefined) throw new FcError(`tar.exe cannot handle a name ending with a dot or space: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
   let bad = unsupportedChars(paths.join(''), null, { withOem: false });
   let checked = paths;
   if (bad.length === 0) {
@@ -1258,7 +1258,7 @@ function ensureTarCanUse(paths, oemNames = []) {
   // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
   const codes = bad.map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}(${char})`);
   const where = checked.find((p) => bad.some((char) => p.includes(char)));
-  throw new FcError(`tar.exe가 처리할 수 없는 문자가 이름에 있습니다: ${codes.join(' ')} (${where})`);
+  throw new FcError(`The name contains characters tar.exe cannot handle: ${codes.join(' ')} (${where})`);
 }
 
 // args는 tar.exe에 인자로 넘기는 경로, entries는 압축 안에 적힐 이름(원본 이름과 묶을 폴더 안의 이름)이다.
@@ -1266,7 +1266,7 @@ function ensureTarCanUse(paths, oemNames = []) {
 function ensureTarArgs(args, entries = [], { oemEntries = false } = {}) {
   if (oemEntries) ensureTarCanUse(args, entries);
   else ensureTarCanUse([...args, ...entries]);
-  rejectBareDeviceArgs(args, 'tar.exe가 장치로 열어 다룰 수 없습니다');
+  rejectBareDeviceArgs(args, 'would be opened as a device by tar.exe and cannot be handled');
 }
 
 // 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. tar처럼 원본과 그 안의 정션을 따라간다.
@@ -1293,10 +1293,10 @@ function runTar(args, options) {
   try {
     return execFileSync(TAR, args, { ...options, env: tarEnv(), cwd: TAR_CWD });
   } catch (err) {
-    if (err.status === 0xc0000005) throw new FcError(`tar.exe가 비정상 종료했습니다. 처리할 수 없는 이름이 있을 수 있습니다. (${err.status})`);
+    if (err.status === 0xc0000005) throw new FcError(`tar.exe exited abnormally. A name it cannot handle may be present. (${err.status})`);
     const program = missingProgram(err.stderr);
     if (program !== null) {
-      throw new FcError(`이 압축은 tar.exe에 들어 있지 않아 외부 프로그램 ${program}이 필요한데 실행하지 못했습니다. ${program}.exe를 PATH에 두거나 다른 압축(.zip, .tar.gz 등)으로 받으세요.`);
+      throw new FcError(`This archive is not handled by tar.exe, so it needs the external program ${program}, but it could not be run. Put ${program}.exe on PATH or use another archive format (.zip, .tar.gz, etc.).`);
     }
     throw err;
   }
@@ -1364,7 +1364,7 @@ function listedSize(entries, block) {
   let total = 0n;
   for (const line of entries) {
     const match = LISTED_SIZE.exec(line);
-    if (!match) throw new FcError(`압축 파일 목록에서 크기를 읽지 못해 풀지 않았습니다: ${JSON.stringify(line.slice(0, 80))}`);
+    if (!match) throw new FcError(`Could not read the size from the archive listing, so it was not extracted: ${JSON.stringify(line.slice(0, 80))}`);
     total += ((BigInt(match[1]) + block - 1n) / block) * block + ENTRY_OVERHEAD;
   }
   return total;
@@ -1385,12 +1385,12 @@ function ensureRoomToExtract(dest, entries) {
   try {
     space = freeSpace(dest);
   } catch (err) {
-    throw new FcError(`남은 디스크 공간을 확인하지 못해 풀지 않았습니다: ${dest} (${err.code ?? err.message})`);
+    throw new FcError(`Could not check the free disk space, so it was not extracted: ${dest} (${err.code ?? err.message})`);
   }
   const need = listedSize(entries, space.block);
   const { free } = space;
   if (need + SPACE_RESERVE > free) {
-    throw new FcError(`풀면 약 ${formatSize(Number(need))}가 되어 디스크에 ${formatSize(Number(SPACE_RESERVE))}보다 적게 남으므로 풀지 않았습니다. (남은 공간 ${formatSize(Number(free))})`);
+    throw new FcError(`Extracting would take about ${formatSize(Number(need))} and leave less than ${formatSize(Number(SPACE_RESERVE))} free on the disk, so it was not extracted. (free space ${formatSize(Number(free))})`);
   }
   return need;
 }
@@ -1399,8 +1399,8 @@ function ensureRoomToExtract(dest, entries) {
 function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
-  rejectLongName(dest, '풀 폴더');
-  rejectLongTarDir(dest, '풀 폴더');
+  rejectLongName(dest, 'The extraction folder');
+  rejectLongTarDir(dest, 'The extraction folder');
   rejectNewDeviceName(dest);
   ensureTarArgs([path.resolve(archive), path.resolve(dest)]);
   let note = '';
@@ -1408,11 +1408,11 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   if (dryRun || checkSpace) {
     const entries = archiveEntries(archive);
     const size = checkSpace ? ensureRoomToExtract(dest, entries) : null;
-    const sizeNote = size === null ? '' : `, 풀린 크기 약 ${formatSize(Number(size))}`;
-    if (dryRun) note = ` (항목 ${entries.length}개${sizeNote}${exists(dest) ? ', 대상 폴더가 이미 있어 같은 이름 파일은 덮어씀' : ''})`;
+    const sizeNote = size === null ? '' : `, extracted size about ${formatSize(Number(size))}`;
+    if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? ', the destination folder already exists, so files with the same name are overwritten' : ''})`;
   }
   if (isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
-  return perform(`압축 해제: ${archive} -> ${dest}${note}`, dryRun, () => {
+  return perform(`Extract: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
     runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });
   });
@@ -1470,7 +1470,7 @@ function restoreAside(archive, aside, err) {
   try {
     fs.renameSync(aside, archive);
   } catch (restoreErr) {
-    throw new FcError(`압축하지 못했고 기존 압축 파일도 되돌리지 못했습니다: ${archive} (${restoreErr.code}). 기존 압축 파일은 ${aside}에 있습니다.`);
+    throw new FcError(`Could not compress, and could not restore the existing archive either: ${archive} (${restoreErr.code}). The existing archive is at ${aside}.`);
   }
   throw err;
 }
@@ -1517,7 +1517,7 @@ function writeArchive(archive, sources) {
     try {
       fs.rmSync(aside, { force: true });
     } catch (err) {
-      throw new FcError(`압축했지만 기존 압축 파일을 지우지 못했습니다: ${aside} (${err.code})`);
+      throw new FcError(`Compressed, but could not delete the existing archive: ${aside} (${err.code})`);
     }
   }
 }
@@ -1576,7 +1576,7 @@ function rejectShortNameClash(sources, inside) {
     for (const item of items.filter(({ name }) => SHORT_NAME.test(name))) {
       const other = items.find(({ name }) => couldBeShortNameOf(item.name, name));
       if (other !== undefined) {
-        throw new FcError(`8.3 짧은 이름으로 겹칠 수 있는 이름이 함께 있어 묶지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${item.shown}, ${other.shown}`);
+        throw new FcError(`Names that could collide through 8.3 short names are together, so they are not bundled. One could overwrite the other when extracting: ${item.shown}, ${other.shown}`);
       }
     }
   }
@@ -1605,14 +1605,14 @@ function rejectExtractShortNameClash(names, dest) {
   }
   const shown = (parts, name) => [...parts, name].join('/');
   // 목록의 ASCII가 아닌 이름은 깨져 보이므로 그렇다고 알린다(2차 리뷰).
-  const garbled = (...texts) => (texts.some((text) => UNRELIABLE_NAME.test(text)) ? ' (압축 목록의 ASCII가 아닌 이름은 코드페이지 때문에 깨져 보일 수 있습니다)' : '');
+  const garbled = (...texts) => (texts.some((text) => UNRELIABLE_NAME.test(text)) ? ' (non-ASCII names in the archive listing may look garbled because of the code page)' : '');
   for (const { parts, items } of levels.values()) {
     const all = [...items.values()];
     const shorts = all.filter((name) => SHORT_NAME.test(name));
     for (const name of shorts) {
       const other = all.find((candidate) => candidate !== name && mayBe(name, candidate));
       if (other !== undefined) {
-        throw new FcError(`압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있어 풀지 않습니다. 풀 때 한쪽이 덮어써질 수 있습니다: ${shown(parts, name)}, ${shown(parts, other)}${garbled(shown(parts, name), other)}`);
+        throw new FcError(`The archive contains items that could collide through 8.3 short names, so it is not extracted. One could overwrite the other when extracting: ${shown(parts, name)}, ${shown(parts, other)}${garbled(shown(parts, name), other)}`);
       }
     }
     if (shorts.length === 0) continue;
@@ -1626,13 +1626,13 @@ function rejectExtractShortNameClash(names, dest) {
           real = existing.find((candidate) => mayBe(name, candidate));
           if (real === undefined) continue;
           // 이름을 확인할 수 없으므로 같은 압축을 다시 풀 때처럼 이름이 그대로 같은 항목도 여기서 걸린다.
-          note = ` 이름이 그대로 같은 항목일 수도 있지만 확인할 수 없습니다.${garbled(name)}`;
+          note = ` It might be an item with exactly the same name, but that cannot be confirmed.${garbled(name)}`;
         } else {
           if (keys.has(name.toUpperCase()) || !exists(path.join(place, name))) continue;
           real = existing.find((candidate) => couldBeShortNameOf(name, candidate)) ?? name;
           note = garbled(shown(parts, name));
         }
-        throw new FcError(`압축 안의 ${shown(parts, name)}이 8.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어 풀지 않습니다. 풀면 그 항목이 덮어써지거나 섞입니다: ${path.join(place, real)}${note}`);
+        throw new FcError(`${shown(parts, name)} in the archive may point to an item that already exists through an 8.3 short name, so it is not extracted. Extracting would overwrite or mix that item: ${path.join(place, real)}${note}`);
       }
     }
   }
@@ -1693,7 +1693,7 @@ function rejectMissingCompressor(archive) {
   for (const part of archiveExt(archive).split('.').filter(Boolean)) {
     const program = EXTERNAL_COMPRESSORS[part.toLowerCase()];
     if (program !== undefined && findOnPath(program) === null) {
-      throw new FcError(`.${part} 압축은 tar.exe에 들어 있지 않아 외부 프로그램 ${program}이 필요한데 PATH에서 찾지 못했습니다. 다른 압축(.gz, .xz, .zst 등)을 쓰거나 ${program}을 설치하세요: ${archive}`);
+      throw new FcError(`A .${part} archive is not handled by tar.exe, so it needs the external program ${program}, but it was not found on PATH. Use another archive format (.gz, .xz, .zst, etc.) or install ${program}: ${archive}`);
     }
   }
 }
@@ -1706,7 +1706,7 @@ function rejectLongName(target, what) {
   const full = path.resolve(target);
   const long = full.split(/[\\/]/).slice(1).find((part) => part.length > MAX_NAME_LENGTH);
   if (long !== undefined) {
-    throw new FcError(`${what} 경로에 ${long.length}자인 이름이 있어 만들 수 없습니다(이름 한 칸은 ${MAX_NAME_LENGTH}자까지): ${long.slice(0, 40)}… (${target})`);
+    throw new FcError(`The ${what} path has a name of ${long.length} characters, so it cannot be created (one name can be up to ${MAX_NAME_LENGTH} characters): ${long.slice(0, 40)}… (${target})`);
   }
 }
 
@@ -1717,7 +1717,7 @@ const MAX_TAR_DIR = 258;
 function rejectLongTarDir(dir, what) {
   const full = path.resolve(dir);
   if (full.length > MAX_TAR_DIR) {
-    throw new FcError(`${what} 경로가 ${full.length}자라 tar.exe가 그 폴더로 옮겨 갈 수 없습니다(${MAX_TAR_DIR}자까지). 더 짧은 경로를 지정하세요: ${dir}`);
+    throw new FcError(`The ${what} path is ${full.length} characters, so tar.exe cannot change into that folder (up to ${MAX_TAR_DIR}). Specify a shorter path: ${dir}`);
   }
 }
 
@@ -1731,47 +1731,47 @@ function rejectLongTempName(archive) {
   const ext = archiveExt(archive);
   const layers = ext.split('.').filter((part) => part !== '' && isLayerExt(part)).length;
   if (layers > MAX_TAR_LAYERS) {
-    throw new FcError(`압축 확장자가 ${layers}겹이라 tar.exe가 다시 풀 수 없습니다(${MAX_TAR_LAYERS}겹까지). 확장자를 줄여 다시 지정하세요: ${archive}`);
+    throw new FcError(`The archive extension has ${layers} layers, so tar.exe cannot extract it again (up to ${MAX_TAR_LAYERS} layers). Shorten the extension and specify it again: ${archive}`);
   }
   const length = `.fctl-new-${process.pid}-${Date.now()}-0`.length + TEMP_SERIAL_RESERVE + ext.length;
   if (length > MAX_NAME_LENGTH) {
-    throw new FcError(`확장자가 너무 길어(${ext.length}자) 묶는 동안 쓸 임시 파일 이름이 ${MAX_NAME_LENGTH}자를 넘습니다. 확장자를 줄여 다시 지정하세요: ${archive}`);
+    throw new FcError(`The extension is too long (${ext.length} characters), so the temporary file name used while bundling exceeds ${MAX_NAME_LENGTH} characters. Shorten the extension and specify it again: ${archive}`);
   }
 }
 
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
   // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
-  if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다. tar.exe가 풀지 못합니다: ${archive}`);
-  rejectLongName(archive, '압축 파일');
+  if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`A 7z archive cannot be wrapped in another archive. tar.exe cannot extract it: ${archive}`);
+  rejectLongName(archive, 'archive file');
   rejectLongTempName(archive);
   rejectMissingCompressor(archive);
   rejectNewDeviceName(archive);
   sources.forEach(ensureExists);
-  for (const src of sources) rejectLongTarDir(path.dirname(path.resolve(src)), '원본의 상위 폴더');
+  for (const src of sources) rejectLongTarDir(path.dirname(path.resolve(src)), "source's parent folder");
   [archive, ...sources].forEach(rejectStreamPath);
   // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
   const root = sources.find((src) => path.basename(path.resolve(src)) === '');
-  if (root !== undefined) throw new FcError(`드라이브 루트는 묶을 수 없습니다: ${root}`);
+  if (root !== undefined) throw new FcError(`Cannot bundle a drive root: ${root}`);
   // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
-  if (self !== undefined) throw new FcError(`압축 파일 자신을 묶을 수 없습니다: ${self}`);
+  if (self !== undefined) throw new FcError(`Cannot bundle the archive into itself: ${self}`);
   // 원본은 맨 위 이름으로 묶이므로, 이름이 같은 원본은 압축 안에서 겹쳐 풀 때 하나만 남는다. Windows는 대소문자를 가리지 않는다.
   const seen = new Map();
   for (const src of sources) {
     const name = path.basename(path.resolve(src));
     // toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만들므로 대문자로 비교한다(flatten.js와 같다).
     const key = isWindows ? name.toUpperCase() : name;
-    if (seen.has(key)) throw new FcError(`이름이 같은 원본은 함께 묶을 수 없습니다. 풀 때 하나만 남습니다: ${seen.get(key)}, ${src}`);
+    if (seen.has(key)) throw new FcError(`Sources with the same name cannot be bundled together. Only one would remain when extracting: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
   const inside = sources.map(namesInside);
   if (isWindows) rejectShortNameClash(sources, inside);
   ensureParentDir(archive);
-  if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`폴더는 덮어쓸 수 없습니다: ${archive}`);
+  if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(innerEntryExt(archiveExt(archive))) });
-  return perform(`압축: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
+  return perform(`Compress: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
 }
 
 module.exports = {

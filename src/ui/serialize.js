@@ -20,7 +20,7 @@ function toPlain(value, seen = new Set()) {
     default:
       break;
   }
-  if (seen.has(value)) return '[순환]';
+  if (seen.has(value)) return '[circular]';
   seen.add(value);
   try {
     if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();

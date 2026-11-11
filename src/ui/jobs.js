@@ -19,7 +19,7 @@ const MAX_STDERR = 4000;
 
 class BusyError extends fc.FcError {
   constructor(job) {
-    super(`이미 실행 중인 작업이 있습니다: fctl ${job.argv.join(' ')}`);
+    super(`A job is already running: fctl ${job.argv.join(' ')}`);
     this.name = 'BusyError';
     this.job = job;
   }
@@ -53,7 +53,7 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     try {
       child = fork(workerPath, [], { env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true });
     } catch (err) {
-      throw new fc.FcError(`작업 프로세스를 띄우지 못했습니다: ${err.message}`);
+      throw new fc.FcError(`Could not start the job process: ${err.message}`);
     }
     active = job;
     jobs.set(job.id, job);
@@ -83,10 +83,10 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
         job.status = 'error';
         job.error = reply.error;
       } else {
-        const reason = spawnError ? spawnError.message : signal ? `신호 ${signal}` : `종료 코드 ${code}`;
+        const reason = spawnError ? spawnError.message : signal ? `signal ${signal}` : `exit code ${code}`;
         const detail = stderr.trim() ? `\n${stderr.trim()}` : '';
         job.status = 'error';
-        job.error = { name: 'FcError', message: `작업 프로세스가 결과 없이 끝났습니다(${reason}).${detail}` };
+        job.error = { name: 'FcError', message: `The job process ended without a result (${reason}).${detail}` };
       }
       if (active === job) active = null;
       forget();
@@ -128,9 +128,9 @@ function formatElapsed(ms) {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  if (hours > 0) return `${hours}시간 ${minutes}분 ${seconds}초`;
-  if (minutes > 0) return `${minutes}분 ${seconds}초`;
-  return `${seconds}초`;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 module.exports = { createJobs, BusyError, formatElapsed, KEPT_HEAD_LINES };

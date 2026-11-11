@@ -171,10 +171,10 @@ function parseCues(body, found) {
 // 탐색 표가 없거나 항목이 하나뿐이거나 마지막 시각이 0이면 길이는 맞춰 보지 않는다. 키프레임을 처음에만 넣은 화면 녹화나
 // 정지 그림 한 장을 영상 트랙으로 넣은 음악 파일이 그렇다(1차 리뷰). 마지막 Cluster를 찾으려면 영상 데이터를 훑어야 해서 보지 않는다.
 function bitrateDoubt(found, beyondEnd, duration) {
-  if (beyondEnd) return 'Segment 크기나 요소 위치가 파일 끝을 넘어, 받다 만 파일일 수 있어 비트레이트를 믿을 수 없습니다.';
+  if (beyondEnd) return 'The Segment size or an element position runs past the end of the file, so it may be a partial download and the bitrate cannot be trusted.';
   if (!found.lastCue || (found.cuePoints ?? 0) < 2 || !found.scale) return null;
   const cueSeconds = (found.lastCue * found.scale) / 1e9;
-  if (duration > cueSeconds * 2 + 60) return `길이 값(${Math.round(duration)}초)이 탐색 표의 마지막 시각(${Math.round(cueSeconds)}초)보다 훨씬 길어 비트레이트를 믿을 수 없습니다.`;
+  if (duration > cueSeconds * 2 + 60) return `The duration value (${Math.round(duration)} s) is much longer than the last time in the seek table (${Math.round(cueSeconds)} s), so the bitrate cannot be trusted.`;
   return null;
 }
 
@@ -316,7 +316,7 @@ function makeReader(file, p) {
     reads += 1;
     const wanted = Math.min(length, Math.max(0, size - offset));
     total += wanted;
-    if (reads > MAX_READS || total > MAX_TOTAL) throw new FcError(`MKV 요소가 너무 많아 읽기를 멈췄습니다: ${p}`);
+    if (reads > MAX_READS || total > MAX_TOTAL) throw new FcError(`Stopped reading because there are too many MKV elements: ${p}`);
     return file.read(offset, wanted);
   };
 }
@@ -330,11 +330,11 @@ function headerAt(read, offset) {
 // 첫 요소가 EBML 머리글이고 문서 형식이 matroska나 webm일 때만 받는다. 머리글의 끝 위치를 돌려준다.
 function checkHeader(read, p) {
   const header = headerAt(read, 0);
-  if (!header || header.id !== ID.EBML || header.size === null || header.size > MAX_ELEMENT) throw new FcError(`MKV/WebM 형식이 아닙니다: ${p}`);
+  if (!header || header.id !== ID.EBML || header.size === null || header.size > MAX_ELEMENT) throw new FcError(`Not an MKV/WebM format: ${p}`);
   const body = read(header.start, header.size);
   const type = [...children(body)].find((child) => child.id === ID.DOC_TYPE);
   const name = type && readText(type.body);
-  if (name !== 'matroska' && name !== 'webm') throw new FcError(`MKV/WebM 형식이 아닙니다: ${p}`);
+  if (name !== 'matroska' && name !== 'webm') throw new FcError(`Not an MKV/WebM format: ${p}`);
   return header.start + header.size;
 }
 
@@ -353,7 +353,7 @@ function readMkvMetadata(dir, p, options = {}) {
     const access = grant(dir, ['read']);
     return parseMkv(access.target, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
-    if (err.syscall) throw new FcError(`MKV 파일을 읽을 수 없습니다: ${p} (${err.code})`);
+    if (err.syscall) throw new FcError(`Cannot read the MKV file: ${p} (${err.code})`);
     throw err;
   }
 }
@@ -366,7 +366,7 @@ function parseOpenedMkv(file, p, verifyBitrate) {
   const { size } = file;
   const read = makeReader(file, p);
   const segment = headerAt(read, checkHeader(read, p));
-  if (!segment || segment.id !== ID.SEGMENT) throw new FcError(`MKV/WebM 형식이 아닙니다: ${p}`);
+  if (!segment || segment.id !== ID.SEGMENT) throw new FcError(`Not an MKV/WebM format: ${p}`);
   const segmentEnd = segment.size === null ? size : Math.min(size, segment.start + segment.size);
 
   const found = { title: null, duration: null, width: null, height: null, displayWidth: null, displayHeight: null };
@@ -438,13 +438,13 @@ function checkOpenedMkv(file, p) {
   const { size } = file;
   const read = makeReader(file, p);
   const ebml = headerAt(read, 0);
-  if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('EBML 머리글이 손상됐습니다.');
-  if (ebml.start + ebml.size > size) return broken('EBML 머리글이 잘렸습니다.');
+  if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('The EBML header is damaged.');
+  if (ebml.start + ebml.size > size) return broken('The EBML header is truncated.');
   // Segment 앞에 Void나 CRC가 올 수 있다.
   let segment = headerAt(read, ebml.start + ebml.size);
   while (segment && GLOBAL_ELEMENTS.has(segment.id) && segment.size !== null) segment = headerAt(read, segment.start + segment.size);
-  if (!segment || segment.id !== ID.SEGMENT) return broken('Segment 요소가 없습니다. 끝까지 받지 못한 파일일 수 있습니다.');
-  if (segment.size !== null && segment.start + segment.size > size) return broken('Segment가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.');
+  if (!segment || segment.id !== ID.SEGMENT) return broken('The Segment element is missing. The file may not be fully downloaded.');
+  if (segment.size !== null && segment.start + segment.size > size) return broken('The Segment runs past the end of the file. It may be truncated.');
   const end = segment.size === null ? size : segment.start + segment.size;
   let tracks = false;
   let offset = segment.start;
@@ -452,15 +452,15 @@ function checkOpenedMkv(file, p) {
     const header = headerAt(read, offset);
     if (!header) {
       // Tracks까지 읽었으면 뒤쪽 패딩일 수 있다.
-      if (tracks) return { status: 'suspect', reason: `${offset}바이트 위치부터 요소가 아닌 데이터가 있습니다.` };
-      return broken(`${offset}바이트 위치의 요소가 손상됐습니다.`);
+      if (tracks) return { status: 'suspect', reason: `There is non-element data from byte ${offset}.` };
+      return broken(`The element at byte ${offset} is damaged.`);
     }
     if (header.size === null) return null;
-    if (header.start + header.size > end) return broken('요소가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.');
+    if (header.start + header.size > end) return broken('An element runs past the end of the file. It may be truncated.');
     if (header.id === ID.TRACKS) tracks = true;
     offset = header.start + header.size;
   }
-  return tracks ? null : broken('Tracks 요소가 없습니다.');
+  return tracks ? null : broken('The Tracks element is missing.');
 }
 
 module.exports = { readMkvMetadata, checkMkvStructure };

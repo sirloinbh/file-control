@@ -86,13 +86,13 @@ function tarChecker() {
       ended = true;
       return;
     }
-    if (!checksumMatches(block)) return fail('tar 헤더 체크섬이 맞지 않아 남겼습니다.');
+    if (!checksumMatches(block)) return fail('Kept because a tar header checksum does not match.');
     const size = octal(block.subarray(124, 136));
-    if (size === null || size > BigInt(Number.MAX_SAFE_INTEGER)) return fail('tar 항목 크기를 읽지 못해 남겼습니다.');
+    if (size === null || size > BigInt(Number.MAX_SAFE_INTEGER)) return fail('Kept because a tar entry size could not be read.');
     const type = String.fromCharCode(block[156]);
     const padded = Math.ceil(Number(size) / BLOCK) * BLOCK;
     if (type === 'x' || type === 'L') {
-      if (size > 1n << 24n) return fail('tar 확장 헤더가 너무 커서 남겼습니다.');
+      if (size > 1n << 24n) return fail('Kept because a tar extended header is too large.');
       collect = { kind: type, size: Number(size), chunks: [], left: padded };
       return;
     }
@@ -110,40 +110,40 @@ function tarChecker() {
     let name;
     const paxPath = pax?.get('path');
     // 빈 pax path는 tar.exe가 헤더 이름으로 풀어 이름이 갈린다(1차 리뷰).
-    if (paxPath !== undefined && paxPath.length === 0) return fail('tar 확장 헤더의 이름이 비어 있어 남겼습니다.');
+    if (paxPath !== undefined && paxPath.length === 0) return fail('Kept because the name in a tar extended header is empty.');
     if (paxPath !== undefined) {
-      if (!isUtf8(paxPath)) return fail('tar 항목 이름이 UTF-8이 아니라 남겼습니다.');
+      if (!isUtf8(paxPath)) return fail('Kept because a tar entry name is not UTF-8.');
       name = paxPath.toString('utf8');
     } else {
       const bytes = longName ?? raw;
-      if (bytes.some((byte) => byte > 0x7f)) return fail('코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.');
+      if (bytes.some((byte) => byte > 0x7f)) return fail('Kept because there is an item whose name may differ depending on the code page.');
       name = bytes.toString('latin1');
     }
     let entrySize = size;
     const paxSize = pax?.get('size');
     if (paxSize !== undefined) {
       const text = paxSize.toString('latin1');
-      if (!/^\d+$/.test(text)) return fail('tar 항목 크기를 읽지 못해 남겼습니다.');
+      if (!/^\d+$/.test(text)) return fail('Kept because a tar entry size could not be read.');
       entrySize = BigInt(text);
-      if (entrySize > BigInt(Number.MAX_SAFE_INTEGER)) return fail('tar 항목 크기를 읽지 못해 남겼습니다.');
+      if (entrySize > BigInt(Number.MAX_SAFE_INTEGER)) return fail('Kept because a tar entry size could not be read.');
     }
-    if (pax && [...pax.keys()].some((key) => key.startsWith('GNU.sparse'))) return fail('희소 파일 항목이 있어 남겼습니다.');
+    if (pax && [...pax.keys()].some((key) => key.startsWith('GNU.sparse'))) return fail('Kept because there is a sparse file entry.');
     pax = null;
     longName = null;
     const dataLength = Math.ceil(Number(entrySize) / BLOCK) * BLOCK;
     if (type === '0' || type === '\0' || type === '7') entries.push({ name, size: Number(entrySize) });
     else if (type === '5') entries.push({ name: name.endsWith('/') ? name : `${name}/`, size: Number(entrySize) });
     // 크기가 있는 하드링크는 tar.exe가 뒤 블록을 다음 항목으로 읽을 수 있어 스캔과 갈린다(1차 리뷰).
-    else if (type === '1' && entrySize > 0n) return fail('내용이 있는 하드링크 항목이 있어 남겼습니다.');
+    else if (type === '1' && entrySize > 0n) return fail('Kept because there is a hard link entry with content.');
     else if (type === '1') entries.push({ name, size: null });
-    else return fail(`풀린 결과로 확인할 수 없는 tar 항목 종류가 있어 남겼습니다. (종류 ${JSON.stringify(type)})`);
+    else return fail(`Kept because there is a tar entry type that cannot be checked against the extracted result. (type ${JSON.stringify(type)})`);
     skip = dataLength;
   }
 
   function push(chunk) {
     if (reason !== null) return;
     if (ended) {
-      if (pending.some((byte) => byte !== 0) || chunk.some((byte) => byte !== 0)) fail('tar 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.');
+      if (pending.some((byte) => byte !== 0) || chunk.some((byte) => byte !== 0)) fail('Kept because there is other data after the tar end marker.');
       pending = Buffer.alloc(0);
       return;
     }
@@ -165,7 +165,7 @@ function tarChecker() {
         const body = Buffer.concat(collect.chunks).subarray(0, collect.size);
         if (collect.kind === 'x') {
           pax = parsePax(body);
-          if (pax === null) fail('tar 확장 헤더를 읽지 못해 남겼습니다.');
+          if (pax === null) fail('Kept because a tar extended header could not be read.');
         } else {
           longName = cString(body);
         }
@@ -176,13 +176,13 @@ function tarChecker() {
       header(data.subarray(0, BLOCK));
       data = data.subarray(BLOCK);
     }
-    if (ended && reason === null && data.some((byte) => byte !== 0)) fail('tar 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.');
+    if (ended && reason === null && data.some((byte) => byte !== 0)) fail('Kept because there is other data after the tar end marker.');
     pending = ended ? Buffer.alloc(0) : Buffer.from(data);
   }
 
   function finish() {
     if (reason !== null) return { reason };
-    if (!ended) return { reason: 'tar 끝 표시가 없어 남겼습니다. 끝이 잘렸을 수 있습니다.' };
+    if (!ended) return { reason: 'Kept because the tar end marker is missing. The end may be truncated.' };
     return { entries };
   }
 
@@ -200,8 +200,8 @@ function scanTarGz(file) {
       resolve(result);
     };
     const input = fs.createReadStream(file);
-    input.on('error', (err) => end({ reason: `압축 파일을 다시 읽지 못해 남겼습니다. (${err.code})` }));
-    gunzip.on('error', (err) => end({ reason: `gzip이 손상됐거나 잘렸거나 뒤에 다른 데이터가 있어 남겼습니다. (${err.code})` }));
+    input.on('error', (err) => end({ reason: `Kept because the archive could not be read again. (${err.code})` }));
+    gunzip.on('error', (err) => end({ reason: `Kept because the gzip is damaged, truncated, or has other data after it. (${err.code})` }));
     gunzip.on('data', (chunk) => checker.push(chunk));
     // 멤버 뒤의 다음 바이트가 0x00이면 Node는 오류 없이 거기서 멈추고 나머지를 버린다(tar.exe도 읽지 않는다, 1차 리뷰).
     // 그래서 gzip이 실제로 읽은 바이트 수가 파일 크기와 같아야 한다.
@@ -210,10 +210,10 @@ function scanTarGz(file) {
       try {
         size = fs.statSync(file).size;
       } catch (err) {
-        end({ reason: `압축 파일을 다시 읽지 못해 남겼습니다. (${err.code})` });
+        end({ reason: `Kept because the archive could not be read again. (${err.code})` });
         return;
       }
-      if (gunzip.bytesWritten !== size) end({ reason: 'gzip 끝 뒤에 다른 데이터가 있어 남겼습니다.' });
+      if (gunzip.bytesWritten !== size) end({ reason: 'Kept because there is other data after the end of the gzip.' });
       else end(checker.finish());
     });
     input.pipe(gunzip);
@@ -223,11 +223,11 @@ function scanTarGz(file) {
 // 별도 node 프로세스로 scanTarGz를 실행한다. 큰 파일도 이 프로세스의 메모리에 올리지 않는다.
 function scanTarGzSync(file) {
   const { error, status, stdout } = spawnSync(process.execPath, [__filename, file], { encoding: 'utf8', maxBuffer: Infinity, windowsHide: true });
-  if (error || status !== 0) return { reason: `tar.gz 내용을 확인하지 못해 남겼습니다. (${error?.code ?? status})` };
+  if (error || status !== 0) return { reason: `Kept because the tar.gz content could not be checked. (${error?.code ?? status})` };
   try {
     return JSON.parse(stdout);
   } catch {
-    return { reason: 'tar.gz 내용을 확인하지 못해 남겼습니다.' };
+    return { reason: 'Kept because the tar.gz content could not be checked.' };
   }
 }
 

@@ -19,20 +19,20 @@ const statusUrl = (job) => `${STATUS_PATH}?id=${encodeURIComponent(job.id)}`;
 const resultUrl = (job) => `${RESULT_PATH}?id=${encodeURIComponent(job.id)}`;
 
 function commandLine(job) {
-  return html`<p>명령: <code>fctl ${job.argv.join(' ')}</code></p>`;
+  return html`<p>Command: <code>fctl ${job.argv.join(' ')}</code></p>`;
 }
 
 // 상태 페이지: 최근 줄만 보이므로 앞에서 생략한 줄 수를 알린다.
 function linesBlock(lines, skipped) {
-  if (lines.length === 0) return html`<p class="muted">아직 진행 줄이 없습니다.</p>`;
-  return html`${skipped > 0 ? html`<p class="muted">앞의 진행 줄 ${skipped}개는 생략했습니다.</p>` : ''}<pre class="report">${lines.join('\n')}</pre>`;
+  if (lines.length === 0) return html`<p class="muted">No progress lines yet.</p>`;
+  return html`${skipped > 0 ? html`<p class="muted">Skipped the first ${skipped} progress lines.</p>` : ''}<pre class="report">${lines.join('\n')}</pre>`;
 }
 
 // 결과 페이지: jobs.js는 줄이 많으면 처음 KEPT_HEAD_LINES줄 뒤의 중간 줄을 버린다. 그 자리에 생략 표시를 넣는다.
 function allLinesBlock(lines, dropped) {
   if (dropped === 0) return html`<pre class="report">${lines.join('\n')}</pre>`;
   return html`<pre class="report">${lines.slice(0, KEPT_HEAD).join('\n')}</pre>
-<p class="muted">중간의 진행 줄 ${dropped}개는 생략했습니다.</p>
+<p class="muted">Skipped ${dropped} progress lines in the middle.</p>
 <pre class="report">${lines.slice(KEPT_HEAD).join('\n')}</pre>`;
 }
 
@@ -50,10 +50,10 @@ function notFound(available) {
   return {
     status: 404,
     body: page({
-      title: '작업 없음',
+      title: 'No job',
       available,
-      alerts: [{ kind: 'error', message: '작업을 찾을 수 없습니다. 오래된 작업은 결과를 남기지 않습니다.' }],
-      body: html`<p><a href="/">처음 화면으로</a></p>`,
+      alerts: [{ kind: 'error', message: 'Job not found. Old jobs do not keep their results.' }],
+      body: html`<p><a href="/">Back to the start page</a></p>`,
     }),
   };
 }
@@ -63,12 +63,12 @@ function statusPage(jobs, job, { available } = {}) {
   const recent = job.lines.slice(-RECENT_LINES);
   const skipped = job.droppedLines + job.lines.length - recent.length;
   return page({
-    title: '작업 실행 중',
+    title: 'Job running',
     available,
     refresh: { seconds: REFRESH_SECONDS },
-    alerts: [{ kind: 'info', message: `실행 중입니다. 경과 시간 ${formatElapsed(jobs.elapsed(job))}. 이 화면은 ${REFRESH_SECONDS}초마다 새로 고칩니다.` }],
+    alerts: [{ kind: 'info', message: `Running. Elapsed time ${formatElapsed(jobs.elapsed(job))}. This page refreshes every ${REFRESH_SECONDS} seconds.` }],
     body: html`${commandLine(job)}
-<h2>진행</h2>
+<h2>Progress</h2>
 ${linesBlock(recent, skipped)}`,
   });
 }
@@ -77,14 +77,14 @@ ${linesBlock(recent, skipped)}`,
 function outcomeAlert(job) {
   if (job.status === 'error') {
     const detail = job.error && job.error.stderr ? `\n${String(job.error.stderr).trim()}` : '';
-    return { kind: 'error', message: `실행하지 못했습니다: ${job.error ? job.error.message : '알 수 없는 오류'}${detail}` };
+    return { kind: 'error', message: `Could not run: ${job.error ? job.error.message : 'unknown error'}${detail}` };
   }
   const { failure, report } = job.outcome;
   if (failure) {
-    const message = failure.message === report ? '일부 항목을 처리하지 못했습니다. 아래 보고를 확인하세요.' : failure.message;
+    const message = failure.message === report ? 'Some items could not be processed. Check the report below.' : failure.message;
     return { kind: 'warning', message };
   }
-  return { kind: 'success', message: '끝났습니다.' };
+  return { kind: 'success', message: 'Done.' };
 }
 
 // 끝난 작업의 결과 페이지. views[command](outcome, job)가 있으면 그 화면(표 등)을, 없으면 CLI와 같은 보고 글을 보인다.
@@ -95,19 +95,19 @@ function resultPage(jobs, job, { available, views = {} } = {}) {
     const { outcome } = job;
     const view = outcome.command ? views[outcome.command] : undefined;
     if (view) content = view(outcome, job);
-    else if (outcome.help) content = html`<p class="muted">도움말은 터미널에서 fctl --help로 보세요.</p>`;
+    else if (outcome.help) content = html`<p class="muted">See the help in a terminal with fctl --help.</p>`;
     else if (outcome.report) content = html`<pre class="report">${outcome.report}</pre>`;
-    else content = html`<p class="muted">보고할 내용이 없습니다.</p>`;
+    else content = html`<p class="muted">Nothing to report.</p>`;
   }
   const lines = job.lines.length > 0 || job.droppedLines > 0
-    ? html`<details><summary>진행 줄 ${job.lines.length + job.droppedLines}개</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`
+    ? html`<details><summary>${job.lines.length + job.droppedLines} progress lines</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`
     : '';
   return page({
-    title: job.status === 'error' ? '작업 실패' : '작업 결과',
+    title: job.status === 'error' ? 'Job failed' : 'Job result',
     available,
     alerts: [alert],
     body: html`${commandLine(job)}
-<p class="muted">걸린 시간 ${formatElapsed(jobs.elapsed(job))}</p>
+<p class="muted">Elapsed ${formatElapsed(jobs.elapsed(job))}</p>
 ${content}
 ${lines}`,
   });
@@ -144,21 +144,21 @@ function startJobResponse(jobs, argv, { available } = {}) {
     return {
       status: 409,
       body: page({
-        title: '실행 중인 작업이 있음',
+        title: 'A job is running',
         available,
-        alerts: [{ kind: 'error', message: `${err.message} 끝난 뒤에 다시 실행하세요.` }],
-        body: html`<p><a href="${statusUrl(err.job)}">실행 중인 작업 보기</a></p>`,
+        alerts: [{ kind: 'error', message: `${err.message} Run it again after it finishes.` }],
+        body: html`<p><a href="${statusUrl(err.job)}">View the running job</a></p>`,
       }),
     };
   }
 }
 
 // 폼의 실행 버튼. 실행 중인 작업이 있으면 버튼을 막고 그 작업으로 가는 링크를 보인다.
-function runButton(jobs, label = '실행') {
+function runButton(jobs, label = 'Run') {
   const active = jobs.running();
   if (!active) return html`<button type="submit">${label}</button>`;
   return html`<button type="submit" disabled>${label}</button>
-${alertBox('info', '다른 작업이 실행 중이라 끝날 때까지 실행할 수 없습니다.')}<p><a href="${statusUrl(active)}">실행 중인 작업 보기</a></p>`;
+${alertBox('info', 'Another job is running, so this cannot run until it finishes.')}<p><a href="${statusUrl(active)}">View the running job</a></p>`;
 }
 
 module.exports = { jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH };

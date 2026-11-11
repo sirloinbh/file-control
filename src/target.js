@@ -10,20 +10,20 @@ const { WINDOWS_DEVICE_NAME, deviceNamePattern } = require('./windowsNames');
 // 타겟 디렉토리를 실제 절대경로로 정규화한다. 없거나 폴더가 아니면 오류를 낸다.
 // 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
 function resolveTarget(dir) {
-  if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('타겟 폴더를 지정하세요.');
-  if (dir.includes('\0')) throw new FcError('타겟 경로에 NUL 문자가 있습니다.');
+  if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('Specify a target folder.');
+  if (dir.includes('\0')) throw new FcError('The target path contains a NUL character.');
   const abs = path.resolve(dir);
   rejectNetworkPath(abs);
   // System Volume Information·Recovery·다른 사용자의 AppData처럼 볼 권한이 없는 폴더는 확인할 수 없어 받지 않는다.
-  const unreadable = (err) => new FcError(`타겟 폴더를 확인할 수 없어 쓸 수 없습니다: ${abs} (${err.code ?? err.message})`);
+  const unreadable = (err) => new FcError(`Cannot use the target folder because it cannot be checked: ${abs} (${err.code ?? err.message})`);
   let stat;
   try {
     stat = fs.statSync(abs, { throwIfNoEntry: false });
   } catch (err) {
     throw unreadable(err);
   }
-  if (!stat) throw new FcError(`타겟 폴더가 없습니다: ${abs}`);
-  if (!stat.isDirectory()) throw new FcError(`타겟이 폴더가 아닙니다: ${abs}`);
+  if (!stat) throw new FcError(`Target folder does not exist: ${abs}`);
+  if (!stat.isDirectory()) throw new FcError(`Target is not a folder: ${abs}`);
   // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
   let target;
   try {
@@ -34,7 +34,7 @@ function resolveTarget(dir) {
   rejectNetworkPath(target);
   rejectTrailingDotOrSpace(target);
   const reason = protectedReason(target);
-  if (reason) throw new FcError(`보호된 경로라 타겟으로 쓸 수 없습니다: ${target} (${reason})`);
+  if (reason) throw new FcError(`Cannot use a protected path as the target: ${target} (${reason})`);
   return target;
 }
 
@@ -43,7 +43,7 @@ function resolveTarget(dir) {
 function rejectNetworkPath(p) {
   if (process.platform !== 'win32') return;
   if (p.startsWith('\\\\') && !/^\\\\\?\\[A-Za-z]:/.test(p)) {
-    throw new FcError(`네트워크 경로는 타겟으로 쓸 수 없습니다: ${p}`);
+    throw new FcError(`Cannot use a network path as the target: ${p}`);
   }
 }
 
@@ -54,7 +54,7 @@ const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
 function rejectTrailingDotOrSpace(target) {
   if (process.platform !== 'win32') return;
   const name = target.slice(path.parse(target).root.length).split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part));
-  if (name !== undefined) throw new FcError(`끝이 점이나 공백인 폴더는 타겟으로 쓸 수 없습니다: ${target}`);
+  if (name !== undefined) throw new FcError(`Cannot use a folder whose name ends with a dot or space as the target: ${target}`);
 }
 
 // 보호 기준 경로를 타겟과 같은 방식(실제 경로)으로 맞춘다. 없는 경로면 그대로 쓴다.
@@ -93,8 +93,8 @@ function driveSystemReason(target) {
   if (process.platform !== 'win32') return null;
   const { root } = path.parse(target);
   const [first] = target.slice(root.length).split(path.sep);
-  if (!first) return `드라이브 루트 ${root}(휴지통·System Volume Information이 있거나 생기는 곳)`;
-  if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `시스템 폴더 ${path.join(root, first)}`;
+  if (!first) return `drive root ${root} (holds or will hold the Recycle Bin and System Volume Information)`;
+  if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `system folder ${path.join(root, first)}`;
   return null;
 }
 
@@ -120,9 +120,9 @@ function otherProfileReason(target, home) {
   const lower = name.toLowerCase();
   if (lower === 'public') return null;
   const profile = path.join(profiles, name);
-  if (lower === 'default' || lower === 'default user') return `기본 사용자 프로필 ${profile}`;
-  if (sub === undefined) return `다른 사용자 폴더 ${profile}`;
-  if (isHiddenSettings(sub)) return `다른 사용자의 설정 폴더 ${path.join(profile, sub)}`;
+  if (lower === 'default' || lower === 'default user') return `default user profile ${profile}`;
+  if (sub === undefined) return `another user's folder ${profile}`;
+  if (isHiddenSettings(sub)) return `another user's settings folder ${path.join(profile, sub)}`;
   return null;
 }
 
@@ -133,7 +133,7 @@ function homeDir() {
   } catch {
     home = '';
   }
-  if (!home || !path.isAbsolute(home)) throw new FcError('사용자 폴더를 알 수 없어 보호 경로를 확인할 수 없습니다.');
+  if (!home || !path.isAbsolute(home)) throw new FcError('Cannot check protected paths because the user folder is unknown.');
   return realOrResolved(home);
 }
 
@@ -145,16 +145,16 @@ function isHiddenSettings(name) {
 // 타겟이 보호 경로와 겹치면 이유를, 아니면 null을 돌려준다.
 function protectedReason(target) {
   for (const root of systemRoots()) {
-    if (isInside(root, target)) return `시스템 폴더 ${root}`;
-    if (isInside(target, root)) return `시스템 폴더 ${root}를 포함`;
+    if (isInside(root, target)) return `system folder ${root}`;
+    if (isInside(target, root)) return `contains system folder ${root}`;
   }
   const drive = driveSystemReason(target);
   if (drive) return drive;
   const home = homeDir();
-  if (isInside(target, home)) return `사용자 폴더 ${home}를 포함`;
+  if (isInside(target, home)) return `contains user folder ${home}`;
   if (isInside(home, target)) {
     const [first] = path.relative(home, target).split(path.sep);
-    if (isHiddenSettings(first)) return `사용자 설정 폴더 ${path.join(home, first)}`;
+    if (isHiddenSettings(first)) return `user settings folder ${path.join(home, first)}`;
     return null;
   }
   return otherProfileReason(target, home);
@@ -172,7 +172,7 @@ function isInside(target, p) {
 // p를 타겟 기준 절대경로로 바꾼다. 타겟 밖이면 오류를 낸다.
 function resolveInside(target, p) {
   const abs = path.resolve(target, p);
-  if (!isInside(target, abs)) throw new FcError(`타겟 폴더 밖의 경로입니다: ${abs} (타겟: ${target})`);
+  if (!isInside(target, abs)) throw new FcError(`Path is outside the target folder: ${abs} (target: ${target})`);
   return abs;
 }
 
@@ -182,12 +182,12 @@ function realInside(target, abs) {
   try {
     real = fs.realpathSync.native(abs);
   } catch (err) {
-    if (err.code === 'ENOENT') throw new FcError(`경로가 없거나 끊어진 링크입니다: ${abs}`);
+    if (err.code === 'ENOENT') throw new FcError(`Path does not exist or is a broken link: ${abs}`);
     throw err;
   }
   // 둘 다 실제 경로이므로 글자 그대로 비교한다. isInside의 대소문자 무시는 NTFS보다 넓어서(K와 U+212A) 형제 폴더를 안으로 본다.
   const prefix = target.endsWith(path.sep) ? target : target + path.sep;
-  if (real !== target && !real.startsWith(prefix)) throw new FcError(`링크를 거쳐 타겟 폴더 밖을 가리킵니다: ${abs} -> ${real}`);
+  if (real !== target && !real.startsWith(prefix)) throw new FcError(`Path points outside the target folder through a link: ${abs} -> ${real}`);
   return real;
 }
 
@@ -196,7 +196,7 @@ function realInside(target, abs) {
 function resolveFileInside(target, p) {
   const abs = resolveInside(target, p);
   const real = realInside(target, abs);
-  if (!fs.statSync(real).isFile()) throw new FcError(`파일이 아닙니다: ${abs}`);
+  if (!fs.statSync(real).isFile()) throw new FcError(`Not a file: ${abs}`);
   return real;
 }
 
@@ -208,14 +208,14 @@ const WINDOWS_BAD_CHARS = /[:<>"|?*\x00-\x1f]/;
 function rejectAmbiguousNames(rel, p) {
   if (process.platform !== 'win32') return;
   const name = rel.split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part) || WINDOWS_BAD_CHARS.test(part) || WINDOWS_DEVICE_NAME.test(part));
-  if (name !== undefined) throw new FcError(`Windows에서 다르게 해석될 수 있는 이름입니다: ${JSON.stringify(name)} (${p})`);
+  if (name !== undefined) throw new FcError(`Name may be interpreted differently on Windows: ${JSON.stringify(name)} (${p})`);
 }
 
 // 타겟 기준으로 정리한 절대경로를 돌려준다. 타겟 밖이거나 Windows에서 해석이 갈리는 이름이면 오류를 낸다.
 function resolveAccessPath(target, p) {
   const abs = resolveInside(target, p);
   // path.relative는 K와 U+212A를 같게 보므로, 그런 형제 폴더의 경로가 타겟 안 다른 파일로 바뀌지 않게 한다.
-  if (abs.slice(0, target.length).toUpperCase() !== target.toUpperCase()) throw new FcError(`타겟 폴더 밖의 경로입니다: ${abs} (타겟: ${target})`);
+  if (abs.slice(0, target.length).toUpperCase() !== target.toUpperCase()) throw new FcError(`Path is outside the target folder: ${abs} (target: ${target})`);
   const rel = path.relative(target, abs);
   rejectAmbiguousNames(rel, p);
   return path.join(target, rel);
@@ -232,7 +232,7 @@ function realForAccess(target, abs) {
 function rejectLinksInside(real, abs) {
   if (!fs.statSync(real).isDirectory()) return;
   const link = listEntries(real).find((entry) => entry.type === 'link');
-  if (link) throw new FcError(`링크가 든 폴더는 다룰 수 없습니다: ${abs} (링크: ${link.path})`);
+  if (link) throw new FcError(`Cannot handle a folder that contains a link: ${abs} (link: ${link.path})`);
 }
 
 function checkRead(target, p) {
@@ -250,13 +250,13 @@ function checkWrite(target, p) {
   while (existing !== target && !fs.lstatSync(existing, { throwIfNoEntry: false })) existing = path.dirname(existing);
   const real = realForAccess(target, existing);
   if (existing === abs) {
-    if (real === target) throw new FcError(`타겟 폴더 자체에는 쓸 수 없습니다: ${abs}`);
+    if (real === target) throw new FcError(`Cannot write to the target folder itself: ${abs}`);
     rejectLinksInside(real, abs);
     // 하드링크는 경로로 타겟 밖 파일과 구분할 수 없다. 읽기·삭제는 그대로 두고, 내용을 바꾸는 쓰기만 거부한다(#48).
     rejectHardLinkedWrite(real);
     return real;
   }
-  if (!fs.statSync(real).isDirectory()) throw new FcError(`파일 아래에는 쓸 수 없습니다: ${abs} (${real})`);
+  if (!fs.statSync(real).isDirectory()) throw new FcError(`Cannot write below a file: ${abs} (${real})`);
   return path.join(real, path.relative(existing, abs));
 }
 
@@ -264,17 +264,17 @@ function checkWrite(target, p) {
 function checkDelete(target, p) {
   const abs = resolveAccessPath(target, p);
   const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
-  if (stat && stat.isSymbolicLink()) throw new FcError(`링크는 삭제할 수 없습니다: ${abs}`);
+  if (stat && stat.isSymbolicLink()) throw new FcError(`Cannot delete a link: ${abs}`);
   const real = realForAccess(target, abs);
-  if (real === target) throw new FcError(`타겟 폴더 자체는 삭제할 수 없습니다: ${abs}`);
+  if (real === target) throw new FcError(`Cannot delete the target folder itself: ${abs}`);
   rejectLinksInside(real, abs);
   return real;
 }
 
 const ACCESS = {
-  read: { name: '읽기', check: checkRead },
-  write: { name: '쓰기', check: checkWrite },
-  delete: { name: '삭제', check: checkDelete },
+  read: { name: 'Read', check: checkRead },
+  write: { name: 'Write', check: checkWrite },
+  delete: { name: 'Delete', check: checkDelete },
 };
 
 // 타겟 하나에 작업 종류('read', 'write', 'delete')별 권한을 부여한다. 보호 경로는 resolveTarget이 거부하고,
@@ -282,22 +282,22 @@ const ACCESS = {
 // access.read(p)·write(p)·delete(p)는 경로를 검사해 실제 작업에 쓸 경로를 돌려주고, 아무것도 바꾸지 않는다.
 // 검사와 작업 사이에 폴더가 바뀔 수 있으니 작업 직전에 호출하고, 돌려받은 경로를 그대로 쓴다.
 function grant(dir, kinds) {
-  if (!Array.isArray(kinds) || kinds.length === 0) throw new FcError('부여할 권한을 지정하세요. (read, write, delete)');
+  if (!Array.isArray(kinds) || kinds.length === 0) throw new FcError('Specify the permissions to grant. (read, write, delete)');
   if (kinds.findIndex((kind) => typeof kind !== 'string' || !Object.hasOwn(ACCESS, kind)) !== -1) {
-    throw new FcError('알 수 없는 권한이 있습니다. (read, write, delete만 됩니다)');
+    throw new FcError('Unknown permission. (only read, write, delete are allowed)');
   }
   const granted = new Set(kinds);
   const target = resolveTarget(dir);
   const access = { target };
   for (const [kind, { name, check }] of Object.entries(ACCESS)) {
     access[kind] = (p) => {
-      if (typeof p !== 'string') throw new FcError('경로는 문자열이어야 합니다.');
-      if (!granted.has(kind)) throw new FcError(`${name} 권한이 없습니다: ${p} (타겟: ${target})`);
+      if (typeof p !== 'string') throw new FcError('Paths must be strings.');
+      if (!granted.has(kind)) throw new FcError(`No ${name} permission: ${p} (target: ${target})`);
       try {
         return check(target, p);
       } catch (err) {
         if (err instanceof FcError) throw err;
-        throw new FcError(`경로를 확인할 수 없습니다: ${p} (${err.code})`);
+        throw new FcError(`Cannot check the path: ${p} (${err.code})`);
       }
     };
   }
@@ -311,7 +311,7 @@ const MAX_READ = 2 ** 31 - 1;
 function readInside(target, p) {
   const real = resolveFileInside(target, p);
   const { size } = fs.statSync(real);
-  if (size > MAX_READ) throw new FcError(`파일이 너무 커서 한 번에 읽을 수 없습니다: ${real} (${size}바이트, readRange로 나눠 읽으세요)`);
+  if (size > MAX_READ) throw new FcError(`File is too large to read at once: ${real} (${size} bytes, read it in pieces with readRange)`);
   return fs.readFileSync(real);
 }
 
@@ -319,9 +319,9 @@ function readInside(target, p) {
 // 헤더(매직 넘버)는 offset 0으로, 컨테이너 박스처럼 중간에 있는 구조는 그 위치로 읽는다.
 // 손상된 헤더의 큰 length를 그대로 받아도 실제 파일에 있는 만큼만 메모리를 잡는다.
 function readRange(target, p, { offset = 0, length } = {}) {
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`offset이 올바르지 않습니다: ${offset}`);
-  if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`length가 올바르지 않습니다: ${length}`);
-  if (length > MAX_READ) throw new FcError(`한 번에 읽을 수 있는 길이(${MAX_READ}바이트)를 넘습니다: ${length}`);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`Invalid offset: ${offset}`);
+  if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`Invalid length: ${length}`);
+  if (length > MAX_READ) throw new FcError(`Exceeds the length that can be read at once (${MAX_READ} bytes): ${length}`);
   const fd = fs.openSync(resolveFileInside(target, p), 'r');
   try {
     const available = Math.max(0, fs.fstatSync(fd).size - offset);
@@ -378,8 +378,8 @@ function volumeFormat(target) {
 // 파일 시스템을 확인하지 못해도 지우지 않는다.
 function stampVolumeReason(target) {
   const format = volumeFormat(target);
-  if (format === null) return '파일 시스템을 확인하지 못해, 확인한 뒤 바뀐 파일을 알아볼 수 있는지 몰라 남겼습니다.';
-  if (NO_CHANGE_TIME.has(format.toUpperCase())) return `${format} 볼륨은 변경 시각을 적지 않아, 확인한 뒤 같은 크기로 바뀐 파일을 알아볼 수 없어 남겼습니다.`;
+  if (format === null) return 'Kept because the file system could not be checked, so a file changed after the check could not be detected.';
+  if (NO_CHANGE_TIME.has(format.toUpperCase())) return `Kept because ${format} volumes do not record change times, so a file changed to the same size after the check could not be detected.`;
   return null;
 }
 
@@ -409,9 +409,9 @@ function ensureUnmoved(dir) {
   try {
     real = fs.realpathSync.native(dir);
   } catch (err) {
-    throw new FcError(`폴더를 읽을 수 없습니다: ${dir} (${err.code})`);
+    throw new FcError(`Cannot read the folder: ${dir} (${err.code})`);
   }
-  if (real !== dir) throw new FcError(`읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다. 아무것도 다루지 않았습니다: ${dir} -> ${real}`);
+  if (real !== dir) throw new FcError(`The folder was turned into a link while reading and now points elsewhere. Nothing was touched: ${dir} -> ${real}`);
 }
 
 function listEntries(root, unreadable) {
@@ -425,10 +425,10 @@ function listEntries(root, unreadable) {
       dirents = fs.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
       if (unreadable && relDir !== '' && SKIPPABLE_READ_ERRORS.has(err.code)) {
-        unreadable.push({ path: dir, relative: relDir, reason: `폴더를 읽을 수 없어 그 안은 보지 않았습니다: ${err.code}` });
+        unreadable.push({ path: dir, relative: relDir, reason: `Skipped the contents because the folder could not be read: ${err.code}` });
         continue;
       }
-      throw new FcError(`폴더를 읽을 수 없습니다: ${dir} (${err.code})`);
+      throw new FcError(`Cannot read the folder: ${dir} (${err.code})`);
     }
     ensureUnmoved(dir);
     for (const dirent of dirents) {

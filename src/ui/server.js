@@ -15,25 +15,25 @@ const HOST = '127.0.0.1';
 // project-standards의 포트 배정(슬롯 09, sirloinbh/project-standards#435).
 const DEFAULT_PORT = 8109;
 
-const UI_HELP = `사용법: fctl ui [--port=번호] [--no-open]
+const UI_HELP = `Usage: fctl ui [--port=NUMBER] [--no-open]
 
-  로컬 웹 화면을 띄웁니다. 127.0.0.1에서만 접속할 수 있고 Ctrl+C로 끝냅니다.
+  Starts the local web UI. It is reachable only at 127.0.0.1. Stop it with Ctrl+C.
 
-옵션:
-  --port=번호   받을 포트 (기본: ${DEFAULT_PORT}, 0이면 빈 포트)
-  --no-open     기본 브라우저를 열지 않음
-  -h, --help    도움말`;
+Options:
+  --port=NUMBER  port to listen on (default: ${DEFAULT_PORT}, 0 picks a free port)
+  --no-open      do not open the default browser
+  -h, --help     show help`;
 
 function homePage(available) {
   const rows = CATEGORIES.map((category) => [
-    available.has(category.path) ? html`<a href="${category.path}">${category.label}</a>` : html`${category.label} <span class="muted">(준비 중)</span>`,
+    available.has(category.path) ? html`<a href="${category.path}">${category.label}</a>` : html`${category.label} <span class="muted">(coming soon)</span>`,
     category.detail,
   ]);
   return page({
-    title: '파일 컨트롤',
+    title: 'File Control',
     available,
-    body: html`<p>폴더와 파일을 다루는 fctl 명령을 화면에서 씁니다. 파일을 바꾸는 명령은 먼저 미리보기를 보여 주고, 지우기는 휴지통으로 보냅니다.</p>
-${table([{ label: '분류', width: '30%' }, { label: '하는 일' }], rows)}`,
+    body: html`<p>Use the fctl commands for folders and files from this page. Commands that change files show a preview first, and deletes go to the Recycle Bin.</p>
+${table([{ label: 'Category', width: '30%' }, { label: 'What it does' }], rows)}`,
   });
 }
 
@@ -58,7 +58,7 @@ function createHandler(routes = new Map(), { token = createToken() } = {}) {
   };
   const fail = (res, err) => {
     // 화면 코드의 예외는 스택 없이 문구만 보여 준다. 서버는 계속 돈다.
-    send(res, 500, page({ title: '오류', available, alerts: [{ kind: 'error', message: err instanceof FcError ? err.message : `화면을 만들지 못했습니다: ${err.message}` }] }));
+    send(res, 500, page({ title: 'Error', available, alerts: [{ kind: 'error', message: err instanceof FcError ? err.message : `Could not build the page: ${err.message}` }] }));
   };
   const context = { available, tokenField: raw(tokenField(token)) };
   return async (req, res) => {
@@ -69,7 +69,7 @@ function createHandler(routes = new Map(), { token = createToken() } = {}) {
         checkRequest(req, { port });
       } catch (err) {
         if (!(err instanceof RequestError)) throw err;
-        send(res, err.status, page({ title: '받지 않는 요청', available, alerts: [{ kind: 'error', message: err.message }] }));
+        send(res, err.status, page({ title: 'Request not accepted', available, alerts: [{ kind: 'error', message: err.message }] }));
         return;
       }
       let pathname;
@@ -80,14 +80,14 @@ function createHandler(routes = new Map(), { token = createToken() } = {}) {
       }
       const route = pathname === null ? undefined : all.get(pathname);
       if (route === undefined) {
-        send(res, 404, page({ title: '없는 화면', available, alerts: [{ kind: 'error', message: `없는 주소입니다: ${req.url}` }], body: html`<p><a href="/">처음 화면으로</a></p>` }));
+        send(res, 404, page({ title: 'Page not found', available, alerts: [{ kind: 'error', message: `No such address: ${req.url}` }], body: html`<p><a href="/">Back to the start page</a></p>` }));
         return;
       }
       const methods = typeof route === 'function' ? { GET: route } : route;
       const handler = methods[req.method === 'HEAD' ? 'GET' : req.method];
       if (typeof handler !== 'function') {
         const allow = Object.keys(methods).flatMap((method) => (method === 'GET' ? ['GET', 'HEAD'] : [method])).join(', ');
-        send(res, 405, page({ title: '허용하지 않는 요청', available, alerts: [{ kind: 'error', message: `이 주소는 ${req.method} 요청을 받지 않습니다.` }] }), { Allow: allow });
+        send(res, 405, page({ title: 'Request not allowed', available, alerts: [{ kind: 'error', message: `This address does not accept ${req.method} requests.` }] }), { Allow: allow });
         return;
       }
       let form;
@@ -98,7 +98,7 @@ function createHandler(routes = new Map(), { token = createToken() } = {}) {
           if (!(err instanceof RequestError)) throw err;
           // 읽지 않은 본문이 남아 있으면 응답 뒤 연결을 닫아 다음 요청과 섞이지 않게 한다.
           res.setHeader('Connection', 'close');
-          send(res, err.status, page({ title: '받지 않는 요청', available, alerts: [{ kind: 'error', message: err.message }] }));
+          send(res, err.status, page({ title: 'Request not accepted', available, alerts: [{ kind: 'error', message: err.message }] }));
           return;
         }
       }
@@ -123,7 +123,7 @@ function checkPortFree(port) {
     const socket = net.connect({ port, host: HOST });
     const done = (busy) => {
       socket.destroy();
-      if (busy) reject(Object.assign(new Error(`포트 ${port} 사용 중`), { code: 'EADDRINUSE' }));
+      if (busy) reject(Object.assign(new Error(`Port ${port} is in use`), { code: 'EADDRINUSE' }));
       else resolve();
     };
     socket.setTimeout(2000, () => done(false));
@@ -133,7 +133,7 @@ function checkPortFree(port) {
 }
 
 function parsePort(text) {
-  if (!/^\d+$/.test(text) || Number(text) > 65535) throw new FcError(`--port에는 0~65535 사이 숫자를 쓰세요: ${text}`);
+  if (!/^\d+$/.test(text) || Number(text) > 65535) throw new FcError(`Use a number from 0 to 65535 for --port: ${text}`);
   return Number(text);
 }
 
@@ -144,8 +144,8 @@ function parseUiArgs(argv) {
     if (arg === '-h' || arg === '--help') options.help = true;
     else if (arg === '--no-open') options.open = false;
     else if (arg.startsWith('--port=')) options.port = parsePort(arg.slice('--port='.length));
-    else if (arg === '--port') throw new FcError('--port에는 값을 --port=번호처럼 붙이세요.');
-    else throw new FcError(`ui에서 알 수 없는 인자: ${arg}\n\n${UI_HELP}`);
+    else if (arg === '--port') throw new FcError('Attach the value to --port, like --port=NUMBER.');
+    else throw new FcError(`Unknown argument for ui: ${arg}\n\n${UI_HELP}`);
   }
   return options;
 }
@@ -153,8 +153,8 @@ function parseUiArgs(argv) {
 // 서버를 띄우고 { server, url }을 돌려준다. 포트를 이미 쓰고 있으면 다른 포트로 넘어가지 않고 실패한다.
 function startServer({ port = DEFAULT_PORT, routes } = {}) {
   const portError = (err) => {
-    if (err.code === 'EADDRINUSE') return new FcError(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다. 무엇이 쓰는지 확인하세요(netstat -ano | findstr :${port}). 다른 포트로 띄우려면 --port=번호를 쓰세요.`);
-    if (err.code === 'EACCES') return new FcError(`포트 ${port}를 열 권한이 없습니다. 다른 포트를 --port=번호로 고르세요.`);
+    if (err.code === 'EADDRINUSE') return new FcError(`Port ${port} is already used by another program. Check what uses it (netstat -ano | findstr :${port}). To start on another port, use --port=NUMBER.`);
+    if (err.code === 'EACCES') return new FcError(`No permission to open port ${port}. Choose another port with --port=NUMBER.`);
     return err;
   };
   // 빈 포트(0)는 운영체제가 고르므로 미리 볼 필요가 없다.
@@ -164,7 +164,7 @@ function startServer({ port = DEFAULT_PORT, routes } = {}) {
     server.once('error', (err) => reject(portError(err)));
     server.listen({ port, host: HOST, exclusive: true }, () => {
       // 시작한 뒤의 서버 오류는 알리기만 하고 프로세스를 끝내지 않는다.
-      server.on('error', (err) => console.error(`화면 서버 오류: ${err.message}`));
+      server.on('error', (err) => console.error(`UI server error: ${err.message}`));
       resolve({ server, url: `http://${HOST}:${server.address().port}/` });
     });
   }));
@@ -198,13 +198,13 @@ async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
   }
   // 화면별 주소를 따로 주지 않으면 작업 상태·결과 페이지(#253)를 붙인다. 명령은 자식 프로세스로 실행한다.
   const { server, url } = await startServer({ port: options.port, routes: routes ?? defaultRoutes() });
-  out(`fctl 화면: ${url}`);
-  out('끝내려면 Ctrl+C를 누르세요.');
+  out(`fctl UI: ${url}`);
+  out('Press Ctrl+C to stop.');
   if (options.open) openBrowser(url);
   process.once('SIGINT', () => {
     server.close();
     server.closeAllConnections();
-    out('화면 서버를 끝냈습니다.');
+    out('UI server stopped.');
   });
   return server;
 }
