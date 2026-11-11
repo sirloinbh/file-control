@@ -177,9 +177,9 @@ test('링크와 장치 항목은 풀기 전에 거부하고, 타겟 밖을 가�
   for (const dryRun of [true, false]) {
     const result = extractArchives(dir, { dryRun });
     const reason = (name) => result.failed.find((item) => path.basename(item.archive) === name)?.reason;
-    assert.match(reason('sym.tar'), /링크나 장치/);
-    assert.match(reason('dev.tar'), /링크나 장치/);
-    if (!dryRun) assert.match(reason('hard.tar'), /압축을 풀지 못했습니다/);
+    assert.match(reason('sym.tar'), /link or device/);
+    assert.match(reason('dev.tar'), /link or device/);
+    if (!dryRun) assert.match(reason('hard.tar'), /Could not extract/);
   }
   assert.deepStrictEqual(tree(outside), ['o.txt']);
   assert.strictEqual(fs.readFileSync(path.join(outside, 'o.txt'), 'utf8'), '원본');
@@ -207,7 +207,7 @@ test('항목이 없는 파일은 실패로 보고하고 폴더를 만들지 않�
   const result = extractArchives(dir);
   assert.strictEqual(result.extracted.length, 0);
   assert.strictEqual(result.failed.length, 4);
-  for (const failure of result.failed) assert.match(failure.reason, /항목이 없습니다/);
+  for (const failure of result.failed) assert.match(failure.reason, /no entries/);
   assert.deepStrictEqual(tree(dir), ['blank.tar', 'empty.zip', 'zero.zip', 'zeros.zip']);
   assert.deepStrictEqual(fs.readdirSync(dir).length, 4);
 });
@@ -222,7 +222,7 @@ test('푸는 동안 같은 이름의 파일이 생기면 덮어쓰지 않고 실
   });
   const result = extractArchives(dir);
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /같은 이름이 이미 있어/);
+  assert.match(result.failed[0].reason, /the name already exists/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a'), 'utf8'), '사용자 파일');
   assert.deepStrictEqual(tree(dir), ['a', 'a.zip']);
   noTemp(dir);
@@ -234,7 +234,7 @@ test('풀면 특별한 폴더 이름이 되는 압축 파일은 건너뛴다', (
   const result = extractArchives(dir);
   assert.strictEqual(result.extracted.length, 0);
   assert.strictEqual(result.skipped.length, 3);
-  for (const item of result.skipped) assert.match(item.reason, /특별한 폴더 이름/);
+  for (const item of result.skipped) assert.match(item.reason, /special name/);
   assert.strictEqual(fs.readdirSync(dir).length, 3);
 });
 
@@ -257,7 +257,7 @@ test('같은 이름이 있으면 합치지 않고 건너뛰어 다시 실행해�
   const first = extractArchives(dir);
   assert.deepStrictEqual(first.extracted.map((item) => item.name), ['once']);
   assert.strictEqual(first.skipped.length, 2);
-  assert.match(first.skipped[0].reason, /같은 이름이 이미 있어/);
+  assert.match(first.skipped[0].reason, /the name already exists/);
   assert.deepStrictEqual(tree(path.join(dir, 'a')), ['old.txt']);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'file'), 'utf8'), '파일');
   const second = extractArchives(dir);
@@ -272,7 +272,7 @@ test('같은 폴더 이름이 되는 압축 파일 둘은 앞의 것만 푼다',
   const result = extractArchives(dir, { dryRun: true });
   assert.strictEqual(result.extracted.length + result.failed.length, 1);
   assert.strictEqual(result.skipped.length, 1);
-  assert.match(result.skipped[0].reason, /같은 이름이 이미 있어/);
+  assert.match(result.skipped[0].reason, /the name already exists/);
 });
 
 test('풀려 나온 압축 파일은 다시 풀지 않는다', () => {
@@ -288,7 +288,7 @@ test('깨진 압축 파일은 실패로 보고하고 나머지를 계속하며 �
   makeZip(dir, 'good.zip', { 'x.txt': 'x' });
   const result = extractArchives(dir);
   assert.deepStrictEqual(result.extracted.map((item) => item.name), ['good']);
-  assert.match(result.failed[0].reason, /압축을 풀지 못했습니다.*tar 종료 코드/);
+  assert.match(result.failed[0].reason, /Could not extract.*tar exit code/);
   assert.deepStrictEqual(tree(dir), ['bad.zip', 'good.zip', 'good/x.txt']);
   assert.ok(!fs.existsSync(path.join(dir, 'bad')));
   noTemp(dir);
@@ -314,7 +314,7 @@ test('대소문자만 다르거나 같은 이름의 항목이 겹치면 실패�
   const result = extractArchives(dir);
   assert.strictEqual(result.extracted.length, 0);
   assert.strictEqual(result.failed.length, 2);
-  assert.match(result.failed[0].reason, /목록 2개, 결과 1개/);
+  assert.match(result.failed[0].reason, /listing 2, result 1/);
   assert.deepStrictEqual(tree(dir), ['case.zip', 'dup.zip']);
 });
 
@@ -327,7 +327,7 @@ test('Windows에서 다르게 해석되는 이름이 나오면 결과로 내놓�
   assert.strictEqual(result.extracted.length, 0);
   assert.strictEqual(result.failed.length, 3);
   // 끝이 공백인 폴더는 tar.exe가 먼저 실패한다.
-  assert.deepStrictEqual(result.failed.map((failure) => /다르게 해석될 수 있는 이름/.test(failure.reason)), [true, true, false]);
+  assert.deepStrictEqual(result.failed.map((failure) => /interpreted differently on Windows/.test(failure.reason)), [true, true, false]);
   assert.deepStrictEqual(tree(dir), ['device.zip', 'dot.zip', 'space.zip']);
 });
 
@@ -335,7 +335,7 @@ test('암호가 걸린 압축 파일은 묻지 않고 실패로 보고한다', (
   const dir = tempDir();
   makeZip(dir, 'secret.zip', [{ name: 'secret.txt', data: 'xxxxxxxxxxxxxxxx', flags: 1 }]);
   const result = extractArchives(dir);
-  assert.match(result.failed[0].reason, /암호/);
+  assert.match(result.failed[0].reason, /encrypted/);
   assert.deepStrictEqual(tree(dir), ['secret.zip']);
 });
 
@@ -352,7 +352,7 @@ test('풀린 결과에 링크가 있으면 결과로 내놓지 않는다', (t) =
   });
   const result = extractArchives(dir);
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /링크가 들어 있습니다/);
+  assert.match(result.failed[0].reason, /contains a link/);
   assert.strictEqual(renameSync.mock.callCount(), 0);
   assert.deepStrictEqual(tree(outside), ['o.txt']);
   assert.deepStrictEqual(tree(dir), ['a.zip']);
@@ -369,7 +369,7 @@ test('임시 폴더를 지우지 못하면 그 경로를 알린다', (t) => {
   });
   const result = extractArchives(dir);
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /임시 폴더를 지우지 못했습니다.*EPERM/);
+  assert.match(result.failed[0].reason, /Could not delete the temporary folder.*EPERM/);
   fs.rmSync(path.join(dir, fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'))), { recursive: true });
 });
 
@@ -409,9 +409,9 @@ test('계획 뒤에 압축 파일이나 대상이 바뀌면 그 파일만 실패
   const result = applyExtractions(plan);
   assert.deepStrictEqual(result.extracted.map((item) => path.relative(dir, item.dest)).sort(), ['ok', path.join('other', 'p')]);
   assert.strictEqual(result.failed.length, 5);
-  assert.ok(result.failed.some((item) => /계획 뒤에 경로가 바뀌었습니다/.test(item.reason)));
-  assert.ok(result.failed.some((item) => /계획 뒤에 파일이 아니게/.test(item.reason)));
-  assert.ok(result.failed.some((item) => /같은 이름이 이미 있어/.test(item.reason)));
+  assert.ok(result.failed.some((item) => /The path changed after planning/.test(item.reason)));
+  assert.ok(result.failed.some((item) => /No longer a file after planning/.test(item.reason)));
+  assert.ok(result.failed.some((item) => /the name already exists/.test(item.reason)));
   assert.deepStrictEqual(tree(outside), ['o.zip']);
   assert.deepStrictEqual(tree(path.join(dir, 'taken')), []);
 });
@@ -436,7 +436,7 @@ test('끝이 점이 되는 폴더 이름은 건너뛴다', () => {
   makeZip(dir, 'a..zip', { 'x.txt': 'x' });
   const result = extractArchives(dir);
   assert.strictEqual(result.skipped.length, 1);
-  assert.match(result.skipped[0].reason, /다르게 해석될 수 있는 이름/);
+  assert.match(result.skipped[0].reason, /interpreted differently on Windows/);
   assert.deepStrictEqual(tree(dir), ['a..zip']);
 });
 
@@ -448,8 +448,8 @@ test('미리보기는 아무것도 만들지 않고 항목 수와 깨진 파일�
   assert.deepStrictEqual(tree(dir), ['a.zip', 'bad.zip']);
   assert.ok(!fs.existsSync(path.join(dir, 'a')));
   assert.strictEqual(result.failed.length, 1);
-  assert.match(formatExtractions(result), /\[미리보기\] 압축 해제: a\.zip -> a \(항목 2개\)/);
-  assert.match(formatExtractions(result), /\[미리보기\] 압축 해제 1개, 건너뜀 0개, 실패 1개/);
+  assert.match(formatExtractions(result), /\[Preview\] Extract: a\.zip -> a \(2 items\)/);
+  assert.match(formatExtractions(result), /\[Preview\] Extract 1, skipped 0, failed 1/);
 });
 
 test('보호 경로는 거부한다', () => {
@@ -459,17 +459,17 @@ test('보호 경로는 거부한다', () => {
 test('extract-all 명령은 결과를 보여 주고 실패가 있으면 오류로 끝낸다', () => {
   const dir = tempDir();
   makeZip(dir, 'a.zip', { 'x.txt': 'x' });
-  assert.match(run(['extract-all', dir, '--dry-run']), /\[미리보기\] 압축 해제 1개/);
-  assert.match(run(['extract-all', dir]), /압축 해제: a\.zip -> a \(항목 1개\)\n압축 해제 1개, 건너뜀 0개, 실패 0개/);
+  assert.match(run(['extract-all', dir, '--dry-run']), /\[Preview\] Extract 1/);
+  assert.match(run(['extract-all', dir]), /Extract: a\.zip -> a \(1 items\)\nExtract 1, skipped 0, failed 0/);
   fs.writeFileSync(path.join(dir, 'bad.zip'), 'not a zip');
-  assert.throws(() => run(['extract-all', dir]), (err) => err instanceof FcError && /실패: bad\.zip/.test(err.message));
+  assert.throws(() => run(['extract-all', dir]), (err) => err instanceof FcError && /Failed: bad\.zip/.test(err.message));
 });
 
 test('extract-all 명령은 잘못된 인자를 거부한다', () => {
   const dir = tempDir();
-  assert.throws(() => run(['extract-all']), /사용법/);
-  assert.throws(() => run(['extract-all', dir, 'more']), /타겟은 하나만/);
-  assert.throws(() => run(['extract-all', 'C:']), /드라이브 문자/);
+  assert.throws(() => run(['extract-all']), /Usage/);
+  assert.throws(() => run(['extract-all', dir, 'more']), /Only one target/);
+  assert.throws(() => run(['extract-all', 'C:']), /drive letter/);
   assert.throws(() => run(['extract-all', dir, '--force']), /--force/);
   assert.throws(() => run(['extract-all', dir, '--permanent']), /--permanent/);
 });
@@ -481,7 +481,7 @@ test('extract-all은 풀린 크기가 남은 공간보다 큰 압축 파일을 �
   for (const dryRun of [true, false]) {
     const result = extractArchives(dir, { dryRun, removeArchives: true });
     assert.deepStrictEqual(result.failed.map((item) => path.basename(item.archive)), ['huge.zip'], `dryRun ${dryRun}`);
-    assert.match(result.failed[0].reason, /풀면 약 90\.9TB가 되어/);
+    assert.match(result.failed[0].reason, /Extracting would take about 90\.9TB/);
     assert.deepStrictEqual(result.extracted.map((item) => item.name), ['ok']);
     if (!dryRun) assert.strictEqual(fs.readFileSync(path.join(dir, 'ok', 'a.txt'), 'utf8'), 'A');
   }

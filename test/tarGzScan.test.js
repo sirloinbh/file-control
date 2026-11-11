@@ -86,17 +86,17 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
   const good = zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), END]));
   const cases = {
     // tar.exe는 체크섬이 틀린 헤더를 건너뛰고(Damaged… Retrying) 성공으로 끝낸다.
-    checksum: [Buffer.concat([file('a.txt', 'a', { breakChecksum: true }), END]), /체크섬이 맞지 않아/],
-    'non-ascii': [Buffer.concat([file(Buffer.from([0xc7, 0xd1, 0x2e, 0x74]), 'a'), END]), /코드페이지에 따라/],
-    'empty-pax-path': [Buffer.concat([pax({ path: '' }), file('e.txt', ''), END]), /이름이 비어 있어/],
-    'pax-utf8': [Buffer.concat([pax({ path: Buffer.from([0xff, 0x41]) }), file('e.txt', ''), END]), /UTF-8이 아니라/],
-    sparse: [Buffer.concat([file('s.txt', 'a', { type: 'S' }), END]), /항목 종류/],
-    'gnu-sparse-pax': [Buffer.concat([pax({ 'GNU.sparse.size': '10' }), file('s.txt', 'a'), END]), /희소 파일/],
-    symlink: [Buffer.concat([header('l', 0, { type: '2' }), END]), /항목 종류/],
-    'hardlink-data': [Buffer.concat([file('h.txt', 'abc', { type: '1' }), END]), /내용이 있는 하드링크/],
-    'bad-size': [Buffer.concat([header('a.txt', Buffer.from('zzzzzzzzzzz\0', 'latin1')), END]), /크기를 읽지 못해/],
-    'zero-then-data': [Buffer.concat([Buffer.alloc(512), file('a.txt', 'a'), END]), /끝 표시 뒤에/],
-    'no-end': [file('a.txt', 'a'), /끝 표시가 없어/],
+    checksum: [Buffer.concat([file('a.txt', 'a', { breakChecksum: true }), END]), /checksum does not match/],
+    'non-ascii': [Buffer.concat([file(Buffer.from([0xc7, 0xd1, 0x2e, 0x74]), 'a'), END]), /depending on the code page/],
+    'empty-pax-path': [Buffer.concat([pax({ path: '' }), file('e.txt', ''), END]), /is empty/],
+    'pax-utf8': [Buffer.concat([pax({ path: Buffer.from([0xff, 0x41]) }), file('e.txt', ''), END]), /is not UTF-8/],
+    sparse: [Buffer.concat([file('s.txt', 'a', { type: 'S' }), END]), /entry type/],
+    'gnu-sparse-pax': [Buffer.concat([pax({ 'GNU.sparse.size': '10' }), file('s.txt', 'a'), END]), /sparse file/],
+    symlink: [Buffer.concat([header('l', 0, { type: '2' }), END]), /entry type/],
+    'hardlink-data': [Buffer.concat([file('h.txt', 'abc', { type: '1' }), END]), /hard link entry with content/],
+    'bad-size': [Buffer.concat([header('a.txt', Buffer.from('zzzzzzzzzzz\0', 'latin1')), END]), /size could not be read/],
+    'zero-then-data': [Buffer.concat([Buffer.alloc(512), file('a.txt', 'a'), END]), /after the tar end marker/],
+    'no-end': [file('a.txt', 'a'), /end marker is missing/],
   };
   for (const [name, [tar, reason]] of Object.entries(cases)) assert.match(scan(dir, `${name}.tar.gz`, tar).reason ?? '', reason, name);
   // 멤버 뒤가 0x00으로 시작하면 Node는 오류 없이 멈추므로 읽은 바이트 수로 잡는다.
@@ -107,7 +107,7 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
     cut: good.subarray(0, good.length - 1),
   };
   for (const [name, data] of Object.entries(raw)) assert.ok(scan(dir, `${name}.tar.gz`, data, { raw: true }).reason, name);
-  assert.match(scan(dir, 'zero-gap2.tar.gz', Buffer.concat([good, Buffer.alloc(1), good]), { raw: true }).reason, /gzip 끝 뒤에 다른 데이터/);
+  assert.match(scan(dir, 'zero-gap2.tar.gz', Buffer.concat([good, Buffer.alloc(1), good]), { raw: true }).reason, /other data after the end of the gzip/);
   // 없는 파일도 사유로 돌려준다.
-  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /다시 읽지 못해/);
+  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /could not be read again/);
 });

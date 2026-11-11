@@ -199,7 +199,7 @@ test('치운 폴더에 파일이 생기면 휴지통으로 보내지 않고 알�
   const result = collapse(dir);
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.failed[0].reason, /치운 폴더에 파일이 있어/);
+  assert.match(result.failed[0].reason, /emptied folder contains files/);
   assert.strictEqual(fs.readFileSync(path.join(emptied, 'b', 'new.txt'), 'utf8'), '새 파일');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'f.txt'), 'utf8'), 'a/b/c/f.txt');
 });
@@ -220,7 +220,7 @@ test('자리표시에 다른 내용이 생겨 옮기지 못하면 사유를 그�
   const result = collapse(dir);
   t.mock.restoreAll();
   assert.doesNotMatch(result.failed[0].reason, /undefined/);
-  assert.match(result.failed[0].reason, /다른 내용이 생겨 지우지 않았습니다/);
+  assert.match(result.failed[0].reason, /now has other content, so it was not deleted/);
 });
 
 test('구간 아래에 잔여물이나 시스템 폴더가 있으면 접지 않는다', () => {
@@ -230,14 +230,14 @@ test('구간 아래에 잔여물이나 시스템 폴더가 있으면 접지 않�
   const result = collapse(dir);
   assert.deepStrictEqual(result.collapsed, []);
   assert.deepStrictEqual(tree(dir), [...files].sort());
-  assert.strictEqual(result.skipped.filter((item) => /접지 않습니다/.test(item.reason)).length, 3);
+  assert.strictEqual(result.skipped.filter((item) => /Not collapsed/.test(item.reason)).length, 3);
 });
 
 test('타겟 바로 아래의 잔여물을 보고한다', () => {
   const dir = tempDir();
   make(dir, ['.fctl-new-1-2-3/f.txt']);
   const result = collapse(dir);
-  assert.match(result.skipped[0].reason, /잔여물/);
+  assert.match(result.skipped[0].reason, /leftover/);
 });
 
 test('가운데 이름을 다룰 수 없는 구간은 미리보기에서도 건너뛴다', () => {
@@ -248,7 +248,7 @@ test('가운데 이름을 다룰 수 없는 구간은 미리보기에서도 건�
     const result = collapse(dir, { dryRun });
     assert.deepStrictEqual(result.collapsed, []);
     assert.deepStrictEqual(result.failed, []);
-    assert.match(result.skipped[0].reason, /다르게 해석될 수 있는 이름/);
+    assert.match(result.skipped[0].reason, /interpreted differently on Windows/);
   }
 });
 
@@ -257,7 +257,7 @@ test('보고는 위 구간까지 접힌 최종 위치를 적는다', () => {
   make(dir, ['p/q/1/f.txt', 'p/q/1/z/w/g.txt']);
   const result = collapse(dir);
   assert.deepStrictEqual(tree(dir), ['p/f.txt', 'p/z/g.txt']);
-  assert.match(formatCollapse(result), /접기: p[\\/]q[\\/]1[\\/]z[\\/]w -> p[\\/]z/);
+  assert.match(formatCollapse(result), /Collapse: p[\\/]q[\\/]1[\\/]z[\\/]w -> p[\\/]z/);
 });
 
 test('3층 구조의 최종 위치를 실행과 미리보기 모두 맞게 적는다', () => {
@@ -282,7 +282,7 @@ test('안쪽 구간이 실패하면 그 구간을 품은 위 구간을 접지 �
   const result = collapse(dir);
   t.mock.restoreAll();
   assert.deepStrictEqual(tree(dir), ['m/h.txt', 'p/q/1/f.txt', 'p/q/1/z/w/g.txt']);
-  assert.ok(result.failed.some((item) => /안쪽 구간이 실패해/.test(item.reason)));
+  assert.ok(result.failed.some((item) => /inner section failed/.test(item.reason)));
 });
 
 test('이름을 옮기는 사이 맨 위 이름에 파일이 생기면 덮어쓰지 않고 되돌린다', (t) => {
@@ -299,7 +299,7 @@ test('이름을 옮기는 사이 맨 위 이름에 파일이 생기면 덮어쓰
   const result = collapse(dir);
   mock.mock.restore();
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a'), 'utf8'), '사용자 파일');
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-old.*EEXIST/);
+  assert.match(result.failed[0].reason, /could not undo it either.*\.fctl-old.*EEXIST/);
   const names = fs.readdirSync(dir);
   const lifted = names.find((name) => name.startsWith('.fctl-new'));
   assert.ok(result.failed[0].reason.includes(lifted));
@@ -311,7 +311,7 @@ test('사라지는 폴더 이름에 제품번호가 있으면 접지 않고, 맨
   make(dir, ['새 폴더/ABC-123/f.mp4', 'XYZ-999/XYZ-999 제목/g.mp4']);
   const result = collapse(dir);
   assert.deepStrictEqual(tree(dir), ['XYZ-999/g.mp4', '새 폴더/ABC-123/f.mp4']);
-  assert.match(result.skipped[0].reason, /제품번호가 사라집니다: ABC-123/);
+  assert.match(result.skipped[0].reason, /lose the product number in the folder name: ABC-123/);
 });
 
 test('잔여물과 시스템 폴더, 링크가 든 구간은 접지 않고 보고한다', () => {
@@ -323,7 +323,7 @@ test('잔여물과 시스템 폴더, 링크가 든 구간은 접지 않고 보�
   const result = collapse(dir);
   assert.deepStrictEqual(result.collapsed, []);
   assert.strictEqual(result.skipped.length, 3);
-  assert.ok(result.skipped.some((item) => /링크가 든 폴더/.test(item.reason)));
+  assert.ok(result.skipped.some((item) => /folder that contains a link/.test(item.reason)));
   assert.deepStrictEqual(fs.readdirSync(outside), ['o.txt']);
   assert.deepStrictEqual(recycled, []);
 });
@@ -331,7 +331,7 @@ test('잔여물과 시스템 폴더, 링크가 든 구간은 접지 않고 보�
 test('저장소가 들어 있으면 전체를 거부한다', () => {
   const dir = tempDir();
   make(dir, ['a/b/.git/config']);
-  assert.throws(() => collapse(dir), /저장소가 들어 있어/);
+  assert.throws(() => collapse(dir), /contains a repository/);
   assert.deepStrictEqual(tree(dir), ['a/b/.git/config']);
 });
 
@@ -341,7 +341,7 @@ test('계획 뒤에 구간에 파일이 생기면 그 구간을 접지 않고 �
   const plan = planCollapse(dir);
   fs.writeFileSync(path.join(dir, 'a', 'new.txt'), '새 파일');
   const result = applyCollapse(plan);
-  assert.match(result.failed[0].reason, /폴더 내용이 바뀌었습니다/);
+  assert.match(result.failed[0].reason, /folder content changed after planning/);
   assert.deepStrictEqual(tree(dir), ['a/b/c/f.txt', 'a/new.txt', 'p/g.txt']);
 });
 
@@ -392,7 +392,7 @@ test('되돌리지도 못하면 위치를 알린다', (t) => {
   });
   const result = collapse(dir);
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
+  assert.match(result.failed[0].reason, /could not undo it either.*\.fctl-new/);
   const lifted = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
   assert.strictEqual(fs.readFileSync(path.join(dir, lifted, 'f.txt'), 'utf8'), 'a/b/c/f.txt');
 });
@@ -420,7 +420,7 @@ test('빈 폴더를 휴지통으로 보내지 못하면 접은 결과를 두고 
   };
   const result = collapse(dir);
   assert.strictEqual(result.collapsed.length, 1);
-  assert.match(result.failed[0].reason, /빈 폴더를 휴지통으로 보내지 못했습니다.*\.fctl-old.*대화형 세션/);
+  assert.match(result.failed[0].reason, /could not send the empty folder to the Recycle Bin.*\.fctl-old.*interactive session/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'f.txt'), 'utf8'), 'a/b/c/f.txt');
   // 잔여 폴더는 다시 실행해도 접지 않는다.
   assert.strictEqual(collapse(dir).collapsed.length, 0);
@@ -441,7 +441,7 @@ test('미리보기는 아무것도 바꾸지 않고 같은 계획을 보여 준�
   const result = collapse(dir, { dryRun: true });
   assert.deepStrictEqual(tree(dir), ['a/b/c/f.txt']);
   assert.deepStrictEqual(recycled, []);
-  assert.match(formatCollapse(result), /\[미리보기\] 접기: a[\\/]b[\\/]c -> a\n\[미리보기\] 접기 1개, 건너뜀 0개, 실패 0개/);
+  assert.match(formatCollapse(result), /\[Preview\] Collapse: a[\\/]b[\\/]c -> a\n\[Preview\] Collapse 1, skipped 0, failed 0/);
 });
 
 test('보호 경로는 거부한다', () => {
@@ -451,24 +451,24 @@ test('보호 경로는 거부한다', () => {
 test('collapse 명령은 결과를 보여 주고 실패가 있으면 오류로 끝낸다', (t) => {
   const dir = tempDir();
   make(dir, ['a/b/f.txt']);
-  assert.match(run(['collapse', dir, '--dry-run']), /\[미리보기\] 접기 1개/);
+  assert.match(run(['collapse', dir, '--dry-run']), /\[Preview\] Collapse 1/);
   const mock = t.mock.method(fs, 'renameSync', () => {
     throw Object.assign(new Error('busy'), { code: 'EBUSY' });
   });
-  assert.throws(() => run(['collapse', dir]), (err) => err instanceof FcError && /실패: a /.test(err.message));
+  assert.throws(() => run(['collapse', dir]), (err) => err instanceof FcError && /Failed: a /.test(err.message));
   mock.mock.restore();
-  assert.match(run(['collapse', dir]), /접기: a[\\/]b -> a\n접기 1개, 건너뜀 0개, 실패 0개/);
+  assert.match(run(['collapse', dir]), /Collapse: a[\\/]b -> a\nCollapse 1, skipped 0, failed 0/);
   assert.deepStrictEqual(tree(dir), ['a/f.txt']);
 });
 
 test('collapse 명령은 잘못된 인자를 거부한다', () => {
   const dir = tempDir();
-  assert.throws(() => run(['collapse']), /사용법/);
-  assert.throws(() => run(['collapse', dir, 'more']), /타겟은 하나만/);
-  assert.throws(() => run(['collapse', 'C:']), /드라이브 문자/);
+  assert.throws(() => run(['collapse']), /Usage/);
+  assert.throws(() => run(['collapse', dir, 'more']), /Only one target/);
+  assert.throws(() => run(['collapse', 'C:']), /drive letter/);
   assert.throws(() => run(['collapse', dir, '--force']), /--force/);
   assert.throws(() => run(['collapse', dir, '--permanent']), /--permanent/);
-  assert.throws(() => run(['collapse', dir, '--remove-archives']), /extract-all에서만/);
+  assert.throws(() => run(['collapse', dir, '--remove-archives']), /used only with extract-all/);
 });
 
 // #85: 접으면 폴더 속성이 맨 아래 폴더의 것이 되므로 숨김 폴더가 든 구간은 접지 않는다.
@@ -481,9 +481,9 @@ test('collapse는 맨 위·가운데·맨 아래 중 숨김 폴더가 있는 구
   const plan = planCollapse(dir);
   assert.deepStrictEqual(plan.collapses.map((item) => path.relative(dir, item.top)).sort(), ['plain', 'sys', 'top']);
   assert.deepStrictEqual(plan.skipped.map((item) => [path.relative(dir, item.path), item.reason]).sort(), [
-    ['hidtop', '숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): hidtop'],
-    ['p', `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('p', 'hidmid')}`],
-    ['vis', `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('vis', 'hidleaf')}`],
+    ['hidtop', 'Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): hidtop'],
+    ['p', `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${path.join('p', 'hidmid')}`],
+    ['vis', `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${path.join('vis', 'hidleaf')}`],
   ]);
   const result = collapse(dir);
   assert.deepStrictEqual(result.failed, []);
@@ -498,7 +498,7 @@ test('collapse는 폴더 속성을 읽지 못하면 아무것도 접지 않고 �
   onAttributes = () => {
     throw Object.assign(new Error('blocked'), { status: 3 });
   };
-  assert.throws(() => collapse(dir), /숨김·시스템 속성을 확인할 수 없습니다/);
+  assert.throws(() => collapse(dir), /Cannot check hidden and system attributes/);
   assert.deepStrictEqual(tree(dir), ['top/leaf/a.txt']);
 });
 
@@ -549,5 +549,5 @@ test('collapse는 타겟 바로 아래가 아닌 숨김 맨 위 폴더도 부모
   const plan = planCollapse(dir);
   assert.deepStrictEqual(listed, ['x', path.join('x', 'z')]);
   assert.deepStrictEqual(plan.collapses, []);
-  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'x', 'z'), reason: `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${path.join('x', 'z')}` }]);
+  assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'x', 'z'), reason: `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${path.join('x', 'z')}` }]);
 });

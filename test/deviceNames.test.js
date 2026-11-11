@@ -63,7 +63,7 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
       unzip: () => fc.unzip(path.join(dir, 'ok.zip'), p),
     };
     for (const [kind, attempt] of Object.entries(attempts)) {
-      assert.throws(attempt, /Windows가 장치로 여는 이름이라 만들지 않습니다/, `${kind} ${name}`);
+      assert.throws(attempt, /Not created because Windows opens this name as a device/, `${kind} ${name}`);
     }
   }
   // 폴더 안으로 옮기거나 복사해도 새 이름이 장치 이름이면 거부한다.
@@ -72,12 +72,12 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
   for (const name of ['nul:x', 'CON:s', 'aux.txt:x']) {
     const p = path.join(dir, name);
     for (const attempt of [() => fc.writeFile(p, 'x'), () => fc.makeDir(p), () => fc.rename(src, name), () => fc.copy([src], p), () => fc.move([src], p), () => fc.zip(p, [src])]) {
-      assert.throws(attempt, /장치로 여는 이름이라 만들지 않습니다|스트림/, name);
+      assert.throws(attempt, /opens this name as a device|streams/, name);
     }
   }
   for (const dryRun of [false, true]) {
-    assert.throws(() => fc.copy([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `cp dryRun=${dryRun}`);
-    assert.throws(() => fc.move([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /장치로 여는 이름/, `mv dryRun=${dryRun}`);
+    assert.throws(() => fc.copy([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /opens this name as a device/, `cp dryRun=${dryRun}`);
+    assert.throws(() => fc.move([path.join(dir, 'Nul.mp4')], path.join(dir, 'box'), { dryRun }), /opens this name as a device/, `mv dryRun=${dryRun}`);
   }
   assert.deepStrictEqual(listing(dir), [...before, 'Nul.mp4'].sort());
 });
@@ -94,8 +94,8 @@ test('이미 있는 장치 이름 폴더 안에는 평범한 이름을 만들 �
   fc.unzip(path.join(dir, 'ok.zip'), path.join(folder, 'out'));
   assert.strictEqual(fc.readFile(path.join(folder, 'out', 'src.txt')), 'S');
   // 그 안에 새로 만드는 이름이 장치 이름이면 거부한다.
-  assert.throws(() => fc.writeFile(path.join(folder, 'nul.txt'), 'x'), /장치로 여는 이름이라 만들지 않습니다: "nul.txt"/);
-  assert.throws(() => fc.makeDir(path.join(folder, 'new', 'CON', 'x')), /장치로 여는 이름이라 만들지 않습니다: "CON"/);
+  assert.throws(() => fc.writeFile(path.join(folder, 'nul.txt'), 'x'), /Not created because Windows opens this name as a device: "nul.txt"/);
+  assert.throws(() => fc.makeDir(path.join(folder, 'new', 'CON', 'x')), /Not created because Windows opens this name as a device: "CON"/);
 });
 
 test('이미 있는 장치 이름 파일은 읽고, 덮어쓰고, 평범한 이름으로 바꾸거나 옮길 수 있다 (#135)', { skip: !isWindows }, () => {
@@ -118,8 +118,8 @@ test('zip은 장치 이름 그대로인 원본을 tar.exe에 넘기기 전에 �
   fs.writeFileSync(path.join(dir, 'aux', 'a.txt'), 'A');
   const before = listing(dir);
   for (const src of ['nul', 'CON', path.join('aux', 'a.txt')]) {
-    assert.throws(() => fc.zip(path.join(dir, 'out.zip'), [path.join(dir, src)]), /tar\.exe가 장치로 열어 다룰 수 없습니다/, src);
-    assert.throws(() => fc.zip(path.join(dir, 'out.zip'), [path.join(dir, src)], { dryRun: true }), /tar\.exe가 장치로 열어/, src);
+    assert.throws(() => fc.zip(path.join(dir, 'out.zip'), [path.join(dir, src)]), /would be opened as a device by tar\.exe and cannot be handled/, src);
+    assert.throws(() => fc.zip(path.join(dir, 'out.zip'), [path.join(dir, src)], { dryRun: true }), /opened as a device by tar\.exe/, src);
   }
   assert.deepStrictEqual(listing(dir), before);
 });
@@ -130,10 +130,10 @@ test('압축 목록 읽기는 장치 이름 그대로인 압축 파일 경로를
   fc.zip(path.join(dir, 'a.zip'), [path.join(dir, 'a.txt')]);
   fs.renameSync(path.join(dir, 'a.zip'), literal(path.join(dir, 'nul')));
   const archive = path.join(dir, 'nul');
-  assert.throws(() => fc.archiveEntries(archive), /tar\.exe가 장치로 열어/);
-  assert.throws(() => fc.archiveNames(archive), /tar\.exe가 장치로 열어/);
-  assert.throws(() => fc.probeArchive(archive, { maxBuffer: 1024 * 1024, timeout: 60 * 1000 }), /tar\.exe가 장치로 열어/);
-  assert.throws(() => fc.unzip(archive, path.join(dir, 'out')), /tar\.exe가 장치로 열어/);
+  assert.throws(() => fc.archiveEntries(archive), /opened as a device by tar\.exe/);
+  assert.throws(() => fc.archiveNames(archive), /opened as a device by tar\.exe/);
+  assert.throws(() => fc.probeArchive(archive, { maxBuffer: 1024 * 1024, timeout: 60 * 1000 }), /opened as a device by tar\.exe/);
+  assert.throws(() => fc.unzip(archive, path.join(dir, 'out')), /opened as a device by tar\.exe/);
   assert.deepStrictEqual(listing(dir), ['a.txt', 'nul']);
 });
 
@@ -159,8 +159,8 @@ test('rm은 장치 이름 그대로인 경로를 PowerShell을 부르기 전에 
   });
   const fresh = reload();
   for (const target of ['nul', 'CON', path.join('CON', 'a.txt')]) {
-    assert.throws(() => fresh.remove([path.join(dir, target)]), /장치 이름\("(nul|CON)"\)이 든 경로는 휴지통으로 보낼 수 없습니다/, target);
-    assert.throws(() => fresh.remove([path.join(dir, target)], { dryRun: true }), /휴지통으로 보낼 수 없습니다/, target);
+    assert.throws(() => fresh.remove([path.join(dir, target)]), /A path containing the device name \("(nul|CON)"\) cannot be sent to the Recycle Bin/, target);
+    assert.throws(() => fresh.remove([path.join(dir, target)], { dryRun: true }), /cannot be sent to the Recycle Bin/, target);
   }
   assert.strictEqual(calls.mock.callCount(), 0);
   fresh.remove([path.join(dir, 'nul')], { permanent: true });
@@ -180,7 +180,7 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
     throw err;
   });
   const fresh = reload();
-  assert.throws(() => fresh.remove([path.join(dir, 'box')]), (err) => err instanceof fresh.FcError && err.message.includes(`안에 장치 이름 항목(${path.join('sub', 'nul')})이 있어 실패했을 수 있습니다`));
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), (err) => err instanceof fresh.FcError && err.message.includes(`It may have failed because of an item with a device name inside (${path.join('sub', 'nul')})`));
   // 장치 이름이 없으면 원래 오류를 그대로 낸다.
   assert.throws(() => fresh.remove([path.join(dir, 'plain.txt')]), (err) => !(err instanceof fresh.FcError) && err.status === 1);
 });

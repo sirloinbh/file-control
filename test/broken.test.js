@@ -185,14 +185,14 @@ test('앞 바이트가 맞지 않아도 정상일 수 있는 파일은 의심으
 
 test('MP4의 잘린 mdat, 0으로 채워진 moov, 파일 밖을 가리키는 위치표를 찾는다', () => {
   const whole = mp4();
-  assert.match(judge('a.mp4', whole.subarray(0, whole.length - 10)).reason, /mdat.*잘린/);
-  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('mdat', Buffer.alloc(64))])).reason, /moov 박스가 없습니다/);
+  assert.match(judge('a.mp4', whole.subarray(0, whole.length - 10)).reason, /mdat.*truncated/);
+  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('mdat', Buffer.alloc(64))])).reason, /moov box is missing/);
   const zeroed = Buffer.from(whole);
   const start = ftyp().length + 8;
   zeroed.fill(0, start, start + moov(stco(40)).length - 8);
   assert.match(judge('a.mp4', zeroed).reason, /mvhd/);
-  assert.match(judge('a.mp4', mp4(stco(40, 1000000))).reason, /위치표/);
-  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)))])).reason, /트랙/);
+  assert.match(judge('a.mp4', mp4(stco(40, 1000000))).reason, /location table/);
+  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)))])).reason, /no tracks/);
   // 앞쪽까지 받고 나머지는 0인 파일: moov가 뒤에 올 자리가 비어 있다.
   assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), Buffer.alloc(4096)])).status, 'broken');
 });
@@ -248,9 +248,9 @@ test('조각으로 나뉜 MP4의 빈 위치표는 정상이다', () => {
 
 test('MKV의 잘린 Cluster, 없는 Tracks, 손상된 요소를 찾는다', () => {
   const whole = mkv(tracks(), cluster());
-  assert.match(judge('a.mkv', whole.subarray(0, whole.length - 10)).reason, /Segment.*잘린/);
+  assert.match(judge('a.mkv', whole.subarray(0, whole.length - 10)).reason, /Segment.*truncated/);
   assert.match(judge('a.mkv', mkv(cluster())).reason, /Tracks/);
-  assert.match(judge('a.mkv', mkv(Buffer.alloc(32))).reason, /요소가 손상/);
+  assert.match(judge('a.mkv', mkv(Buffer.alloc(32))).reason, /element at byte \d+ is damaged/);
   assert.match(judge('a.mkv', ebml()).reason, /Segment/);
 });
 
@@ -267,15 +267,15 @@ test('크기를 모르는 MKV 요소를 만나면 판단을 멈춘다', () => {
 
 test('잘린 zip과 항목 머리글이 틀린 zip을 찾는다', () => {
   const whole = zip();
-  assert.match(judge('a.zip', whole.subarray(0, whole.length - 30)).reason, /끝 표시/);
+  assert.match(judge('a.zip', whole.subarray(0, whole.length - 30)).reason, /end marker/);
   const damaged = Buffer.from(whole);
   damaged.fill(0, 0, 4);
   damaged.write('PK\x07\x08', 0, 'latin1');
-  assert.match(judge('a.zip', damaged).reason, /항목의 머리글/);
+  assert.match(judge('a.zip', damaged).reason, /entry header/);
   const beyond = Buffer.from(whole);
   beyond.writeUInt32LE(1000, beyond.length - 22 + 16);
-  assert.match(judge('a.zip', beyond).reason, /목록이 끝 표시/);
-  assert.match(judge('a.docx', whole.subarray(0, 20)).reason, /끝 표시/);
+  assert.match(judge('a.zip', beyond).reason, /directory runs past the end marker/);
+  assert.match(judge('a.docx', whole.subarray(0, 20)).reason, /end marker/);
 });
 
 test('zip 주석 안의 끝 표시에 속지 않고, 뒤에 붙은 데이터는 의심으로만 둔다', () => {
@@ -306,7 +306,7 @@ test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로
   fs.closeSync(fd);
   const result = findBroken(dir);
   assert.deepStrictEqual(result.broken, []);
-  assert.match(result.unreadable[0].reason, /너무 커/);
+  assert.match(result.unreadable[0].reason, /too large/);
 });
 
 test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
@@ -319,11 +319,11 @@ test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
 });
 
 test('잘린 7z와 머리글이 손상된 7z를 찾는다', () => {
-  assert.match(judge('a.7z', sevenZip({ nextOffset: 100, nextSize: 4 })).reason, /잘린/);
-  assert.match(judge('a.7z', Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4])).reason, /머리글이 잘렸/);
+  assert.match(judge('a.7z', sevenZip({ nextOffset: 100, nextSize: 4 })).reason, /truncated/);
+  assert.match(judge('a.7z', Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4])).reason, /header is truncated/);
   const damaged = sevenZip();
   damaged[14] ^= 0xff;
-  assert.match(judge('a.7z', damaged).reason, /머리글이 손상/);
+  assert.match(judge('a.7z', damaged).reason, /header is damaged/);
 });
 
 test('tar.exe가 손상이라고 알린 파일만 깨졌다고 본다', { skip: process.platform !== 'win32' }, () => {
@@ -396,19 +396,19 @@ test('외부 압축 프로그램이 없으면 판단 못함으로 두고 프로�
   assert.deepStrictEqual(result.broken, []);
   assert.deepStrictEqual(result.suspect, []);
   assert.strictEqual(result.unreadable.length, 1);
-  assert.strictEqual(result.unreadable[0].reason, '압축을 풀 외부 프로그램 lz4이 없어 판단하지 않았습니다. lz4.exe를 PATH에 두면 확인할 수 있습니다.');
-  assert.match(formatBroken(result), /판단 못함: a\.tar \(압축을 풀 외부 프로그램 lz4이 없어/);
+  assert.strictEqual(result.unreadable[0].reason, 'The external program lz4 needed to extract it is missing, so it was not judged. Put lz4.exe on PATH to check it.');
+  assert.match(formatBroken(result), /Undetermined: a\.tar \(The external program lz4 needed to extract it is missing/);
 });
 
 test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 판단 못함으로 둔다 (#245)', () => {
   const cases = {
-    'tar.exe: Error opening archive: Child process exited with status 1': /외부 프로그램이 실패해\(종료 코드 1\) 판단하지 않았습니다/,
-    ' tar.exe: Error opening archive: Child process exited with status 2': /종료 코드 2/,
+    'tar.exe: Error opening archive: Child process exited with status 1': /external extraction program failed \(exit code 1\), so it was not judged/,
+    ' tar.exe: Error opening archive: Child process exited with status 2': /exit code 2/,
     // 압축을 연 뒤 읽는 도중에 실패한 형태(1차 리뷰)
-    'tar.exe: Child process exited with status 3': /외부 프로그램이 실패해\(종료 코드 3\)/,
-    'tar.exe: Error opening archive: Can\'t initialize filter; unable to run program "lzop -d"': /외부 프로그램 lzop이 없어/,
+    'tar.exe: Child process exited with status 3': /external extraction program failed \(exit code 3\)/,
+    'tar.exe: Error opening archive: Can\'t initialize filter; unable to run program "lzop -d"': /external program lzop needed to extract it is missing/,
     // 항목 이름이 문구를 흉내 낸 줄은 프로그램 없음으로 보지 않는다(#241과 같은 규칙).
-    '../unable to run program "lz4 x": Path contains \'..\'': /tar로 읽지 못해 판단하지 않았습니다/,
+    '../unable to run program "lz4 x": Path contains \'..\'': /Could not read with tar, so it was not judged/,
   };
   for (const [stderr, reason] of Object.entries(cases)) {
     const dir = tempDir();
@@ -455,7 +455,7 @@ test('tar.exe의 그 밖의 실패는 깨졌다고 하지 않고 판단 못함�
     tarResult = null;
     assert.deepStrictEqual(result.broken, []);
     assert.strictEqual(result.unreadable.length, 1);
-    assert.match(result.unreadable[0].reason, /판단하지 않았습니다/);
+    assert.match(result.unreadable[0].reason, /not judged/);
   }
 });
 
@@ -536,14 +536,14 @@ test('formatBroken은 상태별 줄과 개수를 보여 준다', () => {
   fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
   fs.writeFileSync(path.join(dir, 'b.jpg'), png());
   const report = formatBroken(findBroken(dir));
-  assert.match(report, /깨짐: a\.mp4 \(/);
-  assert.match(report, /의심: b\.jpg \(/);
-  assert.match(report, /살펴본 파일 2개, 깨짐 1개, 의심 1개, 판단 못함 0개, 건너뜀 0개/);
+  assert.match(report, /Broken: a\.mp4 \(/);
+  assert.match(report, /Suspect: b\.jpg \(/);
+  assert.match(report, /Checked 2 files, 1 broken, 1 suspect, 0 undetermined, 0 skipped/);
 });
 
 test('fctl find-broken은 보고만 하고 성공으로 끝난다', () => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
-  assert.match(run(['find-broken', dir]), /깨짐: a\.mp4/);
+  assert.match(run(['find-broken', dir]), /Broken: a\.mp4/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
 });

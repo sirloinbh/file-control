@@ -54,7 +54,7 @@ test('toPlain은 순환은 끊고, 여러 곳에서 함께 쓰는 객체는 그�
   const shared = { n: 1 };
   const loop = { shared, again: shared };
   loop.self = loop;
-  assert.deepStrictEqual(toPlain(loop), { shared: { n: 1 }, again: { n: 1 }, self: '[순환]' });
+  assert.deepStrictEqual(toPlain(loop), { shared: { n: 1 }, again: { n: 1 }, self: '[circular]' });
 });
 
 test('execute는 도움말·결과·부분 실패를 던지지 않고 돌려주고, 모르는 명령은 표시해 던진다', () => {
@@ -69,8 +69,8 @@ test('execute는 도움말·결과·부분 실패를 던지지 않고 돌려주�
   assert.match(listed.report, /a\.txt/);
   assert.strictEqual(listed.failure, undefined);
 
-  assert.throws(() => execute(['nope']), (err) => err instanceof fc.FcError && err.unknownCommand === true && !/사용법/.test(err.message));
-  assert.throws(() => execute(['ls', '--nope']), /알 수 없는 옵션: --nope/);
+  assert.throws(() => execute(['nope']), (err) => err instanceof fc.FcError && err.unknownCommand === true && !/Usage/.test(err.message));
+  assert.throws(() => execute(['ls', '--nope']), /Unknown option: --nope/);
 });
 
 test('execute는 지우기 명령의 확인값이 다르면 결과와 함께 failure를 돌려주고, CLI는 같은 실패로 끝난다', (t) => {
@@ -81,17 +81,17 @@ test('execute는 지우기 명령의 확인값이 다르면 결과와 함께 fai
   const outcome = execute(['remove-broken', dir, '--yes=틀린값']);
   assert.strictEqual(outcome.command, 'remove-broken');
   assert.strictEqual(outcome.result.mismatch, true);
-  assert.match(outcome.report, /의심, 지우지 않음: bad\.zip/);
+  assert.match(outcome.report, /Suspect, not deleted: bad\.zip/);
   assert.ok(outcome.failure instanceof fc.FcError);
-  assert.match(outcome.failure.message, /확인값을 만든 때와 달라/);
+  assert.match(outcome.failure.message, /differs from when the confirmation value was made/);
   assert.strictEqual(outcome.failure.output, outcome.report);
   assert.throws(() => run(['remove-broken', dir, '--yes=틀린값']), (err) => err.message === outcome.failure.message && err.output === outcome.report);
   assert.ok(fs.existsSync(path.join(dir, 'bad.zip')));
 });
 
 test('CLI run은 모르는 명령에 도움말을 붙여 거부하고, 도움말 요청에는 도움말을 돌려준다', () => {
-  assert.throws(() => run(['nope']), (err) => /^알 수 없는 명령: nope\n\nfctl - 파일 컨트롤/.test(err.message));
-  assert.match(run([]), /^fctl - 파일 컨트롤/);
+  assert.throws(() => run(['nope']), (err) => /^Unknown command: nope\n\nfctl - File Control/.test(err.message));
+  assert.match(run([]), /^fctl - File Control/);
 });
 
 test('worker의 runOnce는 결과를 JSON으로 보내고, 화면에 없는 표준 입력은 기다리지 않고 거부한다', () => {
@@ -106,7 +106,7 @@ test('worker의 runOnce는 결과를 JSON으로 보내고, 화면에 없는 표�
   const errors = [];
   runOnce(['write', path.join(dir, 'w.txt')], (msg) => errors.push(msg));
   assert.deepStrictEqual(errors.map((m) => m.type), ['error']);
-  assert.match(errors[0].error.message, /내용을 함께 입력/);
+  assert.match(errors[0].error.message, /also enter the file contents/);
   assert.ok(!fs.existsSync(path.join(dir, 'w.txt')));
 });
 
@@ -130,7 +130,7 @@ test('createJobs는 실제 작업 프로세스로 명령을 실행하고 결과�
   const bad = jobs.start(['flatten']);
   await settled(jobs, bad);
   assert.strictEqual(bad.status, 'error');
-  assert.match(bad.error.message, /사용법: fctl flatten <타겟>/);
+  assert.match(bad.error.message, /Usage: fctl flatten <target>/);
 });
 
 test('createJobs는 결과 객체를 JSON으로 옮겨 받고, env를 작업 프로세스에 넘긴다', async () => {
@@ -162,7 +162,7 @@ test('createJobs는 실행 중에는 새 작업을 거부하고, 끝나면 다�
   const flag = path.join(dir, 'go');
   const jobs = createJobs({ workerPath: FAKE_WORKER });
   const first = jobs.start(['wait', flag]);
-  assert.throws(() => jobs.start(['progress', '1']), (err) => err instanceof BusyError && err instanceof fc.FcError && err.job === first && /이미 실행 중인 작업/.test(err.message));
+  assert.throws(() => jobs.start(['progress', '1']), (err) => err instanceof BusyError && err instanceof fc.FcError && err.job === first && /A job is already running/.test(err.message));
   assert.strictEqual(jobs.running(), first);
   fs.writeFileSync(flag, '');
   await settled(jobs, first);
@@ -177,7 +177,7 @@ test('createJobs는 결과 없이 끝난 작업 프로세스를 사유와 함께
   const crashed = jobs.start(['crash']);
   await settled(jobs, crashed);
   assert.strictEqual(crashed.status, 'error');
-  assert.match(crashed.error.message, /결과 없이 끝났습니다\(종료 코드 3\)/);
+  assert.match(crashed.error.message, /ended without a result \(exit code 3\)/);
   assert.match(crashed.error.message, /망가짐/);
 
   const failed = jobs.start(['error']);
@@ -204,18 +204,18 @@ test('createJobs는 작업 프로세스를 띄우지 못하면 사유를 밝혀 
     throw new Error('띄우기 실패');
   };
   const jobs = createJobs({ fork });
-  assert.throws(() => jobs.start(['ls']), /작업 프로세스를 띄우지 못했습니다: 띄우기 실패/);
+  assert.throws(() => jobs.start(['ls']), /Could not start the job process: 띄우기 실패/);
   assert.strictEqual(jobs.running(), null);
   assert.throws(() => jobs.start(['ls']), /띄우기 실패/);
   assert.strictEqual(calls, 2);
 });
 
 test('formatElapsed는 경과 시간을 시간·분·초로 보여 준다', () => {
-  assert.strictEqual(formatElapsed(-5), '0초');
-  assert.strictEqual(formatElapsed(999), '0초');
-  assert.strictEqual(formatElapsed(12_345), '12초');
-  assert.strictEqual(formatElapsed(65_000), '1분 5초');
-  assert.strictEqual(formatElapsed(3_723_000), '1시간 2분 3초');
+  assert.strictEqual(formatElapsed(-5), '0s');
+  assert.strictEqual(formatElapsed(999), '0s');
+  assert.strictEqual(formatElapsed(12_345), '12s');
+  assert.strictEqual(formatElapsed(65_000), '1m 5s');
+  assert.strictEqual(formatElapsed(3_723_000), '1h 2m 3s');
 });
 
 test('createJobs는 진행 줄이 아주 많으면 앞부분과 최근 줄만 남기고 버린 수를 센다', async () => {
@@ -241,7 +241,7 @@ test('worker의 runOnce는 실제 명령(flatten)의 진행 줄을 결과보다 
   const sent = [];
   runOnce(['flatten', dir], (msg) => sent.push(msg));
   assert.deepStrictEqual(sent.map((m) => m.type), ['progress', 'done']);
-  assert.strictEqual(sent[0].line, `이동: ${path.join('sub', 'a.txt')} -> a.txt`);
+  assert.strictEqual(sent[0].line, `Move: ${path.join('sub', 'a.txt')} -> a.txt`);
   assert.strictEqual(sent[1].outcome.command, 'flatten');
   assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
   assert.ok(fs.existsSync(path.join(dir, 'sub', 'h.txt')));
@@ -267,7 +267,7 @@ test('createJobs는 살아 있는 자식의 error에서는 풀지 않고 close�
   child.emit('close', 1, null);
   assert.strictEqual(jobs.running(), null);
   assert.strictEqual(job.status, 'error');
-  assert.match(job.error.message, /결과 없이 끝났습니다\(메시지 보내기 실패\)/);
+  assert.match(job.error.message, /ended without a result \(메시지 보내기 실패\)/);
 
   child = fakeChild(undefined);
   const failed = jobs.start(['ls']);

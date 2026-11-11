@@ -46,7 +46,7 @@ test('tar.exe가 만든 7z(LZMA로 압축된 헤더)의 이름·크기·폴더�
     for (const at of [headerAt + 3, headerAt + 1, 10, 30]) {
       const bad = Buffer.from(data);
       bad[at] ^= 0x55;
-      assert.match(scan(bad).reason ?? '', /CRC가 맞지 않아|구조를 읽지 못해|손상돼|중간에 끝나|7z 끝 뒤에|목록에 없는 데이터/, `${options} ${at}`);
+      assert.match(scan(bad).reason ?? '', /CRC of the 7z (start )?header does not match|could not be read|is damaged|ends prematurely|after the end of the 7z|not in the listing/, `${options} ${at}`);
     }
   }
 });
@@ -56,26 +56,26 @@ test('직접 만든 7z: UTF-16 이름을 읽고, CRC가 없거나 목록에 없�
   assert.deepStrictEqual(scan(sevenZipBuffer(files)).entries, [
     { name: '한글.txt', size: 3, folder: false }, { name: 'dir', size: 0, folder: true }, { name: 'dir/x.txt', size: 2, folder: false }, { name: 'e.txt', size: 0, folder: false },
   ]);
-  assert.match(scan(sevenZipBuffer(files, { crc: false })).reason, /CRC가 없어/);
+  assert.match(scan(sevenZipBuffer(files, { crc: false })).reason, /has no CRC/);
   // 항목 CRC 없이 폴더 CRC만 있으면 libarchive가 검사하지 않으므로 CRC 없음으로 본다(1차 리뷰).
-  assert.match(scan(sevenZipBuffer([{ name: 'x.txt', data: 'hello' }], { folderCrcOnly: true })).reason, /CRC가 없어/);
+  assert.match(scan(sevenZipBuffer([{ name: 'x.txt', data: 'hello' }], { folderCrcOnly: true })).reason, /has no CRC/);
   // 항목 수가 남은 헤더 길이로 가능한 수를 넘으면 큰 배열을 만들기 전에 거부한다.
   assert.match(scan(sevenZipBuffer(files, { mutateHeader: (header) => {
     const at = header.lastIndexOf(Buffer.from([0x05, files.length]));
     return Buffer.concat([header.subarray(0, at + 1), Buffer.from([0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]), header.subarray(at + 2)]);
-  } })).reason, /개수가 맞지 않아/);
-  assert.match(scan(sevenZipBuffer(files, { gap: 4 })).reason, /목록에 없는 데이터/);
-  assert.match(scan(Buffer.concat([sevenZipBuffer(files), Buffer.from('z')])).reason, /7z 끝 뒤에/);
-  assert.match(scan(sevenZipBuffer(files).subarray(0, 40)).reason, /7z 끝 뒤에|중간에 끝나/);
-  assert.match(scan(Buffer.from('not 7z at all, just text that is long enough')).reason, /7z로 시작하지 않아/);
+  } })).reason, /does not add up/);
+  assert.match(scan(sevenZipBuffer(files, { gap: 4 })).reason, /not in the listing/);
+  assert.match(scan(Buffer.concat([sevenZipBuffer(files), Buffer.from('z')])).reason, /after the end of the 7z/);
+  assert.match(scan(sevenZipBuffer(files).subarray(0, 40)).reason, /after the end of the 7z|ends prematurely/);
+  assert.match(scan(Buffer.from('not 7z at all, just text that is long enough')).reason, /does not start as a 7z/);
   // 헤더 CRC는 맞지만 내용이 틀린 헤더(다음 헤더 CRC를 다시 계산)
   const broken = sevenZipBuffer(files, { mutateHeader: (header) => header.subarray(0, header.length - 3) });
   assert.ok(scan(broken).reason);
   // CRC는 있지만 지우기 표시(anti) 항목
-  assert.match(scan(sevenZipBuffer(files, { anti: true })).reason, /지우기 표시/);
+  assert.match(scan(sevenZipBuffer(files, { anti: true })).reason, /marked as deleted/);
   // 같은 데이터를 헤더 압축 없이(COPY) EncodedHeader로 감싼 것도 읽는다.
   assert.strictEqual(scan(sevenZipBuffer(files, { encoded: true })).entries.length, 4);
-  assert.match(scan(sevenZipBuffer(files, { encoded: true, encodedCrc: false })).reason, /헤더에 CRC가 없어/);
+  assert.match(scan(sevenZipBuffer(files, { encoded: true, encodedCrc: false })).reason, /header has no CRC/);
   // 헤더 크기 0 등 시작 헤더 값이 맞지 않는 파일
   assert.ok(scan(Buffer.alloc(32)).reason);
 });
@@ -114,19 +114,19 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
     }
   };
   // 끝 표시(0x00)가 없다.
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok.subarray(0, ok.length - 1), 11)), /중간에 끝나/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok.subarray(0, ok.length - 1), 11)), /ends prematurely/);
   // 첫 청크가 사전을 재설정하지 않는다.
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x02, a), Buffer.from([0x00])]), 6)), /손상돼/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x02, a), Buffer.from([0x00])]), 6)), /is damaged/);
   // 속성을 정하지 않은 LZMA 청크
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x01, a), Buffer.from([0x80, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0x00])]), 7)), /손상돼/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x01, a), Buffer.from([0x80, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0x00])]), 7)), /is damaged/);
   // 풀린 크기가 헤더 크기를 넘는 청크와 잘못된 제어 바이트
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 5)), /손상돼/);
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0x03, 0, 0, 0x41, 0x00]), 1)), /손상돼/);
-  assert.match(reason(() => lzma2Decode(Buffer.from([41]), ok, 11)), /LZMA2 설정/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 5)), /is damaged/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0x03, 0, 0, 0x41, 0x00]), 1)), /is damaged/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([41]), ok, 11)), /LZMA2 settings/);
   // 풀린 크기보다 일찍 끝난다.
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 12)), /중간에 끝나/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 12)), /ends prematurely/);
   // lc+lp가 4를 넘는 LZMA2 속성(lc=8, lp=4)은 받지 않는다(1차 리뷰: 상태 재설정마다 큰 표를 채워 매우 느려짐).
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0xe0, 0, 0, 0, 4, 44, 0, 0, 0, 0, 0, 0x00]), 1)), /LZMA2 설정/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0xe0, 0, 0, 0, 4, 44, 0, 0, 0, 0, 0, 0x00]), 1)), /LZMA2 settings/);
   // xz --format=raw --lzma2=lc=4,lp=0,pb=0로 만든 'hello hello hello world'. 앞에 0xFF로 끝나는 압축하지 않은 청크를 두고
   // LZMA 청크가 사전을 재설정하면 첫 리터럴의 앞 바이트는 0으로 본다(1차 리뷰).
   const raw = Buffer.from('e0001600100400341a154118b89b3e4fc54dd75df64d0000', 'hex');
@@ -136,7 +136,7 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
   // 압축된 크기보다 덜 읽고 끝나는 청크(압축된 크기를 1 늘림)
   const loose = Buffer.from(raw);
   loose.writeUInt16BE(loose.readUInt16BE(3) + 1, 3);
-  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([loose.subarray(0, loose.length - 1), Buffer.from([0x00, 0x00])]), 23)), /손상돼/);
+  assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([loose.subarray(0, loose.length - 1), Buffer.from([0x00, 0x00])]), 23)), /is damaged/);
 });
 
 test('lzma2Decode는 압축하지 않은 청크(0x02) 뒤의 상태 재설정 없는 LZMA 청크(0x80)를 xz처럼 이어서 푼다 (#222 2차 리뷰)', () => {

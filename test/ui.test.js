@@ -38,7 +38,7 @@ function launch(args) {
     }, 20000);
     child.stdout.on('data', (chunk) => {
       out += chunk;
-      const found = /fctl 화면: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
+      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
       if (found) {
         clearTimeout(timer);
         resolve({ child, url: found[1], output: () => out });
@@ -79,10 +79,10 @@ test('공통 부품: 표는 경로를 이스케이프하고 빈 표에는 안내
   assert.ok(out.includes('C:\\a&amp;b\\&lt;한글 😀&gt;\\&quot;x&quot;.mp4'));
   assert.ok(!out.includes('<한글'));
   assert.ok(out.includes('<col style="width: 70%">'));
-  assert.ok(out.includes('<span class="badge badge-ok">이동</span>'));
-  assert.ok(out.includes('<span class="badge badge-skip">건너뜀</span>'));
+  assert.ok(out.includes('<span class="badge badge-ok">Moved</span>'));
+  assert.ok(out.includes('<span class="badge badge-skip">Skipped</span>'));
   assert.ok(out.includes('<span class="badge badge-error">실패: 잠김</span>'));
-  assert.ok(table([{ label: 'a' }, { label: 'b' }], []).text.includes('<td class="empty" colspan="2">항목이 없습니다.</td>'));
+  assert.ok(table([{ label: 'a' }, { label: 'b' }], []).text.includes('<td class="empty" colspan="2">No items.</td>'));
   assert.ok(summaryCards([{ label: '이동', value: 3, tone: 'ok' }, { label: '<실패>', value: 0 }]).text.includes('<div class="card card-ok"><div class="value">3</div><div class="label">이동</div></div><div class="card"><div class="value">0</div><div class="label">&lt;실패&gt;</div></div>'));
   assert.strictEqual(alertBox('error', '<잠김>').text, '<div class="alert alert-error" role="alert">&lt;잠김&gt;</div>');
   assert.strictEqual(alertBox('success', '끝').text, '<div class="alert alert-success" role="status">끝</div>');
@@ -97,8 +97,8 @@ test('page는 제목·알림을 이스케이프하고, 어두운 화면 CSS와 �
   assert.ok(out.includes('<div class="alert alert-warning" role="alert">a&amp;b</div>'));
   assert.ok(out.includes('<p>&lt;본문&gt;</p>'));
   assert.ok(out.includes('@media (prefers-color-scheme: dark)') && out.includes(':root {'));
-  assert.ok(out.includes('<a href="/files" aria-current="page">기본 파일 작업</a>'));
-  for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="준비 중">${category.label}</span>`), category.label);
+  assert.ok(out.includes('<a href="/files" aria-current="page">Basic file tasks</a>'));
+  for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="Coming soon">${category.label}</span>`), category.label);
   // 클라이언트 JS는 쓰지 않는다(#250).
   assert.ok(!/<script/i.test(out));
 });
@@ -120,11 +120,11 @@ test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 
   const home = await request(url);
   assert.strictEqual(home.status, 200);
   assert.strictEqual(home.headers['content-type'], 'text/html; charset=utf-8');
-  assert.ok(home.body.includes('<h1>파일 컨트롤</h1>'));
+  assert.ok(home.body.includes('<h1>File Control</h1>'));
   for (const category of CATEGORIES) assert.ok(home.body.includes(category.label));
   const missing = await request(new URL('/nope?<x>', url));
   assert.strictEqual(missing.status, 404);
-  assert.ok(missing.body.includes('없는 주소입니다: /nope?%3Cx%3E') || missing.body.includes('없는 주소입니다: /nope?&lt;x&gt;'));
+  assert.ok(missing.body.includes('No such address: /nope?%3Cx%3E') || missing.body.includes('No such address: /nope?&lt;x&gt;'));
   assert.ok(!missing.body.includes('<x>'));
   const head = await request(url, { method: 'HEAD' });
   assert.strictEqual(head.status, 200);
@@ -139,9 +139,9 @@ test('fctl ui는 포트를 이미 쓰고 있으면 다른 포트로 넘어가지
   await new Promise((resolve) => busy.listen(0, '127.0.0.1', resolve));
   t.after(() => busy.close());
   const { port } = busy.address();
-  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`) && err.message.includes('netstat'));
+  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`Port ${port} is already used by another program`) && err.message.includes('netstat'));
   // 명령으로 띄워도 종료 코드 1과 같은 안내로 끝난다.
-  await assert.rejects(launch(['--no-open', `--port=${port}`]), (err) => err.code === 1 && err.stderr.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`));
+  await assert.rejects(launch(['--no-open', `--port=${port}`]), (err) => err.code === 1 && err.stderr.includes(`Port ${port} is already used by another program`));
 });
 
 test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 계속 돈다 (#251)', async (t) => {
@@ -152,11 +152,11 @@ test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 �
   const base = `http://127.0.0.1:${server.address().port}`;
   const failed = await request(`${base}/files`);
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('화면을 만들지 못했습니다: &lt;boom&gt;'));
+  assert.ok(failed.body.includes('Could not build the page: &lt;boom&gt;'));
   const home = await request(`${base}/`);
   assert.strictEqual(home.status, 200);
   // 등록된 분류는 메뉴와 첫 화면에서 링크가 된다.
-  assert.ok(home.body.includes('<a href="/files">기본 파일 작업</a>'));
+  assert.ok(home.body.includes('<a href="/files">Basic file tasks</a>'));
 });
 
 test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)로 듣고 있어도 실패한다 (#251 1차 리뷰)', async (t) => {
@@ -164,7 +164,7 @@ test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)�
   await new Promise((resolve) => busy.listen(0, '0.0.0.0', resolve));
   t.after(() => busy.close());
   const { port } = busy.address();
-  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`));
+  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`Port ${port} is already used by another program`));
 });
 
 test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 정하며, 비동기 예외도 500으로 답한다 (#251 1차 리뷰)', async (t) => {
@@ -186,6 +186,6 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
   assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
   const failed = await request(`${base}/archive`);
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('화면을 만들지 못했습니다: &lt;later&gt;'));
+  assert.ok(failed.body.includes('Could not build the page: &lt;later&gt;'));
   assert.strictEqual((await request(`${base}/`)).status, 200);
 });

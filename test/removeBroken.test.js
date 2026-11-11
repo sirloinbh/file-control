@@ -135,7 +135,7 @@ test('확인값이 없으면 목록만 보여 주고 아무것도 바꾸지 않�
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(logs(dir), []);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
-  assert.match(formatRemoveBroken(result), /지울 파일: a\.mp4[\s\S]*아직 지우지 않았습니다[\s\S]*--yes=[0-9a-f]{12}/);
+  assert.match(formatRemoveBroken(result), /To delete: a\.mp4[\s\S]*Nothing has been deleted yet[\s\S]*--yes=[0-9a-f]{12}/);
 });
 
 test('--dry-run은 확인값이 맞아도 아무것도 바꾸지 않고 --dry-run 없이 실행하라고 안내한다', () => {
@@ -145,7 +145,7 @@ test('--dry-run은 확인값이 맞아도 아무것도 바꾸지 않고 --dry-ru
   assert.strictEqual(result.confirmed, false);
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(logs(dir), []);
-  assert.match(formatRemoveBroken(result), /--dry-run 없이 --yes=/);
+  assert.match(formatRemoveBroken(result), /without --dry-run and with --yes=/);
 });
 
 test('확인값이 맞으면 기록을 먼저 남기고 깨진 파일만 휴지통으로 보낸다', () => {
@@ -163,11 +163,11 @@ test('확인값이 맞으면 기록을 먼저 남기고 깨진 파일만 휴지�
   const [name] = logs(dir);
   assert.strictEqual(result.log, path.join(dir, name));
   const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
-  assert.strictEqual(log.kind, '깨진 파일');
+  assert.strictEqual(log.kind, 'broken files');
   assert.deepStrictEqual(log.items.map((item) => item.path).sort(), recycled.slice().sort());
   assert.strictEqual(log.items.find((item) => item.path.endsWith('a.mp4')).size, Buffer.byteLength(BROKEN));
   assert.ok(log.items.every((item) => item.reason.length > 0));
-  assert.match(formatRemoveBroken(result), /휴지통으로 이동: a\.mp4[\s\S]*제거 기록: [\s\S]*휴지통 2개, 실패 0개/);
+  assert.match(formatRemoveBroken(result), /Move to the Recycle Bin: a\.mp4[\s\S]*Removal log: [\s\S]*Recycle Bin 2, failed 0/);
 });
 
 test('깨진 파일이 없으면 기록을 남기지 않고 볼륨도 확인하지 않는다', () => {
@@ -189,8 +189,8 @@ test('방금 바뀐 파일과 수정 시각을 보존해 방금 복사한 파일
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(logs(dir), []);
   assert.strictEqual(result.kept.length, 2);
-  assert.ok(result.kept.every((item) => /받는 중/.test(item.reason)));
-  assert.match(formatRemoveBroken(result), /남김: a\.mp4/);
+  assert.ok(result.kept.every((item) => /downloading/.test(item.reason)));
+  assert.match(formatRemoveBroken(result), /Kept: a\.mp4/);
 });
 
 test('시각이 미래인 파일은 사유를 밝히고 남긴다', () => {
@@ -200,7 +200,7 @@ test('시각이 미래인 파일은 사유를 밝히고 남긴다', () => {
   fs.utimesSync(path.join(dir, 'a.mp4'), future, future);
   const result = removeBroken(dir);
   assert.strictEqual(result.removals.length, 0);
-  assert.match(result.kept[0].reason, /미래/);
+  assert.match(result.kept[0].reason, /future/);
 });
 
 test('5분 기준은 가장 늦은 시각에서 잰다', () => {
@@ -253,10 +253,10 @@ test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남
   assert.deepStrictEqual(Object.keys(kept).sort(), Object.keys(expected).sort());
   for (const [name, marker] of Object.entries(expected)) {
     assert.ok(kept[name].includes(`(${marker})`), `${name}: ${kept[name]}`);
-    assert.match(kept[name], /받는 중일 수 있어 남겼습니다/);
+    assert.match(kept[name], /may still be downloading/);
   }
-  assert.match(kept[path.join('safari.mp4.download', 'safari.mp4')], /표시 폴더\(safari\.mp4\.download\) 안에 있어/);
-  assert.match(formatRemoveBroken(result), /남김: x\.mp4 \(받기 도구의 표시 파일\(x\.mp4\.part\)이 옆에 있어/);
+  assert.match(kept[path.join('safari.mp4.download', 'safari.mp4')], /marker folder \(safari\.mp4\.download\) and may still be downloading/);
+  assert.match(formatRemoveBroken(result), /Kept: x\.mp4 \(Kept because the download tool's marker file \(x\.mp4\.part\) is next to/);
 });
 
 test('표시로 보는 꼬리는 모두 대소문자와 관계없이 파일을 남긴다', () => {
@@ -276,9 +276,9 @@ test('방금 바뀐 파일은 표시 파일보다 방금 바뀐 사유를, 표�
   fs.writeFileSync(path.join(dir, 'x.mp4'), BROKEN);
   const stat = fs.lstatSync(path.join(dir, 'x.mp4'));
   const latest = Math.max(stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs);
-  assert.match(removeBroken(dir, { now: latest + 1000 }).kept[0].reason, /방금 바뀐 파일/);
+  assert.match(removeBroken(dir, { now: latest + 1000 }).kept[0].reason, /changed just now/);
   const big = removeBroken(dir, { maxSize: 1 });
-  assert.match(big.kept[0].reason, /표시 파일\(x\.mp4\.part\)/);
+  assert.match(big.kept[0].reason, /marker file \(x\.mp4\.part\)/);
 });
 
 test('표시 파일을 보려고 폴더를 읽지 못하면 그 폴더의 깨진 파일을 모두 남기고 폴더는 한 번만 읽는다', (t) => {
@@ -298,7 +298,7 @@ test('표시 파일을 보려고 폴더를 읽지 못하면 그 폴더의 깨진
   const result = removeBroken(dir);
   assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['c.mp4']);
   assert.strictEqual(result.kept.length, 2);
-  assert.ok(result.kept.every((item) => /폴더를 읽지 못해 남겼습니다\. \(EPERM\)/.test(item.reason)), JSON.stringify(result.kept));
+  assert.ok(result.kept.every((item) => /could not be read to check for the download tool's marker file\. \(EPERM\)/.test(item.reason)), JSON.stringify(result.kept));
   assert.strictEqual(reads, 1);
 });
 
@@ -394,7 +394,7 @@ test('판별하는 사이에 같은 크기의 다른 파일로 바뀌면 남긴�
   t.mock.restoreAll();
   assert.strictEqual(replaced, true);
   assert.deepStrictEqual(result.removals, []);
-  assert.match(result.kept[0].reason, /바뀌어 남겼습니다/);
+  assert.match(result.kept[0].reason, /changed after it was judged/);
 });
 
 test('기록을 쓴 뒤 파일이 바뀌면 같은 크기와 시각이어도 지우지 않고 실패로 보고한다', (t) => {
@@ -410,16 +410,16 @@ test('기록을 쓴 뒤 파일이 바뀌면 같은 크기와 시각이어도 지
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, [path.join(dir, 'b.mp4')]);
   assert.strictEqual(result.failed.length, 1);
-  assert.match(result.failed[0].reason, /바뀌어 지우지 않았습니다/);
+  assert.match(result.failed[0].reason, /changed after it was judged/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
 });
 
 test('저장소이거나 저장소를 담은 타겟은 미리보기부터 거부한다', () => {
   const dir = tempDir();
   make(dir, { 'repo/.git/x.zip': BROKEN, 'repo/a.mp4': BROKEN, 'repo/sub/b.mp4': BROKEN });
-  assert.throws(() => removeBroken(dir), /저장소/);
-  assert.throws(() => removeBroken(path.join(dir, 'repo')), /저장소/);
-  assert.throws(() => removeBroken(path.join(dir, 'repo', '.git')), /저장소/);
+  assert.throws(() => removeBroken(dir), /repository/);
+  assert.throws(() => removeBroken(path.join(dir, 'repo')), /repository/);
+  assert.throws(() => removeBroken(path.join(dir, 'repo', '.git')), /repository/);
   assert.strictEqual(removeBroken(path.join(dir, 'repo', 'sub')).removals.length, 1);
   assert.deepStrictEqual(recycled, []);
 });
@@ -431,14 +431,14 @@ test('1GB 이상인 파일은 영구 삭제될 수 있어 남긴다', () => {
   const result = removeBroken(dir, { maxSize: limit });
   assert.deepStrictEqual(result.removals.map((item) => path.basename(item.path)), ['small.mp4']);
   assert.deepStrictEqual(result.kept.map((item) => path.basename(item.path)), ['big.mp4']);
-  assert.match(result.kept[0].reason, /영구 삭제/);
+  assert.match(result.kept[0].reason, /permanently deleted/);
 });
 
 for (const [name, answer, pattern] of [
-  ['이동식', () => 'True|Removable\r\n', /고정 디스크가 아니라\(Removable\)/],
-  ['네트워크', () => 'True|Network\r\n', /고정 디스크가 아니라\(Network\)/],
-  ['확인 실패', () => { throw new Error('실행 실패'); }, /볼륨 종류를 확인하지 못해/],
-  ['알 수 없는 답', () => '뜻밖의 출력', /볼륨 종류를 확인하지 못해/],
+  ['이동식', () => 'True|Removable\r\n', /not a fixed disk \(Removable\)/],
+  ['네트워크', () => 'True|Network\r\n', /not a fixed disk \(Network\)/],
+  ['확인 실패', () => { throw new Error('실행 실패'); }, /volume type could not be checked/],
+  ['알 수 없는 답', () => '뜻밖의 출력', /volume type could not be checked/],
 ]) {
   test(`고정 디스크로 확인되지 않으면 지우지 않고 남긴다: ${name}`, () => {
     const dir = tempDir();
@@ -460,13 +460,13 @@ test('휴지통 설정상 영구 삭제될 파일(바로 제거, 최대 크기 �
     volume = () => 'True|Fixed|1|26427\r\n';
     const nuke = removeBroken(dir);
     assert.deepStrictEqual(nuke.removals, []);
-    assert.ok(nuke.kept.length === 3 && nuke.kept.every((item) => /^이 볼륨은 휴지통 설정이 "바로 제거"라 .*남겼습니다\.$/.test(item.reason)), JSON.stringify(nuke.kept));
+    assert.ok(nuke.kept.length === 3 && nuke.kept.every((item) => /^Kept because this volume is set to remove files immediately.*permanently deleted\.$/.test(item.reason)), JSON.stringify(nuke.kept));
     // 최대 크기 1MB: big.mp4(약 2.6MB)와 그 하드링크는 남기고 a.mp4는 지울 목록에 둔다.
     volume = () => 'True|Fixed|0|1\r\n';
     const plan = removeBroken(dir);
     assert.deepStrictEqual(plan.removals.map((item) => path.basename(item.path)), ['a.mp4']);
     const kept = Object.fromEntries(plan.kept.map((item) => [path.basename(item.path), item.reason]));
-    assert.strictEqual(kept['big.mp4'] ?? kept['big-link.mp4'], '휴지통 최대 크기(1MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로 남겼습니다.');
+    assert.strictEqual(kept['big.mp4'] ?? kept['big-link.mp4'], 'Kept because it is larger than the Recycle Bin maximum size (1MB), so Windows would permanently delete it without asking.');
     assert.strictEqual(kept['big.mp4'], kept['big-link.mp4']);
     assert.deepStrictEqual(recycled, []);
   } finally {
@@ -500,11 +500,11 @@ test('실제 휴지통 설정 스크립트는 볼륨 종류와 설정 칸을 정
 });
 
 for (const [name, answer, pattern] of [
-  ['exFAT', () => 'exFAT\r\n', /^exFAT 볼륨은 변경 시각을 적지 않아/],
-  ['FAT32', () => 'FAT32\r\n', /^FAT32 볼륨은 변경 시각을 적지 않아/],
-  ['FAT', () => 'FAT\r\n', /^FAT 볼륨은 변경 시각을 적지 않아/],
-  ['확인 실패', () => { throw new Error('실행 실패'); }, /^파일 시스템을 확인하지 못해/],
-  ['알 수 없는 답', () => '뜻밖의 출력', /^파일 시스템을 확인하지 못해/],
+  ['exFAT', () => 'exFAT\r\n', /^Kept because exFAT volumes do not record change times/],
+  ['FAT32', () => 'FAT32\r\n', /^Kept because FAT32 volumes do not record change times/],
+  ['FAT', () => 'FAT\r\n', /^Kept because FAT volumes do not record change times/],
+  ['확인 실패', () => { throw new Error('실행 실패'); }, /^Kept because the file system could not be checked/],
+  ['알 수 없는 답', () => '뜻밖의 출력', /^Kept because the file system could not be checked/],
 ]) {
   test(`변경 시각이 없거나 확인하지 못한 파일 시스템이면 고정 디스크여도 지우지 않는다 (#184): ${name}`, () => {
     const dir = tempDir();
@@ -519,7 +519,7 @@ for (const [name, answer, pattern] of [
     assert.deepStrictEqual(result.removed, []);
     assert.deepStrictEqual(recycled, []);
     assert.deepStrictEqual(logs(dir), []);
-    assert.match(formatRemoveBroken(plan), /남김: a\.mp4 \(/);
+    assert.match(formatRemoveBroken(plan), /Kept: a\.mp4 \(/);
   });
 }
 
@@ -549,7 +549,7 @@ test('비대화형이면 기록을 남기기 전에 멈추고, 볼륨은 실행�
   volume = () => 'False|Fixed\r\n';
   const { code } = removeBroken(dir);
   assert.strictEqual(probes, 1);
-  assert.throws(() => removeBroken(dir, { confirm: code }), /대화형 세션/);
+  assert.throws(() => removeBroken(dir, { confirm: code }), /interactive session/);
   assert.strictEqual(probes, 2);
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(logs(dir), []);
@@ -563,7 +563,7 @@ test('한 파일이 휴지통으로 가지 못해도 나머지는 계속하고, 
   };
   const result = confirmed(dir);
   assert.strictEqual(result.failed.length, 1);
-  assert.strictEqual(result.failed[0].reason, `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.mp4')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다).`);
+  assert.strictEqual(result.failed[0].reason, `Could not send to the Recycle Bin: ${path.join(dir, 'a.mp4')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다).`);
   assert.strictEqual(result.removed.length, 1);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
   assert.ok(!fs.existsSync(path.join(dir, 'b.mp4')));
@@ -583,10 +583,10 @@ test('remove-broken은 실제로 지울 때 파일마다 몇 번째인지와 결
   const result = removeBroken(dir, { onProgress, confirm: listed.code });
   assert.strictEqual(result.removed.length, 2);
   assert.deepStrictEqual(lines, [
-    '휴지통으로 보내는 중: 3개 (100개씩 묶어 보냅니다)',
-    '1/3 휴지통으로 이동: a.mp4',
-    `2/3 실패: b.mp4 (휴지통으로 보내지 못했습니다: ${path.join(dir, 'b.mp4')} (recycle).)`,
-    '3/3 휴지통으로 이동: c.mp4',
+    'Sending to the Recycle Bin: 3 (in batches of 100)',
+    '1/3 Move to the Recycle Bin: a.mp4',
+    `2/3 Failed: b.mp4 (Could not send to the Recycle Bin: ${path.join(dir, 'b.mp4')} (recycle).)`,
+    '3/3 Move to the Recycle Bin: c.mp4',
   ]);
 });
 
@@ -613,7 +613,7 @@ test('fctl remove-broken은 진행 줄을 progress로 넘긴다 (#99)', () => {
   const code = removeBroken(dir).code;
   const lines = [];
   run(['remove-broken', dir, `--yes=${code}`], { progress: (line) => lines.push(line) });
-  assert.deepStrictEqual(lines, ['휴지통으로 보내는 중: 1개 (100개씩 묶어 보냅니다)', '1/1 휴지통으로 이동: a.mp4']);
+  assert.deepStrictEqual(lines, ['Sending to the Recycle Bin: 1 (in batches of 100)', '1/1 Move to the Recycle Bin: a.mp4']);
 });
 
 test('remove-broken은 100개씩 묶어 PowerShell 한 번으로 보내고 경로와 판별 때의 fileStamp를 함께 넘긴다 (#194)', () => {
@@ -652,11 +652,11 @@ test('remove-broken은 묶음 안에서 PowerShell이 다시 본 결과(경로·
     const result = removeBroken(dir, { confirm: listed.code });
     assert.deepStrictEqual(result.removed.map((item) => path.basename(item.path)), ['a.mp4']);
     const reasons = Object.fromEntries(result.failed.map((item) => [path.basename(item.path), item.reason]));
-    assert.match(reasons['b.mp4'], /^판별한 뒤 경로가 바뀌어 지우지 않았습니다/);
-    assert.match(reasons['c.mp4'], /^판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
-    assert.match(reasons['d.mp4'], /^판별한 뒤 파일이 바뀌어 지우지 않았습니다/);
-    assert.match(reasons['e.mp4'], /^판별한 뒤 파일이 사라져 지우지 않았습니다/);
-    assert.strictEqual(reasons['f.mp4'], `휴지통으로 보냈는지 알 수 없습니다: ${path.join(dir, 'f.mp4')} (PowerShell 종료 코드 3). 휴지통과 원래 자리를 확인하세요.`);
+    assert.match(reasons['b.mp4'], /^Not deleted because the path changed after it was judged/);
+    assert.match(reasons['c.mp4'], /^Not deleted because the file changed after it was judged/);
+    assert.match(reasons['d.mp4'], /^Not deleted because the file changed after it was judged/);
+    assert.match(reasons['e.mp4'], /^Not deleted because the file disappeared after it was judged/);
+    assert.strictEqual(reasons['f.mp4'], `It is unknown whether it was sent to the Recycle Bin: ${path.join(dir, 'f.mp4')} (PowerShell exit code 3). Check the Recycle Bin and the original location.`);
     assert.ok(Object.values(reasons).every((reason) => !/Command failed|스크립트/.test(reason)));
   } finally {
     batchHook = null;
@@ -677,9 +677,9 @@ test('remove-broken은 지우기 직전에 볼륨 설정으로 영구 삭제될 
     const result = removeBroken(dir, { confirm: listed.code });
     assert.strictEqual(result.removed.length, 0);
     const reasons = Object.fromEntries(result.failed.map((item) => [path.basename(item.path), item.reason]));
-    assert.strictEqual(reasons['a.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'a.mp4')}. 이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다.`);
-    assert.strictEqual(reasons['b.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'b.mp4')}. 휴지통 최대 크기(7164MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로 지우지 않았습니다.`);
-    assert.strictEqual(reasons['c.mp4'], `휴지통으로 보내지 않았습니다: ${path.join(dir, 'c.mp4')}. 휴지통이 없을 수 있는 드라이브(Removable)라 영구 삭제될 수 있으므로 지우지 않았습니다.`);
+    assert.strictEqual(reasons['a.mp4'], `Not sent to the Recycle Bin: ${path.join(dir, 'a.mp4')}. It was not deleted because this volume is set to remove files immediately instead of using the Recycle Bin, so it would be permanently deleted.`);
+    assert.strictEqual(reasons['b.mp4'], `Not sent to the Recycle Bin: ${path.join(dir, 'b.mp4')}. It was not deleted because it is larger than the Recycle Bin maximum size (7164MB), so Windows would permanently delete it without asking.`);
+    assert.strictEqual(reasons['c.mp4'], `Not sent to the Recycle Bin: ${path.join(dir, 'c.mp4')}. It was not deleted because the drive (Removable) may have no Recycle Bin and the file could be permanently deleted.`);
     assert.ok(['a.mp4', 'b.mp4', 'c.mp4'].every((name) => fs.existsSync(path.join(dir, name))));
   } finally {
     batchHook = null;
@@ -696,7 +696,7 @@ test('remove-broken은 묶음을 시작하지 못하면(비대화형) 그 묶음
   try {
     const result = removeBroken(dir, { confirm: listed.code });
     assert.strictEqual(result.removed.length, 0);
-    assert.deepStrictEqual(result.failed.map((item) => item.reason), ['대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.', '대화형 세션이 아니면 휴지통으로 보낼 수 없습니다.']);
+    assert.deepStrictEqual(result.failed.map((item) => item.reason), ['Cannot send to the Recycle Bin outside an interactive session.', 'Cannot send to the Recycle Bin outside an interactive session.']);
     assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'b.mp4')));
   } finally {
     batchHook = null;
@@ -719,7 +719,7 @@ test('휴지통으로 보낼 수 없는 긴 경로(260자 이상)는 계획에�
   make(dir, { [path.relative(dir, long)]: BROKEN, [path.relative(dir, fits)]: Buffer.alloc(64) });
   const plan = removeBroken(dir);
   assert.deepStrictEqual(plan.removals.map((item) => item.path), [fits]);
-  assert.deepStrictEqual(plan.kept, [{ path: long, reason: '경로가 260자라 휴지통으로 보낼 수 있는 259자를 넘어 남겼습니다. 이름을 줄이거나 위 폴더로 옮긴 뒤 다시 실행하세요.' }]);
+  assert.deepStrictEqual(plan.kept, [{ path: long, reason: 'Kept because the path is 260 characters, over the 259 that can be sent to the Recycle Bin. Shorten the name or move it to a parent folder and run again.' }]);
   const result = confirmed(dir);
   assert.deepStrictEqual(recycled, [fits]);
   assert.deepStrictEqual(result.failed, []);
@@ -730,13 +730,13 @@ test('rm도 휴지통 한도를 넘는 경로는 PowerShell을 부르지 않고 
   const dir = tempDir();
   const long = pathOfLength(dir, 300);
   make(dir, { [path.relative(dir, long)]: 'x' });
-  assert.throws(() => remove([long]), (err) => err.message === `경로가 300자라 휴지통으로 보낼 수 없습니다(${MAX_RECYCLE_PATH}자까지): ${long}`);
+  assert.throws(() => remove([long]), (err) => err.message === `The path is 300 characters, so it cannot be sent to the Recycle Bin (up to ${MAX_RECYCLE_PATH}): ${long}`);
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(long));
   assert.strictEqual(MAX_RECYCLE_PATH, 259);
 });
 
-const linkReason = (other) => `같은 파일의 다른 이름(하드링크: ${path.basename(other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
+const linkReason = (other) => `Kept because another name of the same file (hard link: ${path.basename(other)}) is deleted first in this run, which changes the file's modification time, so it cannot be deleted together. Each time you run again after 5 minutes, one name is deleted.`;
 
 test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이름은 실제 사유로 남긴다 (#101)', () => {
   const dir = tempDir();
@@ -755,7 +755,7 @@ test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이
   assert.ok(fs.existsSync(other.path));
   // 다시 실행하면 남은 이름은 5분 동안 방금 바뀐 파일로 남고, 그 뒤에는 지운다. 시계를 1분만 옮겨 미래 시각으로 보지 않게 한다.
   skew = 60 * 1000;
-  assert.deepStrictEqual(removeBroken(dir).kept, [{ path: other.path, reason: '방금 바뀐 파일이라 받는 중일 수 있어 남겼습니다.' }]);
+  assert.deepStrictEqual(removeBroken(dir).kept, [{ path: other.path, reason: 'Kept because it changed just now and may still be downloading.' }]);
   skew = HOUR;
   assert.deepStrictEqual(confirmed(dir).removed.map((item) => item.path), [other.path]);
 });
@@ -778,8 +778,8 @@ test('고정 디스크가 아니면 하드링크의 다른 이름도 하드링�
   make(dir, { 'a.mp4': BROKEN });
   fs.linkSync(path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4'));
   for (const [answer, reason] of [
-    ['True|Removable\r\n', '고정 디스크가 아니라(Removable) 영구 삭제될 수 있어 남겼습니다.'],
-    ['', '볼륨 종류를 확인하지 못해 남겼습니다.'],
+    ['True|Removable\r\n', 'Kept because the drive is not a fixed disk (Removable), so it could be permanently deleted.'],
+    ['', 'Kept because the volume type could not be checked.'],
   ]) {
     volume = () => answer;
     const plan = removeBroken(dir);
@@ -806,7 +806,7 @@ test('기록을 남기지 못하면 아무것도 지우지 않는다', (t) => {
   t.mock.method(fs, 'fsyncSync', () => {
     throw Object.assign(new Error('디스크'), { code: 'ENOSPC' });
   });
-  assert.throws(() => removeBroken(dir, { confirm: code }), /기록 파일을 쓰지 못했습니다/);
+  assert.throws(() => removeBroken(dir, { confirm: code }), /Could not write the log file/);
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
@@ -900,7 +900,7 @@ test('판단 못함은 지우지 않고 나머지만 지운다', (t) => {
   assert.strictEqual(result.unreadable.length, 1);
   assert.deepStrictEqual(recycled, [path.join(dir, 'b.mp4')]);
   assert.ok(fs.existsSync(path.join(dir, 'locked.mp4')));
-  assert.match(formatRemoveBroken(result), /판단 못함, 지우지 않음: locked\.mp4/);
+  assert.match(formatRemoveBroken(result), /Undetermined, not deleted: locked\.mp4/);
 });
 
 test('확인값은 타겟, 경로, 사유, 식별값 중 하나만 달라도 달라지고 순서에는 영향받지 않는다', () => {
@@ -936,7 +936,7 @@ test('본 목록의 파일이 모두 남김이 되면 맞지 않는 값으로 �
   const result = removeBroken(dir, { confirm: code });
   assert.strictEqual(result.removals.length, 0);
   assert.strictEqual(result.mismatch, true);
-  assert.throws(() => run(['remove-broken', dir, `--yes=${code}`]), /아무것도 지우지 않았습니다/);
+  assert.throws(() => run(['remove-broken', dir, `--yes=${code}`]), /[Nn]othing was deleted/);
   assert.deepStrictEqual(recycled, []);
 });
 
@@ -944,14 +944,14 @@ test('fctl remove-broken은 확인값이 맞아야 지운다', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
   const code = codeIn(run(['remove-broken', dir]));
-  assert.match(run(['remove-broken', dir, '--dry-run', `--yes=${code}`]), /--dry-run 없이/);
-  assert.match(run(['remove-broken', dir, '--dry-run', '--yes']), /아직 지우지 않았습니다/);
-  const isRefused = (pattern) => (err) => pattern.test(err.message) && /아직 지우지 않았습니다/.test(err.output);
-  assert.throws(() => run(['remove-broken', dir, '--yes']), isRefused(/확인값을 붙이세요/));
-  assert.throws(() => run(['remove-broken', dir, '--yes=']), isRefused(/아무것도 지우지 않았습니다/));
-  assert.throws(() => run(['remove-broken', dir, '--yes=000000000000']), isRefused(/아무것도 지우지 않았습니다/));
+  assert.match(run(['remove-broken', dir, '--dry-run', `--yes=${code}`]), /without --dry-run/);
+  assert.match(run(['remove-broken', dir, '--dry-run', '--yes']), /Nothing has been deleted yet/);
+  const isRefused = (pattern) => (err) => pattern.test(err.message) && /Nothing has been deleted yet/.test(err.output);
+  assert.throws(() => run(['remove-broken', dir, '--yes']), isRefused(/confirmation value shown in the list/));
+  assert.throws(() => run(['remove-broken', dir, '--yes=']), isRefused(/[Nn]othing was deleted/));
+  assert.throws(() => run(['remove-broken', dir, '--yes=000000000000']), isRefused(/[Nn]othing was deleted/));
   assert.deepStrictEqual(recycled, []);
-  assert.match(run(['remove-broken', dir, `--yes=${code}`]), /휴지통으로 이동: a\.mp4/);
+  assert.match(run(['remove-broken', dir, `--yes=${code}`]), /Move to the Recycle Bin: a\.mp4/);
   assert.strictEqual(recycled.length, 2);
 });
 
@@ -963,10 +963,10 @@ test('fctl remove-broken은 실패해도 옮긴 파일을 표준 출력 보고�
     if (target.endsWith('a.mp4')) throw new Error('잠김');
   };
   assert.throws(() => run(['remove-broken', dir, `--yes=${code}`]), (err) => {
-    assert.match(err.message, /보내지 못한 파일이 1개/);
-    assert.doesNotMatch(err.message, /휴지통으로 이동/);
-    assert.match(err.output, /휴지통으로 이동: b\.mp4/);
-    assert.match(err.output, /실패: a\.mp4/);
+    assert.match(err.message, /1 files could not be sent to the Recycle Bin/);
+    assert.doesNotMatch(err.message, /Move to the Recycle Bin/);
+    assert.match(err.output, /Move to the Recycle Bin: b\.mp4/);
+    assert.match(err.output, /Failed: a\.mp4/);
     return true;
   });
 });
@@ -974,8 +974,8 @@ test('fctl remove-broken은 실패해도 옮긴 파일을 표준 출력 보고�
 test('--yes는 remove-broken에서만 쓰고, --force와 --permanent는 거부한다', () => {
   const dir = tempDir();
   make(dir, { 'a.mp4': BROKEN });
-  assert.throws(() => run(['find-broken', dir, '--yes']), /--yes는 remove-broken/);
-  assert.throws(() => run(['find-broken', dir, '--yes=abc']), /--yes는 remove-broken/);
+  assert.throws(() => run(['find-broken', dir, '--yes']), /--yes can be used only with remove-broken/);
+  assert.throws(() => run(['find-broken', dir, '--yes=abc']), /--yes can be used only with remove-broken/);
   assert.throws(() => run(['remove-broken', dir, '--permanent', '--yes']), /--permanent/);
   assert.throws(() => run(['remove-broken', dir, '--force', '--yes']), /--force/);
   assert.deepStrictEqual(recycled, []);

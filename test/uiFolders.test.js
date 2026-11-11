@@ -61,25 +61,25 @@ test('browseFolder의 parent로 위로 가고, 드라이브 루트에서는 더 
 test('browseFolder는 사용자 폴더 자체와 숨김 설정 폴더를 고를 수 없게 표시한다 (#254)', () => {
   make(home, { 'AppData/': '', '.ssh/': '', '.config/': '', 'Downloads/': '', '자료/': '' });
   const result = browseFolder(home);
-  assert.match(result.protected, /사용자 폴더/);
+  assert.match(result.protected, /user folder/);
   const reasons = Object.fromEntries(result.folders.map((folder) => [folder.name, folder.protected]));
-  for (const name of ['AppData', '.ssh', '.config']) assert.match(reasons[name], /사용자 설정 폴더/, name);
+  for (const name of ['AppData', '.ssh', '.config']) assert.match(reasons[name], /user settings folder/, name);
   assert.strictEqual(reasons.Downloads, null);
   assert.strictEqual(reasons['자료'], null);
   // 보호 폴더 안도 들어가 볼 수는 있고, 그 안도 고를 수 없다.
   make(home, { 'AppData/Local/': '' });
   const inside = browseFolder(path.join(home, 'AppData'));
-  assert.match(inside.protected, /사용자 설정 폴더/);
-  assert.match(inside.folders[0].protected, /사용자 설정 폴더/);
+  assert.match(inside.protected, /user settings folder/);
+  assert.match(inside.folders[0].protected, /user settings folder/);
 });
 
 test('browseFolder는 시스템 폴더(C:\\Windows)와 그것을 담은 드라이브 루트를 고를 수 없게 표시한다 (#254)', { skip: !isWindows }, () => {
   const windows = process.env.SystemRoot ?? 'C:\\Windows';
   const root = browseFolder(path.parse(windows).root);
-  assert.match(root.protected, /시스템 폴더/);
+  assert.match(root.protected, /system folder/);
   const entry = root.folders.find((folder) => folder.name.toLowerCase() === path.basename(windows).toLowerCase());
   assert.ok(entry, 'Windows 폴더가 목록에 있다');
-  assert.match(entry.protected, /시스템 폴더/);
+  assert.match(entry.protected, /system folder/);
 });
 
 test('browseFolder는 절대경로가 아니거나 없는 폴더, 파일을 FcError로 거부한다 (#254)', () => {
@@ -104,61 +104,61 @@ test('commonPlaces는 실제로 있는 다운로드·바탕화면·문서 경로
   const run = (dirs, env = {}, names = [], registered = {}) => commonPlaces({ home: h, env, exists: (x) => dirs.includes(x), readDir: () => names, shell: () => registered });
   // OneDrive 없이 기본 폴더만 있으면 그 경로
   assert.deepStrictEqual(run([p('Downloads'), p('Desktop'), p('Documents')]), [
-    { label: '다운로드', path: p('Downloads') },
-    { label: '바탕화면', path: p('Desktop') },
-    { label: '문서', path: p('Documents') },
+    { label: 'Downloads', path: p('Downloads') },
+    { label: 'Desktop', path: p('Desktop') },
+    { label: 'Documents', path: p('Documents') },
   ]);
   // OneDrive(사용자 폴더 아래 OneDrive 폴더)로 옮긴 바탕화면·문서는 한국어 이름도 찾는다.
   assert.deepStrictEqual(run([p('Downloads'), p('Desktop'), p('OneDrive', 'Desktop'), p('OneDrive', '문서'), p('Documents')], {}, ['OneDrive', 'Music']), [
-    { label: '다운로드', path: p('Downloads') },
-    { label: '바탕화면', path: p('OneDrive', 'Desktop') },
-    { label: '문서', path: p('OneDrive', '문서') },
+    { label: 'Downloads', path: p('Downloads') },
+    { label: 'Desktop', path: p('OneDrive', 'Desktop') },
+    { label: 'Documents', path: p('OneDrive', '문서') },
   ]);
   // 회사 OneDrive(환경 변수, OneDrive - 회사 폴더)도 본다.
   const work = path.join(base, 'elsewhere', 'OneDrive - 회사');
   assert.deepStrictEqual(run([path.join(work, '바탕 화면'), p('OneDrive - 학교', 'Documents')], { OneDriveCommercial: work }, ['OneDrive - 학교']), [
-    { label: '바탕화면', path: path.join(work, '바탕 화면') },
-    { label: '문서', path: p('OneDrive - 학교', 'Documents') },
+    { label: 'Desktop', path: path.join(work, '바탕 화면') },
+    { label: 'Documents', path: p('OneDrive - 학교', 'Documents') },
   ]);
   // 없는 위치는 빼고, 사용자 폴더를 모르면 빈 목록이다.
   assert.deepStrictEqual(run([]), []);
   assert.deepStrictEqual(commonPlaces({ home: '' }), []);
   // 실제 사용자 폴더(가짜 home)에 Downloads가 있으면 찾는다.
   make(home, { 'Downloads/': '' });
-  assert.deepStrictEqual(commonPlaces({ env: {}, shell: () => ({}) }).find((place) => place.label === '다운로드'), { label: '다운로드', path: path.join(home, 'Downloads') });
+  assert.deepStrictEqual(commonPlaces({ env: {}, shell: () => ({}) }).find((place) => place.label === 'Downloads'), { label: 'Downloads', path: path.join(home, 'Downloads') });
   // Windows에 등록된 위치(User Shell Folders)가 있으면 그것을 먼저 쓴다. 그 폴더가 없으면 후보로 넘어간다(1차 리뷰).
   const registered = { desktop: p('OneDrive', 'Desktop'), documents: p('Docs elsewhere'), downloads: p('gone') };
   assert.deepStrictEqual(run([p('Downloads'), p('Desktop'), p('OneDrive', 'Desktop'), p('OneDrive', '문서'), p('Documents'), p('Docs elsewhere')], {}, ['OneDrive'], registered), [
-    { label: '다운로드', path: p('Downloads') },
-    { label: '바탕화면', path: p('OneDrive', 'Desktop') },
-    { label: '문서', path: p('Docs elsewhere') },
+    { label: 'Downloads', path: p('Downloads') },
+    { label: 'Desktop', path: p('OneDrive', 'Desktop') },
+    { label: 'Documents', path: p('Docs elsewhere') },
   ]);
 });
 
 test('browseFolder는 네트워크·장치 경로를 열지 않는다 (#254 1차 리뷰)', { skip: !isWindows }, () => {
   for (const bad of ['\\\\localhost\\C$', '\\\\?\\C:\\Windows', '\\\\.\\C:\\Windows', '//localhost/C$', '\\\\attacker\\share']) {
-    assert.throws(() => browseFolder(bad), (err) => err instanceof FcError && /네트워크·장치 경로/.test(err.message), bad);
+    assert.throws(() => browseFolder(bad), (err) => err instanceof FcError && /Network and device paths/.test(err.message), bad);
   }
 });
 
 test('browseFolder는 짧은 이름·대소문자·정션을 실제 경로로 풀어 보호 폴더를 고르지 못하게 한다 (#254 1차 리뷰)', { skip: !isWindows }, () => {
-  // 정션으로 사용자 설정 폴더(AppData)를 가리켜도 실제 경로로 판정한다.
+  // 정션으로 user settings folder(AppData)를 가리켜도 실제 경로로 판정한다.
   make(home, { 'AppData/Local/': '' });
   const dir = fs.mkdtempSync(path.join(base, 'junction-'));
   const link = path.join(dir, 'applink');
   fs.symlinkSync(path.join(home, 'AppData'), link, 'junction');
   const viaLink = browseFolder(link);
   assert.strictEqual(viaLink.path, path.join(home, 'AppData'));
-  assert.match(viaLink.protected, /사용자 설정 폴더/);
-  assert.match(viaLink.folders[0].protected, /사용자 설정 폴더/);
+  assert.match(viaLink.protected, /user settings folder/);
+  assert.match(viaLink.folders[0].protected, /user settings folder/);
   // 대소문자가 다른 표기도 실제 이름으로 바꾼다.
   assert.strictEqual(browseFolder(path.join(home, 'APPDATA')).path, path.join(home, 'AppData'));
   // 8.3 짧은 이름(만들어 두는 볼륨에서만)
   const windows = process.env.SystemRoot ?? 'C:\\Windows';
   const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
   const short = path.join(path.parse(programFiles).root, 'PROGRA~1');
-  if (fs.existsSync(short)) assert.match(browseFolder(short).protected, /시스템 폴더/);
-  assert.match(browseFolder(windows.toUpperCase()).protected, /시스템 폴더/);
+  if (fs.existsSync(short)) assert.match(browseFolder(short).protected, /system folder/);
+  assert.match(browseFolder(windows.toUpperCase()).protected, /system folder/);
 });
 
 test('browseFolder는 끝이 점이나 공백인 이름을 고를 수 없게 표시한다 (#254 1차 리뷰)', { skip: !isWindows }, () => {
@@ -167,7 +167,7 @@ test('browseFolder는 끝이 점이나 공백인 이름을 고를 수 없게 표
   fs.mkdirSync(`\\\\?\\${path.join(dir, 'odd.')}`);
   const listed = browseFolder(dir).folders.find((folder) => folder.name === 'odd.');
   assert.ok(listed, '끝이 점인 폴더가 목록에 있다');
-  assert.match(listed.protected, /끝이 점이나 공백/);
+  assert.match(listed.protected, /name ending with a dot or space/);
   fs.rmdirSync(`\\\\?\\${path.join(dir, 'odd.')}`);
 });
 
