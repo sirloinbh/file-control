@@ -1,50 +1,50 @@
-# Claude Code 지침
+# Claude Code instructions
 
-사용자가 말로 시키는 파일·폴더 작업(만들기, 읽기, 수정, 이름 변경, 이동, 복사, 삭제, 압축, 압축 해제)을 이 저장소의 `fctl`로 처리한다.
+Handle the file and folder work the user asks for in words (create, read, edit, rename, move, copy, delete, compress, extract) with this repo's `fctl`.
 
-## 실행
+## Running
 
-- `node bin/fctl.js <명령>`으로 실행한다. 명령 목록은 `node bin/fctl.js --help`와 [README.md](README.md)에 있다.
-- `fctl`로 할 수 없는 작업(파일 내용 일부 수정, 조건 검색 등)은 Claude Code의 기본 도구를 쓰되 아래 규칙은 똑같이 지킨다.
-- 사용자가 말하는 "다운로드", "바탕화면", "문서"는 `C:\Users\kimbh\Downloads`, `C:\Users\kimbh\OneDrive\Desktop`, `C:\Users\kimbh\OneDrive\문서`처럼 실제 경로를 `ls`로 확인한 뒤 쓴다.
+- Run it with `node bin/fctl.js <command>`. The command list is in `node bin/fctl.js --help` and [README.md](README.md).
+- For work `fctl` cannot do (editing part of a file's content, searching by condition, and so on), use Claude Code's default tools, but follow the rules below the same way.
+- When the user says "Downloads", "Desktop", or "Documents", check the real path with `ls` before using it, such as `C:\Users\kimbh\Downloads`, `C:\Users\kimbh\OneDrive\Desktop`, and `C:\Users\kimbh\OneDrive\문서` (`문서` is the Korean name of the Documents folder, kept because it is a real path).
 
-## 규칙
+## Rules
 
-1. 여러 파일을 한꺼번에 다루거나 무엇을 대상으로 할지 해석이 필요하면, 먼저 `ls`로 대상 목록을 보여주고 계획을 말한 뒤 실행한다.
-2. 삭제는 휴지통(`rm`)으로 보낸다. `--permanent`와 `--force`는 사용자가 그렇게 하라고 직접 말했을 때만 쓴다.
-3. 삭제하거나 덮어쓰기 전에는 대상이 맞는지 확인하고, 사용자가 이번 요청에서 명시하지 않았다면 실행 전에 확인을 받는다.
-4. `C:\Windows`, `C:\Program Files`, 사용자 폴더 최상위의 숨김 설정 폴더(`.ssh`, `AppData` 등)는 사용자가 명시하지 않으면 건드리지 않는다.
-5. 작업이 끝나면 실제로 바뀐 것(무엇이 어디로 갔는지)을 짧게 보고한다. 실패한 항목이 있으면 그대로 알린다.
+1. If you handle many files at once, or the target needs interpretation, first show the list of targets with `ls`, state the plan, and then run it.
+2. Send deletions to the Recycle Bin (`rm`). Use `--permanent` and `--force` only when the user said so directly.
+3. Before you delete or overwrite, check that the target is right, and if the user did not state it explicitly in this request, get confirmation before running.
+4. Do not touch `C:\Windows`, `C:\Program Files`, or the hidden settings folders at the top of the user folder (`.ssh`, `AppData`, and so on) unless the user states them explicitly.
+5. When the work is done, briefly report what actually changed (what went where). If any item failed, report it as it is.
 
-## 개발
+## Development
 
-- 기능을 바꾸면 `test/`에 테스트를 함께 고치고 `npm test`로 확인한다.
-- 외부 패키지 없이 Node.js 기본 모듈만 쓴다.
+- When you change a feature, fix the tests in `test/` together and check with `npm test`.
+- Use only Node.js built-in modules, with no external packages.
 
-## PR 머지
+## PR merge
 
-- GitHub 작업은 개인 계정 `sirloinbh`로 한다. 기본 `gh` 설정(회사 계정) 대신 `GH_CONFIG_DIR="$USERPROFILE/.config/gh-personal" gh ...`를 쓰고, 원격 변경 전에 `gh api user --jq .login`이 `sirloinbh`인지 확인한다.
-- PR을 올린 뒤 자동 코드 리뷰를 최대 2회 거친다 (리뷰 → 보완 커밋 → 2차 리뷰 → 보완 커밋).
-  1. 1차 리뷰: 작성 문맥과 분리된 읽기 전용 리뷰(별도 에이전트, 리뷰 도구 등)로 이슈 완료 기준(연결된 이슈가 없으면 PR 설명)과 PR 전체 diff를 기준으로 정확성·회귀·보안·누락된 테스트를 본다.
-  2. 보완점이 없으면 리뷰를 끝내고 바로 CI 확인과 머지로 넘어간다.
-  3. 보완점이 있으면 이 PR 범위에서 고칠 지적만 반영한다. 관련 테스트를 함께 고쳐 추가 커밋을 만들고 push한다.
-  4. 2차 리뷰: 1차 지적이 반영됐는지와 추가 diff, 최종 PR 전체 diff를 확인한다. 2차 지적은 추가 커밋으로 반영하고, 3차 리뷰는 하지 않고 CI로 넘어간다. 2차 보완 커밋은 지적 범위 안의 수정으로 한정하고, 범위를 넘는 수정은 5번에 따라 새 이슈로 분리한다.
-  5. 이 PR에서 고치기에 큰 수정(요청 범위 밖의 기능, 설계·데이터 구조 변경, 여러 모듈에 걸친 수정, 별도 검증이 필요한 작업)은 고치지 않고 새 이슈카드(문제·범위·완료 기준 포함)로 분리한다. PR 댓글에 이슈 링크를 남기고 이 PR은 계속 진행한다.
-  6. 분리하면 `main`이 깨지는 결함이나 보안·데이터 손상 위험이 있는 결함이 남아 있으면 머지하지 않고 사용자에게 알린다.
-  7. 각 리뷰 차수의 결과(지적 사항, 반영한 커밋, 분리한 이슈, 보완점 없음 여부)를 PR 댓글에 남긴다.
-- 리뷰를 마친 뒤 최종 head의 필수 CI 검사가 모두 통과하면 에이전트(주 에이전트와 로컬 워커)가 사용자에게 묻지 않고 머지한다. 머지 전에 마지막 커밋 기준으로 `npm test`가 통과하는지 확인한다. 리뷰 중 새 커밋이 생기면 이전 CI 결과로 머지하지 않는다.
-  - 필수 검사는 `main` 브랜치 보호에 지정한 `test (node 22)`, `test (node 24)`(`.github/workflows/ci.yml`)다. `gh pr checks <url> --required`로 판정하고, 두 검사가 모두 있고 pass일 때만 머지한다. 필수가 아닌 검사가 실패했으면 머지 전에 사용자에게 알린다.
-  - `gh pr view <url> --json headRefOid`의 SHA가 CI가 통과한 SHA, 로컬에서 `npm test`를 돌린 `git rev-parse HEAD`와 같은지 확인하고 그 SHA로 머지한다.
-  - 머지는 merge commit으로 한다: `gh pr merge <url> --merge --match-head-commit <검증한 head SHA>`.
-  - 머지 후 연결된 이슈(`Closes #N`)가 닫혔는지 확인한다.
-  - 검사가 실패했거나 아직 실행 중이면 머지하지 않는다. 필수 CI 검사가 하나도 없거나 위 검사가 빠진 PR은 자동 머지하지 않고 그 사실을 사용자에게 알린다.
-  - `--admin` 등 브랜치 보호 우회, 리뷰 대신 자기 PR 승인, `main`에 직접 커밋·push, force push는 하지 않는다.
-  - 이 저장소는 `main` 머지가 배포로 이어지지 않는다(로컬 도구). 배포가 생기면 머지 후 배포 결과를 확인하도록 이 항목을 고친다.
-- 연속된 PR(앞 PR의 브랜치를 base로 쌓은 PR)은 아래쪽부터 차례로 머지한다.
-  1. 앞 PR을 머지한 뒤 다음 PR의 base를 `main`으로 바꾼다 (`gh pr edit <번호> --base main`).
-  2. `git fetch origin` 후 다음 PR 브랜치에 `origin/main`을 merge해서 충돌을 해결한다. 코드 의도를 판단해야 하는 충돌은 아래 충돌 규칙에 따라 확인을 받는다. force push가 필요한 rebase는 쓰지 않는다.
-  3. 충돌 해결 후 `npm test`를 통과시키고 일반 push한 다음, 위 머지 조건(필수 검사·SHA 일치·`--match-head-commit`)을 똑같이 확인하고 머지한다. 스택 끝까지 반복한다.
-  4. 변경 내용이 이미 `main`에 모두 들어가 남은 차이가 없는 PR은 머지 대신 사유를 댓글로 남기고 닫는다. 연결된 이슈는 자동으로 닫히지 않으므로, 다른 머지로 해결됐는지 확인하고 해결됐으면 사유 댓글과 함께 닫는다.
-- 머지한 PR의 브랜치는 삭제한다. 단, 다른 열린 PR이 그 브랜치를 base로 쓰면 그 PR의 base를 `main`으로 바꾼 뒤 삭제한다 (`--delete-branch`로 먼저 지우지 않는다).
-- 충돌 해결이 코드 의도를 판단해야 하는 경우(양쪽 변경이 서로 다른 동작을 만드는 경우)에는 해결안을 보여주고 확인을 받는다.
-- 끝나면 머지한 PR(머지 SHA), 닫은 PR, 해결한 충돌 파일을 짧게 보고한다.
+- Do GitHub work with the personal account `sirloinbh`. Instead of the default `gh` setup (the company account), use `GH_CONFIG_DIR="$USERPROFILE/.config/gh-personal" gh ...`, and before any remote change check that `gh api user --jq .login` is `sirloinbh`.
+- After you open a PR, it goes through automatic code review up to 2 times (review → follow-up commit → second review → follow-up commit).
+  1. First review: a read-only review separated from the writing context (a separate agent, a review tool, and so on) looks at correctness, regressions, security, and missing tests, based on the issue's done criteria (the PR description if there is no linked issue) and the whole PR diff.
+  2. If there is nothing to follow up, end the review and go straight to the CI check and the merge.
+  3. If there is something to follow up, address only the comments that should be fixed within this PR's scope. Fix the related tests together, make an extra commit, and push.
+  4. Second review: check that the first comments were addressed, the extra diff, and the final whole PR diff. Address the second comments in an extra commit, and do not do a third review; go on to CI. Limit the second follow-up commit to fixes within the scope of the comments, and split fixes beyond the scope into a new issue per item 5.
+  5. A fix too big for this PR (a feature outside the requested scope, a design or data structure change, a fix across several modules, work that needs separate verification) is not fixed; split it into a new issue card (with the problem, scope, and done criteria). Leave the issue link in a PR comment and keep going with this PR.
+  6. If, even after splitting, a defect that breaks `main` or a defect with a security or data corruption risk remains, do not merge and tell the user.
+  7. Leave the result of each review round (the comments, the commits that addressed them, the issues split off, whether there was nothing to follow up) in a PR comment.
+- After the review, if all the required CI checks on the final head pass, the agents (the main agent and local workers) merge without asking the user. Before merging, check that `npm test` passes on the last commit. If a new commit appears during review, do not merge with the earlier CI result.
+  - The required checks are `test (node 22)` and `test (node 24)` (`.github/workflows/ci.yml`), set in the `main` branch protection. Judge with `gh pr checks <url> --required`, and merge only when both checks exist and pass. If a check that is not required failed, tell the user before merging.
+  - Check that the SHA from `gh pr view <url> --json headRefOid` is the same as the SHA CI passed on and the `git rev-parse HEAD` where you ran `npm test` locally, and merge with that SHA.
+  - Merge with a merge commit: `gh pr merge <url> --merge --match-head-commit <verified head SHA>`.
+  - After the merge, check that the linked issue (`Closes #N`) is closed.
+  - If a check failed or is still running, do not merge. If a PR has no required CI check at all, or lacks the checks above, do not auto-merge it and tell the user.
+  - Do not bypass branch protection with `--admin` and the like, approve your own PR instead of a review, commit or push directly to `main`, or force-push.
+  - This repo's `main` merge does not lead to a deploy (a local tool). If a deploy appears, fix this item so that the deploy result is checked after the merge.
+- Merge consecutive PRs (PRs stacked with an earlier PR's branch as the base) in order, from the bottom.
+  1. After merging the earlier PR, change the next PR's base to `main` (`gh pr edit <number> --base main`).
+  2. After `git fetch origin`, merge `origin/main` into the next PR branch and resolve the conflicts. Conflicts that need a judgment about the code's intent get confirmation under the conflict rule below. Do not use a rebase that needs a force push.
+  3. After resolving the conflicts, make `npm test` pass, push normally, then check the same merge conditions as above (required checks, SHA match, `--match-head-commit`) and merge. Repeat to the end of the stack.
+  4. For a PR whose changes are all already in `main` and that has no difference left, do not merge it; leave the reason in a comment and close it. The linked issue is not closed automatically, so check whether another merge resolved it, and if it did, close it with a comment giving the reason.
+- Delete the branch of a merged PR. However, if another open PR uses that branch as its base, change that PR's base to `main` first and then delete it (do not delete it first with `--delete-branch`).
+- When resolving a conflict needs a judgment about the code's intent (when the changes on both sides produce different behavior), show the resolution and get confirmation.
+- When done, briefly report the merged PRs (merge SHA), the closed PRs, and the conflict files you resolved.
