@@ -43,8 +43,8 @@ Options:
   --            treat all following arguments as names or content, not options
   -h, --help    show help`;
 
-// 인자 해석과 명령 실행은 src/execute.js에 있다(UI와 함께 쓴다, #253). 여기서는 CLI 출력과 실패만 정한다.
-// progress(line)를 주면 오래 걸리는 명령(flatten, remove-broken)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67, #99).
+// Argument parsing and command execution are in src/execute.js (shared with the UI, #253). This file only decides the CLI output and failures.
+// If progress(line) is given, long-running commands (flatten, remove-broken) pass on what they did, one line at a time, even before they finish (#67, #99).
 function run(argv, { progress } = {}) {
   let outcome;
   try {
@@ -58,7 +58,7 @@ function run(argv, { progress } = {}) {
   return outcome.report;
 }
 
-// ui는 끝나지 않고 계속 도는 서버라 run(결과 문자열을 돌려줌)과 따로 띄운다(#251).
+// ui is a server that never ends and keeps running, so it is started separately from run (which returns the result string) (#251).
 if (require.main === module && process.argv[2] === 'ui') {
   require('../src/ui/server').runUi(process.argv.slice(3)).catch((err) => {
     console.error(`Error: ${err.message}`);
@@ -66,7 +66,7 @@ if (require.main === module && process.argv[2] === 'ui') {
   });
 } else if (require.main === module) {
   try {
-    // 진행 줄은 표준 오류로 낸다. 표준 출력의 마지막 보고는 그대로 두고, 중간에 끊겨도 이미 한 일이 화면에 남는다.
+    // Progress lines go to standard error. The final report on standard output stays as it is, and even if it is interrupted midway, what was already done stays on the screen.
     const output = run(process.argv.slice(2), { progress: (line) => process.stderr.write(`Progress: ${line}\n`) });
     if (output) console.log(output);
   } catch (err) {

@@ -3,23 +3,23 @@
 const { findProductNumberRanges } = require('./product');
 
 const MAX_NAME = 255;
-// 영숫자 점 묶음 전체를 꼬리로 보고 그대로 둔다. .en.srt, .7z.001, .tar.gz, .mp4.part가 끊어지지 않는다.
-// 공백이나 하이픈이 든 꼬리(Title.v2 ABC-123)는 이름의 일부다. 번호를 가리지 않고 대소문자도 바꾸지 않으니 잘못 봐도 손해가 없다.
+// It sees the whole run of alphanumeric dot groups as the tail and leaves it as it is. .en.srt, .7z.001, .tar.gz, and .mp4.part are not cut.
+// A tail that contains a space or hyphen (Title.v2 ABC-123) is part of the name. It does not hide the number or change the case, so there is no loss even if misjudged.
 const EXTENSION = /(?:\.[A-Za-z0-9]+)+$/;
 const SEPARATORS = '\\s._\\-–—－＿\\u0085';
-// 번호를 지운 자리와 그 양옆의 구분 문자. 글자가 붙지 않게 공백 하나로 바꾼다.
+// The place where the number was removed and the separator characters on both sides of it. It is replaced with one space so that letters do not stick together.
 const HOLE = '\0';
 const AROUND_HOLE = new RegExp(`[${SEPARATORS}]*${HOLE}[${SEPARATORS}]*`, 'g');
 const EDGE = new RegExp(`^[${SEPARATORS}]+|[${SEPARATORS}]+$`, 'g');
 const TRAILING = new RegExp(`[${SEPARATORS}]+$`);
 const BRACKETS = ['[]', '()', '{}', '（）', '［］', '｛｝', '【】', '「」', '『』', '《》', '〈〉', '〔〕', '〖〗'];
-// Windows는 이름 끝의 점과 공백을 지운다.
+// Windows removes a trailing dot and space from a name.
 const ENDS_BADLY = /[.\s\u0085]$/;
 const NOT_A_NAME = /[\\/:*?"<>|\x00-\x1f]/;
 
 const escape = (char) => `\\${char}`;
 
-// 비게 된 괄호를 없애고 괄호 안쪽의 공백을 지운다. 겹괄호는 없어질 때까지 되풀이한다.
+// It removes brackets that became empty and removes spaces inside brackets. Nested brackets are repeated until they are gone.
 function tidyBrackets(text) {
   let current = text;
   for (const [open, close] of BRACKETS) {
@@ -29,7 +29,7 @@ function tidyBrackets(text) {
   return emptied === text ? emptied : tidyBrackets(emptied);
 }
 
-// 번호를 지우고 남은 말. 지운 자리 양옆의 구분 문자와 빈 괄호를 함께 지운다.
+// What remains after removing the number. It also removes the separator characters on both sides of the removed place and empty brackets.
 function remainder(base, ranges) {
   let rest = '';
   let at = 0;
@@ -41,19 +41,19 @@ function remainder(base, ranges) {
   return tidyBrackets(rest.replace(AROUND_HOLE, ' ')).replace(/\s+/g, ' ').replace(EDGE, '');
 }
 
-// 파일 이름을 정규화한 결과 { name, number, inferred, reason }을 돌려준다. 파일은 건드리지 않는 순수 함수다.
-// - 제품번호를 대문자로 바꿔 맨 앞으로 옮기고, 나머지와 공백으로 구분한다. 영상 abc-123.mp4 -> ABC-123 영상.mp4
-// - 맨 앞의 번호 바로 뒤가 점이면 그대로 둔다. ABC-123.en.srt는 영상과 짝을 이루는 자막 이름이고, ABC-123.7z.001은 분할 압축 조각이다.
-// - 제품번호가 아닌 알파벳과 확장자의 대소문자는 바꾸지 않는다. 확장자와 이름의 일부를 확실히 가를 수 없어 말을 망가뜨리지 않기 위해서다.
-// 어떤 번호를 옮길지 정할 수 없거나 바꾸면 안 되는 이름은 그대로 두고 reason에 사유를 적는다. 바꿀 수 있으면 reason은 null이다.
-// number는 찾은 번호이고 없으면 null이다. 소문자 번호는 이름에 대문자 번호가 없을 때만 보고, 그때 inferred가 true다.
-// 소문자 말(trip-2023)은 번호가 아닐 수 있으니 호출하는 쪽이 미리보기에서 구분해 보여 줄 수 있게 한다.
+// It returns the result of normalizing a file name, { name, number, inferred, reason }. It is a pure function that does not touch files.
+// - It changes the product number to upper case, moves it to the front, and separates it from the rest with a space. Video abc-123.mp4 -> ABC-123 Video.mp4
+// - If a dot comes right after the number at the front, it is left as it is. ABC-123.en.srt is a subtitle name paired with a video, and ABC-123.7z.001 is a split archive piece.
+// - It does not change the case of letters that are not the product number or of the extension. It cannot reliably tell the extension from part of the name, so as not to ruin words.
+// A name where it cannot decide which number to move, or that must not be changed, is left as it is and the reason is written in reason. If it can be changed, reason is null.
+// number is the number found, and if none, null. A lowercase number is looked at only when the name has no upper-case number, and then inferred is true.
+// A lowercase word (trip-2023) may not be a number, so the caller can show it separately in the preview.
 function normalizeName(fileName) {
   const unchanged = (reason, number = null, inferred = false) => ({ name: fileName, number, inferred, reason });
-  // 파일 이름은 255자를 넘을 수 없다. 긴 입력에서 정규식이 느려지거나 괄호 되풀이가 깊어지지 않게 먼저 거른다.
+  // A file name cannot exceed 255 characters. It filters first so that the regular expression does not get slow on long input or the bracket repetition does not get deep.
   if (fileName.length > MAX_NAME) return unchanged('The file name is too long.');
-  // 점으로 시작하는 이름은 숨김 파일이고, 앞에 번호를 붙이면 숨김이 풀린다. ~로 시작하는 이름은 Office 잠금 파일(~$)과
-  // 임시 파일(~WRL0001.tmp, ~abc-123.mp4)이다. 만든 프로그램이 그 이름으로 찾으므로 바꾸지 않는다(#94).
+  // A name that starts with a dot is a hidden file, and putting a number in front would lift the hiding. A name that starts with ~ is an Office lock file (~$) or
+  // a temporary file (~WRL0001.tmp, ~abc-123.mp4). The program that made it looks for it by that name, so it is not changed (#94).
   if (fileName.startsWith('.') || fileName.startsWith('~')) return unchanged('Hidden and temporary file names are not changed.');
   if (NOT_A_NAME.test(fileName)) return unchanged('The file name contains characters that cannot be used.');
   if (ENDS_BADLY.test(fileName)) return unchanged('Names ending with a dot or space are not changed.');
@@ -73,7 +73,7 @@ function normalizeName(fileName) {
   const body = keepsDot || rest === '' ? `${number}${rest}` : `${number} ${rest}`;
   const name = `${body}${extension}`;
   if (name.length > MAX_NAME) return unchanged(`The name is too long once normalized: ${name.length} characters`, number, inferred);
-  // 결과에 새로 생긴 꼬리 앞의 구분 문자처럼 첫 실행에서 정리되지 않은 것을 마저 정리한다. 이름이 줄어들거나 같아지므로 끝난다.
+  // It also tidies what the first run did not tidy, such as the separator before a tail that newly appeared in the result. The name shrinks or stays the same, so it ends.
   return { name: name === fileName ? name : normalizeName(name).name, number, inferred, reason: null };
 }
 

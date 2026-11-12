@@ -1,13 +1,13 @@
 'use strict';
 
-// 묶음 휴지통 이동(recycleFiles, FC_RECYCLE_FILES)을 흉내 낸다(#194, #216). 사용자 휴지통을 건드리지 않도록 테스트에서 쓴다.
-// 실제 스크립트(RECYCLE_FILES_SCRIPT)처럼 줄마다 지우기 직전에 실제 경로·파일 여부·fileStamp를 보고,
-// 남길 파일(keep)을 주면 그것도 다시 본 뒤 지운다. 실제 스크립트 자체는 test/recycle.test.js가 실제 PowerShell로 확인한다.
-// target마다 hook(target, stamp)를 부르고 지운다. hook이 던지면 그 파일만 Windows 사유(error)로 실패한 것처럼 한다.
+// It imitates the batch Recycle Bin move (recycleFiles, FC_RECYCLE_FILES) (#194, #216). It is used in tests so as not to touch the user's Recycle Bin.
+// Like the real script (RECYCLE_FILES_SCRIPT), for each line it looks right before deleting at the real path, the file-ness, and the fileStamp,
+// and if a file to keep (keep) is given, it looks at that again before deleting. The real script itself is checked by test/recycle.test.js with real PowerShell.
+// For each target it calls hook(target, stamp) and deletes. If hook throws, it makes only that file fail as if with a Windows reason (error).
 
 const fs = require('node:fs');
 
-// src/target을 여기서 불러오면 commands.js가 테스트의 가짜 execFileSync보다 먼저 읽혀 진짜 함수를 받아 두므로, 쓸 때 불러온다.
+// If src/target were imported here, commands.js would be read before the test's fake execFileSync and would take the real function, so it is imported at use time.
 const fileStamp = (stat) => require('../src/target').fileStamp(stat);
 
 const decode = (encoded) => Buffer.from(encoded, 'base64').toString('utf16le');

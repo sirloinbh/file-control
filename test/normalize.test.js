@@ -6,9 +6,9 @@ const { normalizeName } = require('../src/normalize');
 const { findProductNumberRanges, extractProductNumbers } = require('../src/product');
 
 const cases = [
-  // 이슈 예시
+  // The issue example
   ['영상 abc-123.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
-  // 위치와 구분 문자
+  // Position and separator characters
   ['abc-123 영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
   ['ABC-123 영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
   ['ABC-123_영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
@@ -19,7 +19,7 @@ const cases = [
   ['앞 - 뒤 ABC-123.mp4', 'ABC-123 앞 - 뒤.mp4', 'ABC-123'],
   ['ABC-123.mp4', 'ABC-123.mp4', 'ABC-123'],
   ['abc-123.mp4', 'ABC-123.mp4', 'ABC-123'],
-  // 괄호
+  // Brackets
   ['[abc-123] 영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
   ['영상 (ABC-123).mkv', 'ABC-123 영상.mkv', 'ABC-123'],
   ['【ABC-123】영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
@@ -31,29 +31,29 @@ const cases = [
   ['《abc-123》.mp4', 'ABC-123.mp4', 'ABC-123'],
   ['(abc-123 감독판).mp4', 'ABC-123 (감독판).mp4', 'ABC-123'],
   ['[태그 abc-123].mp4', 'ABC-123 [태그].mp4', 'ABC-123'],
-  // 전각
+  // Full-width
   ['영상 ＡＢＣ－１２３.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
   ['－ABC-123－.mp4', 'ABC-123.mp4', 'ABC-123'],
   ['＿abc-123＿.mp4', 'ABC-123.mp4', 'ABC-123'],
-  // 같은 번호가 두 번
+  // The same number twice
   ['abc-123 ABC-123.mp4', 'ABC-123 abc-123.mp4', 'ABC-123'],
   ['ABC-123 영상 ABC-123.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
-  // 화질 꼬리
+  // Quality tail
   ['ABC-123-1080p.mp4', 'ABC-123 1080p.mp4', 'ABC-123'],
-  // 번호 바로 뒤의 점은 짝 이름과 조각 이름이라 유지한다
+  // A dot right after the number is kept, because it is a pair name and a piece name
   ['ABC-123.en.srt', 'ABC-123.en.srt', 'ABC-123'],
   ['abc-123.en.srt', 'ABC-123.en.srt', 'ABC-123'],
   ['ABC-123.part1.rar', 'ABC-123.part1.rar', 'ABC-123'],
   ['ABC-123.7z.001', 'ABC-123.7z.001', 'ABC-123'],
   ['abc-123.mp4.bak', 'ABC-123.mp4.bak', 'ABC-123'],
   ['abc-123..mp4', 'ABC-123.mp4', 'ABC-123'],
-  // 확장자는 그대로 둔다
+  // The extension is left as it is
   ['영상 abc-123.MP4', 'ABC-123 영상.MP4', 'ABC-123'],
   ['abc-123', 'ABC-123', 'ABC-123'],
   ['abc-123.tar.GZ', 'ABC-123.tar.GZ', 'ABC-123'],
   ['영상 abc-123.tar.gz', 'ABC-123 영상.tar.gz', 'ABC-123'],
   ['영상 abc-123.tar.mp4', 'ABC-123 영상.tar.mp4', 'ABC-123'],
-  // 번호가 맨 앞이 아니어도 꼬리를 끊지 않는다
+  // Even if the number is not at the front, the tail is not cut
   ['영상 abc-123.en.srt', 'ABC-123 영상.en.srt', 'ABC-123'],
   ['[abc-123].en.srt', 'ABC-123.en.srt', 'ABC-123'],
   ['영상 abc-123.7z.001', 'ABC-123 영상.7z.001', 'ABC-123'],
@@ -61,15 +61,15 @@ const cases = [
   ['영상 abc-123.crdownload', 'ABC-123 영상.crdownload', 'ABC-123'],
   ['영상 abc-123.properties', 'ABC-123 영상.properties', 'ABC-123'],
   ['영상 abc-123.mp4.part', 'ABC-123 영상.mp4.part', 'ABC-123'],
-  // 번호를 뺀 뒤 꼬리가 새로 생기는 이름
+  // A name where a tail newly appears after removing the number
   ['x_.en abc-123', 'ABC-123 x.en', 'ABC-123'],
   ['Vol..2 abc-123', 'ABC-123 Vol.2', 'ABC-123'],
   ['x-.mp4 ABC-123', 'ABC-123 x.mp4', 'ABC-123'],
   ['〔abc-123〕영상.mp4', 'ABC-123 영상.mp4', 'ABC-123'],
-  // 확장자가 아닌 꼬리에 번호가 있는 경우
+  // A case where the number is in a tail that is not an extension
   ['Title.v2 ABC-123', 'ABC-123 Title.v2', 'ABC-123'],
   ['영상.ABC-123', 'ABC-123 영상', 'ABC-123'],
-  // 번호가 아닌 알파벳은 그대로
+  // Alphabet that is not the number stays as it is
   ['Movie 영상.MP4', 'Movie 영상.MP4', null],
   ['Mr.Robot', 'Mr.Robot', null],
   ['Dr.Who S01', 'Dr.Who S01', null],
@@ -154,7 +154,7 @@ test('파일 이름 한도를 넘는 입력은 처리하지 않고 바로 돌려
 
 test('한 번 더 정규화해도 같다', () => {
   const parts = ['abc-123', 'ABC-123', 'ＡＢＣ－１２３', '영상', 'x', '.', '..', ' ', '_', '-', '－', '＿', '[', ']', '(', ')', '{', '}', '【', '】', '「', '」', '〔', '〕', '.mp4', '.MP4', '.tar.gz', '.tar', '.TAR', '.en', '.v2', '.7z.001', '1080p', '😀', '\u200b'];
-  // 곱셈 합동 생성기는 2^53을 넘어 정밀도를 잃어 입력이 몇 가지로 몰리므로 xorshift를 쓴다.
+  // A multiplicative congruential generator exceeds 2^53 and loses precision, so the inputs crowd into a few values; so it uses xorshift.
   let seed = 4242;
   const next = (limit) => {
     seed ^= seed << 13;

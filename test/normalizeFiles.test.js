@@ -9,7 +9,7 @@ const { FcError } = require('../src/commands');
 const { planNormalize, applyNormalize, normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 const { run } = require('../bin/fctl');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -26,7 +26,7 @@ function make(dir, files) {
   }
 }
 
-// 실제 표기 그대로의 목록. 대소문자가 바뀌었는지 보려고 readdir로 읽는다.
+// A list with the real spelling as it is. It is read with readdir to see whether the case changed.
 function tree(dir) {
   return fs
     .readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -66,11 +66,11 @@ test('대소문자만 바뀌는 이름도 임시 이름을 거쳐 바꾼다', (t
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(fs.readdirSync(dir), ['ABC-123.mp4']);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), 'abc-123.mp4');
-  // 임시 이름으로는 rename, 새 이름으로는 덮어쓰지 않는 하드링크 이동(#73)을 한 번씩 쓴다.
+  // It uses rename once for the temporary name and the non-overwriting hard-link move (#73) once for the new name.
   assert.deepStrictEqual(steps, [1, 1]);
 });
 
-// 임시 이름(.fctl-new)의 원래 이름 지우기를 실패시킨다. 잠긴 파일처럼 하드링크는 만들어지고 지우기만 실패한다.
+// It makes deleting the original name of the temporary name (.fctl-new) fail. Like a locked file, the hard link is made and only the deletion fails.
 function lockMiddle(t, times) {
   const unlinkSync = fs.unlinkSync;
   let count = 0;
@@ -122,7 +122,7 @@ test('대소문자 변경 중 원래 이름에 다른 파일이 생기면 덮어
 test('대소문자 변경 중 자리표시에 내용이 생기면 그 내용을 지우지 않는다', (t) => {
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
-  // 하드링크를 못 만드는 드라이브(FAT32·exFAT 등)에서는 빈 자리표시를 먼저 만드는 방식으로 옮긴다.
+  // On a drive that cannot make hard links (FAT32, exFAT, and so on), it moves with the method that first creates an empty placeholder.
   t.mock.method(fs, 'linkSync', () => {
     throw Object.assign(new Error('not supported'), { code: 'EPERM' });
   });
@@ -209,7 +209,7 @@ test('HEAD 표기가 소문자인 베어 저장소도 거부한다', { skip: pro
 test('결과 이름이 다른 파일의 8.3 짧은 이름과 겹치면 바꾸지 않고 보고한다', (t) => {
   const dir = tempDir();
   make(dir, ['[ABC-123].mp4', 'ABC-123 긴 이름.mp4']);
-  // 8.3 이름은 드라이브 설정에 따라 꺼져 있을 수 있어, 짧은 이름이 긴 이름으로 풀리는 동작을 흉내 낸다.
+  // 8.3 names may be turned off depending on the drive setting, so it imitates the behavior where a short name resolves to a long name.
   const long = (p) => (path.basename(p) === 'ABC-123.mp4' ? path.join(dir, 'ABC-123 긴 이름.mp4') : p);
   const { lstatSync } = fs;
   const native = fs.realpathSync.native;
@@ -320,7 +320,7 @@ test('normalize 명령은 결과를 보여 주고 실패가 있으면 오류로 
   const dir = tempDir();
   make(dir, ['[ABC-123].mp4', 'abc-456.mp4']);
   assert.match(run(['normalize', dir, '--dry-run']), /\[Preview\] Rename 1, lowercase words 1/);
-  // 잠긴 파일처럼 원래 이름을 지우지 못하게 한다. 만든 새 이름은 지워 되돌린다.
+  // It makes the original name undeletable like a locked file. It deletes the new name it made and rolls back.
   const unlinkSync = fs.unlinkSync;
   const mock = t.mock.method(fs, 'unlinkSync', (p) => {
     if (path.basename(p) === '[ABC-123].mp4') throw Object.assign(new Error('busy'), { code: 'EBUSY' });
@@ -370,7 +370,7 @@ test('받는 중인 파일과 그 표시 파일이 옆에 있는 파일은 바�
   assert.match(reasons['영상 BCD-234.mp4.part'], /name of a file being downloaded/);
   assert.match(reasons['영상 CDE-345.mp4'], /marker file \(영상 CDE-345\.mp4\.aria2\)/);
   assert.match(reasons['영상 CDE-345.mp4.aria2'], /name of a file being downloaded/);
-  // Safari 표시 폴더 안이라도 폴더 이름(x.mp4.download)과 파일 이름이 다르면 표시로 보지 않는다. 안의 x.mp4만 받는 중이다.
+  // Even inside a Safari marker folder, if the folder name (x.mp4.download) and the file name differ, it is not seen as a marker. Only the x.mp4 inside is downloading.
   assert.strictEqual(result.renamed.length, 2);
 });
 
@@ -434,14 +434,14 @@ test('타겟의 위 폴더가 프로젝트·프로그램 폴더면 아무것도 
   const project = tempDir();
   make(project, ['myproj/package.json', 'myproj/src/영상 ABC-123.mp4', 'myproj/src/a/b/그림 BCD-234.png']);
   assert.throws(() => normalizeFiles(path.join(project, 'myproj', 'src')), (err) => err instanceof FcError && /a parent folder looks like a project folder \(contains package\.json\): .*myproj$/.test(err.message));
-  // 몇 단계 위든 막고, 계획(planNormalize)만 만들 때도 거부한다.
+  // It blocks at any number of levels up, and also refuses when only making the plan (planNormalize).
   assert.throws(() => planNormalize(path.join(project, 'myproj', 'src', 'a', 'b')), (err) => err instanceof FcError && /a parent folder looks like a project folder/.test(err.message));
   assert.deepStrictEqual(tree(project), ['myproj/package.json', 'myproj/src/a/b/그림 BCD-234.png', 'myproj/src/영상 ABC-123.mp4']);
   const program = tempDir();
   make(program, ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
   assert.throws(() => normalizeFiles(path.join(program, 'App', 'sub')), (err) => err instanceof FcError && /a parent folder holds both executables and DLLs, so it is treated as a program folder: .*App$/.test(err.message));
   assert.deepStrictEqual(tree(program), ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
-  // 옆 폴더의 표시 파일은 위 폴더가 아니므로 막지 않는다.
+  // A marker file in a neighboring folder is not a folder above, so it is not blocked.
   const side = tempDir();
   make(side, ['lib/package.json', 'videos/영상 ABC-123.mp4']);
   normalizeFiles(path.join(side, 'videos'));

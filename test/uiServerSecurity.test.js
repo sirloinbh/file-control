@@ -1,6 +1,6 @@
 'use strict';
 
-// fctl ui 서버에 붙인 요청 검사(#252): 잘못된 Host, 다른 Origin, 토큰 없음·틀림, GET으로 바꾸기 시도가 거부되고 파일이 바뀌지 않는다.
+// The request check attached to the fctl ui server (#252): a wrong Host, another Origin, no or wrong token, and an attempt to change with GET are refused and files do not change.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -19,13 +19,13 @@ function request(url, { method = 'GET', headers = {}, body } = {}) {
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
     });
-    // 한도를 넘는 본문을 보내는 중에 서버가 연결을 닫을 수 있다. 응답을 받았으면 그것으로 판정한다.
+    // While sending a body over the limit, the server may close the connection. If a response was received, it judges by that.
     req.on('error', (err) => (err.code === 'ECONNRESET' || err.code === 'EPIPE' ? resolve({ status: 'reset' }) : reject(err)));
     req.end(body);
   });
 }
 
-// Content-Length 없이 본문을 여러 조각으로 보낸다(Transfer-Encoding: chunked).
+// It sends the body in several pieces without Content-Length (Transfer-Encoding: chunked).
 function chunked(url, parts) {
   return new Promise((resolve, reject) => {
     const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' } }, (res) => {
@@ -38,7 +38,7 @@ function chunked(url, parts) {
   });
 }
 
-// 화면 하나(/form, 토큰이 든 폼)와 파일을 쓰는 POST 주소(/write)를 둔 서버를 띄운다.
+// It starts a server with one screen (/form, a form that holds the token) and a POST address that writes a file (/write).
 async function serve(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-ui-security-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -87,7 +87,7 @@ test('잘못된 Host는 화면 요청과 바꾸는 요청 모두 거부하고 �
     const res = await request(`${url}write`, { method: 'POST', headers: { ...FORM_TYPE, host }, body: `token=${token}&text=x` });
     assert.strictEqual(res.status, 403, host);
   }
-  // localhost 이름으로 들어온 요청은 받는다.
+  // A request that came in under the localhost name is accepted.
   assert.strictEqual((await request(`${url}form`, { headers: { host: `localhost:${port}` } })).status, 200);
   assert.strictEqual(fs.existsSync(target), false);
 });
@@ -106,12 +106,12 @@ test('다른 Origin·다른 사이트에서 보낸 POST, 토큰 없음·틀림�
   assert.match(missing.body, /Reopen the page/);
   assert.strictEqual((await post({}, 'token=wrong&text=x')).status, 403);
   assert.strictEqual((await post({}, `token=${token.slice(1)}&text=x`)).status, 403);
-  // 폼 형식이 아니거나 한도를 넘는 본문도 거부한다.
+  // A body that is not a form type or exceeds the limit is also refused.
   assert.strictEqual((await post({ 'content-type': 'text/plain' }, `token=${token}&text=x`)).status, 415);
   assert.strictEqual((await post({}, `token=${token}&text=${'x'.repeat(MAX_BODY)}`)).status, 413);
-  // Content-Length 없이 조각(chunked)으로 보내도 읽는 중에 한도로 막는다(1차 리뷰).
+  // Even if sent in chunks (chunked) without Content-Length, it is blocked by the limit while reading (first review).
   assert.strictEqual((await chunked(`${url}write`, [`token=${token}&text=`, 'x'.repeat(MAX_BODY / 2), 'x'.repeat(MAX_BODY / 2)])).status, 413);
-  // 같은 PC의 다른 포트(same-site)에서 보냈다는 표시, 토큰 필드 중복도 거부한다.
+  // A mark that it was sent from another port on the same PC (same-site), and a duplicated token field, are also refused.
   assert.strictEqual((await post({ 'sec-fetch-site': 'same-site' }, `token=${token}&text=x`)).status, 403);
   assert.strictEqual((await post({}, `token=${token}&token=${token}x&text=x`)).status, 403);
   assert.strictEqual(fs.existsSync(target), false);

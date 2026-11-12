@@ -5,15 +5,15 @@ const { grant } = require('./target');
 const { withOpenFile } = require('./openedFile');
 const { spsAspect } = require('./videoSps');
 
-// 파일 맨 앞에 올 수 있는 박스. ftyp이 없는 옛 QuickTime 파일도 받으려고 여러 개를 둔다.
+// Boxes that can come at the very front of a file. It holds several in order to also accept old QuickTime files that have no ftyp.
 const FIRST_BOXES = new Set(['ftyp', 'styp', 'moov', 'mdat', 'free', 'skip', 'wide', 'pnot']);
 
-// 손상된 파일이 작은 박스를 끝없이 늘어놓아도 읽기 횟수가 한없이 늘지 않게 한다. 정상 파일은 수십 번이면 끝난다.
+// So that the number of reads does not grow without bound even when a damaged file lines up small boxes endlessly. A normal file ends in tens of reads.
 const MAX_READS = 20000;
-// 제목·코멘트 값의 최대 크기. 더 크면 없는 값으로 본다. 표지 이미지 같은 큰 값은 메모리에 올리지 않는다.
+// The maximum size of a title or comment value. If larger, it is treated as absent. A large value such as a cover image is not loaded into memory.
 const MAX_TEXT = 64 * 1024;
 
-// 제목은 iTunes 형식, QuickTime 키, 옛 QuickTime, 3GPP 순으로 고른다. 코멘트도 같은 순서이고 같은 형식 안에서는 왼쪽이 먼저다.
+// The title is chosen in the order iTunes format, QuickTime keys, old QuickTime, 3GPP. The comment has the same order, and within the same format the left one comes first.
 const TITLE_SOURCES = ['ilst:©nam', 'mdta:com.apple.quicktime.title', 'udta:©nam', 'udta:titl'];
 const COMMENT_SOURCES = [
   'ilst:©cmt',
@@ -27,7 +27,7 @@ const COMMENT_SOURCES = [
 
 const fourcc = (buffer, offset = 0) => buffer.toString('latin1', offset, offset + 4);
 
-// offset부터 length바이트를 읽고, 모자라면 손상으로 본다. 읽기 횟수도 여기서 센다. file은 withOpenFile이 연 파일이다.
+// It reads length bytes from offset, and if it falls short, it is seen as damage. It also counts the number of reads here. file is the file opened by withOpenFile.
 function makeReader(file, p) {
   let reads = 0;
   return (offset, length) => {
@@ -39,8 +39,8 @@ function makeReader(file, p) {
   };
 }
 
-// 박스 헤더를 풀어 { type, start, end }를 돌려준다. start는 내용의 시작이다. 틀린 헤더면 null이다.
-// size 0은 "파일 끝까지"인데 최상위에서만 뜻이 있다. 안쪽의 0은 옛 QuickTime udta의 끝 표시이므로 null로 돌려 순회를 끝낸다.
+// It decodes a box header and returns { type, start, end }. start is the start of the content. If the header is wrong, it is null.
+// Size 0 means "to the end of the file" and has meaning only at the top level. A 0 inside is the end marker of an old QuickTime udta, so it returns null to end the traversal.
 function readBoxHeader(read, offset, end, topLevel) {
   if (end - offset < 8) return null;
   const head = read(offset, Math.min(16, end - offset));
@@ -62,14 +62,14 @@ function readBoxHeader(read, offset, end, topLevel) {
   return { type, start, end: offset + size };
 }
 
-// start~end 안의 자식 박스를 차례로 돌려준다.
-// 끝에 남은 8바이트 미만은 무시한다. 틀린 헤더를 만나면 strict일 때만 오류이고, 아니면 거기서 끝낸다.
+// It returns the child boxes within start to end in order.
+// Less than 8 leftover bytes at the end are ignored. On meeting a wrong header, it is an error only when strict, and otherwise it ends there.
 function* boxes(read, p, start, end, strict) {
   let offset = start;
   while (end - offset >= 8) {
     const box = readBoxHeader(read, offset, end, false);
     if (!box) {
-      // 크기 0은 끝 표시라 손상이 아니다.
+      // Size 0 is an end marker, not damage.
       if (strict && read(offset, 4).readUInt32BE(0) !== 0) throw new FcError(`The MP4 structure is damaged: ${p} (at byte ${offset})`);
       return;
     }
@@ -78,7 +78,7 @@ function* boxes(read, p, start, end, strict) {
   }
 }
 
-// 최상위 박스를 훑어 moov를 찾는다. mdat은 내용을 읽지 않고 건너뛴다.
+// It scans the top-level boxes to find moov. It skips mdat without reading its content.
 function findMoov(read, p, size) {
   let offset = 0;
   let first = true;
@@ -98,20 +98,20 @@ function findMoov(read, p, size) {
   throw new FcError(`The MP4 file has no moov box. The file may be truncated: ${p}`);
 }
 
-// 값이 박스 안에 다 들어 있으면 그 값을, 아니면 null을 돌려준다.
+// If the value fits entirely inside the box, it returns that value, otherwise null.
 function readPayload(read, box, length) {
   const available = box.end - box.start;
   if (available < length) return null;
   return read(box.start, length);
 }
 
-// 버전·플래그의 첫 바이트를 돌려준다. 0, 1이 아닌 버전은 구조를 알 수 없으므로 null이다.
+// It returns the first byte of the version and flags. A version other than 0 or 1 has an unknown structure, so it is null.
 function readVersion(read, box) {
   const head = readPayload(read, box, 1);
   return head && head[0] <= 1 ? head[0] : null;
 }
 
-// 재생 시간이 정해지지 않았으면 값이 전부 1로 채워져 있으므로 null로 본다.
+// If the duration is not set, the value is filled with all 1s, so it is seen as null.
 function durationValue(buffer, offset, version) {
   if (version === 1) {
     const value = buffer.readBigUInt64BE(offset);
@@ -121,14 +121,14 @@ function durationValue(buffer, offset, version) {
   return value === 0xffffffff ? null : value;
 }
 
-// 변환 행렬 { a b u / c d v / x y w }에서 a와 d가 0이고 b와 c가 0이 아니면 90도나 270도 회전이다(휴대폰 세로 영상).
-// 0·180도와 그 밖의 행렬(기울임 등)은 너비와 높이를 바꾸지 않는 것으로 본다.
+// In the transform matrix { a b u / c d v / x y w }, if a and d are 0 and b and c are not 0, it is a 90 or 270 degree rotation (a phone portrait video).
+// 0 and 180 degrees and other matrices (a skew and so on) are seen as not swapping the width and height.
 function isQuarterTurn(body, offset) {
   const [a, b, c, d] = [0, 4, 12, 16].map((at) => body.readInt32BE(offset + at));
   return a === 0 && d === 0 && b !== 0 && c !== 0;
 }
 
-// quarterTurn은 영상 전체에 걸리는 mvhd 행렬의 회전이다. 행렬까지 들어 있지 않으면 거짓이다(#113).
+// quarterTurn is the rotation of the mvhd matrix that applies to the whole movie. If the matrix is not included, it is false (#113).
 function readMvhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
@@ -148,8 +148,8 @@ function readMehd(read, box) {
   return body ? durationValue(body, 4, version) : null;
 }
 
-// 화면 크기(트랙 행렬을 걸기 전)는 16.16 고정소수점이다. width, height는 정수 부분이고 exactWidth, exactHeight는 소수까지 담는다.
-// 트랙 행렬이 90도나 270도 회전이면 quarterTurn이 참이다.
+// The screen size (before applying the track matrix) is 16.16 fixed point. width and height are the integer part, and exactWidth and exactHeight hold the fraction too.
+// If the track matrix is a 90 or 270 degree rotation, quarterTurn is true.
 function readTkhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
@@ -167,15 +167,15 @@ function readTkhd(read, box) {
   };
 }
 
-// 영상 표본 항목의 고정 필드 길이. 그 뒤에 avcC, pasp 같은 자식 박스가 온다.
+// The fixed-field length of a video sample entry. After it come child boxes such as avcC and pasp.
 const VISUAL_ENTRY = 78;
 
-// avcC·hvcC는 SPS와 PPS 몇 개라 보통 수백 바이트다. 더 크면 읽지 않는다.
+// avcC and hvcC hold a few SPS and PPS, so they are usually a few hundred bytes. If larger, they are not read.
 const MAX_CODEC_CONFIG = 64 * 1024;
 
-// 첫 표본 항목의 인코딩 해상도와 화소 비율을 읽는다. 항목 앞에 4+4바이트, 항목 안 32바이트 위치에 너비와 높이가 있다.
-// pasp는 { h, v }로 화소 하나의 가로:세로 비율이다. 없거나 0이 든 값이면 null이다. 1:1도 값으로 둔다.
-// spsAspect는 avcC·hvcC 안 SPS의 화소 비율이다(#113). 영상 데이터(mdat)는 읽지 않는다.
+// It reads the encoded resolution and pixel aspect ratio of the first sample entry. The width and height are at 4+4 bytes before the entry and at position 32 bytes inside the entry.
+// pasp is { h, v }, the horizontal:vertical ratio of one pixel. If absent or it holds 0, it is null. 1:1 is also kept as a value.
+// spsAspect is the pixel aspect ratio of the SPS inside avcC and hvcC (#113). It does not read the video data (mdat).
 function readStsd(read, p, box) {
   const body = readPayload(read, box, 44);
   if (!body || body.readUInt32BE(4) === 0) return null;
@@ -194,23 +194,23 @@ function readStsd(read, p, box) {
   return sample;
 }
 
-// 화소 비율을 곱한 너비 (정사각형 화소면 그대로)
+// The width multiplied by the pixel aspect ratio (unchanged if square pixels)
 const stretched = (width, aspect) => (Math.abs(aspect - 1) > 1e-9 ? Math.max(1, Math.round(width * aspect)) : width);
 
-// 회전을 걸기 전의 보이는 크기. 화소 비율은 컨테이너 값을 영상 데이터 값보다 먼저 쓴다(FFmpeg가 pasp를 SPS보다 먼저 쓰는 것과 같다).
-// 1. pasp: 화소 비율을 직접 적은 값이다. 1:1이면 정사각형 화소로 본다.
-// 2. tkhd 화면 크기가 인코딩 해상도와 다르면 그 크기. 규격상 표본 그림은 이 크기로 늘여 보여 준다. pasp 없이 tkhd에만 화소 비율을 반영한 파일이 있다.
-//    너비와 높이를 같은 배율로 바꾼 크기는 화소 비율 1로 보고 인코딩 해상도를 쓴다.
-//    회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일(너비와 높이가 바뀐 비율)은 화소 비율이 아니라서 쓰지 않고 다음 단계로 간다.
-//    정수 부분이 0인 크기(16비트 밀지 않고 적은 틀린 값 등)는 쓰지 않는다.
-// 3. SPS의 화소 비율(VUI). pasp가 없고 tkhd에서 화소 비율을 알 수 없을 때 쓴다(ffmpeg로 만든 일부 파일).
+// The visible size before applying rotation. For the pixel aspect ratio, it uses the container value before the video data value (like FFmpeg, which uses pasp before the SPS).
+// 1. pasp: a value that writes the pixel aspect ratio directly. If it is 1:1, it is seen as square pixels.
+// 2. If the tkhd screen size differs from the encoded resolution, that size. By the specification, the sample picture is stretched to this size when shown. There are files that reflect the pixel aspect ratio only in tkhd, without pasp.
+//    A size that changed the width and height by the same factor is seen as pixel aspect ratio 1 and the encoded resolution is used.
+//    A file of a rotated video that wrote the size after rotation in tkhd (a ratio with width and height swapped) is not a pixel aspect ratio, so it is not used and moves to the next step.
+//    A size whose integer part is 0 (a wrong value written without the 16-bit shift and so on) is not used.
+// 3. The pixel aspect ratio (VUI) of the SPS. It is used when there is no pasp and the pixel aspect ratio cannot be known from tkhd (some files made with ffmpeg).
 function unrotatedSize(sample, header, turned) {
   const { width, height } = sample;
   if (sample.pasp) return [stretched(width, sample.pasp.h / sample.pasp.v), height];
   if (header && header.width >= 1 && header.height >= 1 && (header.width !== sample.width || header.height !== sample.height)) {
     const aspect = (header.exactWidth * height) / (header.exactHeight * width);
-    // 바뀐 꼴인지는 인코딩 해상도와, SPS 화소 비율을 반영한 보이는 너비 둘 다로 본다. 화소가 정사각형이 아닌 영상(1440x1080, 4:3)을
-    // 회전하고 tkhd에 회전한 뒤의 크기(1080x1920)를 적으면 인코딩 해상도와는 바뀐 꼴이 아니기 때문이다(#124).
+    // Whether it is in swapped form is judged by both the encoded resolution and the visible width that reflects the SPS pixel aspect ratio. If a video whose pixels are not square (1440x1080, 4:3) is
+    // rotated and tkhd is written with the size after rotation (1080x1920), it is not in swapped form against the encoded resolution (#124).
     const visibleWidth = sample.spsAspect ? (width * sample.spsAspect.h) / sample.spsAspect.v : width;
     const swappedWith = (shown) => Math.abs((header.exactWidth * shown) / (header.exactHeight * height) - 1) < 0.01;
     if (!(turned && (swappedWith(width) || swappedWith(visibleWidth)))) {
@@ -222,7 +222,7 @@ function unrotatedSize(sample, header, turned) {
   return [width, height];
 }
 
-// movieTurn은 mvhd 행렬의 회전이다. 트랙 행렬과 함께 걸리므로 둘 중 하나만 90·270도이면 너비와 높이가 바뀐다.
+// movieTurn is the rotation of the mvhd matrix. It is applied together with the track matrix, so if only one of the two is 90 or 270 degrees, the width and height are swapped.
 function readTrack(read, p, trak, movieTurn) {
   let header = null;
   let handler = null;
@@ -245,19 +245,19 @@ function readTrack(read, p, trak, movieTurn) {
     }
   }
   if (handler !== 'vide') return null;
-  // 인코딩 해상도(stsd)를 먼저 쓰고, 0이면 화면 크기(tkhd)를 쓴다.
+  // It uses the encoded resolution (stsd) first, and if 0, the screen size (tkhd).
   const width = sample?.width || header?.width || 0;
   const height = sample?.height || header?.height || 0;
   if (width === 0 || height === 0) return null;
-  // 보이는 크기. 화소 비율을 반영하고(unrotatedSize), 90·270도 회전이면 너비와 높이를 바꾼다.
-  // 인코딩 해상도가 0이라 tkhd 크기를 쓴 경우는 이미 보이는 크기라 화소 비율을 다시 곱하지 않는다.
+  // The visible size. It reflects the pixel aspect ratio (unrotatedSize), and for a 90 or 270 degree rotation swaps the width and height.
+  // If it used the tkhd size because the encoded resolution is 0, it is already the visible size, so the pixel aspect ratio is not multiplied again.
   const turned = Boolean(header?.quarterTurn) !== Boolean(movieTurn);
   const [shownWidth, shownHeight] = sample?.width && sample?.height ? unrotatedSize(sample, header, turned) : [width, height];
   const [displayWidth, displayHeight] = turned ? [shownHeight, shownWidth] : [shownWidth, shownHeight];
   return { width, height, displayWidth, displayHeight, enabled: header?.enabled ?? true, duration: header?.duration ?? 0 };
 }
 
-// 표지 그림이나 미리보기 트랙이 본편보다 클 수 있으므로, 켜진 트랙 중 재생 시간이 긴 트랙을 고르고 같으면 큰 쪽을 고른다.
+// A cover picture or preview track can be larger than the main one, so among the enabled tracks it picks the one with the longer duration, and if equal, the larger.
 function mainVideo(tracks) {
   return tracks.reduce((best, track) => {
     if (!best) return track;
@@ -266,7 +266,7 @@ function mainVideo(tracks) {
   }, null);
 }
 
-// UTF-16은 BOM이 있으면 따르고, 없으면 big endian으로 읽는다. 잘못된 글자는 U+FFFD로 바뀐다. fatal이면 대신 예외를 낸다.
+// For UTF-16, it follows the BOM if there is one, and otherwise reads as big endian. Wrong letters become U+FFFD. If fatal, it throws an exception instead.
 function decodeText(buffer, encoding = 'utf-8', { fatal = false } = {}) {
   let text;
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) text = new TextDecoder('utf-16le').decode(buffer);
@@ -279,7 +279,7 @@ function remember(tags, key, text) {
   if (text && !tags.has(key)) tags.set(key, text);
 }
 
-// ilst 항목 안의 data 박스를 읽는다. 앞 8바이트는 형식과 언어다. 형식 0·1은 UTF-8, 2는 UTF-16BE이고 나머지(숫자, 그림 등)는 글자가 아니다.
+// It reads the data box inside an ilst entry. The first 8 bytes are the type and the language. Types 0 and 1 are UTF-8, 2 is UTF-16BE, and the rest (numbers, pictures, and so on) are not text.
 function readDataBox(read, p, item) {
   for (const box of boxes(read, p, item.start, item.end, false)) {
     if (box.type !== 'data') continue;
@@ -294,7 +294,7 @@ function readDataBox(read, p, item) {
   return null;
 }
 
-// keys 박스의 값은 ilst 항목의 번호(1부터)와 짝이 된다.
+// The values of the keys box are paired with the numbers (from 1) of the ilst entries.
 function readKeys(read, box) {
   const length = box.end - box.start;
   if (length < 8 || length > MAX_TEXT) return [];
@@ -310,7 +310,7 @@ function readKeys(read, box) {
   return names;
 }
 
-// meta는 ISO 형식이면 앞에 0으로 찬 4바이트(버전·플래그)가 있고, QuickTime 형식이면 그 자리가 첫 자식의 크기라 0이 아니다.
+// In an ISO-format meta, there are 4 zero-filled bytes (version and flags) in front, and in QuickTime format that position is the size of the first child, so it is not 0.
 function readMeta(read, p, meta, tags) {
   const head = readPayload(read, meta, 4);
   if (!head) return;
@@ -323,19 +323,19 @@ function readMeta(read, p, meta, tags) {
   }
   for (const item of items) {
     const index = Buffer.from(item.type, 'latin1').readUInt32BE(0);
-    // keys가 있으면 항목 이름은 글자가 아니라 번호다.
+    // If keys exists, the entry name is a number, not text.
     const key = names ? names[index - 1] && `mdta:${names[index - 1]}` : `ilst:${item.type}`;
     if (key && (TITLE_SOURCES.includes(key) || COMMENT_SOURCES.includes(key))) remember(tags, key, readDataBox(read, p, item));
   }
 }
 
-// 옛 QuickTime 항목의 언어 코드가 0x400 미만(Macintosh 언어 코드)이거나 0x7FFF(지정 안 함)이면 글자는 Mac 인코딩이다(#69).
-// FFmpeg(libavformat/mov.c)도 이때 Mac 인코딩으로 읽는다. FFmpeg는 언어와 관계없이 MacRoman을 쓰지만, 여기서는 언어 코드에 맞는
-// Mac 인코딩 가운데 Node가 읽을 수 있는 것을 고른다. 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 간체 중국어(33) GBK,
-// 키릴 문자 언어(러시아어 32, 세르비아어 42, 마케도니아어 43, 불가리아어 44, 우크라이나어 45, 벨라루스어 46, 우즈베크어 47, 카자흐어 48,
-// 아제르바이잔어 키릴 49, 몰도바어 53, 키르기스어 54, 타지크어 55, 투르크멘어 56, 몽골어 키릴 58) Mac Cyrillic이고,
-// 나머지는 MacRoman이다(그리스어·히브리어·아랍어 등 Node에 없는 Mac 인코딩은 FFmpeg처럼 MacRoman으로 읽혀 글자가 틀릴 수 있다).
-// 0x400 이상(ISO 639-2/T 언어 코드)이면 UTF-8이다.
+// If the language code of an old QuickTime entry is under 0x400 (a Macintosh language code) or 0x7FFF (unspecified), the text is in a Mac encoding (#69).
+// FFmpeg (libavformat/mov.c) also reads it as a Mac encoding in this case. FFmpeg uses MacRoman regardless of language, but here it picks, among the Mac encodings that fit the language code,
+// one that Node can read. Japanese (11) Shift_JIS, Traditional Chinese (19) Big5, Korean (23) EUC-KR, Simplified Chinese (33) GBK,
+// Cyrillic-script languages (Russian 32, Serbian 42, Macedonian 43, Bulgarian 44, Ukrainian 45, Belarusian 46, Uzbek 47, Kazakh 48,
+// Azerbaijani Cyrillic 49, Moldavian 53, Kyrgyz 54, Tajik 55, Turkmen 56, Mongolian Cyrillic 58) Mac Cyrillic, and
+// the rest are MacRoman (Mac encodings Node does not have, such as Greek, Hebrew, and Arabic, are read as MacRoman like FFmpeg, so letters can be wrong).
+// If it is 0x400 or more (an ISO 639-2/T language code), it is UTF-8.
 const MAC_ENCODINGS = new Map([
   [11, 'shift_jis'],
   [19, 'big5'],
@@ -349,12 +349,12 @@ function classicEncoding(language) {
   return MAC_ENCODINGS.get(language) ?? 'macintosh';
 }
 
-// 한중일 인코딩. 두 바이트 글자가 우연히 U+0080~U+07FF의 UTF-8 글자가 되는 일이 흔하다(EUC-KR 치킨 C4 A1 C5 B2 = ġŲ).
+// CJK encodings. It is common for a two-byte letter to become a UTF-8 letter in U+0080 to U+07FF by chance (EUC-KR "chicken" C4 A1 C5 B2 = ġŲ).
 const CJK_ENCODINGS = new Set(['shift_jis', 'big5', 'euc-kr', 'gbk']);
 
-// Mac 언어 코드인데 내용이 올바른 UTF-8이면 UTF-8로 쓴 것으로 본다. 언어 코드를 0으로 두고 UTF-8로 쓰는 도구가 있어서다.
-// MacRoman·Mac Cyrillic의 ASCII 밖 글자는 UTF-8 규칙에 거의 맞지 않는다(café의 é = 0x8E).
-// 한중일 언어 코드는 UTF-8로 읽은 글자에 U+0800 이상(한중일 글자가 있는 범위)이 있고 그 아래의 ASCII 밖 글자가 없을 때만 UTF-8로 본다(1차 리뷰).
+// If it is a Mac language code but the content is valid UTF-8, it is seen as written in UTF-8. This is because some tools leave the language code as 0 and write UTF-8.
+// Non-ASCII letters of MacRoman and Mac Cyrillic hardly fit the UTF-8 rules (the é of café = 0x8E).
+// For a CJK language code, it is seen as UTF-8 only when the text read as UTF-8 has U+0800 or above (the range with CJK letters) and has no non-ASCII letter below it (first review).
 function decodeClassic(buffer, language) {
   const encoding = classicEncoding(language);
   if (encoding !== 'utf-8') {
@@ -362,14 +362,14 @@ function decodeClassic(buffer, language) {
     try {
       text = decodeText(buffer, 'utf-8', { fatal: true });
     } catch {
-      // UTF-8이 아니면 언어 코드의 인코딩으로 읽는다.
+      // If it is not UTF-8, it reads in the encoding of the language code.
     }
     if (text !== null && (!CJK_ENCODINGS.has(encoding) || !/[\u0080-\u07ff]/.test(text))) return text;
   }
   return decodeText(buffer, encoding);
 }
 
-// 옛 QuickTime 항목은 길이 2바이트, 언어 2바이트, 글자 순으로 여러 언어가 이어진다. 첫 값을 쓴다.
+// An old QuickTime entry has several languages in a row in the order 2-byte length, 2-byte language, text. It uses the first value.
 function readClassicText(read, box) {
   const length = box.end - box.start;
   if (length < 4 || length > MAX_TEXT) return null;
@@ -379,7 +379,7 @@ function readClassicText(read, box) {
   return decodeClassic(body.subarray(4, 4 + size), body.readUInt16BE(2));
 }
 
-// 3GPP 항목은 버전·플래그 4바이트, 언어 2바이트, 글자 순이다.
+// A 3GPP entry is in the order 4 bytes of version and flags, 2-byte language, text.
 function readGppText(read, box) {
   const length = box.end - box.start;
   if (length <= 6 || length > MAX_TEXT) return null;
@@ -401,16 +401,16 @@ function firstTag(tags, sources) {
   return null;
 }
 
-// 타겟 안 MP4/MOV 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
-// 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
-// 받다 만 파일이거나 길이가 표본 표와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
-// bitrate와 bitrateNote는 options.verifyBitrate가 true일 때만 채운다(#207). 끄면 둘 다 null이고 트랙의 표본 표(stts, 최대 8MB)와
-// 데이터 위치표(stco·co64)를 보지 않는다. 비트레이트를 쓰지 않는 중복·제품번호 찾기의 입출력을 줄이기 위해서다.
-// width, height는 인코딩 해상도이고, displayWidth, displayHeight는 화소 비율과 90·270도 회전을 반영한 보이는 크기다(#106, #113).
-// 화소 비율은 pasp, tkhd 화면 크기, SPS 순으로 고르고(unrotatedSize), 회전은 트랙(tkhd)과 영상 전체(mvhd) 행렬을 함께 본다.
-// 필요한 박스만 나눠 읽으므로 파일이 커도 내용 전체를 메모리에 올리지 않는다.
-// 경로나 입출력 문제, MP4/MOV가 아닌 파일, moov 앞이나 moov 자신이 잘린 파일, 읽은 구조의 손상은 FcError를 낸다.
-// 깨진 파일 판별은 checkMp4Structure가 한다. 이 함수는 moov 뒤의 mdat이 잘렸거나 0으로 채워진 파일은 잡지 못하고, 제목·코멘트(udta, meta) 쪽 손상은 찾은 값까지만 돌려준다.
+// It reads the metadata of an MP4/MOV file inside the target and returns { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }.
+// A value not found is null. duration is in seconds, and bitrate is the bits per second computed from the whole file size.
+// If the file is partly downloaded or the length differs greatly from the sample table, bitrate is null and the reason is written in bitrateNote (bitrateDoubt, #179).
+// bitrate and bitrateNote are filled only when options.verifyBitrate is true (#207). If off, both are null and the track's sample table (stts, up to 8MB) and
+// the data position table (stco, co64) are not looked at. This is to reduce the I/O of the duplicate and product-number search, which does not use the bitrate.
+// width and height are the encoded resolution, and displayWidth and displayHeight are the visible size reflecting the pixel aspect ratio and the 90 and 270 degree rotation (#106, #113).
+// The pixel aspect ratio is chosen in the order pasp, tkhd screen size, SPS (unrotatedSize), and for rotation it looks at the track (tkhd) and whole-movie (mvhd) matrices together.
+// It reads only the needed boxes in pieces, so even for a large file it does not load the whole content into memory.
+// A path or I/O problem, a file that is not MP4/MOV, a file truncated before moov or in moov itself, and damage in the structure read raise an FcError.
+// Broken-file judgment is done by checkMp4Structure. This function cannot catch a file whose mdat after moov is truncated or zero-filled, and for damage on the title and comment (udta, meta) side, it returns only the values found so far.
 function readMp4Metadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
@@ -437,7 +437,7 @@ function parseOpenedMp4(file, p, verifyBitrate) {
   const tags = new Map();
   for (const box of boxes(read, p, moov.start, moov.end, true)) {
     if (box.type === 'mvhd') movie = readMvhd(read, box);
-    // mvhd의 회전을 함께 반영해야 하므로 트랙은 moov를 다 훑은 뒤에 읽는다. mvhd가 트랙 뒤에 오는 파일도 있다.
+    // The mvhd rotation must also be reflected, so tracks are read after scanning all of moov. Some files have mvhd after the tracks.
     if (box.type === 'trak') traks.push(box);
     if (box.type === 'mvex') {
       fragmented = true;
@@ -449,7 +449,7 @@ function parseOpenedMp4(file, p, verifyBitrate) {
     if (box.type === 'meta') readMeta(read, p, box, tags);
   }
 
-  // mehd는 조각까지 합한 전체 길이이고 mvhd는 moov 안 부분의 길이이므로 mehd를 먼저 쓴다.
+  // mehd is the whole length including the fragments and mvhd is the length of the part in moov, so mehd is used first.
   const units = fragmentDuration || movie?.duration;
   const duration = units && movie?.timescale ? units / movie.timescale : null;
   const tracks = traks.map((box) => readTrack(read, p, box, movie?.quarterTurn)).filter(Boolean);
@@ -468,7 +468,7 @@ function parseOpenedMp4(file, p, verifyBitrate) {
   };
 }
 
-// start~end의 자식 박스를 모아 { list, complete }로 돌려준다. complete가 false면 중간에 틀린 헤더를 만났다. 크기 0은 끝 표시라 틀린 것이 아니다.
+// It gathers the child boxes of start to end and returns { list, complete }. If complete is false, a wrong header was met midway. Size 0 is an end marker, not a wrong one.
 function childBoxes(read, start, end) {
   const list = [];
   let offset = start;
@@ -481,7 +481,7 @@ function childBoxes(read, start, end) {
   return { list, complete: true };
 }
 
-// 데이터가 다른 파일에 있는 트랙인지 본다. dref 항목의 플래그 끝 비트가 1이면 이 파일 안이다. 위치 문자열이 없으면 가리킬 파일이 없으므로 이 파일로 본다.
+// It checks whether the track's data is in another file. If the last flag bit of a dref entry is 1, it is inside this file. If there is no location string, there is no file to point to, so it is seen as this file.
 function isExternalTrack(read, minf) {
   const dinf = findChild(read, minf, 'dinf');
   const dref = dinf && findChild(read, dinf, 'dref');
@@ -493,8 +493,8 @@ function findChild(read, parent, type) {
   return childBoxes(read, parent.start, parent.end).list.find((box) => box.type === type);
 }
 
-// 트랙의 데이터 위치표(stco, co64)를 본다. 문제가 없으면 null을, 있으면 { outside, reason }을 돌려준다.
-// outside는 위치표가 파일 끝 너머를 가리키는 경우다. 이 파일에 데이터가 없다는 뜻이므로 다른 트랙과 상관없이 손상이다.
+// It looks at the track's data position table (stco, co64). If there is no problem, it returns null; if there is, { outside, reason }.
+// outside is the case where the position table points past the end of the file. It means this file has no data, so it is damage regardless of other tracks.
 function checkTrack(read, trak, size) {
   const unsound = (reason) => ({ outside: false, reason });
   const mdia = findChild(read, trak, 'mdia');
@@ -514,11 +514,11 @@ function checkTrack(read, trak, size) {
   return last >= BigInt(size) ? { outside: true, reason: 'The data location table points past the end of the file. It may be truncated.' } : null;
 }
 
-// 표본 표(stts) 항목 수 한도. 한 항목이 8바이트라 8MB다. 가변 프레임 영상도 표본마다 한 항목이면 몇 시간 분량이 들어간다.
+// The limit on the number of sample table (stts) entries. One entry is 8 bytes, so it is 8MB. Even a variable-frame-rate video holds several hours' worth with one entry per sample.
 const MAX_STTS_ENTRIES = 1024 * 1024;
 
-// 트랙의 표본 표(stts)에 적힌 표본 길이의 합을 mdhd의 시간 단위로 나눠 초로 돌려준다(#179).
-// 헤더의 길이(mvhd, tkhd, mdhd)와 달리 실제 표본마다 적힌 값이다. 표가 없거나 비었거나 읽을 수 없으면 null이다(조각 파일은 moov의 표가 비어 있다).
+// It divides the sum of the sample lengths written in the track's sample table (stts) by the time unit of mdhd and returns seconds (#179).
+// Unlike the header lengths (mvhd, tkhd, mdhd), it is a value written for each real sample. If the table is absent, empty, or unreadable, it is null (a fragmented file has an empty table in moov).
 function trackDataSeconds(read, trak) {
   const mdia = findChild(read, trak, 'mdia');
   const mdhd = mdia && findChild(read, mdia, 'mdhd');
@@ -539,11 +539,11 @@ function trackDataSeconds(read, trak) {
   return units > 0 && Number.isSafeInteger(units) ? units / timescale : null;
 }
 
-// 머리글의 길이로 계산한 비트레이트를 믿을 수 없으면 사유를, 믿을 수 있으면 null을 돌려준다(#179).
-// - 데이터 위치표가 파일 끝 너머를 가리키면 받다 만 파일이다. 파일 크기가 적힌 길이보다 적어 비트레이트가 낮게 나온다.
-// - 적힌 길이가 표본 표 길이(트랙 중 가장 긴 것)의 2배에 60초를 더한 것보다 길면 길이가 깨졌다고 본다. 편집 목록의 빈 구간이나
-//   트랙끼리의 길이 차이는 이보다 작다. 적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
-// 조각 파일(mvex)은 moov의 표본 표가 비어 있어 길이를 맞춰 보지 않는다.
+// If the bitrate computed from the header length cannot be trusted, it returns the reason; if it can be trusted, null (#179).
+// - If the data position table points past the end of the file, it is a partly downloaded file. The file size is smaller than the written length and the bitrate comes out low.
+// - If the written length is longer than 2 times the sample table length (the longest among the tracks) plus 60 seconds, the length is seen as broken. The empty stretches of an edit list and
+//   the length differences between tracks are smaller than this. A written length that is shorter gives a high bitrate and is not wrongly caught as low quality, so it is not looked at.
+// A fragmented file (mvex) has an empty sample table in moov, so the length is not cross-checked.
 function bitrateDoubt(read, traks, size, duration, fragmented) {
   if (traks.some((trak) => checkTrack(read, trak, size)?.outside)) return 'The data location table points past the end of the file, so it may be a partial download and the bitrate cannot be trusted.';
   if (fragmented || !duration) return null;
@@ -554,13 +554,13 @@ function bitrateDoubt(read, traks, size, duration, fragmented) {
   return null;
 }
 
-// 넘어도 잘렸다고 볼 수 있는 박스. 다른 이름은 뒤에 덧붙은 데이터일 수 있다.
+// Boxes that can be seen as truncated if they go past the end. Other names may be data appended after.
 const CONTENT_BOXES = new Set(['moov', 'mdat', 'moof']);
 
-// MP4/MOV의 구조가 온전한지 본다. 손상이면 { status: 'broken', reason }을, 의심스러우면 { status: 'suspect', reason }을, 문제를 찾지 못하면 null을 돌려준다.
-// 입출력 문제와 읽기 한도 초과는 예외로 나간다.
-// 최상위 박스, moov 안의 mvhd와 trak, 트랙의 데이터 위치표까지 본다. 영상 데이터 자체는 읽지 않으므로 mdat 안의 손상은 찾지 못한다.
-// 재생에 필요한 구조가 온전하면 그 뒤의 패딩이나 덧붙은 데이터는 손상으로 보지 않는다. 압축된 moov(cmov)와 참조 무비(rmra)는 판단하지 않는다.
+// It checks whether the MP4/MOV structure is intact. For damage it returns { status: 'broken', reason }, for suspicion { status: 'suspect', reason }, and if it finds no problem, null.
+// I/O problems and exceeding the read limit go out as exceptions.
+// It looks at the top-level boxes, mvhd and trak inside moov, and up to the track's data position table. It does not read the video data itself, so damage inside mdat is not found.
+// If the structure needed for playback is intact, padding or appended data after it is not seen as damage. A compressed moov (cmov) and a reference movie (rmra) are not judged.
 function checkMp4Structure(target, real, p) {
   return withOpenFile(target, real, (file) => checkOpenedMp4(file, p));
 }
@@ -585,7 +585,7 @@ function checkOpenedMp4(file, p) {
     if (type === 'moof' || (type === 'styp' && offset === 0)) fragment = true;
     offset = box.end;
   }
-  // DASH, HLS의 미디어 조각은 moov 없이 moof만 있다. 초기화 파일이 따로 있으므로 이 파일만으로는 판단할 수 없다.
+  // A DASH or HLS media fragment has only moof without moov. The initialization file is separate, so it cannot be judged from this file alone.
   if (!moov && fragment) return { status: 'suspect', reason: 'The file has only fragments (moof) and no moov. It may be a streaming fragment.' };
   if (!moov) return broken('The moov box is missing. The file may not be fully downloaded or may be damaged.');
   const { list, complete } = childBoxes(read, moov.start, moov.end);

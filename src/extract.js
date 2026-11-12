@@ -8,19 +8,19 @@ const { scanTarGzSync } = require('./tarGzScan');
 const { readSevenZip } = require('./sevenZip');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
 
-// tar.exe로 읽는 형식. 겹 확장자를 먼저 본다.
+// Formats read with tar.exe. Layered extensions are looked at first.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;
 
-// 원본을 지워도 되는지 내용으로 확인하는 형식. 나머지는 지우지 않는다.
-// .tar.gz는 본문이 변해도 tar.exe가 성공하므로 Node로 gzip CRC와 tar 구조를 따로 확인한다(#197, tarGzScan.js). .tar는 체크섬이 없다. .tar.xz와 .tar.bz2는 tar 끝 표시 뒤를 읽지 않아 무결성 검사를 건너뛸 수 있다. RAR는 확인하지 못했다.
-// tar.exe는 확장자가 아니라 내용으로 형식을 고르므로 앞 바이트도 본다.
+// Formats where it confirms by content that the original may be deleted. It does not delete the rest.
+// For .tar.gz, tar.exe succeeds even if the body changed, so the gzip CRC and the tar structure are checked separately with Node (#197, tarGzScan.js). .tar has no checksum. .tar.xz and .tar.bz2 do not read past the tar end marker, so they can skip the integrity check. RAR was not confirmed.
+// tar.exe picks the format by content, not by extension, so it also looks at the leading bytes.
 const ZIP = /\.zip$/i;
 const TAR_GZ = /\.(?:tar\.gz|tgz)$/i;
 const SEVEN_ZIP = /\.7z$/i;
 const ZIP_LOCAL = Buffer.from('PK\x03\x04', 'latin1');
 const SEVEN_ZIP_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
 const SEVEN_ZIP_HEADER = 32;
-// zip 끝 레코드는 22바이트에 주석이 최대 65535바이트 붙는다.
+// The zip end record is 22 bytes, with a comment of up to 65535 bytes attached.
 const ZIP_END_SIZE = 22;
 const ZIP_TAIL = ZIP_END_SIZE + 65535;
 const ZIP_END = Buffer.from('PK\x05\x06', 'latin1');
@@ -34,20 +34,20 @@ const ZIP64_LOCATOR = 0x07064b50;
 const ZIP64_LOCATOR_SIZE = 20;
 const ZIP64_END = 0x06064b50;
 const ZIP64_END_SIZE = 56;
-// 이 글자가 든 이름은 tar.exe가 _로 바꾸거나 앞부분을 버린다.
+// tar.exe turns a name with these characters into _ or drops the front part.
 const CHANGED_NAME = /[:?*<>|"\x00-\x1f]/;
 
-// 압축 파일 이름에서 확장자를 뺀 폴더 이름. 압축 파일이 아니면 null이다.
+// The folder name of an archive name without the extension. If it is not an archive, it is null.
 function folderName(name) {
   const match = ARCHIVE.exec(name);
   if (!match || match.index === 0) return null;
   return name.slice(0, match.index);
 }
 
-// 타겟 아래 압축 파일마다 풀 새 폴더를 정한다. 파일은 건드리지 않는다.
-// 이미 있는 폴더와 합치지 않는다. 다시 실행해도 같은 내용을 또 풀지 않게 번호를 붙이지 않고 건너뛴다.
-// - extractions: 풀 압축 파일 ({ archive, dest, name })
-// - skipped: 다루지 않는 항목 ({ path, reason })
+// It decides the new folder to extract each archive under the target into. It does not touch files.
+// It does not merge with an existing folder. So that running again does not extract the same content again, it does not add a number and skips.
+// - extractions: archives to extract ({ archive, dest, name })
+// - skipped: items that are not handled ({ path, reason })
 function planExtractions(dir) {
   const access = grant(dir, ['read', 'write']);
   const plan = { target: access.target, extractions: [], skipped: [] };
@@ -66,7 +66,7 @@ function planExtractions(dir) {
       if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('Not extracted because it is a leftover from an earlier job.');
       if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Not extracted because it is inside a Windows system folder.');
       if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('Not extracted because it is inside a repository folder.');
-      // 풀린 폴더가 .git 같은 이름이 되면 다른 명령이 특별 취급한다. 잔여물 이름은 위에서 압축 파일 이름으로 걸러진다.
+      // If the extracted folder becomes a name such as .git, other commands treat it specially. Leftover names are already filtered out above as archive names.
       if (SYSTEM_FOLDER.test(name) || REPOSITORY_FOLDER.test(name)) throw new FcError(`Not extracted because the folder would get a special name: ${name}`);
       if (name.length > MAX_NAME) throw new FcError(`The folder name is too long: ${name}`);
       const archive = access.read(entry.path);
@@ -84,9 +84,9 @@ function planExtractions(dir) {
   return plan;
 }
 
-// 압축 파일 옆에 만들 임시 폴더(.fctl-new-<pid>-<시각>-<번호>)를 tar.exe에 -C로 넘기므로, 그 경로가 MAX_TAR_DIR(258자)를 넘으면
-// unzip이 거부한다(#228). 미리보기는 unzip을 부르지 않으므로 여기서 같은 판정을 하고, 임시 경로가 아닌 압축 파일 기준으로 알린다(#238).
-// 번호가 늘어날 자리로 zip의 임시 이름과 같은 글자 수(TEMP_SERIAL_RESERVE)를 남긴다. 알릴 때는 압축 파일 폴더를 몇 자로 줄여야 하는지 보인다(1차 리뷰).
+// The temporary folder to create next to the archive (.fctl-new-<pid>-<time>-<number>) is passed to tar.exe with -C, so if that path exceeds MAX_TAR_DIR (258 characters),
+// unzip refuses (#228). The preview does not call unzip, so it makes the same judgment here and reports based on the archive, not the temporary path (#238).
+// It leaves as many characters as the temporary name of zip (TEMP_SERIAL_RESERVE) as room for the number to grow. When reporting, it shows how many characters the archive's folder must be shortened to (first review).
 function rejectLongTempDir(archive) {
   const folder = path.dirname(path.resolve(archive));
   const name = `.fctl-new-${process.pid}-${Date.now()}-0`;
@@ -96,9 +96,9 @@ function rejectLongTempDir(archive) {
   }
 }
 
-// 항목 수와 파일 수를 돌려준다. 끝까지 받지 못한 파일은 오류 없이 항목 0개로 읽히므로 실패로 본다.
-// 링크와 장치 항목은 풀기 전에 거부한다. 링크를 따라 쓰는 것을 tar.exe에만 맡기지 않는다.
-// 풀린 크기가 남은 공간에 들어가는지도 본다(#77). dest는 풀 폴더이고, 임시 폴더도 같은 폴더 안에 만든다.
+// It returns the number of entries and files. A file that was not downloaded to the end reads as 0 entries without an error, so it is seen as a failure.
+// Links and device entries are refused before extracting. It does not leave writing through links to tar.exe alone.
+// It also checks whether the extracted size fits in the free space (#77). dest is the extraction folder, and the temporary folder is made in the same folder.
 function inspectArchive(archive, dest) {
   rejectLongTempDir(archive);
   const entries = archiveEntries(archive);
@@ -106,13 +106,13 @@ function inspectArchive(archive, dest) {
   const special = entries.find((entry) => !'-hd'.includes(entry[0]));
   if (special !== undefined) throw new FcError(`The archive contains an item such as a link or device. (type ${JSON.stringify(special[0])})`);
   ensureRoomToExtract(dest, entries);
-  // 끝이 /인 항목은 데이터가 있어도 폴더로 풀린다.
+  // An entry ending in / is extracted as a folder even if it has data.
   const files = entries.filter((entry) => entry[0] !== 'd' && !entry.trimEnd().endsWith('/')).length;
   return { entries: entries.length, files };
 }
 
-// 목록과 실제 결과가 다르면 일부를 잃은 것이다. tar.exe는 대소문자만 다른 항목을 오류 없이 덮어쓴다.
-// 쓸 수 없는 이름(con.txt, 끝이 점)이나 링크가 나오면 지우기도 어려우므로 결과로 내놓지 않는다.
+// If the list and the real result differ, some was lost. tar.exe overwrites entries that differ only in case without an error.
+// If an unusable name (con.txt, a trailing dot) or a link appears, it is also hard to delete, so it is not produced as a result.
 function checkExtracted(temp, fileCount) {
   let files = 0;
   for (const entry of fs.readdirSync(temp, { recursive: true, withFileTypes: true })) {
@@ -132,7 +132,7 @@ function removeTemp(temp, cause) {
   }
 }
 
-// 임시 폴더에 다 푼 뒤에 이름을 바꾼다. 실패해도 일부만 풀린 폴더가 결과처럼 남지 않는다.
+// It renames after extracting everything into a temporary folder. Even on failure, a partly extracted folder does not remain as a result.
 function extractOne(item, access) {
   const archive = access.read(item.archive);
   if (archive !== item.archive) throw new FcError(`The path changed after planning: ${item.archive} -> ${archive}`);
@@ -145,7 +145,7 @@ function extractOne(item, access) {
   try {
     unzip(archive, temp, { checkSpace: false });
     checkExtracted(temp, files);
-    // renameSync는 대상이 파일이면 덮어쓴다. 푸는 동안 같은 이름이 생겼을 수 있으므로 덮어쓰지 않는 이동을 쓴다.
+    // renameSync overwrites if the target is a file. The same name may have appeared during extraction, so it uses a move that does not overwrite.
     if (!moveWithoutOverwrite(temp, dest)) throw new FcError(`Not extracted because the name already exists: ${item.name}`);
   } catch (err) {
     removeTemp(temp, err instanceof FcError ? err : new FcError(failureReason(err)));
@@ -154,7 +154,7 @@ function extractOne(item, access) {
   return entries;
 }
 
-// extra 필드에서 id 항목의 데이터를 찾는다. 없으면 undefined, 구조가 어긋나면 null이다.
+// It finds the data of the id entry in the extra field. If absent, undefined; if the structure is off, null.
 function extraField(extra, id) {
   let pos = 0;
   while (pos + 4 <= extra.length) {
@@ -168,8 +168,8 @@ function extraField(extra, id) {
 
 const safeNumber = (big) => (big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : null);
 
-// UTF-8 표시가 없는 이름을 tar.exe처럼 OEM 코드페이지로 읽는다(#83). Node가 그 코드페이지를 모르거나 바이트가 맞지 않으면 null이다.
-// Node의 CP949는 확장 영역(UHC) 글자를 오류 없이 다른 글자로 읽는다. 이렇게 잘못 읽어도 풀린 결과에 그 이름이 없어 남기므로 지우지는 않는다.
+// It reads a name without a UTF-8 marker in the OEM code page like tar.exe (#83). If Node does not know that code page or the bytes do not fit, it is null.
+// Node's CP949 reads extended-area (UHC) letters as other letters without an error. Even if misread this way, the name is not in the extracted result so it is kept, so nothing is deleted.
 function decodeOemName(bytes) {
   const cp = oemCodePage();
   const label = { 949: 'euc-kr', 932: 'shift_jis', 936: 'gbk', 950: 'big5', 866: 'ibm866' }[cp] ?? (cp >= 1250 && cp <= 1258 ? `windows-${cp}` : null);
@@ -181,15 +181,15 @@ function decodeOemName(bytes) {
   }
 }
 
-// Zip64 끝 레코드를 읽어 항목 수와 중앙 디렉터리 위치를 돌려준다(#83). 믿을 수 없으면 사유 문자열이다.
-// locatorAt은 32비트 끝 레코드 바로 앞의 Zip64 위치 표시 자리다.
+// It reads the Zip64 end record and returns the entry count and the central directory position (#83). If it cannot be trusted, it is a reason string.
+// locatorAt is the position of the Zip64 locator right before the 32-bit end record.
 function readZip64End(target, archive, locatorAt) {
   const locator = readRange(target, archive, { offset: locatorAt, length: ZIP64_LOCATOR_SIZE });
   if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) return 'Kept because it may be a piece of a split archive.';
   const recordOffset = safeNumber(locator.readBigUInt64LE(8));
   const record = recordOffset === null ? Buffer.alloc(0) : readRange(target, archive, { offset: recordOffset, length: ZIP64_END_SIZE });
   if (record.length < ZIP64_END_SIZE || record.readUInt32LE(0) !== ZIP64_END) return 'Kept because the Zip64 structure could not be read.';
-  // 레코드 크기(앞 12바이트를 뺀 길이)만큼 지나면 바로 위치 표시가 나와야 한다.
+  // After passing the record size (the length minus the first 12 bytes), the locator must appear right away.
   const recordSize = safeNumber(record.readBigUInt64LE(4));
   if (recordSize === null || recordOffset + 12 + recordSize !== locatorAt) return 'Kept because the Zip64 structure does not match the file size.';
   if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0 || record.readBigUInt64LE(24) !== record.readBigUInt64LE(32)) return 'Kept because it may be a piece of a split archive.';
@@ -200,9 +200,9 @@ function readZip64End(target, archive, locatorAt) {
   return { total, directorySize, directoryOffset, directoryEnd: recordOffset };
 }
 
-// 항목이 파일 처음부터 중앙 디렉터리 앞까지 빈틈없이 이어지는지 본다. 목록에 없는 항목이 사이에 끼면
-// tar.exe는 풀지 않는데 원본을 지우게 된다(#83). 항목의 끝은 로컬 헤더, 압축된 본문, 데이터 설명자를 더한 자리다.
-// 앞에서부터 차례로 읽을 때 항목마다 파일을 다시 열지 않도록 1MB씩 읽어 둔다(항목이 수만 개인 zip).
+// It checks that the entries continue without a gap from the start of the file to the central directory. If an entry not in the list is in between,
+// tar.exe does not extract it but the original would be deleted (#83). The end of an entry is the local header, the compressed body, and the data descriptor added together.
+// So that the file is not reopened for each entry when reading in order from the front, it reads 1MB at a time (for a zip with tens of thousands of entries).
 function chunkReader(target, archive, chunk = 1 << 20) {
   let start = 0;
   let data = Buffer.alloc(0);
@@ -218,7 +218,7 @@ function chunkReader(target, archive, chunk = 1 << 20) {
 function checkZipLayout(target, archive, entries, directoryOffset) {
   const read = chunkReader(target, archive);
   const sorted = [...entries].sort((a, b) => a.offset - b.offset);
-  // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
+  // If the first entry does not start at the start of the file, there may be an entry in front that is not in the list. A zip whose offsets were fixed after concatenation is like this.
   if (sorted.length > 0 && sorted[0].offset !== 0) return 'Kept because there is data at the start of the zip that is not in the directory.';
   for (const [i, entry] of sorted.entries()) {
     const expected = i + 1 < sorted.length ? sorted[i + 1].offset : directoryOffset;
@@ -231,8 +231,8 @@ function checkZipLayout(target, archive, entries, directoryOffset) {
       continue;
     }
     if (gap === 0) return 'Kept because a zip entry has the data descriptor flag but no descriptor.';
-    // 데이터 설명자는 서명(4바이트)이 있을 수도 없을 수도 있고, 크기 칸이 4바이트나 8바이트다(tar.exe의 Zip64는 8바이트).
-    // 그래서 길이는 다음 항목까지의 거리로 정하고, CRC와 압축된 크기가 중앙 디렉터리와 같은지 본다.
+    // The data descriptor may or may not have a signature (4 bytes), and the size fields are 4 or 8 bytes (Zip64 of tar.exe uses 8 bytes).
+    // So the length is decided by the distance to the next entry, and it checks that the CRC and the compressed size match the central directory.
     const layout = { 12: [false, false], 16: [true, false], 20: [false, true], 24: [true, true] }[gap];
     if (!layout) return gap < 0 ? 'Kept because zip entries overlap.' : 'Kept because there is data between zip entries that is not in the directory.';
     const [signed, wide] = layout;
@@ -246,9 +246,9 @@ function checkZipLayout(target, archive, entries, directoryOffset) {
   return null;
 }
 
-// zip의 중앙 디렉터리를 읽어 항목 목록을 돌려준다. 믿을 수 없으면 사유 문자열을 돌려준다.
-// tar.exe는 끝에서 처음 만난 끝 레코드를 믿어서, 잘린 zip 안의 무압축 zip이나 이어 붙인 zip이면 일부만 풀고 성공한다.
-// 그래서 끝 레코드가 파일 끝에 딱 맞고 중앙 디렉터리가 바로 앞에 이어지는지 본다. Zip64면 Zip64 끝 레코드로 본다.
+// It reads the central directory of the zip and returns the entry list. If it cannot be trusted, it returns a reason string.
+// tar.exe trusts the first end record it meets from the end, so for an uncompressed zip inside a truncated zip, or a concatenated zip, it extracts only part and succeeds.
+// So it checks that the end record fits exactly at the end of the file and the central directory continues right before it. For Zip64, it looks at the Zip64 end record.
 function readZipEntries(target, archive, entryCount) {
   const size = fileSizeInside(target, archive);
   const tailOffset = Math.max(0, size - ZIP_TAIL);
@@ -259,7 +259,7 @@ function readZipEntries(target, archive, entryCount) {
   if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'Kept because there is other data after the zip end marker.';
   const disk = tail.readUInt16LE(at + 4);
   const directoryDisk = tail.readUInt16LE(at + 6);
-  // 이 디스크의 항목 수와 전체 항목 수가 다르면 tar.exe는 중앙 디렉터리 대신 로컬 헤더를 차례로 읽는다(1차 리뷰에서 실측).
+  // If the entry count of this disk differs from the total entry count, tar.exe reads the local headers in order instead of the central directory (measured in the first review).
   if (tail.readUInt16LE(at + 8) !== tail.readUInt16LE(at + 10)) return 'Kept because it may be a piece of a split archive.';
   let total = tail.readUInt16LE(at + 10);
   let directorySize = tail.readUInt32LE(at + 12);
@@ -268,7 +268,7 @@ function readZipEntries(target, archive, entryCount) {
   const locatorAt = end - ZIP64_LOCATOR_SIZE;
   const locator = locatorAt >= 0 ? readRange(target, archive, { offset: locatorAt, length: 4 }) : Buffer.alloc(0);
   if (locator.length === 4 && locator.readUInt32LE(0) === ZIP64_LOCATOR) {
-    // 32비트 끝 레코드의 값은 Zip64 표시(모두 1인 값)이거나 Zip64 끝 레코드와 같아야 한다.
+    // The values of the 32-bit end record must be the Zip64 marker (all-ones values) or equal to the Zip64 end record.
     const zip64 = readZip64End(target, archive, locatorAt);
     if (typeof zip64 === 'string') return zip64;
     if ((disk !== 0 && disk !== 0xffff) || (directoryDisk !== 0 && directoryDisk !== 0xffff)) return 'Kept because it may be a piece of a split archive.';
@@ -299,7 +299,7 @@ function readZipEntries(target, archive, entryCount) {
       name = decodeOemName(bytes);
       if (name === null) return 'Kept because there is an item whose name may differ depending on the code page.';
     }
-    // 32비트 칸이 모두 1이면 Zip64 extra 필드에 원래 크기, 압축된 크기, 로컬 헤더 위치, 디스크 번호 순으로 그 칸만 들어 있다.
+    // If a 32-bit field is all ones, the Zip64 extra field holds only that field, in the order original size, compressed size, local header position, and disk number.
     let size = directory.readUInt32LE(pos + 24);
     let compressed = directory.readUInt32LE(pos + 20);
     let offset = directory.readUInt32LE(pos + 42);
@@ -331,8 +331,8 @@ function readZipEntries(target, archive, entryCount) {
   return entries.map(({ name, size }) => ({ name, size }));
 }
 
-// 항목이 원래 이름 그대로 풀렸는지 본다. 내용은 남아도 이름은 원본에만 있을 수 있다.
-// 미리보기에서는 풀린 결과가 없으니 이름 글자만 본다. size가 없으면 크기는 보지 않는다.
+// It checks that the entry was extracted under its original name. Even if the content remains, the name may exist only in the original.
+// The preview has no extracted result, so it looks only at the name letters. If there is no size, it does not look at the size.
 function checkEntryNames(entries, dest, dryRun) {
   for (const { name, size } of entries) {
     if (CHANGED_NAME.test(name)) return `Kept because an item would get a different name when extracted: ${JSON.stringify(name)}`;
@@ -347,7 +347,7 @@ function checkEntryNames(entries, dest, dryRun) {
   return null;
 }
 
-// 원본을 지우면 안 되는 사유. 지워도 되면 null이다.
+// The reason the original must not be deleted. If it may be deleted, it is null.
 function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
   const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
@@ -358,8 +358,8 @@ function keepReason(access, item, entryCount, dryRun) {
   }
   if (SEVEN_ZIP.test(archive)) {
     if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return 'Kept because the content does not start as a 7z.';
-    // 헤더(압축된 헤더 포함)를 읽어 UTF-16 이름과 크기, 항목마다 CRC가 있는지 본다(#198). tar.exe는 첫 7z만 읽으므로
-    // 머리글이 가리키는 끝이 파일 끝과 맞는지, 본문 사이에 목록에 없는 데이터가 없는지도 본다.
+    // It reads the header (including a compressed header) and checks the UTF-16 names and sizes and whether each entry has a CRC (#198). tar.exe reads only the first 7z, so
+    // it also checks whether the end the header points to matches the end of the file and whether there is data between bodies that is not in the list.
     const size = fileSizeInside(access.target, archive);
     const scan = readSevenZip((offset, length) => readRange(access.target, archive, { offset, length }), size);
     if (scan.reason !== undefined) return scan.reason;
@@ -368,7 +368,7 @@ function keepReason(access, item, entryCount, dryRun) {
   }
   if (TAR_GZ.test(archive)) {
     if (head[0] !== 0x1f || head[1] !== 0x8b) return 'Kept because the content does not start as gzip.';
-    // gzip CRC·길이, tar 헤더 체크섬·끝 표시를 처음부터 끝까지 확인한다(#197). 항목 수는 tar.exe 목록과 같아야 한다.
+    // It checks the gzip CRC and length and the tar header checksum and end marker from start to end (#197). The entry count must equal the tar.exe list.
     const scan = scanTarGzSync(archive);
     if (scan.reason !== undefined) return scan.reason;
     if (scan.entries.length !== entryCount) return `Kept because the number of tar entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
@@ -377,8 +377,8 @@ function keepReason(access, item, entryCount, dryRun) {
   return 'Kept because it cannot be confirmed that the extracted content of this format is intact.';
 }
 
-// 푼 압축 파일이 그 뒤로 바뀌었으면 지우지 않는다. 지우는 것은 내용을 확인한 그 파일이어야 한다.
-// before는 풀기 전에 잡은 fileStamp다. 변경 시각까지 보므로 같은 크기로 제자리에서 다시 쓰고 수정 시각을 되돌려도 알아챈다.
+// If the extracted archive changed after that, it does not delete. What is deleted must be the very file whose content was checked.
+// before is the fileStamp taken before extracting. It also looks at the change time, so even a rewrite in place with the same size and a restored modification time is noticed.
 function removeArchive(access, item, before, dryRun) {
   const archive = access.delete(item.archive);
   if (archive !== item.archive) throw new FcError(`Not deleted because the path changed after extracting: ${item.archive} -> ${archive}`);
@@ -387,13 +387,13 @@ function removeArchive(access, item, before, dryRun) {
   try {
     remove([archive], { dryRun });
   } catch (err) {
-    // 휴지통 이동의 FcError는 사유만 담으므로 풀린 뒤라는 맥락을 붙인다(#185). 다른 오류는 removalFailure가 붙인다.
+    // The FcError of the Recycle Bin move carries only the reason, so the context that it is after extracting is added (#185). Other errors get it from removalFailure.
     if (err instanceof FcError) throw new FcError(`${dryRun ? 'Even if extracted, the original cannot be deleted.' : 'Extracted, but could not delete the original.'} ${err.message}`);
     throw err;
   }
 }
 
-// 미리보기는 실제로 풀지 않았으므로 "풀어도"로 알린다(#185 1차 리뷰).
+// The preview did not really extract, so it reports with "Even if extracted, ..." (#185 first review).
 function removalFailure(err, dryRun) {
   if (err instanceof FcError) return err.message;
   return `${dryRun ? 'Even if extracted, the original cannot be checked or sent to the Recycle Bin.' : 'Extracted, but could not check the original or send it to the Recycle Bin.'} (${err.code ?? err.status})`;
@@ -401,15 +401,15 @@ function removalFailure(err, dryRun) {
 
 function failureReason(err) {
   if (err instanceof FcError) return err.message;
-  // tar.exe의 오류는 코드페이지로 나와 한글이 깨지므로 종료 코드만 쓴다.
+  // The errors of tar.exe come out in the code page and Korean is garbled, so only the exit code is used.
   if (err.status !== undefined && err.status !== null) return `Could not extract. The archive may be damaged, encrypted, or contain a path that points outside the target or a name that cannot be used. (tar exit code ${err.status})`;
   return `Could not extract. (${err.code})`;
 }
 
-// 타겟 아래 압축 파일을 각각 새 폴더에 푼다. 풀려 나온 압축 파일을 다시 풀지는 않는다.
-// removeArchives를 주면 정상으로 풀린 압축 파일을 휴지통으로 보낸다. 건너뛰거나 실패한 압축 파일은 지우지 않는다.
-// 돌려주는 값: { target, dryRun, removeArchives, extracted, skipped, removed, kept, failed }.
-// extracted는 { archive, dest, name, entries }, removed는 경로, kept와 failed는 { archive, reason } 목록이다. 풀렸지만 지우지 못한 파일은 failed에 넣는다.
+// It extracts each archive under the target into a new folder. It does not extract again an archive that came out of an extraction.
+// If removeArchives is given, it sends archives that extracted normally to the Recycle Bin. It does not delete archives that were skipped or failed.
+// The returned value is { target, dryRun, removeArchives, extracted, skipped, removed, kept, failed }.
+// extracted is { archive, dest, name, entries }, removed is paths, and kept and failed are lists of { archive, reason }. A file that was extracted but could not be deleted goes in failed.
 function extractArchives(dir, options = {}) {
   return applyExtractions(planExtractions(dir), options);
 }
@@ -417,13 +417,13 @@ function extractArchives(dir, options = {}) {
 function applyExtractions(plan, { dryRun = false, removeArchives = false } = {}) {
   const result = { target: plan.target, dryRun, removeArchives, extracted: [], skipped: plan.skipped, removed: [], kept: [], failed: [] };
   const access = grant(plan.target, removeArchives ? ['read', 'write', 'delete'] : ['read', 'write']);
-  // 변경 시각이 없는 볼륨(exFAT 등)에서는 푼 뒤 같은 크기로 바뀐 압축 파일을 알아보지 못해 지우지 않는다(#184).
+  // On a volume without a change time (exFAT and so on), it cannot recognize an archive that changed to the same size after extracting, so it does not delete (#184).
   const volumeReason = removeArchives && plan.extractions.length > 0 ? stampVolumeReason(plan.target) : null;
   for (const item of plan.extractions) {
     let before;
     let entries;
     try {
-      // ReFS의 파일 번호는 2^53을 넘어 숫자로 받으면 정밀도를 잃으므로 bigint로 받는다.
+      // ReFS file IDs exceed 2^53 and would lose precision as numbers, so they are received as bigint.
       before = fileStamp(fs.lstatSync(item.archive, { bigint: true }));
       entries = dryRun ? inspectArchive(item.archive, path.dirname(item.dest)).entries : extractOne(item, access);
       result.extracted.push({ ...item, entries });

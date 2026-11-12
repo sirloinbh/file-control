@@ -15,7 +15,7 @@ concurrency:
 jobs:
   test:
     name: test (node ${{ matrix.node }})
-    # zip 테스트가 Windows 기본 tar.exe(bsdtar)를 쓰므로 Windows 러너에서 돌린다.
+    # The zip tests use the default Windows tar.exe (bsdtar), so they run on a Windows runner.
     runs-on: windows-latest
     strategy:
       fail-fast: false

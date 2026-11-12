@@ -27,8 +27,8 @@ async function settled(jobs, job, timeoutMs = 20000) {
   }
 }
 
-// 테스트용 서버: 작업 페이지에 POST /start(argv는 정해 둠)를 더한다.
-// POST는 서버 토큰을 폼으로 보내야 처리기까지 간다(#252). 토큰은 GET /token 화면의 숨은 필드에서 읽는다.
+// A server for tests: it adds POST /start (argv is fixed) to the job pages.
+// A POST must send the server token as a form to reach the handler (#252). The token is read from the hidden field of the GET /token screen.
 async function serve(t, jobs, argvForStart) {
   const routes = jobRoutes(jobs);
   routes.set('/start', { POST: (req, { available }) => startJobResponse(jobs, argvForStart(), { available }) });
@@ -41,7 +41,7 @@ async function serve(t, jobs, argvForStart) {
   return { get, post };
 }
 
-// 끝난 작업 객체(서버 없이 화면만 볼 때 쓴다).
+// A finished job object (used when looking only at the screen, without a server).
 function finished(fields) {
   return { id: 'abc', argv: ['flatten', 'D:\\a<b>'], status: 'done', startedAt: 0, endedAt: 65_000, lines: [], droppedLines: 0, outcome: null, error: null, ...fields };
 }
@@ -73,7 +73,7 @@ test('작업 시작 → 상태 페이지(진행·경과·새로 고침) → 동�
   assert.match(statusHtml, /Running\. Elapsed time \d+s/);
   assert.ok(statusHtml.includes(`fctl wait ${flag.replace(/\\/g, '\\')}`));
 
-  // 실행 중에는 결과 페이지를 열어도 상태 페이지로 돌아가고, 새 실행은 409로 거부한다.
+  // While running, opening the result page goes back to the status page, and a new run is refused with 409.
   const early = await get(`/job/result?id=${job.id}`);
   assert.strictEqual(early.status, 303);
   assert.strictEqual(early.headers.get('location'), location);
@@ -148,7 +148,7 @@ test('상태 페이지는 최근 진행 줄만 보이고 생략한 줄 수를 �
 });
 
 test('결과 페이지는 버린 중간 진행 줄 자리에 생략 표시를 넣는다 (#253 1차 리뷰)', () => {
-  // jobs.js는 처음 100줄을 남기고 그 뒤의 오래된 줄부터 버린다.
+  // jobs.js keeps the first 100 lines and drops the old lines after them.
   const lines = [...Array.from({ length: 100 }, (_, i) => `줄 ${i + 1}`), '줄 201', '줄 202'];
   const body = resultPage(clock, finished({ lines, droppedLines: 100, outcome: { command: 'flatten', report: '끝' } }));
   assert.match(body, /<summary>202 progress lines<\/summary>/);

@@ -7,14 +7,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-// 테스트가 사용자 휴지통을 건드리지 않게, commands.js를 불러오기 전에 휴지통 호출을 가짜로 바꿔 둔다.
+// So that the test does not touch the user's Recycle Bin, the Recycle Bin call is swapped for a fake before commands.js is imported.
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
-// 폴더 속성 읽기(FC_ROOT)에 끼어들 동작(#85). commands.js가 불러올 때의 함수를 쓰므로 테스트 안에서 다시 가짜로 바꿀 수 없다.
+// Behavior to intervene in the folder attribute reading (FC_ROOT) (#85). commands.js uses the function from when it was imported, so it cannot be swapped to a fake again inside a test.
 let onAttributes = null;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_ROOT !== undefined && onAttributes) onAttributes(options);
@@ -56,7 +56,7 @@ function make(dir, files) {
   }
 }
 
-// 파일과 빈 폴더 목록
+// The list of files and empty folders
 function tree(dir) {
   const all = fs.readdirSync(dir, { recursive: true, withFileTypes: true });
   return all
@@ -422,7 +422,7 @@ test('빈 폴더를 휴지통으로 보내지 못하면 접은 결과를 두고 
   assert.strictEqual(result.collapsed.length, 1);
   assert.match(result.failed[0].reason, /could not send the empty folder to the Recycle Bin.*\.fctl-old.*interactive session/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'f.txt'), 'utf8'), 'a/b/c/f.txt');
-  // 잔여 폴더는 다시 실행해도 접지 않는다.
+  // A leftover folder is not collapsed even if run again.
   assert.strictEqual(collapse(dir).collapsed.length, 0);
 });
 
@@ -471,7 +471,7 @@ test('collapse 명령은 잘못된 인자를 거부한다', () => {
   assert.throws(() => run(['collapse', dir, '--remove-archives']), /used only with extract-all/);
 });
 
-// #85: 접으면 폴더 속성이 맨 아래 폴더의 것이 되므로 숨김 폴더가 든 구간은 접지 않는다.
+// #85: collapsing makes the folder attributes those of the bottom folder, so it does not collapse a stretch that holds a hidden folder.
 test('collapse는 맨 위·가운데·맨 아래 중 숨김 폴더가 있는 구간을 접지 않고, 시스템 속성만 있으면 접는다 (#85)', { skip: !isWindows && 'Windows 폴더 속성' }, () => {
   const dir = tempDir();
   make(dir, ['top/mid/leaf/a.txt', 'vis/hidleaf/b.txt', 'hidtop/x/c.txt', 'p/hidmid/q/d.txt', 'sys/inner/e.txt', 'plain/inner/f.txt']);
@@ -488,7 +488,7 @@ test('collapse는 맨 위·가운데·맨 아래 중 숨김 폴더가 있는 구
   const result = collapse(dir);
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(tree(dir), ['hidtop/x/c.txt', 'p/hidmid/q/d.txt', 'plain/f.txt', 'sys/e.txt', 'top/a.txt', 'vis/hidleaf/b.txt']);
-  // 시스템 속성은 맨 아래 폴더와 함께 맨 위 이름으로 옮겨 간다.
+  // The system attribute moves along with the bottom folder to the top name.
   assert.match(childProcess.execFileSync('attrib', [path.join(dir, 'sys')], { encoding: 'utf8' }), /^\s*S\s/);
 });
 
@@ -511,7 +511,7 @@ test('collapse는 접을 구간이 없으면 폴더 속성을 읽지 않고, 있
   };
   assert.deepStrictEqual(planCollapse(dir).collapses, []);
   assert.strictEqual(reads, 0);
-  // 접을 구간이 여럿이어도 한 번만 읽는다.
+  // Even with several stretches to collapse, it reads only once.
   make(dir, ['c/d/e.txt', 'f/g/h.txt']);
   assert.strictEqual(planCollapse(dir).collapses.length, 2);
   assert.strictEqual(reads, isWindows ? 1 : 0);
@@ -527,13 +527,13 @@ test('collapse는 맨 아래 폴더 안쪽의 숨김 항목으로는 막지 않�
   };
   const result = collapse(dir);
   assert.deepStrictEqual(result.collapsed.map((item) => path.relative(dir, item.dest)), ['ok']);
-  // 맨 위 폴더의 부모(타겟 자신)와 맨 아래를 뺀 구간 폴더만 읽는다.
+  // It reads only the parent of the top folder (the target itself) and the stretch folders without the bottom one.
   assert.deepStrictEqual(listed, ['.', 'ok']);
   assert.deepStrictEqual(tree(dir), ['ok/.hid/b.txt', 'ok/a.txt', 'ok/secret.txt']);
   for (const name of ['ok/.hid', 'ok/secret.txt']) {
     const full = path.join(dir, name);
     const out = childProcess.execFileSync('attrib', [full], { encoding: 'utf8' });
-    // attrib는 경로 앞에 속성 글자(A, H 등)를 찍는다.
+    // attrib prints the attribute letters (A, H, and so on) in front of the path.
     assert.match(out.slice(0, out.indexOf(full)), /H/, name);
   }
 });

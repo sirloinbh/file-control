@@ -11,7 +11,7 @@ const { FcError } = require('../src/commands');
 const { planExtractions, applyExtractions, extractArchives, formatExtractions } = require('../src/extract');
 const { run } = require('../bin/fctl');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -20,7 +20,7 @@ function tempDir() {
   return fs.realpathSync.native(dir);
 }
 
-// 항목 이름과 플래그를 마음대로 넣을 수 있는 무압축 zip. { 이름: 내용 } 또는 { name, data, flags } 목록을 받는다.
+// An uncompressed zip where the entry names and flags can be put in freely. It takes { name: content } or a list of { name, data, flags }.
 function zipBuffer(entries) {
   const list = Array.isArray(entries) ? entries : Object.entries(entries).map(([name, data]) => ({ name, data }));
   const locals = [];
@@ -62,7 +62,7 @@ function zipBuffer(entries) {
   return Buffer.concat([...locals, directory, end]);
 }
 
-// 항목 종류를 마음대로 넣을 수 있는 tar. { name, data, type, link } 목록을 받는다.
+// A tar where the entry kind can be put in freely. It takes a list of { name, data, type, link }.
 function tarBuffer(entries) {
   const blocks = [];
   for (const { name, data = '', type = '0', link = '' } of entries) {
@@ -115,7 +115,7 @@ test('압축 파일마다 이름이 같은 새 폴더에 풀고 압축 파일은
 });
 
 test('코드페이지에 있는 한글 이름의 압축 파일과 항목을 푼다', (t) => {
-  // tar.exe는 코드페이지에 없는 문자를 처리하지 못해 영문 Windows에서는 시험할 수 없다.
+  // tar.exe cannot handle characters not in the code page, so this cannot be tested on English Windows.
   const codePage = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
   if (codePage !== '949') return t.skip(`코드페이지 ${codePage}에서는 한글을 처리하지 못한다`);
   const dir = tempDir();
@@ -326,7 +326,7 @@ test('Windows에서 다르게 해석되는 이름이 나오면 결과로 내놓�
   const result = extractArchives(dir);
   assert.strictEqual(result.extracted.length, 0);
   assert.strictEqual(result.failed.length, 3);
-  // 끝이 공백인 폴더는 tar.exe가 먼저 실패한다.
+  // A folder whose name ends in a space fails in tar.exe first.
   assert.deepStrictEqual(result.failed.map((failure) => /interpreted differently on Windows/.test(failure.reason)), [true, true, false]);
   assert.deepStrictEqual(tree(dir), ['device.zip', 'dot.zip', 'space.zip']);
 });
@@ -485,6 +485,6 @@ test('extract-all은 풀린 크기가 남은 공간보다 큰 압축 파일을 �
     assert.deepStrictEqual(result.extracted.map((item) => item.name), ['ok']);
     if (!dryRun) assert.strictEqual(fs.readFileSync(path.join(dir, 'ok', 'a.txt'), 'utf8'), 'A');
   }
-  // 풀지 못한 압축 파일은 지우지 않고, 임시 폴더도 남기지 않는다.
+  // An archive that could not be extracted is not deleted, and the temporary folder is not left either.
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['huge.zip', 'ok']);
 });

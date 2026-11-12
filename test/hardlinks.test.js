@@ -1,6 +1,6 @@
 'use strict';
 
-// 하드링크 정책(#48): 읽기·삭제·이름 바꾸기는 그대로 두고, 같은 파일의 다른 이름까지 바뀌는 내용 쓰기만 거부한다.
+// Hard link policy (#48): reading, deleting, and renaming are left as they are, and only content writes that would change other names of the same file are refused.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -11,12 +11,12 @@ const fc = require('../src/commands');
 const { grant } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
-// 임시 폴더가 AppData 아래라 grant가 보호 경로로 거부하므로 사용자 폴더를 가짜 경로로 바꿔 둔다(target.test.js와 같다).
+// The temporary folder is under AppData, so grant refuses it as a protected path; the user folder is swapped with a fake path (the same as target.test.js).
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 const HARD_LINKED = /changing the content of a hard link would also change \d+ other name\(s\) of the same file/;
 
-// outside/secret.txt와 같은 파일인 target/hard.txt를 만든다.
+// It makes target/hard.txt, the same file as outside/secret.txt.
 function fixture() {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fc-hard-')));
   test.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -45,11 +45,11 @@ test('cp --force는 하드링크를 덮어쓰지 않고, 합칠 폴더 안에 �
   const { root, outside, target, secret, hard, src } = fixture();
   assert.throws(() => fc.copy([src], hard, { force: true }), HARD_LINKED);
   assert.throws(() => fc.copy([src], hard, { force: true, dryRun: true }), HARD_LINKED);
-  // 폴더를 합치면 같은 이름의 파일을 제자리에 덮어써 다른 이름의 내용이 바뀐다.
+  // Merging folders overwrites the file of the same name in place and changes the content under the other name.
   fs.mkdirSync(path.join(root, 'from', 'sub'), { recursive: true });
   fs.writeFileSync(path.join(root, 'from', 'a.txt'), 'A');
   fs.writeFileSync(path.join(root, 'from', 'sub', 'b.txt'), 'B');
-  // cp는 있는 폴더 안에 같은 이름(target/from)으로 복사하므로, 그 폴더가 이미 있으면 합친다.
+  // cp copies under the same name (target/from) inside an existing folder, so if that folder already exists, it merges.
   fs.mkdirSync(path.join(target, 'from', 'sub'), { recursive: true });
   fs.linkSync(path.join(outside, 'secret.txt'), path.join(target, 'from', 'sub', 'b.txt'));
   for (const dryRun of [false, true]) {
@@ -66,7 +66,7 @@ test('cp --force는 여러 원본 중 하나라도 하드링크를 덮어쓰면 
   assert.throws(() => fc.copy([path.join(root, 'a.txt'), path.join(root, 'hard.txt')], target, { force: true }), HARD_LINKED);
   assert.deepStrictEqual(fs.readdirSync(target), ['hard.txt']);
   assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
-  // --force가 없으면 원래처럼 이미 있다고 알린다.
+  // Without --force, it reports that it already exists, as before.
   assert.throws(() => fc.copy([path.join(root, 'hard.txt')], target), /Already exists/);
 });
 
@@ -90,7 +90,7 @@ test('mv --force·rename·rm --permanent는 하드링크의 이름만 바꾸거�
   assert.strictEqual(fc.readFile(renamed), 'NEW');
   assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
   assert.strictEqual(fs.statSync(secret).nlink, 1);
-  // 링크 수가 1이 되면 다시 쓸 수 있다.
+  // If the link count becomes 1, it can be rewritten.
   fs.linkSync(secret, path.join(target, 'again.txt'));
   fc.remove([path.join(target, 'again.txt')], { permanent: true });
   fc.writeFile(secret, 'MINE', { force: true });
@@ -113,7 +113,7 @@ test('grant는 하드링크를 읽기·삭제로는 내주고 쓰기로는 내�
   assert.strictEqual(access.read('hard.txt'), hard);
   assert.strictEqual(access.delete('hard.txt'), hard);
   assert.throws(() => access.write('hard.txt'), HARD_LINKED);
-  // 새 이름과 하드링크가 아닌 파일은 그대로 쓸 수 있다.
+  // A new name and a file that is not a hard link can be written as is.
   fs.writeFileSync(path.join(target, 'plain.txt'), 'p');
   assert.strictEqual(access.write('plain.txt'), path.join(target, 'plain.txt'));
   assert.strictEqual(access.write('new.txt'), path.join(target, 'new.txt'));

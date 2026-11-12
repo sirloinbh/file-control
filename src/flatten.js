@@ -7,16 +7,16 @@ const { FcError, remove, hiddenOrSystemEntries, recycleEmptyFolders, recycleBinS
 const { extractProductNumbers } = require('./product');
 const { grant, walk, isInside } = require('./target');
 
-// NTFS 파일 이름 한도 (UTF-16 글자 수)
+// The NTFS file name limit (in UTF-16 characters)
 const MAX_NAME = 255;
 
-// toLowerCase는 문맥을 봐서 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만드므로 대문자로 맞춘다.
+// toLowerCase looks at context and makes ΑΣ and ασ, which are the same name on NTFS, different, so it uses upper case.
 function nameKey(name) {
   return process.platform === 'win32' ? name.toUpperCase() : name;
 }
 
-// 이름이 비어 있는지 본다. 계획한 이름뿐 아니라 실제 항목도 확인해야 8.3 짧은 이름(LONGFI~1.TXT)과의 겹침이 잡힌다.
-// 한도를 넘는 이름은 파일 시스템에 물어볼 수 없으니 그대로 돌려보내 호출한 쪽에서 건너뛰게 한다.
+// It checks whether the name is free. It must check not only the planned names but also the real items, so that an overlap with an 8.3 short name (LONGFI~1.TXT) is caught.
+// A name over the limit cannot be asked of the file system, so it is returned as is and the caller skips it.
 function isTaken(name, target, taken) {
   if (taken.has(nameKey(name))) return true;
   if (name.length > MAX_NAME) return false;
@@ -27,8 +27,8 @@ function isTaken(name, target, taken) {
   }
 }
 
-// a.mkv가 겹치면 a (2).mkv, a (3).mkv 순으로 비어 있는 이름을 찾는다.
-// 같은 이름이 많을 때 매번 2부터 다시 찾지 않도록 이름별 다음 번호를 기억한다.
+// If a.mkv collides, it looks for a free name in the order a (2).mkv, a (3).mkv.
+// So that it does not search from 2 again every time when there are many of the same name, it remembers the next number for each name.
 function freeName(name, target, taken, nextNumber) {
   if (!isTaken(name, target, taken)) return name;
   const { name: base, ext } = path.parse(name);
@@ -42,27 +42,27 @@ function freeName(name, target, taken, nextNumber) {
   }
 }
 
-// 폴더 이름의 끝이 확장자처럼 보이는지 본다. Movie.2021.1080p처럼 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
+// It checks whether the end of a folder name looks like an extension. An end that starts with digits, such as Movie.2021.1080p, is not seen as an extension.
 const EXTENSION_LIKE = /\.(?:[A-Za-z][A-Za-z0-9]{0,9}|7z)$/;
 
-// 이름에 정보가 없는 파일명. 이런 파일만 제품번호 폴더 이름으로 바꾼다. 계약서, ko 같은 이름은 지우면 정보를 잃는다.
+// File names with no information. Only such files are changed to the product-number folder name. Names such as "계약서" (Korean for "contract") and ko would lose information if removed.
 const GENERIC_NAME = /^(?:[A-Z]|VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
 
-// GENERIC_NAME에서 한 글자 이름을 뺀 것. a, o처럼 한 글자는 줄임말일 수 있어 제품번호가 아닌 폴더 이름으로는 바꾸지 않는다(#71).
+// GENERIC_NAME without the one-letter names. A one-letter name such as a or o may be an abbreviation, so it is not changed to a folder name that is not a product number (#71).
 const GENERIC_WORD = /^(?:VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
 
-// 폴더 이름에 이것들만 있으면 정보가 없다고 본다. 영상 종류·화질·코덱 같은 말과 흔한 폴더 이름이다.
+// If a folder name has only these, it is seen as having no information. Words such as video kind, quality, and codec, and common folder names.
 const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOTOS?|AUDIO|SAMPLES?|UNTITLED|영상|동영상|파일|DOWNLOADS?|SUBS?|SUBTITLES?|자막|NEW|FOLDER|TEMP|TMP|새|폴더|[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
 
-// PLAIN_FOLDER_WORD 중 화질·코덱만 나타내는 말. 혼자서는 이름이 되지 못하지만 같은 영상의 판을 구분한다(#150).
+// The words in PLAIN_FOLDER_WORD that show only quality or codec. Alone they cannot be a name, but they tell versions of the same video apart (#150).
 const QUALITY_WORD = /^(?:[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
 
-// Windows가 새 폴더에 붙이는 이름. 번호가 붙어도 정보가 없다.
+// The name Windows gives a new folder ("새 폴더", Korean for "New folder"). Even with a number attached, it has no information.
 const DEFAULT_FOLDER = /^(?:새 폴더|New folder)(?: \(\d+\))?$/i;
 
-// 정보 없는 파일명 대신 쓸 만한 폴더 이름이면 true(#71). 제품번호가 있거나, 위의 흔한 말이 아닌 단어가 하나라도 있으면 된다.
-// 전각 글자(Ｖｉｄｅｏ)는 NFKC로 맞춰 보고, 탐색기가 붙이는 번호·복사본 표시(Downloads (2), 새 폴더 - 복사본)는 떼고 본다(1차 리뷰).
-// 한 글자뿐인 폴더 이름(a/)은 줄임말일 수 있어 쓰지 않는다.
+// True if it is a usable folder name to use instead of a file name with no information (#71). It is enough that there is a product number or at least one word that is not one of the common words above.
+// Full-width letters are normalized with NFKC, and the number and copy marks Explorer adds (Downloads (2), "새 폴더 - 복사본", "New folder - copy") are stripped before looking (first review).
+// A folder name of only one letter (a/) may be an abbreviation, so it is not used.
 function informativeFolder(folder) {
   if (extractProductNumbers(folder).length > 0) return true;
   const plain = folder.normalize('NFKC').trim().replace(/(?:\s*\(\d+\)|\s+-\s+(?:복사본|Copy))+$/i, '');
@@ -72,49 +72,49 @@ function informativeFolder(folder) {
   return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
 }
 
-// 이름으로 고를 폴더인지 본다(#211). 쓸 만한 이름이라도 자막 폴더(English Subs/, Eng Sub/)는 자막만 담는 폴더라 고르지 않는다.
-// 다른 말이 함께 있는 폴더(Movie [Eng Sub]/)는 하드섭 영상의 제목일 수 있어 고른다(2차 리뷰).
-// 언어 이름만 있는 폴더(English/)는 여기서 고른다(#233). 자막만 담은 언어 폴더는 planFlatten이 자막의 폴더 목록에서 미리 뺀다.
+// It checks whether a folder is one to pick by name (#211). Even a usable name, a subtitle folder (English Subs/, Eng Sub/) holds only subtitles, so it is not picked.
+// A folder with other words together (Movie [Eng Sub]/) may be the title of a hard-subbed video, so it is picked (second review).
+// A folder with only a language name (English/) is picked here (#233). A language folder that holds only subtitles is removed in advance by planFlatten from the subtitle's folder list.
 function titleFolder(folder) {
   return informativeFolder(folder) && !subtitleFolder(folder);
 }
 
-// 접두어 사이에 함께 붙일 가까운 폴더인지 본다(#150). 쓸 만한 이름이거나 화질·코덱만 있는 이름(1080p, WEB-DL)이면 된다.
-// Subs·자막·Videos·새 폴더 같은 담는 폴더 이름은 붙이지 않는다. 붙이면 ABC-123/Subs/video.en.srt가 ABC-123/video.mp4와 짝을 잃는다.
+// It checks whether it is a nearby folder to attach together between prefixes (#150). It is enough that it is a usable name or a name with only quality or codec (1080p, WEB-DL).
+// Container folder names such as Subs, "자막" (subtitles), Videos, and "새 폴더" (new folder) are not attached. If attached, ABC-123/Subs/video.en.srt would lose its pair with ABC-123/video.mp4.
 function distinguishingFolder(folder) {
   if (informativeFolder(folder)) return true;
   const folderWords = words(folder.normalize('NFKC'));
   return folderWords.length > 0 && folderWords.every((word) => QUALITY_WORD.test(word));
 }
 
-// 정보 없는 파일명이 가까운 폴더 이름(CD1)을 받았을 때, 유일한 파일이 아닌 바깥 폴더의 제품번호나 제목을 앞에 붙인다(#150).
-// ABC-123/CD1/video.mp4, ABC-123/CD2/video.mp4는 ABC-123 CD1.mp4, ABC-123 CD2.mp4가 된다. 받은 이름에 제품번호가 있거나,
-// 바깥 이름이 이미 들어 있거나, 붙이면 길이 한도를 넘으면 받은 이름을 그대로 돌려준다.
-// outer는 받은 이름의 폴더보다 바깥 폴더들(가까운 쪽부터)이다. 파일 하나만 담은 바깥 폴더(Show/CD1/video.mp4의 Show)도 들어간다(#168).
+// When a file name with no information received the nearby folder name (CD1), it prepends the product number or the title of an outer folder that is not the only file (#150).
+// ABC-123/CD1/video.mp4 and ABC-123/CD2/video.mp4 become ABC-123 CD1.mp4 and ABC-123 CD2.mp4. If the received name has a product number,
+// the outer name is already in it, or attaching would exceed the length limit, it returns the received name as is.
+// outer is the folders outside the folder of the received name (from the nearest). An outer folder that holds only one file (Show of Show/CD1/video.mp4) is included too (#168).
 function withOuterFolder(fileName, detailed, outer) {
   const { name: base, ext } = path.parse(fileName);
   if (!GENERIC_WORD.test(words(base).join(''))) return detailed;
   const chosen = detailed.slice(0, detailed.length - ext.length);
   if (extractProductNumbers(chosen).length > 0) return detailed;
-  // 확장자가 붙은 바깥 폴더(ABC-123.mp4/)도 그 확장자를 떼고 쓴다(1차 리뷰).
+  // An outer folder with an extension attached (ABC-123.mp4/) is also used with that extension stripped (first review).
   const stems = folderStems(outer, ext);
   const pick = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? outerTitle(stems);
   if (pick === undefined || containsWords(words(chosen), words(pick).join(''))) return detailed;
-  // 바깥 이름이 받은 이름을 이미 담고 있으면(Show CD1/CD1/video.mp4) 겹치지 않게 바깥 이름과 사이 폴더만 쓴다(#178).
+  // If the outer name already contains the received name (Show CD1/CD1/video.mp4), it uses only the outer name and the in-between folders so they do not overlap (#178).
   if (containsWords(words(pick), words(chosen).join(''))) {
     const merged = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)}${ext}`;
     return merged.length <= MAX_NAME ? merged : detailed;
   }
-  // 바깥 폴더와 받은 이름 사이의 화질 폴더 등도 접두어처럼 붙인다(1차 리뷰). Show/1080p/CD1/video.mp4 → Show 1080p CD1.mp4
+  // Quality folders and the like between the outer folder and the received name are also attached like a prefix (first review). Show/1080p/CD1/video.mp4 -> Show 1080p CD1.mp4
   const full = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)} ${detailed}`;
   if (full.length <= MAX_NAME) return full;
   const short = `${pick.normalize('NFC')} ${detailed}`;
   return short.length <= MAX_NAME ? short : detailed;
 }
 
-// detailedName이 고른 폴더보다 바깥의 폴더를 가까운 쪽부터 돌려준다(#168). 예전에는 유일한 파일이 아닌 바깥 폴더만 넘겨
-// Show/CD1/video.mp4 하나만 있으면 CD1.mp4가 되어 Show를 잃었고, 같은 Show에 CD2가 있을 때(Show CD1.mp4)와 결과가 달랐다.
-// 고른 폴더를 찾지 못하면 예전처럼 유일한 파일이 아닌 바깥 폴더만 돌려준다.
+// It returns the folders outside the folder detailedName chose, from the nearest (#168). Before, it passed only an outer folder that was not the only file, so
+// a lone Show/CD1/video.mp4 became CD1.mp4 and lost Show, and the result differed from when the same Show had a CD2 (Show CD1.mp4).
+// If it cannot find the chosen folder, it returns only the outer folder that is not the only file, as before.
 function outerFolders(fileName, detailed, ancestors, soleCount) {
   const ext = path.extname(fileName);
   const chosen = detailed.slice(0, detailed.length - ext.length);
@@ -123,56 +123,56 @@ function outerFolders(fileName, detailed, ancestors, soleCount) {
   return ancestors.slice(index === -1 ? soleCount : index + 1);
 }
 
-// 파일과 같은 확장자로 끝나는 폴더 이름은 그 확장자를 떼고, 비었거나 점 폴더이거나 다른 확장자처럼 보이는 이름은 뺀다.
+// For a folder name that ends with the same extension as the file, it strips that extension, and it leaves out names that are empty, dot folders, or look like another extension.
 function folderStems(folders, ext) {
   return folders
     .map((folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder))
     .filter((stem) => stem.trim() !== '' && !stem.startsWith('.') && !EXTENSION_LIKE.test(stem));
 }
 
-// 자막 폴더 이름에 들어가는 말. English Subs/처럼 다른 말과 함께 있어도 자막 폴더로 본다.
+// Words that go in subtitle folder names. Even together with other words, as in English Subs/, it is seen as a subtitle folder.
 const SUBTITLE_WORD = /^(?:SUBS?|SUBTITLES?|자막)$/;
 
-// 언어 이름. 이 말만 있고 영상이 없는 폴더(English/, 한국어/)는 자막을 언어별로 나눠 담는 폴더로 보고 자막 폴더처럼 다룬다(2차 리뷰, #233).
+// Language names. A folder with only these words and no video (English/, "한국어/" Korean) is seen as a folder that holds subtitles split by language and is handled like a subtitle folder (second review, #233).
 const LANGUAGE_WORD = /^(?:ENGLISH|ENG|EN|KOREAN|KOR|KO|JAPANESE|JPN|JA|CHINESE|CHS|CHT|CHI|ZH|SPANISH|SPA|ES|FRENCH|FRE|FRA|FR|GERMAN|GER|DEU|DE|한국어|한글|영어|일본어|중국어)$/;
 
-// 자막 말이 든 폴더(Subs/, English Subs/, 자막/)면 true. 이 폴더와 그 안의 폴더는 자막만 담는다고 본다.
+// True if it is a folder with subtitle words (Subs/, English Subs/, "자막/" subtitles). This folder and the folders inside it are seen as holding only subtitles.
 function hasSubtitleWord(folder) {
   return words(folder.normalize('NFKC')).some((word) => SUBTITLE_WORD.test(word));
 }
 
-// 언어 이름만 있는 폴더(English/, 한국어/)면 true. 자막을 언어별로 나눠 담는 폴더이거나 언어별 영상(더빙판) 폴더다.
+// True if it is a folder with only a language name (English/, "한국어/" Korean). It is a folder that holds subtitles split by language or a folder of videos by language (dubbed versions).
 function languageFolder(folder) {
   const folderWords = words(folder.normalize('NFKC'));
   return folderWords.length > 0 && folderWords.every((word) => LANGUAGE_WORD.test(word));
 }
 
-// 자막 말과 언어 이름으로만 된 폴더(Subs/, Eng Sub/, English/)면 true.
+// True if it is a folder made only of subtitle words and language names (Subs/, Eng Sub/, English/).
 function containerFolder(folder) {
   const folderWords = words(folder.normalize('NFKC'));
   return folderWords.length > 0 && folderWords.every((word) => SUBTITLE_WORD.test(word) || LANGUAGE_WORD.test(word));
 }
 
-// 자막 말이 들고 자막·언어 말로만 된 폴더(Subs/, English Subs/, 자막/)면 true. Movie [Eng Sub]/처럼 제목이 든 폴더는 자막 폴더로 보지 않는다(2차 리뷰).
+// True if it has subtitle words and is made only of subtitle and language words (Subs/, English Subs/, "자막/" subtitles). A folder that holds a title, such as Movie [Eng Sub]/, is not seen as a subtitle folder (second review).
 function subtitleFolder(folder) {
   return hasSubtitleWord(folder) && containerFolder(folder);
 }
 
-// 고른 폴더보다 바깥에서 붙일 제목 폴더를 가까운 쪽부터 찾는다(#211). 언어 이름만 있는 폴더와 자막 폴더(English Subs/)는 다른 제목이 없을 때만 쓴다.
-// Show/English/CD1/video.mp4는 Show를 고르고, 사이의 English는 joinBetween이 붙여 Show English CD1이 된다(#233). English/CD1/video.mp4는 English를 붙인다.
+// It looks, from the nearest, for the title folder to attach from outside the chosen folder (#211). A folder with only a language name and a subtitle folder (English Subs/) are used only when there is no other title.
+// Show/English/CD1/video.mp4 picks Show, and the English in between is attached by joinBetween, making Show English CD1 (#233). English/CD1/video.mp4 attaches English.
 function outerTitle(stems) {
   return stems.find((stem) => titleFolder(stem) && !languageFolder(stem)) ?? stems.find(titleFolder) ?? stems.find(informativeFolder);
 }
 
-// folders(가까운 폴더부터) 중 자막 폴더 가운데 가장 바깥 것의 다음 위치(#211). 그보다 가까운 폴더는 자막 폴더 안이라 제목으로 고르지 않는다.
-// 자막 파일은 planFlatten이 자막 폴더를 미리 빼므로, 이 위치는 자막 폴더 안의 다른 파일(Subs/Fonts/font.ttf)에 쓰인다.
+// The position after the outermost one that is a subtitle folder among folders (from the nearest) (#211). Folders nearer than that are inside a subtitle folder, so they are not picked as a title.
+// For a subtitle file, planFlatten removes the subtitle folder in advance, so this position is used for other files inside a subtitle folder (Subs/Fonts/font.ttf).
 function titleStart(folders) {
   return folders.findLastIndex(subtitleFolder) + 1;
 }
 
-// chosen 뒤에 사이 폴더(between, 가까운 쪽부터) 중 붙일 이름을 바깥부터 붙인다(#150). 이미 들어 있는 이름(also 포함)은 다시 붙이지 않는다.
-// 자막 말이 든 폴더와 그 아래 폴더(Subs/English/)는 붙이지 않는다. 붙이면 ABC-123/Subs/English/video.en.srt가 영상과 접두어가 달라진다(1차 리뷰).
-// 언어 이름만 있는 폴더(Show/English/CD1/)는 언어별 영상 폴더일 수 있어 붙인다(#233). 자막만 담은 언어 폴더는 planFlatten이 미리 뺀다.
+// After chosen, it attaches, from the outside, the names to attach among the in-between folders (between, from the nearest) (#150). Names already in it (including also) are not attached again.
+// Folders with subtitle words and the folders below them (Subs/English/) are not attached. If attached, ABC-123/Subs/English/video.en.srt would get a different prefix from the video (first review).
+// A folder with only a language name (Show/English/CD1/) may be a folder of videos by language, so it is attached (#233). A language folder that holds only subtitles is removed in advance by planFlatten.
 function joinBetween(chosen, between, also = '') {
   let prefix = chosen.normalize('NFC');
   for (const stem of [...between].reverse()) {
@@ -184,12 +184,12 @@ function joinBetween(chosen, between, also = '') {
   return prefix;
 }
 
-// 공백·기호·대소문자 차이를 빼고 단어로 나눈다.
+// It drops differences of spaces, symbols, and case and splits into words.
 function words(name) {
   return name.normalize('NFC').toUpperCase().split(/[\s\-_.()[\]]+/).filter(Boolean);
 }
 
-// 폴더의 이어진 단어들을 붙인 것이 파일 이름과 같으면 true. 글자 단위로 찾으면 v와 movie, 2와 2021처럼 우연히 겹친다.
+// True if the folder's consecutive words joined together equal the file name. Searching by character would overlap by chance, as with v and movie, or 2 and 2021.
 function containsWords(folderWords, fileText) {
   return folderWords.some((_, start) => {
     let joined = '';
@@ -198,9 +198,9 @@ function containsWords(folderWords, fileText) {
   });
 }
 
-// 폴더명이 파일명보다 자세하면 true. 판단이 서지 않으면 파일 이름을 지키도록 false를 돌려준다.
-// 길이만으로는 고르지 않는다. 파일 이름의 정보(날짜, 화질, 언어, 번호)는 지우면 되돌릴 수 없다.
-// loose가 true면 정보 없는 파일명에 제품번호가 아닌 폴더 이름도 쓴다(#71).
+// True if the folder name is more detailed than the file name. If it cannot decide, it returns false so that the file name is kept.
+// It does not choose by length alone. The information in a file name (date, quality, language, number) cannot be restored once removed.
+// If loose is true, even a folder name that is not a product number is used for a file name with no information (#71).
 function isMoreDetailed(folder, base, loose = false) {
   const folderWords = words(folder);
   const baseWords = words(base);
@@ -210,95 +210,95 @@ function isMoreDetailed(folder, base, loose = false) {
   if (f.length > b.length && containsWords(folderWords, b)) return true;
   if (b.includes(f)) return false;
   if (extractProductNumbers(folder).length > 0 && GENERIC_NAME.test(b)) return true;
-  // video.mp4처럼 정보 없는 파일명은 제품번호로 인정되지 않는 폴더 이름(PART-01, BD-123)이라도 쓴다. 그대로 두면 폴더가 지워지며 그 정보를 잃는다(#71).
+  // A file name with no information, such as video.mp4, uses even a folder name not accepted as a product number (PART-01, BD-123). If left as is, the folder is deleted and the information is lost (#71).
   return loose && GENERIC_WORD.test(b) && titleFolder(folder);
 }
 
-// 파일 이름과 폴더 이름(가까운 폴더부터) 중 가장 자세한 이름을 확장자를 유지해 돌려준다.
-// start보다 가까운 폴더(자막 폴더 안의 폴더)는 정보 없는 파일명의 새 이름으로 고르지 않는다(#211). 제품번호 폴더는 그대로 고른다.
+// It returns the most detailed name among the file name and the folder names (from the nearest folder), keeping the extension.
+// Folders nearer than start (folders inside a subtitle folder) are not picked as the new name for a file name with no information (#211). A product-number folder is still picked.
 function detailedName(fileName, folders, start = 0) {
   const { name: base, ext } = path.parse(fileName);
-  // 확장자가 없으면 폴더 이름의 끝이 확장자가 될 수 있고(data + data.zip/), .env.local 같은 점 파일은 이름이 곧 정체다.
-  // .tar.gz는 폴더 이름을 붙이면 .gz만 남아 형식을 잃는다. Dr. Strange의 ". Strange"는 확장자가 아니다.
+  // If there is no extension, the end of the folder name could become the extension (data + data.zip/), and for a dot file such as .env.local the name is the identity.
+  // For .tar.gz, attaching the folder name leaves only .gz and loses the format. The ". Strange" of Dr. Strange is not an extension.
   if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
   const pick = (loose) => {
     let best = base;
     for (const [index, folder] of folders.entries()) {
       if (loose && index < start) continue;
-      // 폴더 이름에 같은 확장자가 들어 있으면(ABC-123.mp4/) 겹치지 않게 빼고, 다른 확장자면 이중 확장자가 되므로 쓰지 않는다.
+      // If the folder name contains the same extension (ABC-123.mp4/), it is removed so they do not overlap, and a different extension would make a double extension, so it is not used.
       const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-      // .trash-1000 같은 점 폴더 이름을 쓰면 숨김 파일이 된다.
+      // Using a dot folder name such as .trash-1000 would make a hidden file.
       if (!stem.startsWith('.') && !EXTENSION_LIKE.test(stem) && isMoreDetailed(stem, best, loose)) best = stem.normalize('NFC');
     }
     return best;
   };
-  // 제품번호 폴더를 먼저 찾는다. 없을 때만 정보 없는 파일명에 다른 폴더 이름을 쓰므로, 가까운 summer-2023/이 바깥 ABC-123/을 밀어내지 않는다.
+  // It looks for a product-number folder first. Only when there is none does it use another folder name for a file name with no information, so a nearer summer-2023/ does not push out an outer ABC-123/.
   const strict = pick(false);
   return (strict === base ? pick(true) : strict) + ext;
 }
 
-// 정보 없는 파일명이 폴더 안의 유일한 파일이 아니어서 폴더 이름으로 바꿀 수 없을 때, 가까운 폴더 이름을 앞에 붙인 이름을 돌려준다(#71).
-// ABC-123/video.mp4와 ABC-123/sample.mp4는 ABC-123 video.mp4, ABC-123 sample.mp4가 된다. 원래 이름을 남겨 서로 구분되고,
-// 본편과 샘플이 같은 이름을 다투지 않는다. 붙일 수 없으면 원래 이름을 돌려준다.
-// folders는 가까운 폴더부터 바깥 폴더 순이다. 가까운 폴더가 1080p/처럼 정보가 없으면 위로 올라가 처음 만나는 쓸 만한 폴더 이름을 붙인다(1차 리뷰).
-// 정보 없는지는 첫 점 앞부분으로 본다. video.en.srt도 video.mp4와 같은 접두어를 받아 자막 짝이 유지된다. 앞에 붙이기만 하므로 정보를 잃지 않는다.
+// When a file name with no information is not the only file in the folder and cannot be changed to the folder name, it returns a name with the nearest folder name prepended (#71).
+// ABC-123/video.mp4 and ABC-123/sample.mp4 become ABC-123 video.mp4 and ABC-123 sample.mp4. The original name is kept so they can be told apart,
+// and the main feature and the sample do not fight over the same name. If it cannot attach, it returns the original name.
+// folders is in order from the nearest folder to the outer folders. If the nearest folder has no information, like 1080p/, it goes up and attaches the first usable folder name it meets (first review).
+// Whether it has no information is judged by the part before the first dot. video.en.srt also gets the same prefix as video.mp4, so the subtitle pair is kept. It only prepends, so no information is lost.
 function prefixedName(fileName, folders) {
   const { name: base, ext } = path.parse(fileName);
   if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
   const b = words(base.split('.')[0]).join('');
   if (!GENERIC_NAME.test(b)) return fileName;
-  // 폴더 하나(문자열)나 없는 값도 받는다.
+  // It also accepts a single folder (a string) or a missing value.
   const stems = folderStems([folders].flat().filter((folder) => folder !== undefined), ext);
-  // detailedName처럼 제품번호 폴더를 먼저 찾아, ABC-123/Extras/video.mp4가 Extras 대신 ABC-123을 붙이게 한다(2차 리뷰).
-  // 제목 폴더는 자막 말이 든 폴더보다 바깥에서만 고른다(#211). Show/Subs/Forced/video.en.srt가 Forced를 받으면 영상과 짝을 잃는다.
+  // Like detailedName, it looks for a product-number folder first, so that ABC-123/Extras/video.mp4 attaches ABC-123 instead of Extras (second review).
+  // The title folder is picked only outside a folder with subtitle words (#211). If Show/Subs/Forced/video.en.srt received Forced, it would lose its pair with the video.
   const titles = stems.slice(titleStart(stems));
   const chosen = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? (GENERIC_WORD.test(b) ? titles.find(titleFolder) : undefined);
   if (chosen === undefined) return fileName;
-  // 고른 폴더와 파일 사이의 가까운 폴더 이름(1080p, CD1)도 바깥부터 함께 붙인다(#150). Show/1080p/video.mp4와 Show/720p/video.mp4가
-  // Show video.mp4, Show video (2).mp4가 되어 화질 구분을 잃지 않게 한다. 이미 들어 있는 이름은 다시 붙이지 않는다.
+  // The nearby folder names between the chosen folder and the file (1080p, CD1) are also attached together from the outside (#150). So that Show/1080p/video.mp4 and Show/720p/video.mp4
+  // do not become Show video.mp4 and Show video (2).mp4 and lose the quality distinction. Names already in it are not attached again.
   const inner = joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)));
   const prefixes = [inner, chosen.normalize('NFC')];
-  // 고른 폴더가 제품번호 폴더가 아니면 바깥의 제목 폴더도 withOuterFolder처럼 앞에 붙인다(#178). Show/CD1/video.mp4와 video.en.srt가
-  // Show CD1 video.mp4, Show CD1 video.en.srt가 되어, video.mp4 하나만 있을 때(Show CD1.mp4)처럼 Show를 잃지 않는다.
-  // 고른 폴더도 사이 폴더처럼 joinBetween으로 붙여, 바깥 이름이 이미 담고 있으면(Show CD1/CD1/1080p/) 다시 붙이지 않는다(1차 리뷰).
+  // If the chosen folder is not a product-number folder, the outer title folder is also prepended like withOuterFolder (#178). So that Show/CD1/video.mp4 and video.en.srt
+  // become Show CD1 video.mp4 and Show CD1 video.en.srt and do not lose Show, as with a lone video.mp4 (Show CD1.mp4).
+  // The chosen folder is also attached with joinBetween like the in-between folders, and if the outer name already contains it (Show CD1/CD1/1080p/), it is not attached again (first review).
   if (extractProductNumbers(chosen).length === 0) {
     const pick = outerTitle(titles.slice(titles.indexOf(chosen) + 1));
     if (pick !== undefined && !containsWords(words(inner), words(pick).join(''))) prefixes.unshift(joinBetween(pick, stems.slice(0, stems.indexOf(pick))));
   }
-  // 길이 한도는 파일 이름 전체가 아니라 접두어와 첫 점 앞부분으로 판단한다(1차 리뷰). video.mp4와 video.en.srt가 길이 차이로
-  // 서로 다른 접두어를 받으면 짝이 깨지기 때문이다. 확장자와 언어 표시 몫으로 PAIR_RESERVE자를 남긴다.
+  // The length limit is judged not by the whole file name but by the prefix and the part before the first dot (first review). Because if video.mp4 and video.en.srt received
+  // different prefixes because of a length difference, the pair would break. It leaves PAIR_RESERVE characters for the extension and the language mark.
   const stem = fileName.split('.')[0];
   const prefix = prefixes.find((candidate) => candidate.length + 1 + stem.length + PAIR_RESERVE <= MAX_NAME) ?? prefixes.at(-1);
   return `${prefix} ${fileName}`;
 }
 
-// 접두어를 고를 때 첫 점 뒤(확장자, .en.forced 같은 언어 표시)에 남겨 두는 글자 수(#178).
+// The number of characters left after the first dot (the extension and a language mark such as .en.forced) when choosing a prefix (#178).
 const PAIR_RESERVE = 30;
 
-// mv·zip이 실패했을 때 남긴 잔여물. 오류 메시지가 알려 준 위치에 그대로 있어야 복구할 수 있으니 옮기지 않는다.
+// Leftovers left when mv or zip failed. They must stay at the location the error message told in order to be recovered, so they are not moved.
 const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+-\d+(?:\.|$)/;
 
-// Windows가 관리하는 폴더. 안쪽 파일을 꺼내면 복원 정보와 함께 망가진다.
+// A folder Windows manages. Taking out the files inside breaks them together with the restore information.
 const SYSTEM_FOLDER = /^(?:\$RECYCLE\.BIN|System Volume Information)$/i;
 
-// 폴더를 꾸미거나 미리보기를 담아 두는 파일. 그 폴더에서만 뜻이 있어, 옮기면 타겟 바로 아래에 desktop (2).ini처럼 쌓인다(#65).
-// 옮기지 않고 파일 수에도 넣지 않으며, 폴더가 비면 폴더와 함께 휴지통으로 간다.
+// Files that decorate a folder or hold previews. They mean something only in that folder, so moving them piles them up right under the target like desktop (2).ini (#65).
+// They are not moved and are not counted in the file count, and if the folder becomes empty they go to the Recycle Bin with the folder.
 const FOLDER_METADATA = /^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i;
 const FOLDER_METADATA_NAMES = ['desktop.ini', 'thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', '.ds_store'];
 
 const isFolderMetadata = (entry) => entry.type === 'file' && FOLDER_METADATA.test(path.basename(entry.relative));
 
-// 이름만으로 프로그램이 쓰는 폴더로 보는 것. 프로그램이 안쪽 구조와 이름으로 파일을 찾으므로 흩어지면 동작하지 않는다(#65).
+// What is seen as a folder a program uses by name alone. A program finds files by the inner structure and names, so it does not work if scattered (#65).
 const PROGRAM_FOLDER = /^(?:node_modules|bower_components|__pycache__|site-packages)$/i;
 
-// 있으면 그 폴더를 프로젝트나 파이썬 가상환경 폴더로 보는 파일.
+// Files that, if present, make the folder a project or Python virtual environment folder.
 const PROJECT_FILE = /^(?:package\.json|pyvenv\.cfg|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|CMakeLists\.txt|composer\.json|Gemfile|.+\.(?:sln|csproj|vcxproj|fsproj|vbproj))$/i;
 
-// 옮기지 않고 통째로 남길 폴더를 { 상대경로 -> 사유 }로 돌려준다(#65). 프로그램 폴더, 프로젝트 폴더, 실행 파일과 DLL이 함께 든 폴더,
-// 숨김 속성 폴더다. 안쪽만 남기고 옆 파일을 꺼내도 프로그램이 깨지므로 그 폴더 아래 전체를 남긴다.
-// 시스템 속성만 있는 폴더는 폴더 아이콘을 꾸밀 때 흔히 붙으므로(desktop.ini와 함께) 일반 폴더로 다룬다(1차 리뷰).
-// attributes는 hiddenOrSystemEntries가 돌려준 { 상대경로 -> 속성 비트(숨김 2, 시스템 4) }다.
-// 타겟 자신이 이런 폴더이거나 프로그램 폴더 안이면 모든 하위 폴더가 프로그램의 일부라 거부한다.
+// It returns the folders to leave whole without moving, as { relative path -> reason } (#65). Program folders, project folders, folders that hold an executable and a DLL together,
+// and folders with the hidden attribute. Even if only the inside is kept and the files beside it are taken out, the program breaks, so everything under that folder is kept.
+// A folder with only the system attribute is treated as an ordinary folder, because that attribute is often added when decorating a folder icon (together with desktop.ini) (first review).
+// attributes is the { relative path -> attribute bits (hidden 2, system 4) } returned by hiddenOrSystemEntries.
+// If the target itself is such a folder or is inside a program folder, every subfolder is part of the program, so it refuses.
 function guardedFolders(target, entries, attributes) {
   for (let dir = target; ; dir = path.dirname(dir)) {
     if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`Not handled because it is inside a program folder: ${dir}`);
@@ -334,10 +334,10 @@ function guardedFolders(target, entries, attributes) {
   return guarded;
 }
 
-// 프로젝트 표시 파일이나 실행 파일·DLL이 우연히 놓이기 쉬운 곳인지 본다(#148). 드라이브 루트, 사용자 폴더와 그 위,
-// 사용자 폴더 바로 아래(다운로드, 바탕화면, 문서 등), OneDrive 폴더 바로 아래(OneDrive\Desktop 등)는 내려받은 package.json이나
-// 설치 파일이 놓여도 프로젝트로 보지 않는다. 그 아래 폴더(다운로드\myproj)부터는 본다.
-// 사용자가 만든 폴더(사용자 폴더\myproj)는 터미널 기본 위치라 프로젝트가 흔히 생기므로 정해진 이름만 건너뛴다(1차 리뷰).
+// It checks whether it is a place where a project marker file or an executable and DLL easily land by accident (#148). A drive root, the user folder and above,
+// directly under the user folder (Downloads, Desktop, Documents, and so on), and directly under the OneDrive folder (OneDrive\Desktop and so on) are not seen as a project even if a downloaded package.json or
+// an installer is there. From the folder below that (Downloads\myproj), it looks.
+// A folder the user made (user-folder\myproj) is the terminal's default location where projects often appear, so only the fixed names are skipped (first review).
 function isCommonPlace(dir, home) {
   if (dir === path.dirname(dir)) return true;
   if (!home) return false;
@@ -348,13 +348,13 @@ function isCommonPlace(dir, home) {
   return path.relative(home, path.dirname(parent)) === '' && ONEDRIVE.test(path.basename(parent)) && ONEDRIVE_FOLDER.test(name);
 }
 
-// 사용자 폴더 바로 아래의 기본 폴더. 디스크의 이름은 한국어 Windows에서도 영어다.
+// The default folders directly under the user folder. The disk names are English even on Korean Windows.
 const HOME_FOLDER = /^(?:Downloads|Desktop|Documents|Pictures|Videos|Music|Favorites|Links|Saved Games|Searches|Contacts|3D Objects)$/i;
-// OneDrive 폴더(OneDrive, OneDrive - 회사)와 그 바로 아래에서 동기화하는 기본 폴더. OneDrive 쪽은 표시 언어 이름으로 만들어진다.
+// The OneDrive folder (OneDrive, OneDrive - Company) and the default folders it syncs directly under it. The OneDrive side is made with display language names.
 const ONEDRIVE = /^OneDrive(?:$| - )/i;
 const ONEDRIVE_FOLDER = /^(?:Desktop|Documents|Pictures|Videos|Music|Attachments|바탕 화면|문서|사진|동영상|음악|첨부 파일)$/i;
 
-// 사용자 폴더의 실제 경로. 알 수 없으면 빈 문자열을 돌려주고, 그때는 드라이브 루트만 건너뛴다(더 많이 막는 쪽).
+// The real path of the user folder. If unknown, it returns an empty string, and then it skips only drive roots (the side that blocks more).
 function realHome() {
   let home;
   try {
@@ -370,9 +370,9 @@ function realHome() {
   }
 }
 
-// 타겟의 위 폴더가 프로젝트 폴더(표시 파일이 바로 안에 있음)나 프로그램 폴더(실행 파일과 DLL이 함께 있음)면 거부한다(#148).
-// myproj/package.json이 있을 때 myproj/src를 흩으면 프로젝트가 깨지고, 저장소가 없으면 되돌릴 수 없다.
-// 위 폴더를 모두 보되 isCommonPlace인 곳은 건너뛴다. 단계 수로 자르지 않는다(myproj/src/a/b도 막는다).
+// If a folder above the target is a project folder (a marker file directly inside) or a program folder (an executable and a DLL together), it refuses (#148).
+// If myproj/src is scattered when myproj/package.json exists, the project breaks, and without a repository it cannot be undone.
+// It looks at all folders above but skips the ones where isCommonPlace is true. It does not cut by number of levels (myproj/src/a/b is also blocked).
 function rejectProjectAncestor(target) {
   const home = realHome();
   for (let dir = path.dirname(target); ; dir = path.dirname(dir)) {
@@ -392,7 +392,7 @@ function rejectProjectAncestor(target) {
   }
 }
 
-// 경로가 남길 폴더 아래면 가장 바깥의 그 폴더 상대경로를, 아니면 undefined를 돌려준다.
+// If the path is under a folder to leave, it returns the relative path of the outermost such folder; otherwise undefined.
 function guardOf(relative, guarded) {
   const parts = relative.split(path.sep);
   for (let depth = 1; depth <= parts.length; depth++) {
@@ -402,8 +402,8 @@ function guardOf(relative, guarded) {
   return undefined;
 }
 
-// 파일이 그 폴더(하위 포함)의 유일한 항목일 때만 폴더 이름을 쓸 수 있다. 여럿이면 ep1, ep2 같은 구분을 잃는다.
-// parts는 이름을 고를 때 보는 폴더들(바깥 폴더부터)이다. 자막 파일은 subtitlePlacement가 정한 폴더들이다(#233).
+// A folder name can be used only when the file is the only item in that folder (including below). If there are several, the distinction such as ep1 and ep2 is lost.
+// parts are the folders looked at when choosing a name (from the outer folder). For a subtitle file, they are the folders subtitlePlacement decided (#233).
 function soleFolders(parts, fileCounts) {
   const folders = [];
   for (let depth = parts.length; depth > 0; depth--) {
@@ -413,17 +413,17 @@ function soleFolders(parts, fileCounts) {
   return folders;
 }
 
-// 폴더 경로 비교용 키. Windows처럼 대소문자와 NFC/NFD 차이를 같은 폴더로 본다.
+// A key for comparing folder paths. Like Windows, it treats differences of case and NFC/NFD as the same folder.
 function folderKey(parts) {
   return parts.join(path.sep).normalize('NFC').toUpperCase();
 }
 
-// 자막 파일 확장자(#233). 자막 폴더 안의 이 파일은 영상 쪽 폴더 구조에 맞춰 이름을 고른다.
+// Subtitle file extensions (#233). A file of this kind inside a subtitle folder chooses its name to match the video-side folder structure.
 const SUBTITLE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.sub', '.idx', '.vtt', '.smi', '.sami', '.sup']);
 
-// 영상 파일이 하위까지 든 폴더의 키와 그 폴더의 실제 이름 Map(#233). 영상이 든 언어 폴더(Show/English/video.mp4)는 자막 폴더가 아니라 더빙판 폴더로 본다.
+// The key of a folder that holds video files, including below, and a Map of that folder's real names (#233). A language folder that holds video (Show/English/video.mp4) is seen as a dubbed-version folder, not a subtitle folder.
 function videoFolders(entries) {
-  // productName이 이 모듈을 불러오므로 쓸 때 불러온다.
+  // productName imports this module, so it is imported when used.
   const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
   const folders = new Map();
   for (const entry of entries) {
@@ -436,14 +436,14 @@ function videoFolders(entries) {
   return folders;
 }
 
-// 자막 파일의 이름을 고를 폴더들(바깥 폴더부터)과 이름 뒤에 붙일 구분 폴더 이름을 돌려준다(#233).
-// 가장 바깥 자막 폴더(Subs/, English Subs/, 영상 없는 언어 폴더 English/)를 빼고, 그 안의 폴더는 영상이 든 같은 경로의 폴더가 영상 쪽에 있는 데까지 쓴다.
-// Show/Subtitles/Season 1/video.srt는 Show/Season 1/에 영상이 있으면 Show/Season 1/video.srt처럼 이름을 고른다.
-// 맞춘 폴더 이름은 영상 쪽 폴더의 표기(videos의 값)를 써서, 대소문자가 달라도(1080P/cd1) 영상과 같은 접두어를 받는다(1차 리뷰).
-// 영상이 없는 폴더(Show/Extras/poster.jpg)에는 맞추지 않는다. 맞추면 영상(Show video.mp4)과 접두어가 달라진다(1차 리뷰).
-// 그보다 안쪽 폴더 중 쓸 만한 이름(Forced/, Full/)은 이름 뒤에 점으로 붙여(Show video.Forced.srt) 영상과 짝을 지키며 서로 구분한다.
-// 제품번호 폴더(Subs/ABC-123/)는 붙이지 않고 폴더로 남겨 예전처럼 먼저 고른다(1차 리뷰). 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 붙이지 않는다.
-// 자막 폴더가 없으면 폴더를 그대로 돌려준다.
+// It returns the folders to choose the name of a subtitle file (from the outer folder) and the distinguishing folder names to attach after the name (#233).
+// It leaves out the outermost subtitle folder (Subs/, English Subs/, a language folder without video, English/), and for the folders inside it uses them up to where a folder of the same path that holds video exists on the video side.
+// If Show/Season 1/ has video, Show/Subtitles/Season 1/video.srt chooses its name like Show/Season 1/video.srt.
+// The matched folder name uses the spelling of the video-side folder (the value of videos), so even if the case differs (1080P/cd1), it gets the same prefix as the video (first review).
+// It does not match to a folder with no video (Show/Extras/poster.jpg). If matched, the prefix would differ from the video (Show video.mp4) (first review).
+// Among the folders deeper than that, a usable name (Forced/, Full/) is attached after the name with a dot (Show video.Forced.srt), keeping the pair with the video while telling them apart.
+// A product-number folder (Subs/ABC-123/) is not attached and is left as a folder, picked first as before (first review). An inner folder made only of subtitle and language words (Subs/English/) is not attached.
+// If there is no subtitle folder, it returns the folders as they are.
 function subtitlePlacement(parts, videos) {
   const container = parts.findIndex((part, index) => subtitleFolder(part) || (languageFolder(part) && !videos.has(folderKey(parts.slice(0, index + 1)))));
   if (container === -1) return { parts, tags: [] };
@@ -460,8 +460,8 @@ function subtitlePlacement(parts, videos) {
   return { parts: [...mirrored, ...products], tags };
 }
 
-// 고른 이름에 구분 폴더 이름(tags)을 첫 점 앞부분 뒤에 점으로 붙인다(#233). Show video.en.srt → Show video.Forced.en.srt
-// 폴더 이름으로 바꾼 이름(Show Season 1.srt)은 확장자 앞에 붙인다.
+// It attaches the distinguishing folder name (tags) to the chosen name with a dot after the part before the first dot (#233). Show video.en.srt -> Show video.Forced.en.srt
+// A name changed to the folder name (Show Season 1.srt) gets it before the extension.
 function withTags(detailed, original, tags) {
   const label = tags.map((tag) => tag.normalize('NFC')).join('.');
   if (detailed.endsWith(original)) {
@@ -472,8 +472,8 @@ function withTags(detailed, original, tags) {
   return `${detailed.slice(0, detailed.length - ext.length)}.${label}${ext}`;
 }
 
-// 폴더마다 안에 든 파일과 링크 수를 하위까지 합쳐 센다. 폴더 설정·미리보기 파일(desktop.ini 등)은 세지 않는다.
-// placeOf는 항목을 셀 폴더들(바깥 폴더부터)을 돌려준다. 자막은 영상 쪽 폴더로 옮겨 세어, 짝인 영상과 같은 폴더의 파일로 본다(#233).
+// For each folder, it counts the files and links inside, including below. It does not count folder settings and preview files (desktop.ini and so on).
+// placeOf returns the folders (from the outer folder) in which to count an item. A subtitle is counted in the video-side folder, so it is seen as a file in the same folder as its paired video (#233).
 function countFiles(entries, placeOf) {
   const counts = new Map();
   for (const entry of entries) {
@@ -487,10 +487,10 @@ function countFiles(entries, placeOf) {
   return counts;
 }
 
-// 버전 관리 폴더. 안쪽 구조가 곧 내용이라 흩어지면 복구할 수 없다.
+// A version control folder. The inner structure is the content, so if scattered it cannot be recovered.
 const REPOSITORY_FOLDER = /^\.(?:git|hg|svn|jj)$/i;
 
-// HEAD, objects, refs가 함께 있으면 Git 저장소 폴더다. 베어 저장소(backup.git)처럼 이름이 .git이 아니어도 잡는다.
+// If HEAD, objects, and refs are together, it is a Git repository folder. A bare repository (backup.git) is caught even when the name is not .git.
 function looksLikeGitDir(dir) {
   const stat = (name) => fs.statSync(path.join(dir, name), { throwIfNoEntry: false });
   try {
@@ -500,8 +500,8 @@ function looksLikeGitDir(dir) {
   }
 }
 
-// 저장소는 폴더 구조 자체가 내용이라, .git 안쪽만 건너뛰어도 작업 파일이 흩어져 복구할 수 없다. 일부만 옮기지 않고 거부한다.
-// 타겟이 저장소의 일반 하위 폴더(r/src)면 저장소는 망가지지 않고 git으로 되돌릴 수 있으므로 막지 않는다.
+// In a repository the folder structure itself is the content, so even skipping only the inside of .git would scatter the working files and make them unrecoverable. It refuses instead of moving only part.
+// If the target is an ordinary subfolder of a repository (r/src), the repository is not broken and can be restored with git, so it is not blocked.
 function rejectRepository(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
     if (REPOSITORY_FOLDER.test(path.basename(dir)) || looksLikeGitDir(dir)) throw new FcError(`Not handled because it is inside a repository: ${dir}`);
@@ -513,18 +513,18 @@ function rejectRepository(target, entries) {
   if (bare) throw new FcError(`Not handled because it contains a repository: ${path.dirname(bare.path)}`);
 }
 
-// 타겟 아래 모든 파일을 타겟 바로 아래로 옮기는 계획을 만든다. 파일은 건드리지 않는다.
-// - moves: 옮길 파일 ({ from, to, name, desired, fromFolder, numbered }). desired는 번호를 붙이기 전의 이름이다. 폴더명이 더 자세하면 fromFolder가 true다.
-//   이름이 겹치면 번호를 붙이고 numbered가 true다. 이미 있는 이름은 폴더라도 피한다.
-// - stay: 이미 타겟 바로 아래에 있어 그대로 두는 항목의 경로
-// - skipped: 옮기지 않는 항목 ({ path, reason }). 링크와 grant가 거부하는 이름은 조용히 빠지지 않게 사유를 남긴다.
-//   통째로 남기는 폴더(프로그램·프로젝트·숨김 폴더)는 안의 파일마다가 아니라 폴더 하나로 남긴다.
-// - guarded: 통째로 남기는 폴더의 상대경로 Set. 빈 폴더 정리도 이 폴더와 그 위를 남긴다.
+// It makes a plan to move all files under the target directly under the target. It does not touch files.
+// - moves: files to move ({ from, to, name, desired, fromFolder, numbered }). desired is the name before a number is added. If the folder name is more detailed, fromFolder is true.
+//   If names collide, a number is added and numbered is true. An existing name is avoided even if it is a folder.
+// - stay: the paths of items that are already directly under the target and are left as they are
+// - skipped: items not moved ({ path, reason }). Links and names that grant refuses leave a reason so they do not drop out silently.
+//   Folders left whole (program, project, and hidden folders) are left as one folder, not file by file.
+// - guarded: a Set of relative paths of the folders left whole. The empty-folder cleanup also keeps these folders and the ones above them.
 function planFlatten(dir) {
   const access = grant(dir, ['read', 'write']);
   const entries = walk(access.target);
   rejectRepository(access.target, entries);
-  // walk가 폴더로 본 곳을 그대로 넘겨 두 판정이 갈리지 않게 한다. node_modules 같은 폴더 안은 통째로 남기므로 보지 않는다.
+  // It passes on as is what walk saw as folders so the two judgments do not split. The inside of a folder such as node_modules is left whole, so it is not looked at.
   const folders = [''].concat(entries.filter((entry) => entry.type === 'dir' && !entry.relative.split(path.sep).some((part) => PROGRAM_FOLDER.test(part))).map((entry) => entry.relative));
   const attributes = hiddenOrSystemEntries(access.target, folders);
   const guarded = guardedFolders(access.target, entries, attributes);
@@ -532,7 +532,7 @@ function planFlatten(dir) {
   const isTop = (entry) => !entry.relative.includes(path.sep);
   const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
   const nextNumber = new Map();
-  // 자막 파일은 자막 폴더를 뺀 영상 쪽 폴더로 이름을 고르고 센다(#233).
+  // For a subtitle file, it chooses and counts its name by the video-side folder without the subtitle folder (#233).
   const videos = videoFolders(entries);
   const placements = new Map();
   const placementOf = (entry) => {
@@ -546,9 +546,9 @@ function planFlatten(dir) {
   };
   const fileCounts = countFiles(entries, (entry) => placementOf(entry).parts);
   const plan = { target: access.target, moves: [], stay: [], skipped: [], guarded: new Set(guarded.keys()) };
-  // 이전 실행이 하드링크를 만든 뒤 멈췄으면 타겟 바로 아래에 같은 파일의 다른 이름(번호가 붙었을 수도 있다)이 있다(#73).
+  // If a previous run stopped after making a hard link, another name of the same file (possibly with a number) exists directly under the target (#73).
   const topFiles = new Map();
-  // 이름을 배정할 파일 ({ from, original, desired, slot, move })
+  // The files to assign names to ({ from, original, desired, slot, move })
   const candidates = [];
   for (const entry of entries) {
     if (!isTop(entry) || entry.type !== 'file') continue;
@@ -597,21 +597,21 @@ function planFlatten(dir) {
     const original = path.basename(entry.path);
     try {
       const from = access.read(entry.path);
-      // 폴더 이름에 확장자를 붙이면 길이 한도를 넘을 수 있다. 파일을 건너뛰지 않고 원래 이름으로 돌아간다.
+      // Attaching an extension to a folder name can exceed the length limit. It does not skip the file and goes back to the original name.
       const place = placementOf(entry);
       const sole = soleFolders(place.parts, fileCounts);
       const ancestors = [...place.parts].reverse();
       let detailed = detailedName(original, sole, titleStart(ancestors));
       if (detailed === original) detailed = prefixedName(original, ancestors);
       else detailed = withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
-      // 그 이름을 두고 번호를 붙여 세 번째 이름을 만들지 않는다.
+      // It does not leave that name and add a number to make a third name.
       const twin = topFiles.get(fileKey(from));
       if (twin) throw new FcError(`Not moved because the name already exists directly under the target: ${path.basename(twin)}${leftoverNote(from, twin)}`);
-      // 이름은 아래에서 한꺼번에 배정한다. 실패하면 이 자리에 사유를 채워 건너뜀 순서를 유지한다.
+      // Names are assigned all at once below. On failure, the reason is filled into this place to keep the skipped order.
       const slot = { path: entry.path, reason: null };
       plan.skipped.push(slot);
       if (detailed.length > MAX_NAME) detailed = original;
-      // 구분 폴더 이름을 붙인 이름이 한도를 넘으면 붙이지 않는다. 짝은 붙이기 전 이름으로 묶는다.
+      // If the name with the distinguishing folder name attached exceeds the limit, it is not attached. The pair is tied by the name before attaching.
       const tagged = place.tags.length > 0 && detailed !== original ? withTags(detailed, original, place.tags) : detailed;
       candidates.push({ from, original, desired: tagged.length > MAX_NAME ? detailed : tagged, pairName: detailed, slot });
     } catch (err) {
@@ -619,13 +619,13 @@ function planFlatten(dir) {
       plan.skipped.push({ path: entry.path, reason: err.message });
     }
   }
-  // 원래 이름을 그대로 쓰는 파일에 먼저 이름을 배정한다(#63). 폴더명 후보(ABC-123 제목/x.mp4 → ABC-123 제목.mp4)가
-  // 원래 그 이름인 파일(z/ABC-123 제목.mp4)의 이름을 먼저 차지해 번호를 붙이게 하지 않는다. 옮기는 순서는 항목 순서 그대로다.
-  // 같은 폴더에서 같은 접두어를 받은 짝(ABC-123/video.mp4, video.en.srt → ABC-123 video.*)은 그보다도 먼저 배정해,
-  // 원래 이름 파일(z/ABC-123 video.mp4)과 겹쳐도 짝 중 하나에만 번호가 붙어 짝이 깨지지 않게 한다(1차 리뷰).
-  // 키는 붙인 접두어 + 원래 이름의 첫 점 앞부분이다. 접두어 폴더 이름의 점(ABC-123 v1.5)에서 자르지 않고,
-  // 하위 폴더에 나뉜 짝(ABC-123/video.mp4, ABC-123/Subs/video.en.srt)도 묶는다(2차 리뷰).
-  // 구분 폴더 이름을 붙인 자막(Show video.Forced.srt)은 붙이기 전 이름(pairName)으로 영상과 묶는다(#233).
+  // It first assigns names to the files that keep their original name (#63). So that a folder-name candidate (ABC-123 Title/x.mp4 -> ABC-123 Title.mp4)
+  // does not take the name of the file that originally has that name (z/ABC-123 Title.mp4) first and force a number on it. The move order is the item order as it is.
+  // Pairs that received the same prefix in the same folder (ABC-123/video.mp4, video.en.srt -> ABC-123 video.*) are assigned even before that,
+  // so that even if they overlap with a file of the original name (z/ABC-123 video.mp4), a number is added to only one of the pair and the pair does not break (first review).
+  // The key is the attached prefix plus the part before the first dot of the original name. It does not cut at a dot in the prefix folder name (ABC-123 v1.5),
+  // and it also ties pairs split across subfolders (ABC-123/video.mp4, ABC-123/Subs/video.en.srt) (second review).
+  // A subtitle with the distinguishing folder name attached (Show video.Forced.srt) is tied to the video by the name before attaching (pairName) (#233).
   const pairKey = (c) => {
     if (!c.pairName.endsWith(c.original)) return nameKey(c.pairName);
     return nameKey(c.pairName.slice(0, c.pairName.length - c.original.length) + c.original.split('.')[0]);
@@ -662,25 +662,25 @@ function planFlatten(dir) {
     delete item.label;
     delete item.count;
   }
-  // 파일이 없는 남길 폴더도 지우지 않는다는 것을 알린다. 다른 남길 폴더 안에 든 것은 바깥 폴더로 이미 알렸다.
+  // It reports that a folder to keep that has no files is also not deleted. Those inside another folder to keep were already reported by the outer folder.
   for (const [relative, label] of guarded) {
     if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `Folder left whole because it is a ${label}.` });
   }
   return plan;
 }
 
-// 덮어쓰지 않고 옮긴다. 이미 있으면(8.3 짧은 이름, 대소문자 포함) 아무것도 바꾸지 않고 false를 돌려준다.
-// renameSync는 대상을 덮어쓰므로(폴더도 같은 이름의 파일을 덮어쓴다, 빌드 26200에서 확인) 그대로 쓰지 않는다.
-// 파일은 새 이름으로 하드링크를 만든 뒤 원래 이름을 지운다(#73). linkSync는 이름이 있으면 EEXIST로 실패하므로 끼어든 파일을 덮어쓰지 않고,
-// 중간에 꺼져도 같은 내용의 두 이름이 남을 뿐 빈 파일이 남지 않는다. 원본이 잠겨 원래 이름을 못 지우면 새 이름을 지워 되돌린다.
-// 하드링크를 못 만드는 경우(FAT32·exFAT, 클라우드 전용 파일 등)와 폴더는 빈 자리표시 파일을 먼저 만든 뒤 그 위로 옮긴다.
+// It moves without overwriting. If it already exists (including an 8.3 short name or case), it changes nothing and returns false.
+// renameSync overwrites the target (a folder also overwrites a file of the same name, confirmed on build 26200), so it is not used as is.
+// For a file, it creates a hard link under the new name and then deletes the original name (#73). linkSync fails with EEXIST if the name exists, so it does not overwrite a file that slipped in,
+// and even if the power goes off midway, only two names with the same content remain, with no empty file left. If the source is locked and the original name cannot be deleted, it deletes the new name and rolls back.
+// When a hard link cannot be made (FAT32, exFAT, cloud-only files, and so on) and for folders, it first creates an empty placeholder file and then moves over it.
 function moveWithoutOverwrite(from, to) {
   if (fs.lstatSync(from).isFile()) {
     try {
       fs.linkSync(from, to);
     } catch (err) {
       if (err.code === 'EEXIST') return false;
-      // 실패로 알렸어도 링크가 만들어졌을 수 있다(네트워크 응답 유실 등). 그러면 내가 만든 이름이므로 이어서 원래 이름을 지운다.
+      // Even if it reported failure, the link may have been made (a lost network response and so on). Then it is a name I made, so it goes on to delete the original name.
       if (!sameFile(from, to)) return moveOverPlaceholder(from, to);
     }
     try {
@@ -710,15 +710,15 @@ function moveOverPlaceholder(from, to) {
   return true;
 }
 
-// 같은 파일인지 파일 번호로 본다. Windows 파일 번호는 64비트라 bigint로 읽는다.
-// 파일 번호를 0으로 알리는 파일 시스템(일부 네트워크 드라이브)에서는 서로 다른 파일을 같다고 보지 않도록 같지 않다고 본다.
+// It checks by file ID whether it is the same file. Windows file IDs are 64 bits, so it reads them as bigint.
+// On a file system that reports the file ID as 0 (some network drives), it is seen as not the same, so that different files are not seen as the same.
 function sameFile(a, b) {
   const sa = fs.lstatSync(a, { bigint: true, throwIfNoEntry: false });
   const sb = fs.lstatSync(b, { bigint: true, throwIfNoEntry: false });
   return Boolean(sa && sb && sa.ino !== 0n && sa.ino === sb.ino && sa.dev === sb.dev);
 }
 
-// 같은 파일을 찾는 열쇠(볼륨:파일 번호). 확인하지 못하거나 파일 번호가 0이면 null이다. 확인하지 못한 사유는 뒤의 이름 고르기가 알린다.
+// The key for finding the same file (volume:file ID). If it cannot be confirmed or the file ID is 0, it is null. The reason it could not be confirmed is reported by the name choosing later.
 function fileKey(p) {
   try {
     const stat = fs.lstatSync(p, { bigint: true, throwIfNoEntry: false });
@@ -728,7 +728,7 @@ function fileKey(p) {
   }
 }
 
-// 원래 이름을 지우지 못했으면 만든 하드링크를 지워 되돌린다. 그사이 새 이름이 다른 파일로 바뀌었으면 지우지 않는다.
+// If it could not delete the original name, it deletes the hard link it made and rolls back. If the new name was replaced by another file in the meantime, it does not delete.
 function removeNewName(from, to, cause) {
   let ours;
   try {
@@ -747,7 +747,7 @@ function removeNewName(from, to, cause) {
   }
 }
 
-// 대상 이름이 이미 있을 때, 이전 실행이 중간에 멈춰 남긴 것으로 보이면 그 사실을 알리는 문구를 돌려준다(#73).
+// When the target name already exists and it looks like something an earlier run left by stopping midway, it returns a message that says so (#73).
 function leftoverNote(from, to) {
   try {
     if (sameFile(from, to)) return ' (another name of the same file as the source (a hard link). It may be a trace of an earlier run that stopped midway; delete one of the names)';
@@ -756,12 +756,12 @@ function leftoverNote(from, to) {
       return ' (that name is an empty file. It may be a placeholder left when an earlier run stopped midway; check it, delete it, and run again)';
     }
   } catch {
-    // 알림 문구만 빠진다.
+    // Only the notice message is left out.
   }
   return '';
 }
 
-// 그사이 다른 프로그램이 내용을 썼다면 내 자리표시가 아니므로 지우지 않는다.
+// If another program wrote content in the meantime, it is not my placeholder, so it does not delete it.
 function removePlaceholder(to, cause) {
   let stat;
   try {
@@ -778,21 +778,21 @@ function removePlaceholder(to, cause) {
   }
 }
 
-// 번호를 다시 고르는 횟수 한도. 다른 프로그램이 계속 같은 이름을 만들 때 끝나지 않는 일을 막는다.
+// The limit on how many times it picks a number again. It prevents an endless task when another program keeps creating the same name.
 const MAX_ATTEMPTS = 100;
 
-// 계획한 이름이 그사이 찼으면 번호를 다시 고른다. a/longfilename.txt를 옮기면 LONGFI~1.TXT가 새로 차는 것처럼 계획 단계에서 알 수 없다.
+// If the planned name got filled in the meantime, it picks a number again. It cannot be known at the planning stage, as when moving a/longfilename.txt newly fills LONGFI~1.TXT.
 function applyMove(move, access, taken, nextNumber) {
-  // 계획과 실행 사이에 원본이 링크로 바뀌었거나 타겟 밖을 가리키면 여기서 거부된다.
+  // If the source was replaced by a link or points outside the target between the plan and the run, it is refused here.
   const from = access.delete(move.from);
-  // 부모가 안쪽을 가리키는 정션으로 바뀌었거나 파일이 폴더로 바뀌면 계획과 다른 항목을 옮기게 된다.
+  // If the parent was replaced by a junction that points inside, or a file became a folder, an item different from the plan would be moved.
   if (from !== move.from) throw new FcError(`The path changed after planning: ${move.from} -> ${from}`);
   if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
   let name = move.name;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (name.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${name}`);
     const to = path.join(access.target, name);
-    // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
+    // It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to.
     if (!fs.lstatSync(to, { throwIfNoEntry: false })) {
       access.write(name);
       if (moveWithoutOverwrite(from, to)) return { ...move, from, to, name, numbered: name !== move.desired };
@@ -803,20 +803,20 @@ function applyMove(move, access, taken, nextNumber) {
   throw new FcError(`Could not find a free name: ${move.desired}`);
 }
 
-// 경로의 상위 폴더를 타겟 기준 상대경로로 돌려준다. 자신이 폴더면 자신도 넣는다.
+// It returns the folders above a path as relative paths from the target. If the path itself is a folder, it also includes the path itself.
 function folderChain(entry) {
   const parts = entry.relative.split(path.sep);
   const last = entry.type === 'dir' ? parts.length : parts.length - 1;
   return Array.from({ length: last }, (_, i) => parts.slice(0, i + 1).join(path.sep));
 }
 
-// 이번에 옮긴 파일이 있던 폴더 중 비게 된 폴더를 가장 위 폴더만 돌려준다. 그 아래 폴더는 함께 지워진다.
-// 원래 비어 있던 폴더(Inbox/)는 사용자가 만든 구조일 수 있어 건드리지 않는다. 옮긴 파일이 있던 트리 안의 빈 폴더만 함께 간다.
-// 남은 파일과 링크, 잔여물·시스템 폴더와 그 안쪽이 있으면 그 위의 폴더는 모두 남긴다.
+// Among the folders that held a file moved this time, it returns only the topmost of those that became empty. The folders below it are deleted together.
+// A folder that was originally empty (Inbox/) may be a structure the user made, so it is not touched. Only empty folders inside the tree that held a moved file go along.
+// If there are remaining files and links, leftovers, or system folders and what is inside them, all the folders above are kept.
 function removableFolders(entries, movedFolders, guarded = new Set()) {
   const occupied = new Set();
   for (const entry of entries) {
-    // 폴더 설정·미리보기 파일만 남은 폴더는 빈 폴더로 보고 함께 휴지통으로 보낸다(#65).
+    // A folder with only folder settings and preview files left is seen as an empty folder and sent to the Recycle Bin together (#65).
     if (isFolderMetadata(entry)) continue;
     const protectedDir = entry.type === 'dir' && (entry.relative.split(path.sep).some((part) => LEFTOVER.test(part) || SYSTEM_FOLDER.test(part)) || guardOf(entry.relative, guarded) !== undefined);
     if (entry.type !== 'dir' || protectedDir) for (const folder of folderChain(entry)) occupied.add(folder);
@@ -826,7 +826,7 @@ function removableFolders(entries, movedFolders, guarded = new Set()) {
   return free.filter((entry) => !freeNames.has(path.dirname(entry.relative)) && movedFolders.has(entry.relative)).map((entry) => entry.path);
 }
 
-// 이동한 파일이 있던 폴더와 그 상위 폴더를 타겟 기준 상대경로로 모은다.
+// It collects the folders that held a moved file and their parent folders as relative paths from the target.
 function foldersOf(moves, target) {
   const folders = new Set();
   for (const { from } of moves) {
@@ -835,10 +835,10 @@ function foldersOf(moves, target) {
   return folders;
 }
 
-// 한 번에 PowerShell로 보내는 폴더 수. 시간 제한과 중간 보고의 단위다.
+// The number of folders sent to PowerShell at once. It is the unit of the time limit and of the interim report.
 const FOLDER_BATCH = 100;
 
-// 휴지통 일괄 이동의 결과를 사유로 바꾼다.
+// It turns the result of the batch Recycle Bin move into reasons.
 const FOLDER_STATUS_REASON = {
   moved: 'The path changed after the check (junction, etc.). Not deleted.',
   notdir: 'No longer a folder after the check.',
@@ -847,26 +847,26 @@ const FOLDER_STATUS_REASON = {
   timeout: 'Not processed because the time limit was hit (an error dialog may have appeared). Try deleting it in Explorer to find the cause.',
 };
 
-// 지우기 전에 Node에서 하는 검사. 통과하면 실제 경로를, 아니면 FcError를 낸다.
+// The check Node does before deleting. If it passes, it gives the real path; otherwise it gives an FcError.
 function checkFolder(folder, access, { dryRun }) {
   const real = access.delete(folder);
-  // 안쪽을 가리키는 정션으로 바뀌었으면 다른 폴더를 지우게 된다.
+  // If it was replaced by a junction that points inside, a different folder would be deleted.
   if (real !== folder) throw new FcError(`The path changed after the check: ${folder} -> ${real}`);
   if (!dryRun) {
     if (!fs.lstatSync(real).isDirectory()) throw new FcError(`No longer a folder after the check: ${real}`);
     const filled = walk(real).find((entry) => entry.type !== 'dir' && !isFolderMetadata(entry));
     if (filled) throw new FcError(`Not deleted because a file appeared in the folder: ${filled.path}`);
     if (real.length > MAX_RECYCLE_PATH) throw new FcError(`The path is ${real.length} characters, so it cannot be sent to the Recycle Bin (up to ${MAX_RECYCLE_PATH}): ${real}`);
-    // 현재 폴더와 그 상위, 장치 이름 같은 rm의 검사를 지우지 않고(미리보기로) 그대로 거친다.
+    // It runs the checks of rm, such as the current folder and above and device names, as they are, without deleting (as a preview).
     remove([real], { dryRun: true, checkVolume: false });
   }
   return real;
 }
 
-// 빈 폴더를 휴지통으로 보낸다. 실패한 폴더는 kept에 남긴다. onFolder(folder, reason)는 폴더마다 끝나는 대로 불린다(reason이 없으면 보냄).
-// 폴더마다 PowerShell을 띄우면 수천 개에서 몇 시간이 걸리므로 FOLDER_BATCH개씩 묶어 보낸다(#67). 묶음마다 Node에서 다시 검사하고,
-// PowerShell도 폴더마다 지우기 직전에 실제 경로·폴더 여부·안의 파일을 다시 본다(recycleEmptyFolders).
-// 휴지통이 없을 수 있는 드라이브(고정 디스크가 아닌 것)와 대화형이 아닌 세션에서는 영구 삭제될 수 있어 지우지 않는다.
+// It sends empty folders to the Recycle Bin. Folders that failed stay in kept. onFolder(folder, reason) is called as each folder finishes (if there is no reason, it was sent).
+// Starting PowerShell for each folder takes hours at thousands of folders, so it sends FOLDER_BATCH at a time (#67). Node checks again for each batch, and
+// PowerShell also checks again, for each folder right before deleting, the real path, whether it is a folder, and the files inside (recycleEmptyFolders).
+// On a drive that may have no Recycle Bin (one that is not a fixed disk) and in a non-interactive session, it may be deleted permanently, so it does not delete.
 function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   const report = { removed: [], kept: [] };
   const done = (folder, reason) => {
@@ -875,12 +875,12 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     onFolder(folder, reason);
   };
   if (folders.length === 0) return report;
-  // 미리보기도 실제 실행과 같은 사유로 남기도록 드라이브와 세션을 먼저 본다(1차 리뷰).
+  // So that the preview also keeps them for the same reason as a real run, it looks at the drive and the session first (first review).
   const state = recycleBinState(access.target);
   let blocked;
   if (state.interactive === false) blocked = 'Cannot send to the Recycle Bin outside an interactive session.';
   else if (state.driveType !== 'Fixed') blocked = `Empty folders were not deleted because the drive (${state.driveType ?? 'unknown type'}) may have no Recycle Bin and they could be permanently deleted.`;
-  // 빈 폴더라 크기는 문제가 되지 않지만, 휴지통 설정이 "바로 제거"면 영구 삭제된다(#81, 빌드 26200에서 확인).
+  // It is an empty folder so the size does not matter, but if the Recycle Bin setting is "remove immediately", it is deleted permanently (#81, confirmed on build 26200).
   else if (state.nukeOnDelete === true) blocked = 'Empty folders were not deleted because this volume is set to remove files immediately, so they would be permanently deleted without using the Recycle Bin.';
   const failure = (err) => (err instanceof FcError ? err.message : `Cannot send to the Recycle Bin. (${err.code ?? err.status})`);
   if (dryRun) {
@@ -898,8 +898,8 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     }
     return report;
   }
-  // 시간 제한에 걸린 묶음에서 손대지 않은 폴더(pending)는 다시 줄 세운다. 매번 하나 이상 끝나므로 언젠가 멈춘다.
-  // 묶음의 첫 폴더에서 바로 시간 제한에 걸리는 일이 연속되면(폴더마다 대화상자가 뜨는 등) 폴더 하나씩만 끝나 몇 시간이 걸리므로 멈춘다(2차 리뷰).
+  // For folders left untouched in a batch that hit the time limit (pending), it queues them up again. At least one finishes each time, so it eventually stops.
+  // If hitting the time limit right at the first folder of a batch happens in a row (such as a dialog appearing for each folder), only one folder finishes at a time and it would take hours, so it stops (second review).
   const MAX_STALLS = 2;
   let stalls = 0;
   const queue = [...folders];
@@ -921,9 +921,9 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
     try {
       results = recycleEmptyFolders(batch, { allowedNames: FOLDER_METADATA_NAMES });
     } catch (err) {
-      // 휴지통 호출의 실패 메시지에는 스크립트 전문이 들어가므로 쓰지 않는다.
+      // The failure message of the Recycle Bin call includes the whole script, so it is not used.
       const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status})`;
-      // 비대화형 세션, 잠금 환경처럼 묶음마다 똑같이 실패할 사유면 나머지도 보내지 않는다.
+      // For a reason that fails the same way in every batch, such as a non-interactive session or a locked-down environment, it does not send the rest either.
       if (err instanceof FcError) blocked = reason;
       for (const folder of batch) done(folder, reason);
       continue;
@@ -933,7 +933,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       if (status === 'pending') pending.push(folder);
       else if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
       else if (status === 'error') {
-        // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135).
+        // If a folder holds an item that is exactly a device name, the Recycle Bin move fails for the whole folder (#135).
         const inside = bareDeviceInside(folder);
         done(folder, inside === undefined ? 'Could not send to the Recycle Bin.' : `Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}). Rename that item with fctl rename and delete again.`);
       } else done(folder, FOLDER_STATUS_REASON[status]);
@@ -946,10 +946,10 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   return report;
 }
 
-// 타겟 아래 파일을 타겟 바로 아래로 옮기고, 비게 된 폴더를 휴지통으로 보낸다. 덮어쓰지 않고, 한 파일이 실패해도 나머지는 계속 옮긴다.
-// 돌려주는 값: { target, dryRun, moved, stay, skipped, failed, removedFolders, keptFolders }.
-// failed는 { from, reason }, keptFolders는 지우지 못한 폴더의 { path, reason } 목록이다.
-// onProgress(line)를 주면 실제 실행에서 파일 하나, 폴더 하나가 끝날 때마다 보고 줄을 넘긴다. 중간에 끊겨도 이미 한 일을 알 수 있다(#67).
+// It moves the files under the target directly under the target and sends the folders that became empty to the Recycle Bin. It does not overwrite, and even if one file fails, it continues moving the rest.
+// The returned value is { target, dryRun, moved, stay, skipped, failed, removedFolders, keptFolders }.
+// failed is { from, reason }, and keptFolders is a list of { path, reason } of folders that could not be deleted.
+// If onProgress(line) is given, in a real run it passes a report line each time a file or a folder is done. Even if it is interrupted midway, you can tell what was already done (#67).
 function flatten(dir, { dryRun = false, onProgress } = {}) {
   const plan = planFlatten(dir);
   const access = grant(plan.target, ['write', 'delete']);
@@ -960,16 +960,16 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
     const { removed, kept } = removeFolders(removableFolders(after, foldersOf(plan.moves, plan.target), plan.guarded), access, { dryRun });
     return { ...result, moved: plan.moves, removedFolders: removed, keptFolders: kept };
   }
-  // 앞으로 옮길 파일의 이름을 뺏지 않도록 계획한 이름을 모두 차지한 것으로 본다.
+  // So that it does not take the names of files to be moved later, all planned names are treated as taken.
   const taken = new Set(plan.moves.map((move) => nameKey(move.name)));
   const nextNumber = new Map();
   const relative = (p) => path.relative(plan.target, p) || '.';
-  // 진행 표시가 던져도 집계와 다음 파일 처리, 빈 폴더 정리는 그대로 간다(#196). 이미 옮긴 파일을 실패로 세지 않는다.
+  // Even if the progress display throws, the tally, the handling of the next file, and the empty-folder cleanup carry on (#196). It does not count an already moved file as a failure.
   const report = (line) => {
     try {
       onProgress?.(line);
     } catch {
-      // 진행 표시는 결과에 영향을 주지 않는다.
+      // The progress display does not affect the result.
     }
   };
   for (const move of plan.moves) {
@@ -983,7 +983,7 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
     }
   }
   const onFolder = (folder, reason) => report(reason === undefined ? `Empty folder to the Recycle Bin: ${relative(folder)}` : `Folder kept: ${relative(folder)} (${reason})`);
-  // 계획이 아니라 이동이 끝난 실제 상태로 판단한다. 실패한 파일이나 그사이 생긴 파일이 있는 폴더는 남는다.
+  // It judges by the real state after the move finished, not by the plan. A folder that has a failed file or a file that appeared in the meantime stays.
   try {
     const { removed, kept } = removeFolders(removableFolders(walk(plan.target), foldersOf(result.moved, plan.target), plan.guarded), access, { dryRun, onFolder });
     result.removedFolders = removed;
@@ -999,7 +999,7 @@ function moveLine(move, relative, prefix) {
   return `${prefix}Move: ${relative(move.from)} -> ${move.name}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`;
 }
 
-// 결과를 사람이 읽을 수 있게 줄로 만든다. 자세한 보고 형식은 #19에서 다듬는다.
+// It makes the result into lines a person can read. The detailed report format will be polished in #19.
 function formatFlatten(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[Preview] ' : '';

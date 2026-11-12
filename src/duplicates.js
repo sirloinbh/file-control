@@ -9,13 +9,13 @@ const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('.
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
 
-// 길이 기준으로 묶는 조건. 다른 영상을 한 묶음에 넣지 않도록 좁게 잡는다.
-// - 길이 차이가 1초 이내. 같은 영상을 다른 형식으로 옮기면 길이가 1초 안쪽으로 달라진다.
-// - 보이는 화면 비율이 3% 이내. 회전(MP4 tkhd·mvhd 행렬, MKV Projection)과 화소 비율(MP4 pasp·tkhd 크기·SPS, MKV PixelCrop·DisplayWidth/Height)을
-//   반영한 보이는 크기(readMp4Metadata, readMkvMetadata의 displayWidth/displayHeight)로 계산한다(#106, #113).
-//   그래서 회전 정보로 세로를 표시하는 휴대폰 영상(1920x1080 + 90도)은 세로 영상(1080x1920)과 묶이고 가로 영상과는 묶이지 않는다.
-// - 60초 미만 영상은 묶지 않는다. 짧은 클립은 길이가 우연히 같은 경우가 많다.
-// 해상도와 크기는 보지 않는다. 다시 인코딩한 같은 영상은 이 둘이 달라지고, 어느 것을 남길지는 묶은 뒤에 고른다.
+// The condition for grouping by length. It is kept narrow so that different videos are not put in one group.
+// - The length differs by 1 second or less. Moving the same video to another format changes the length by under 1 second.
+// - The visible aspect ratio is within 3%. It is computed from the visible size (displayWidth/displayHeight of readMp4Metadata and readMkvMetadata) that reflects rotation (MP4 tkhd and mvhd matrices, MKV Projection) and pixel aspect ratio (MP4 pasp, tkhd size, SPS, MKV PixelCrop and DisplayWidth/Height)
+//   (#106, #113).
+//   So a phone video that shows portrait through rotation information (1920x1080 + 90 degrees) is grouped with a portrait video (1080x1920) and not with a landscape video.
+// - A video shorter than 60 seconds is not grouped. The length of short clips is often the same by chance.
+// It does not look at resolution and size. Re-encoding the same video changes both, and which one to keep is chosen after grouping.
 const DURATION_TOLERANCE = 1;
 const ASPECT_TOLERANCE = 0.03;
 const MIN_DURATION = 60;
@@ -23,21 +23,21 @@ const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
 const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
 
 const SEPARATORS = /[\s._\-–—－＿\u0085]+/g;
-// 탐색기가 붙이는 복사본 꼬리. 이름 - 복사본.mp4, 이름 - Copy (2).mp4
+// The copy tail that Explorer adds. name - 복사본.mp4 (복사본 is Korean for "copy"), name - Copy (2).mp4
 const COPY_SUFFIX = /\s+-\s+(?:복사본|copy)(?:\s*\(\d+\))?$/i;
-// 같은 번호의 다른 조각을 가르는 표시. 다른 영상을 한 묶음에 넣는 것보다 중복을 놓치는 쪽이 안전하므로 넓게 잡는다.
-// 번호를 뺀 나머지를 낱말로 나눠 본다. 화질·코덱 표시와 끝의 (1)·복사본 꼬리는 뺀다.
-// - 낱말 속의 숫자(CD2, part 1, -1, [2], 제목3, 1.5)와 원문자 숫자(①)
-// - 영문 한 글자 낱말(ABC-123 B, (A), [A], Title A)
-// - 로마 숫자(II, xiv, Ⅲ)는 숫자로 바꾼다. 한 글자(I, V, X)는 영문 한 글자로 본다.
-// - 前編·後編, 上巻·下巻, 상·하편, 第一話 같은 말
+// Marks that separate different pieces of the same number. Missing a duplicate is safer than putting different videos in one group, so it is set broadly.
+// It splits what remains after removing the number into words. Quality and codec marks and the trailing (1) and copy tails are left out.
+// - A digit inside a word (CD2, part 1, -1, [2], title3, 1.5) and a circled digit (①)
+// - A one-letter English word (ABC-123 B, (A), [A], Title A)
+// - A Roman numeral (II, xiv, Ⅲ) is turned into a number. A single letter (I, V, X) is seen as a one-letter English word.
+// - Words such as 前編, 後編, 上巻, 下巻, 상, 하편, and 第一話 (Japanese and Korean words for first half, second half, volume 1, volume 2, upper, second part, and episode 1)
 const TOKEN_SEPARATORS = /[\s._\-–—＿\u0085[\](){}【】「」『』《》〈〉〔〕〖〗,+&~!#'"]+/;
 const QUALITY = /^(?:\d{3,4}[pi]|\d+fps|\d+bit|\d+k|[xh]26[45]|\d+ch|aac\d*|ac3|dts|ddp?\d*|mp[34]|h?vc1|av1|vp[89]|\d+kbps|\d+mbps)$/i;
 const ROMAN = /^(?=[ivxlc]{2,}$)c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
 const ROMAN_VALUES = { i: 1, v: 5, x: 10, l: 50, c: 100 };
 const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半|[상중하]편?|[전후]편)$/;
 const KANJI_NUMBER = /^第?[一二三四五六七八九十百]+[話话巻卷部章回]?$/;
-// 원문자 숫자 ①~⑳, 로마 숫자 글자 Ⅰ~Ⅻ, ⅰ~ⅻ를 숫자로 바꾼다.
+// It turns circled digits ①~⑳ and Roman numeral characters Ⅰ~Ⅻ and ⅰ~ⅻ into numbers.
 const NUMBER_SYMBOLS = /[\u2460-\u2473\u2160-\u216b\u2170-\u217b]/g;
 const symbolValue = (ch) => {
   const code = ch.charCodeAt(0);
@@ -52,7 +52,7 @@ function romanValue(token) {
 
 const DUPLICATE_TAIL = /\s*\(\d+\)$/;
 
-// 꼬리를 되풀이해 지운다. 이름 - 복사본 (2), 이름 (1) - 복사본
+// It removes tails repeatedly. name - 복사본 (2), name (1) - 복사본
 function stripTails(text, tails) {
   let current = text.trim();
   for (let previous = null; previous !== current; ) {
@@ -62,8 +62,8 @@ function stripTails(text, tails) {
   return current;
 }
 
-// 번호를 뺀 나머지를 낱말로 나눈다. 끝의 (1)·복사본 꼬리는 빼고, 원문자·로마 숫자 글자는 숫자로 바꾼다.
-// 전각을 반각으로 바꿔도 글자 수가 같으므로 번호 위치를 그대로 쓴다.
+// It splits what remains after removing the number into words. It drops the trailing (1) and copy tails and turns circled digits and Roman numeral characters into numbers.
+// Changing full-width to half-width keeps the character count the same, so the number position is used as it is.
 function restTokens(original, ranges) {
   const base = halfWidth(original);
   let rest = '';
@@ -76,7 +76,7 @@ function restTokens(original, ranges) {
   return rest.split(TOKEN_SEPARATORS).filter((token) => token !== '');
 }
 
-// 조각 표시를 나온 순서대로 이어 돌려준다. 숫자는 앞의 0을 뺀다. CD1, part 01, -1은 모두 1이다. 없으면 null이다.
+// It returns the piece marks joined in the order they appeared. Digits lose their leading 0s. CD1, part 01, and -1 are all 1. If there are none, it is null.
 function findPart(original, ranges) {
   const marks = [];
   for (const token of restTokens(original, ranges)) {
@@ -89,15 +89,15 @@ function findPart(original, ranges) {
   return marks.length === 0 ? null : marks.join(' ');
 }
 
-// 제목 낱말에서 빼는 말. 배포·자막 표시, 조각을 부르는 말(CD, part), 복사본 표시다. 화질·코덱 표시(QUALITY)도 뺀다.
+// Words dropped from the title words. Release and subtitle marks, words that call pieces (CD, part), and copy marks. It also drops quality and codec marks (QUALITY).
 const TITLE_NOISE = new Set([
   'fhd', 'hd', 'uhd', 'sd', 'hq', 'hdr', 'sub', 'subs', 'subbed', 'dub', 'dubbed', 'web', 'webrip', 'webdl', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'hdrip', 'hdtv', 'remux', 'proper', 'repack',
   'hevc', 'avc', 'uncensored', 'censored', 'leak', 'leaked', 'cd', 'part', 'pt', 'disc', 'disk', 'ep', 'episode', 'vol', 'copy', '복사본', '자막', '한글자막', '무자막',
 ]);
 
-// 번호 묶음을 위한 제목 낱말. 번호를 뺀 나머지에서 숫자와 조각 표시, 화질·배포 표시를 뺀 낱말을 소문자로, 중복 없이 나온 순서대로 돌려준다.
-// 이름에 대문자 제품번호가 하나가 아니면 null이다. 파일은 건드리지 않는 순수 함수다.
-// 같은 번호인데 제목이 다르면(titlesDiffer) 제품번호로 잘못 알아본 말일 수 있다(WWE-2023 Raw와 WWE-2023 SmackDown, #103).
+// Title words for a number group. From what remains after removing the number, it returns the words left after dropping digits, piece marks, and quality and release marks, in lower case, without duplicates, in order of appearance.
+// If the name does not have exactly one upper-case product number, it is null. It is a pure function that does not touch files.
+// If the number is the same but the title differs (titlesDiffer), it may be a word wrongly recognized as a product number (WWE-2023 Raw and WWE-2023 SmackDown, #103).
 function titleWords(fileName) {
   const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
   const ranges = findProductNumberRanges(base);
@@ -112,34 +112,34 @@ function titleWords(fileName) {
   return [...words];
 }
 
-// 두 제목 낱말 목록이 둘 다 있는데 서로 다른 제목인지. 한쪽 낱말이 다른 쪽에 모두 들어 있으면 같은 제목으로 본다
-// (좋은 영화와 좋은 영화 감독판). 낱말 일부만 겹치면(WWE Raw와 WWE SmackDown) 다르다. 한쪽이라도 제목이 없으면(ABC-123.mp4) 다르다고 보지 않는다.
+// Whether two title word lists both exist and are different titles. If one side's words are all contained in the other, it is seen as the same title
+// (Good Movie and Good Movie Director's Cut). If the words only partly overlap (WWE Raw and WWE SmackDown), it is different. If either side has no title (ABC-123.mp4), it is not seen as different.
 function titlesDiffer(a, b) {
   if (!a || !b || a.length === 0 || b.length === 0) return false;
   const within = (small, large) => small.every((word) => large.includes(word));
   return !within(a, b) && !within(b, a);
 }
 
-// 카메라·블랙박스·녹화 프로그램이 붙이는 흔한 이름. 이름 묶음의 기준값(소문자, 구분 문자는 공백)이
-// 앞에 영문 낱말 하나(10글자까지)가 올 수 있고, 나머지 낱말이 모두 "영문 4글자까지 + 숫자 + 영문 2글자까지"이거나 영문 1~2글자이며,
-// 숫자가 하나라도 있으면 그렇게 본다.
+// Common names that cameras, dashcams, and recording programs add. The key value of a name group (lower case, separators as spaces)
+// may have one English word (up to 10 characters) in front, and every remaining word is either "up to 4 English letters + digits + up to 2 English letters" or 1 to 2 English letters,
+// and it is seen so if there is at least one digit.
 // IMG_0001, IMG_E0001, GH010001, DJI_0001, DJI_20230101123456_0001_D, FILE0001, VID_20230101_123456, VID-20230101-WA0001,
 // PXL_20230101_123456789.LS, 20230101_123456_F, NO20230101-123456-000001F, 1
-// 이런 클립은 길이가 정해진 경우(블랙박스 1분·3분 조각, 시간으로 나눈 녹화)가 많아 이름과 길이가 같아도 다른 영상일 수 있다(#103).
-// 제품번호(ABC-123)는 번호 묶음이라 여기에 들지 않는다.
+// Such clips often have a fixed length (1-minute and 3-minute dashcam pieces, recordings split by time), so even with the same name and length they can be different videos (#103).
+// A product number (ABC-123) is a number group, so it does not fall here.
 const COUNTER = '(?:[a-z]{0,4}\\d+[a-z]{0,2}|[a-z]{1,2})';
 const GENERIC_NAME = new RegExp(`^(?:[a-z]{1,10} )?${COUNTER}(?: ${COUNTER})*$`);
-// 대문자와 하이픈으로 된 녹화기 카운터(REC-0001, FRONT-0001)는 제품번호로 보여 번호 묶음이 된다(#110).
-// 제품번호 판정은 normalize, product-number와 같이 쓰므로 바꾸지 않고, 이 접두어의 번호 묶음을 흔한 이름으로 본다.
+// A recorder counter made of upper case letters and hyphens (REC-0001, FRONT-0001) looks like a product number and becomes a number group (#110).
+// The product number judgment is shared with normalize and product-number, so it is not changed, and the number groups of these prefixes are seen as common names.
 const COUNTER_PREFIXES = new Set(['REC', 'RECORD', 'CAM', 'CAMERA', 'MOV', 'MOVI', 'MOVIE', 'VIDEO', 'CLIP', 'FILE', 'FRONT', 'REAR', 'INSIDE', 'EVT', 'EVENT', 'NOR', 'NORMAL', 'PARK', 'PARKING', 'EMER', 'MANUAL', 'MVI', 'MAH', 'SAM', 'SDC', 'PICT', 'CIMG', 'HPIM', 'GOPR', 'DJI', 'PXL', 'IMG', 'DSC', 'VID']);
 
-// 이름 묶음({ kind, key, number })이 카메라·순번처럼 흔한 이름인지.
+// Whether a name group ({ kind, key, number }) is a common name such as a camera or sequence name.
 function isGenericGroup(group) {
   if (group.kind === 'number') return COUNTER_PREFIXES.has(group.number.split('-')[0]);
   return /\d/.test(group.key) && GENERIC_NAME.test(group.key);
 }
 
-// 이름 묶음에서 확인이 필요한 까닭을 차례로 돌려준다. 없으면 빈 배열이다.
+// It returns, in order, the reasons a name group needs checking. If there are none, it is an empty array.
 function groupCautions(group) {
   const cautions = [];
   if (group.keep?.doubt) cautions.push(group.keep.doubt);
@@ -148,18 +148,18 @@ function groupCautions(group) {
   return cautions;
 }
 
-// 번호가 없는 이름의 비교값. 대소문자, 전각, 조합형 한글, 구분 문자의 차이와 복사본 꼬리를 없앤다.
+// The comparison value for names without a number. It removes differences of case, full-width characters, composed Hangul, and separators, and copy tails.
 function nameKey(base) {
   return stripTails(halfWidth(base), [COPY_SUFFIX]).replace(SEPARATORS, ' ').trim().toLowerCase();
 }
 
-// 영상 파일 이름 하나의 묶음 기준을 돌려준다. 파일은 건드리지 않는 순수 함수다.
-// - 이름에 대문자 제품번호가 하나 있으면 { kind: 'number', key, number, part }. 확장자, 화질 표시, 제목이 달라도 번호와 조각이 같으면 같은 묶음이다.
-// - 번호가 없으면 { kind: 'name', key }. 확장자를 뺀 이름을 nameKey로 맞춘 값이다.
-// - 서로 다른 번호가 여럿이면 { kind: 'conflict', numbers }. 어느 번호로 묶을지 정하지 않는다.
-// 소문자 말(abc-123)은 번호로 보지 않는다. trip-2023처럼 보통 말인 경우가 많아서다. 먼저 normalize로 대문자로 바꾸면 번호로 묶인다.
+// It returns the grouping key of one video file name. It is a pure function that does not touch files.
+// - If the name has exactly one upper-case product number, { kind: 'number', key, number, part }. Even if the extension, quality mark, or title differ, it is the same group if the number and the piece are the same.
+// - If there is no number, { kind: 'name', key }. It is the name without the extension, normalized with nameKey.
+// - If there are several different numbers, { kind: 'conflict', numbers }. It does not decide which number to group by.
+// A lowercase word (abc-123) is not seen as a number, because it is often an ordinary word such as trip-2023. If you first change it to upper case with normalize, it is grouped by number.
 function duplicateKey(fileName) {
-  // 조합형 한글(macOS에서 온 이름)을 먼저 완성형으로 맞춘다. 번호 위치도 맞춘 이름 기준이다.
+  // It first converts composed Hangul (names from macOS) to the precomposed form. The number position is also based on the converted name.
   const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
   const ranges = findProductNumberRanges(base);
   const numbers = [...new Set(ranges.map((range) => range.number))];
@@ -179,8 +179,8 @@ function skipReason(parts) {
   return null;
 }
 
-// 길이와 해상도, 보이는 크기를 읽는다. 읽을 수 있는 형식은 MP4/MOV와 MKV/WebM이다. 모르면 null이고, 읽지 못한 사유는 note에 둔다.
-// 영상 데이터는 읽지 않고 머리 구조만 본다.
+// It reads the length, resolution, and visible size. The formats it can read are MP4/MOV and MKV/WebM. If unknown it is null, and the reason it could not read goes in note.
+// It does not read the video data and looks only at the head structure.
 function readVideoInfo(target, real) {
   const extension = path.extname(real).toLowerCase();
   const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
@@ -190,11 +190,11 @@ function readVideoInfo(target, real) {
     const { duration, width, height, displayWidth, displayHeight } = reader(target, real);
     const positive = (value) => (Number.isFinite(value) && value > 0 ? value : null);
     const info = { duration: positive(duration), width: positive(width), height: positive(height) };
-    // 보이는 크기는 둘 다 있을 때만 쓰고, 없으면 해상도와 같다고 본다.
+    // The visible size is used only when both exist, and if absent, it is seen as the same as the resolution.
     const shown = positive(displayWidth) !== null && positive(displayHeight) !== null && info.width !== null && info.height !== null;
     info.displayWidth = shown ? displayWidth : info.width;
     info.displayHeight = shown ? displayHeight : info.height;
-    // 예외 없이 값이 빠진 경우도 사유를 남긴다. 길이를 쓰지 않는 조각 MP4, 녹화가 중단된 MKV/WebM이 그렇다.
+    // Even when a value is missing without an exception, it leaves a reason. A fragmented MP4 that does not write the length and an MKV/WebM whose recording was interrupted are such cases.
     const missing = [info.duration === null && 'duration', (info.width === null || info.height === null) && 'resolution'].filter(Boolean);
     return { ...info, note: missing.length === 0 ? null : `The ${missing.join(' and ')} information is missing.` };
   } catch (err) {
@@ -203,42 +203,42 @@ function readVideoInfo(target, real) {
   }
 }
 
-// 보이는 화면 비율(가로÷세로). 보이는 크기(displayWidth, displayHeight)가 없으면 해상도로 계산한다. 해상도를 모르면 null이다.
+// The visible aspect ratio (width / height). If there is no visible size (displayWidth, displayHeight), it is computed from the resolution. If the resolution is unknown, it is null.
 function aspectRatio(file) {
   const width = file.displayWidth ?? file.width;
   const height = file.displayHeight ?? file.height;
   return width && height ? width / height : null;
 }
 
-// 보고에 쓰는 화면 비율. 소수 첫째 자리까지 쓴다(16:9는 1.8, 4:3은 1.3). 해상도를 모르면 null이다.
+// The aspect ratio used in the report. It is written to one decimal place (16:9 is 1.8, 4:3 is 1.3). If the resolution is unknown, it is null.
 function aspectKey(file) {
   const ratio = aspectRatio(file);
   return ratio === null ? null : (Math.round(ratio * 10) / 10).toFixed(1);
 }
 
-// 두 파일의 화면 비율이 같다고 볼 수 있는지. 넓은 쪽이 좁은 쪽보다 3% 이내로 넓으면 같다. 해상도를 모르면 같지 않다.
-// 반올림한 칸으로 비교하면 1920x816(2.353)과 1920x818(2.347)처럼 칸 경계에 걸친 같은 영상이 갈린다(#106).
+// Whether the aspect ratios of two files can be seen as the same. If the wider is within 3% wider than the narrower, they are the same. If the resolution is unknown, they are not the same.
+// Comparing by rounded cells splits the same video that sits on a cell boundary, such as 1920x816 (2.353) and 1920x818 (2.347) (#106).
 function aspectsMatch(a, b) {
   const [x, y] = [aspectRatio(a), aspectRatio(b)];
   if (x === null || y === null) return false;
   return Math.max(x, y) / Math.min(x, y) - 1 <= ASPECT_TOLERANCE + 1e-9;
 }
 
-// 파일 목록을 길이와 화면 비율로 묶는다. 파일은 { duration, width, height, displayWidth, displayHeight, ... }이고, 둘 이상인 묶음만 돌려준다. 순수 함수다.
-// 길이 순으로 놓고, 파일마다 먼저 만든 묶음부터 보며 가장 짧은 파일과 1초 이내이고 묶음의 모든 파일과 화면 비율이 3% 이내인 묶음에 넣는다. 없으면 새 묶음을 만든다.
-// 그래서 묶음 안의 어느 두 파일도 길이가 1초 넘게, 화면 비율이 3% 넘게 차이 나지 않는다.
-// 비율이나 길이 한쪽만으로 먼저 나누지 않으므로, 길이나 비율 한쪽만 가까운 다른 파일 때문에 같은 영상 쌍이 갈리지는 않는다.
-// 다만 한 파일은 한 묶음에만 들므로, 길이와 비율이 모두 가까운 다른 영상이 먼저 묶음을 만들면 같은 영상 쌍이 갈릴 수 있다.
-// 길이를 모르거나 60초 미만이거나 해상도를 모르는 파일은 묶지 않는다. aspect는 묶음의 가장 짧은 파일의 aspectKey다.
+// It groups a list of files by length and aspect ratio. A file is { duration, width, height, displayWidth, displayHeight, ... }, and it returns only groups of two or more. It is a pure function.
+// Sorted by length, for each file it looks at the groups made earliest first and puts it in a group that is within 1 second of the shortest file and within 3% aspect ratio of every file in the group. If there is none, it makes a new group.
+// So no two files in a group differ by more than 1 second in length or more than 3% in aspect ratio.
+// It does not first split by only the ratio or only the length, so a pair of the same video is not split because of another file that is close in only the length or only the ratio.
+// However, a file goes into only one group, so if another video whose length and ratio are both close makes a group first, a pair of the same video can be split.
+// It does not group a file whose length is unknown, which is shorter than 60 seconds, or whose resolution is unknown. aspect is the aspectKey of the shortest file in the group.
 function groupByMetadata(files) {
   const usable = files.filter((file) => file.duration !== null && file.duration >= MIN_DURATION && aspectRatio(file) !== null);
   usable.sort((a, b) => a.duration - b.duration || aspectRatio(a) - aspectRatio(b));
   const groups = [];
-  // 열린 묶음마다 가장 좁은·넓은 비율을 들고 있다. 둘과 3% 이내면 묶음의 모든 파일과 3% 이내다.
+  // Each open group holds its narrowest and widest ratios. If within 3% of both, it is within 3% of every file in the group.
   let open = [];
   for (const file of usable) {
     const ratio = aspectRatio(file);
-    // 길이 창을 지난 묶음은 더 볼 필요가 없다.
+    // A group that has passed the length window need not be looked at any more.
     open = open.filter(({ group }) => file.duration - group.files[0].duration <= DURATION_TOLERANCE);
     const fits = (entry) => Math.max(entry.max, ratio) / Math.min(entry.min, ratio) - 1 <= ASPECT_TOLERANCE + 1e-9;
     const entry = open.find(fits);
@@ -258,21 +258,21 @@ function groupByMetadata(files) {
     .sort((a, b) => a.duration - b.duration || (a.aspect < b.aspect ? -1 : 1));
 }
 
-// 묶음에서 남길 파일을 하나 고른다. files는 { path, size, duration, width, height, note }이고 파일은 건드리지 않는 순수 함수다.
-// 아래 기준을 차례로 적용한다. 기준마다 가장 나은 파일들만 다음 기준으로 넘긴다.
-// 1. 읽을 수 있는 형식(.mp4, .mkv 등)인데 길이나 해상도를 읽지 못한 파일(note가 있는 파일)은 깨졌을 수 있어 뒤로 뺀다.
-//    읽지 않는 형식(.avi 등)은 깨졌는지 모르므로 빼지 않는다.
-// 2. 1에서 남은 파일 중 길이를 아는 가장 긴 파일보다 1초 넘게 짧은 파일은 덜 받았거나 잘린 사본일 수 있어 뒤로 뺀다. 길이를 모르는 파일은 빼지 않는다.
-// 3. 해상도(가로×세로 화소 수)가 가장 높은 파일. 해상도를 모르는 파일은 아는 파일보다 뒤다.
-// 4. 크기가 가장 큰 파일. 해상도가 같으면 더 많은 데이터를 담은 쪽이 화질이 나은 경우가 많다.
-// 5. 이름(확장자 포함)이 가장 짧은 파일. 복사본 꼬리(` - 복사본`, ` (1)`, ` copy`)가 붙은 쪽보다 원래 파일일 가능성이 크다.
-// 6. 그래도 같으면 경로 순으로 첫 파일. 이름 묶음의 보고 순서와 같게 대소문자를 먼저 무시하고 비교한다.
-// 돌려주는 값은 { path, reason, doubt }다. reason은 고른 까닭이고, doubt는 길이를 아는 파일끼리 1초 넘게 달라 같은 영상이 아닐 수 있을 때의 알림이다(없으면 null).
-// 파일이 하나도 없으면 null이다. 하나뿐이면 그 파일을 고르고 reason은 '파일이 하나뿐'이다.
+// It chooses one file to keep from a group. files are { path, size, duration, width, height, note }, and it is a pure function that does not touch files.
+// It applies the criteria below in order. For each criterion, only the best files pass to the next criterion.
+// 1. A file in a readable format (.mp4, .mkv, and so on) whose length or resolution could not be read (a file that has a note) may be broken, so it is moved to the back.
+//    A format that is not read (.avi and so on) is not moved back, because it is not known whether it is broken.
+// 2. Among the files left from 1, a file more than 1 second shorter than the longest file whose length is known may be a copy not fully downloaded or truncated, so it is moved to the back. A file whose length is unknown is not moved back.
+// 3. The file with the highest resolution (width x height in pixels). A file whose resolution is unknown comes after one whose resolution is known.
+// 4. The file with the largest size. With the same resolution, the one that holds more data often has better quality.
+// 5. The file with the shortest name (including the extension). It is more likely the original file than one with a copy tail (` - 복사본`, ` (1)`, ` copy`) attached.
+// 6. If still equal, the first file in path order. It compares ignoring case first, the same as the report order of name groups.
+// The returned value is { path, reason, doubt }. reason is why it was chosen, and doubt is the notice for when files whose lengths are known differ by more than 1 second and may not be the same video (null if none).
+// If there are no files, it is null. If there is only one, it picks that file and reason is "only one file".
 function chooseKeeper(files) {
   if (files.length === 0) return null;
   const durations = files.map((file) => file.duration).filter((value) => value !== null);
-  // 기준은 남은 후보를 받아 점수 함수를 돌려준다. 길이 기준은 1에서 빠진 파일의 길이를 보지 않도록 남은 후보로 가장 긴 길이를 잰다.
+  // A criterion takes the remaining candidates and returns a score function. The length criterion measures the longest length with the remaining candidates, so that it does not look at the length of a file removed in 1.
   const criteria = [
     ['excludes files whose duration or resolution could not be read', () => (file) => (file.note === null ? 1 : 0)],
     [
@@ -302,22 +302,22 @@ function chooseKeeper(files) {
   return { path: candidates[0].path, reason: reasons.join(', '), doubt };
 }
 
-// 타겟 아래 영상 파일을 이름 기준과 길이 기준으로 묶어 중복 후보를 찾는다. 파일은 건드리지 않는다.
-// 묶음마다 남길 파일(keep: chooseKeeper의 결과)을 붙인다. 이름 묶음과 길이 묶음은 따로 고르므로, 두 묶음에 함께 든 파일은 한쪽에서는 남기고 다른 쪽에서는 남기지 않을 수 있다.
-// - groups: 이름이 같은 묶음 ({ kind, key, number, part, generic, differentTitles, files }). 파일이 둘 이상인 것만 넣는다.
-//   generic은 카메라·순번처럼 흔한 이름의 묶음(isGenericGroup)이고, differentTitles는 번호 묶음에 제목이 다른(titlesDiffer) 두 파일이 있는 묶음이다(#103).
-//   번호 묶음의 파일에는 title(titleWords의 값)이 붙는다.
-//   번호 묶음을 먼저, 그 안에서는 기준값 순으로 둔다. 파일은 타겟 안의 경로 순이다.
-// - metadataGroups: 길이와 화면 비율이 같은 묶음 ({ aspect, duration, sameSize, alsoNamed, files }). groupByMetadata를 보라.
-//   alsoNamed는 파일이 모두 한 이름 묶음에 이미 든 묶음이다. 파일은 길이 순이다.
-//   files의 항목은 { path, size, duration, width, height, displayWidth, displayHeight, note }(번호 묶음의 파일은 title도)다. 모르는 값은 null이고, note는 메타데이터를 읽지 못한 사유다.
-// - unknownMetadata: 길이를 모르는 영상 수. 읽지 못하는 형식(avi, wmv 등)과 읽지 못한 파일이 든다.
-// - metadataErrors: 읽을 수 있는 형식인데 길이나 해상도를 읽지 못한 파일 ({ path, reason })
-// - conflicts: 번호가 여럿이라 이름으로 묶지 않은 파일 ({ path, numbers }). 길이로는 묶을 수 있다.
-// - unreadable: 크기나 내용을 읽지 못해 묶지 않은 파일 ({ path, reason })
-// - skipped: 다루지 않는 항목 ({ path, reason })
-// - checked: 살펴본 영상 파일 수
-// 링크는 확장자와 관계없이 건너뜀으로 보고한다. 저장소 폴더 안은 조용히 뺀다. 영상이 아닌 파일(제거 기록 fctl-removed-*.json 포함)은 보지 않는다.
+// It finds duplicate candidates by grouping the video files under the target by the name criterion and the length criterion. It does not touch files.
+// It attaches the file to keep (keep: the result of chooseKeeper) to each group. Name groups and length groups choose separately, so a file in both groups can be kept in one and not kept in the other.
+// - groups: groups with the same name ({ kind, key, number, part, generic, differentTitles, files }). Only those with two or more files are included.
+//   generic is a group with a common name such as a camera or sequence name (isGenericGroup), and differentTitles is a number group that has two files with different titles (titlesDiffer) (#103).
+//   A file in a number group gets a title (the value of titleWords).
+//   Number groups come first, and within them they are in key order. Files are in path order inside the target.
+// - metadataGroups: groups with the same length and aspect ratio ({ aspect, duration, sameSize, alsoNamed, files }). See groupByMetadata.
+//   alsoNamed is a group whose files are all already in one name group. Files are in length order.
+//   An item of files is { path, size, duration, width, height, displayWidth, displayHeight, note } (a file of a number group also has title). Unknown values are null, and note is the reason the metadata could not be read.
+// - unknownMetadata: the number of videos whose length is unknown. It includes formats that cannot be read (avi, wmv, and so on) and files that could not be read.
+// - metadataErrors: files in a readable format whose length or resolution could not be read ({ path, reason })
+// - conflicts: files not grouped by name because they have several numbers ({ path, numbers }). They can still be grouped by length.
+// - unreadable: files not grouped because the size or content could not be read ({ path, reason })
+// - skipped: items that are not handled ({ path, reason })
+// - checked: the number of video files examined
+// A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
 function findDuplicateNames(dir) {
   const access = grant(dir, ['read']);
   const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
@@ -328,7 +328,7 @@ function findDuplicateNames(dir) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;
-    // 폴더를 가리키는 링크도 확장자와 관계없이 그 안을 보지 않았음을 알린다.
+    // A link that points to a folder also reports that its inside was not looked at, regardless of extension.
     if (entry.type === 'link') {
       result.skipped.push({ path: entry.path, reason: 'Links are not checked.' });
       continue;
@@ -338,7 +338,7 @@ function findDuplicateNames(dir) {
     const transport = TRANSPORT_EXTENSIONS.has(extension);
     if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
-      // 영상이 아닌 .ts(TypeScript 소스)는 어디에 있든 보고하지 않는다. 그래서 건너뛸지 보기 전에 내용을 확인한다.
+      // A .ts that is not video (a TypeScript source) is not reported wherever it is. So it checks the content before deciding whether to skip it.
       if (transport && !isTransportStream(access.target, entry.relative)) continue;
       const reason = skipReason(parts);
       if (reason !== null) {
@@ -359,7 +359,7 @@ function findDuplicateNames(dir) {
       }
       const id = `${found.kind}\0${found.key}`;
       if (!byKey.has(id)) byKey.set(id, { kind: found.kind, key: found.key, number: found.number ?? null, part: found.part ?? null, files: [] });
-      // 번호 묶음의 파일에는 제목 낱말을 붙인다. 같은 번호인데 제목이 다른지 볼 때 쓴다.
+      // A file in a number group gets title words. They are used to see whether the title differs despite the same number.
       if (found.kind === 'number') file.title = titleWords(name);
       byKey.get(id).files.push(file);
       nameGroupOf.set(file, id);
@@ -378,8 +378,8 @@ function findDuplicateNames(dir) {
       differentTitles: group.kind === 'number' && group.files.some((a, index) => group.files.slice(index + 1).some((b) => titlesDiffer(a.title, b.title))),
       keep: chooseKeeper(group.files),
     }));
-  // 파일이 모두 한 이름 묶음에 든 길이 묶음은 alsoNamed로 표시한다. 보고에서는 되풀이하지 않지만, 이름과 길이가 함께 맞는다는 정보는 남긴다.
-  // 하나뿐이라 이름 묶음에 나오지 않는 파일은 이름 묶음에 든 것으로 보지 않는다.
+  // A length group whose files are all in one name group is marked alsoNamed. The report does not repeat it, but it keeps the information that the name and the length both match.
+  // A file that does not appear in a name group because it is alone is not seen as being in a name group.
   const shown = (file) => (byKey.get(nameGroupOf.get(file))?.files.length ?? 0) > 1;
   const sameNameGroup = (group) => group.files.every((file) => shown(file) && nameGroupOf.get(file) === nameGroupOf.get(group.files[0]));
   result.metadataGroups = groupByMetadata(videos).map((group) => ({ ...group, alsoNamed: sameNameGroup(group), keep: chooseKeeper(group.files) }));
@@ -387,7 +387,7 @@ function findDuplicateNames(dir) {
   return result;
 }
 
-// 초를 h:mm:ss 또는 m:ss로 쓴다.
+// It writes seconds as h:mm:ss or m:ss.
 function formatDuration(seconds) {
   const total = Math.round(seconds);
   const [h, m, s] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
@@ -395,7 +395,7 @@ function formatDuration(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-// 이름 묶음의 이름. 번호 ABC-123, 번호 ABC-123 조각 2, 이름 "trip"
+// The name of a name group. number ABC-123, number ABC-123 piece 2, name "trip"
 function groupLabel(group) {
   return group.kind === 'number' ? `number ${group.number}${group.part === null ? '' : ` part ${group.part}`}` : `name "${group.key}"`;
 }
@@ -403,7 +403,7 @@ function groupLabel(group) {
 function describe(file) {
   const parts = [formatSize(file.size)];
   if (file.width !== null && file.height !== null) {
-    // 회전이나 화소 비율로 보이는 크기가 다르면 함께 쓴다. 1920x1080(보이는 크기 1080x1920)
+    // If the visible size differs because of rotation or pixel aspect ratio, it writes both. 1920x1080 (displayed size 1080x1920)
     const shown = file.displayWidth != null && file.displayHeight != null && (file.displayWidth !== file.width || file.displayHeight !== file.height);
     parts.push(shown ? `${file.width}x${file.height} (displayed size ${file.displayWidth}x${file.displayHeight})` : `${file.width}x${file.height}`);
   }
@@ -414,14 +414,14 @@ function describe(file) {
 function formatDuplicateNames(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [];
-  // 묶음의 파일 줄. 남길 파일에는 고른 까닭을 붙인다.
+  // The file lines of a group. The file to keep gets the reason it was chosen.
   const pushFiles = (group) => {
     for (const file of group.files) {
       const keep = file.path === group.keep.path ? ` [kept: ${group.keep.reason}]` : '';
       lines.push(`  ${relative(file.path)} (${describe(file)})${keep}`);
     }
   };
-  // 이름 묶음은 같은 영상이 아닐 수 있는 까닭(길이가 다름, 흔한 이름, 제목이 다름)을 주의 줄로 덧붙인다(#103).
+  // For a name group, it adds, as caution lines, the reasons it may not be the same video (different length, common name, different title) (#103).
   for (const group of result.groups) {
     const label = groupLabel(group);
     lines.push(`Duplicate candidates (${label}, ${group.files.length} files):`);

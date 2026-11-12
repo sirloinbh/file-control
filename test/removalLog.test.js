@@ -8,7 +8,7 @@ const path = require('node:path');
 const { FcError } = require('../src/commands');
 const { writeRemovalLog, REMOVAL_LOG } = require('../src/removalLog');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {

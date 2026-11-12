@@ -1,10 +1,10 @@
 'use strict';
 
-// 테스트용 7z를 직접 만든다(#198). 본문은 압축하지 않고(COPY) 한 폴더에 이어 붙인다.
-// files: [{ name, data } | { name, folder: true }]. crc를 false로 주면 항목 CRC를 적지 않는다.
-// gap은 본문 뒤, 헤더 앞에 끼울 목록에 없는 바이트 수다. encoded는 헤더를 COPY EncodedHeader로 한 번 감싼다.
-// folderCrcOnly는 항목 CRC 없이 폴더 CRC만 적는다(libarchive는 이때 검사하지 않는다).
-// mutateHeader는 헤더 바이트를 바꾸는 함수로, 바꾼 뒤 다음 헤더 CRC를 다시 계산한다.
+// It builds a 7z for tests directly (#198). The body is not compressed (COPY) and is concatenated in one folder.
+// files: [{ name, data } | { name, folder: true }]. If crc is false, the entry CRC is not written.
+// gap is the number of bytes not in the list to put after the body and before the header. encoded wraps the header once in a COPY EncodedHeader.
+// folderCrcOnly writes only the folder CRC without the entry CRC (libarchive does not check in this case).
+// mutateHeader is a function that changes header bytes, and after changing, the next-header CRC is recomputed.
 const zlib = require('node:zlib');
 
 function number(value) {

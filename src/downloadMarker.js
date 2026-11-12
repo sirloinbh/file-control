@@ -3,14 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// 받기 도구가 받는 중에 쓰는 이름의 꼬리. x.mp4를 받는 동안 x.mp4.part, x.mp4.aria2처럼 파일 이름 뒤에 붙는다.
-// .part: Firefox, yt-dlp, JDownloader, Transmission / .crdownload: Chrome, Edge / .partial: 옛 Edge / .download: Safari / .opdownload: Opera
-// .fdmdownload: Free Download Manager / .aria2: aria2 / .ytdl, .part-Frag숫자: yt-dlp / .td, .td.cfg, .xltd: Thunder(迅雷) / .!qB: qBittorrent / .!ut: µTorrent / .bc!: BitComet
-// 받는 중인 내용 자체에 이 이름을 쓰는 도구가 많지만, 제 이름의 파일을 함께 두는 도구도 있다. aria2는 크기를 미리 잡은 x.mp4 옆에 x.mp4.aria2를,
-// Firefox는 크기 0인 자리 파일 x.mp4 옆에 x.mp4.part를 둔다. 이런 x.mp4는 오래 멈춰 있으면 시각으로 알 수 없어 이 표시로만 알 수 있다.
+// The tails of the names that download tools use while downloading. While downloading x.mp4, they are attached after the file name, as x.mp4.part and x.mp4.aria2.
+// .part: Firefox, yt-dlp, JDownloader, Transmission / .crdownload: Chrome, Edge / .partial: old Edge / .download: Safari / .opdownload: Opera
+// .fdmdownload: Free Download Manager / .aria2: aria2 / .ytdl, .part-Frag<number>: yt-dlp / .td, .td.cfg, .xltd: Thunder / .!qB: qBittorrent / .!ut: uTorrent / .bc!: BitComet
+// Many tools use this name for the content being downloaded itself, but some also keep a file of their own name alongside. aria2 keeps x.mp4.aria2 beside the size-reserved x.mp4,
+// and Firefox keeps x.mp4.part beside the size-0 placeholder file x.mp4. Such an x.mp4 cannot be told by its time when it stays stalled for long, so it can only be told by this marker.
 const DOWNLOAD_MARKER = /^(.+?)\.(?:part(?:-frag\d+)?|crdownload|partial|download|opdownload|fdmdownload|aria2|ytdl|td(?:\.cfg)?|xltd|!qb|!ut|bc!)$/i;
 
-// 폴더 안의 표시 파일을 받는 중인 파일 이름(소문자)으로 찾아볼 수 있게 모은다. Windows는 이름의 대소문자를 가리지 않는다.
+// It collects the marker files in a folder so they can be looked up by the name of the file being downloaded (lower case). Windows is case-insensitive about names.
 function downloadMarkers(dir) {
   const markers = new Map();
   for (const name of fs.readdirSync(dir)) {
@@ -20,15 +20,15 @@ function downloadMarkers(dir) {
   return markers;
 }
 
-// 파일이 받는 중일 수 있다는 표시를 찾는 함수를 만든다. 폴더마다 표시 파일 목록을 한 번만 읽는다.
-// 돌려주는 함수는 표시가 없으면 null을, 있으면 { folder } (Safari 표시 폴더 안), { marker } (옆의 표시 파일 이름),
-// { error } (폴더를 읽지 못함, 오류 코드) 중 하나를 돌려준다. 읽지 못한 폴더도 기억해 그 폴더의 파일을 모두 표시가 있는 것으로 본다.
+// It makes a function that looks for a marker that a file may be downloading. It reads the marker file list only once per folder.
+// The returned function returns null if there is no marker, and if there is, one of { folder } (inside a Safari marker folder), { marker } (the name of the marker file beside it),
+// and { error } (the folder could not be read, an error code). It also remembers a folder that could not be read and treats all files of that folder as having a marker.
 function markerFinder() {
   const markersIn = new Map();
   return (file) => {
     const dir = path.dirname(file);
     const name = path.basename(file).toLowerCase();
-    // Safari는 받는 중인 파일을 x.mp4.download 폴더 안에 x.mp4로 둔다.
+    // Safari keeps a file being downloaded as x.mp4 inside an x.mp4.download folder.
     if (path.basename(dir).toLowerCase() === `${name}.download`) return { folder: path.basename(dir) };
     if (!markersIn.has(dir)) {
       try {
@@ -44,7 +44,7 @@ function markerFinder() {
   };
 }
 
-// markerFinder가 찾은 표시를 남기는 사유로 쓴다. keeper를 주면 남길 파일의 표시로 적는다.
+// It uses the marker markerFinder found as the reason for keeping. If keeper is given, it writes it as the marker of the file to keep.
 function markerReason(found, { keeper = false } = {}) {
   if (found === null) return null;
   if (found.folder !== undefined) return `Kept because ${keeper ? 'the file to keep is' : 'the file is'} inside the download tool's marker folder (${found.folder}) and may still be downloading.`;

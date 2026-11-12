@@ -1,10 +1,10 @@
 'use strict';
 
-// jobs.test에서 쓰는 가짜 작업 프로세스. 받은 argv의 첫 말로 할 일을 정한다.
-//   progress <n>   진행 줄 n개를 보내고 결과를 보낸다
-//   wait <file>    file이 생길 때까지 기다린 뒤 결과를 보낸다
-//   crash          결과 없이 표준 오류만 남기고 끝난다
-//   error          오류 메시지를 보낸다
+// A fake job process used in jobs.test. It decides what to do by the first word of the argv received.
+//   progress <n>   sends n progress lines and then sends the result
+//   wait <file>    waits until file exists and then sends the result
+//   crash          ends leaving only standard error, with no result
+//   error          sends an error message
 const fs = require('node:fs');
 
 process.once('message', ({ argv }) => {

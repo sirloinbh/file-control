@@ -10,13 +10,13 @@ const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeI
 
 const isWindows = process.platform === 'win32';
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로,
-// 이 파일에서는 사용자 폴더를 임시 폴더 밖의 가짜 경로로 바꿔 둔다. 보호 테스트는 home을 직접 정한다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so
+// in this file the user folder is swapped with a fake path outside the temporary folder. The protection tests decide home directly.
 const defaultHome = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
 let home = defaultHome;
 test.mock.method(os, 'homedir', () => home);
 
-// 테스트 안에서만 사용자 폴더를 바꾸고, 끝나면 되돌린다.
+// It changes the user folder only inside the test and restores it when done.
 function useHome(t, dir) {
   home = dir;
   t.after(() => {
@@ -87,7 +87,7 @@ test('resolveInside는 안쪽 경로를 절대경로로 돌려주고 밖이면 �
   assert.throws(() => resolveInside(target, path.resolve('/etc/passwd')), FcError);
 });
 
-// Windows에서는 디렉토리 심볼릭 링크에 관리자 권한이 필요해서 정션을 쓴다.
+// On Windows, directory symbolic links need administrator rights, so it uses junctions.
 function linkDir(from, to) {
   fs.symlinkSync(from, to, isWindows ? 'junction' : 'dir');
 }
@@ -166,7 +166,7 @@ test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 �
   assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
 });
 
-// 순회 중 폴더를 정션으로 바꾸는 경쟁(#46). readdirSync가 when 폴더를 처음 읽은 직후에 swap을 부른다.
+// A race that swaps a folder for a junction during traversal (#46). It calls swap right after readdirSync first reads the when folder.
 function walkWithSwap(t, when, swap) {
   const readdir = fs.readdirSync;
   let swapped = false;
@@ -198,7 +198,7 @@ test('walk는 목록에 올린 하위 폴더가 읽기 전에 타겟 밖 정션�
   const { outside, target, toJunction } = swapFixture();
   walkWithSwap(t, target, toJunction(outside));
   assert.throws(() => walk(target), (err) => err instanceof FcError && /was turned into a link while reading and now points elsewhere/.test(err.message) && err.message.includes(`${path.join(target, 's')} -> ${outside}`));
-  // 바꾼 뒤의 상태는 정션으로만 보인다.
+  // The state after the swap looks only like a junction.
   t.mock.restoreAll();
   assert.ok(walk(target).some((e) => e.relative === 's' && e.type === 'link'));
   assert.ok(!walk(target).some((e) => e.relative.endsWith('secret.txt')));
@@ -212,7 +212,7 @@ test('walk는 하위 폴더가 타겟 안의 다른 폴더를 가리키는 정�
 
 test('walk는 하위 폴더를 읽는 동안 정션으로 바뀌어도 읽은 목록을 내지 않는다 (#46)', (t) => {
   const { outside, target, toJunction } = swapFixture();
-  // s를 읽은 직후에 바꾸면 읽은 뒤 확인이 잡는다.
+  // If it swaps right after reading s, the check after reading catches it.
   walkWithSwap(t, path.join(target, 's'), toJunction(outside));
   assert.throws(() => walk(target), /was turned into a link while reading and now points elsewhere/);
 });
@@ -220,7 +220,7 @@ test('walk는 하위 폴더를 읽는 동안 정션으로 바뀌어도 읽은 �
 test('grant는 링크 검사로 훑는 폴더 자신이 그 사이 정션으로 바뀌어도 내주지 않는다 (#46)', (t) => {
   const { outside, target, toJunction } = swapFixture();
   const access = grant(target, ['read']);
-  // read(s)는 s의 실제 경로를 구한 뒤 s 안의 링크를 훑는다(rejectLinksInside). 그 목록을 읽은 직후 s를 바꾼다.
+  // read(s) gets the real path of s and then scans the links inside s (rejectLinksInside). Right after reading that list, it swaps s.
   walkWithSwap(t, path.join(target, 's'), toJunction(outside));
   assert.throws(() => access.read('s'), /was turned into a link while reading and now points elsewhere/);
 });
@@ -297,7 +297,7 @@ test('readRange는 손상된 헤더처럼 큰 length를 받아도 파일에 있�
   fs.writeFileSync(path.join(target, 'tiny.mp4'), 'abcde');
   const result = readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 });
   assert.strictEqual(result.toString(), 'bcde');
-  // subarray는 원래 할당한 메모리를 공유하므로, 할당 자체가 작았는지 확인한다.
+  // subarray shares the originally allocated memory, so it checks that the allocation itself was small.
   assert.ok(result.buffer.byteLength <= 5, `할당 크기: ${result.buffer.byteLength}`);
 });
 
@@ -360,8 +360,8 @@ test('resolveTarget은 Windows 시스템 폴더와 그 안, 그것을 품은 드
   if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /protected path/);
 });
 
-// 테스트 안에서만 환경 변수를 바꾸고, 끝나면 되돌린다. t.after는 먼저 등록한 것부터 돌므로,
-// 한 테스트에서 같은 변수를 여러 번 바꿔도 처음 값으로 돌아가도록 키마다 처음 한 번만 저장한다(1차 리뷰).
+// It changes the environment variable only inside the test and restores it when done. t.after runs the earliest registered first, so
+// even if one test changes the same variable several times, it saves only the first time per key so that it returns to the first value (first review).
 const savedEnv = new WeakMap();
 function useEnv(t, values) {
   if (!savedEnv.has(t)) {
@@ -389,7 +389,7 @@ test('resolveTarget은 ProgramData(All Users), 64비트 Program Files, 복구 �
   if (fs.existsSync(allUsers)) assert.throws(() => resolveTarget(allUsers), /protected path.*ProgramData/i);
   const root = tempDir();
   for (const name of ['pf64', 'pd', 'aup']) fs.mkdirSync(path.join(root, name));
-  // 32비트 Node에서는 ProgramFiles가 x86 폴더라 64비트 폴더는 ProgramW6432로만 알 수 있다.
+  // In 32-bit Node, ProgramFiles is the x86 folder, so the 64-bit folder can be known only through ProgramW6432.
   useEnv(t, { ProgramW6432: path.join(root, 'pf64'), ProgramData: path.join(root, 'pd') });
   assert.throws(() => resolveTarget(path.join(root, 'pf64')), /system folder/);
   assert.throws(() => resolveTarget(path.join(root, 'pd')), /system folder/);
@@ -416,10 +416,10 @@ test('resolveTarget은 드라이브마다 있는 휴지통·System Volume Inform
   }
   assert.strictEqual(protectedReason('E:\\Recycle.Bin'), null);
   assert.strictEqual(protectedReason('E:\\data\\$Recycle.Bin'), null);
-  // 드라이브 루트는 휴지통이 아직 없어도 막는다. 처음 rm할 때 생기므로 있는지에 따라 달라지지 않게 한다(1차 리뷰).
+  // A drive root is blocked even if the Recycle Bin does not exist yet. It is created on the first rm, so it must not vary with whether it exists (first review).
   for (const p of ['Y:\\', 'z:\\']) assert.match(protectedReason(p), /drive root/, p);
   assert.throws(() => resolveTarget(path.parse(process.cwd()).root), /protected path/);
-  // 실제 경로를 볼 권한이 없는 폴더는 날것 오류 대신 FcError로 거부한다(관리자로 실행하면 보호 경로로 거부된다).
+  // A folder whose real path you have no permission to see is refused with an FcError instead of a raw error (run as administrator, it is refused as a protected path).
   for (const p of ['C:\\$Recycle.Bin', 'C:\\System Volume Information']) {
     if (fs.existsSync(p)) assert.throws(() => resolveTarget(p), (err) => err instanceof FcError, p);
   }
@@ -454,7 +454,7 @@ test('resolveTarget은 다른 사용자의 프로필과 설정 폴더, 기본 �
   for (const p of [at('kim2', 'Documents'), at('kim2', 'Documents', '.notes'), at('Public'), at('Public', 'Documents')]) {
     assert.strictEqual(resolveTarget(p), p);
   }
-  // 사용자 폴더가 프로필 폴더 밖에 있으면 그 형제를 다른 사용자로 보지 않는다.
+  // If the user folder is outside the profile folder, its siblings are not seen as other users.
   useHome(t, path.join(root, 'elsewhere', 'kim'));
   assert.strictEqual(resolveTarget(at('kim2', '.ssh')), at('kim2', '.ssh'));
 });
@@ -482,7 +482,7 @@ test('resolveTarget은 절대경로가 아닌 환경 변수 대신 기본 위치
     process.env.SystemRoot = systemRoot;
   });
   process.env.SystemRoot = 'relative\\windows';
-  // 상대경로를 그대로 쓰면 현재 폴더 아래를 보호 대상으로 잡아 현재 폴더까지 거부된다.
+  // If a relative path were used as is, the area under the current folder would be caught as protected, and even the current folder would be refused.
   assert.strictEqual(resolveTarget('.'), fs.realpathSync.native('.'));
   assert.throws(() => resolveTarget('C:\\Windows'), /protected path/);
 });
@@ -494,7 +494,7 @@ test('resolveTarget은 사용자 폴더를 알 수 없으면 FcError를 낸다',
 
 const ALL_ACCESS = ['read', 'write', 'delete'];
 
-// 타겟 안에 일반 폴더·파일을, 타겟 밖에 비밀 파일을 만든다.
+// It makes ordinary folders and files inside the target and a secret file outside the target.
 function accessFixture() {
   const root = tempDir();
   const outside = path.join(root, 'outside');
@@ -590,9 +590,9 @@ test('grant는 Windows에서 해석이 갈리는 이름을 세 작업 모두 거
   const access = grant(target, ALL_ACCESS);
   const before = listing(root);
   const names = [
-    // PowerShell·tar.exe는 끝의 점과 공백을 지워 정션이나 타겟 밖으로 풀어낸다.
+    // PowerShell and tar.exe remove a trailing dot and space and resolve to a junction or outside the target.
     'escape.', 'escape ', 'escape./new.txt', 'escape /new.txt', '. ', '.. ', '.. /outside', 'sub/.. ', 'sub./a.txt',
-    // 스트림과 장치 이름
+    // Streams and device names
     'sub/a.txt:hidden', 'sub/a.txt::$DATA', 'NUL', 'nul.txt', 'sub/COM1', 'LPT9.log', 'CONIN$',
   ];
   for (const kind of ALL_ACCESS) {
@@ -609,7 +609,7 @@ test('grant는 점이 들어간 평범한 이름과 장치 이름으로 시작�
   }
 });
 
-// Windows 11 24H2 이상(빌드 26100 이상)에서는 장치 이름 + 확장자 하나만 장치로 본다(#53). 그 아래 버전은 넓게 거부한다.
+// On Windows 11 24H2 and above (build 26100 and above), only a device name plus one extension is seen as a device (#53). Versions below that are refused broadly.
 const WINDOWS_11 = deviceNamePattern() === deviceNamePattern('10.0.26200');
 const DEVICE_LIKE = ['Con.Air.1997.mkv', 'Aux.2018.mp4', 'nul.tar.gz', 'Prn.Movie.mkv', 'Com0.txt', 'Lpt0.txt', 'Nul .mp4', 'NUL..mp4', 'CONIN$.txt', 'sub/Con.Air.1997/a.mkv'];
 
@@ -627,9 +627,9 @@ test('장치 이름 규칙은 Windows 빌드에 따라 고르고, 빌드를 읽�
   assert.strictEqual(deviceNamePattern('10.0.26100'), narrow);
   const wide = deviceNamePattern('10.0.19045');
   assert.notStrictEqual(narrow, wide);
-  // 확인하지 못한 Windows 11 23H2 이하(22000~22631)와 Server 2022(20348)는 넓은 규칙이다.
+  // Windows 11 23H2 and below (22000 to 22631) and Server 2022 (20348), which were not checked, use the broad rule.
   for (const release of ['10.0.26099', '10.0.22631', '10.0.22000', '10.0.20348', '10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
-  // [이름, Windows 11에서 거부, 그 아래에서 거부]
+  // [name, refused on Windows 11, refused on versions below]
   const cases = [
     ['NUL', true, true], ['nul', true, true], ['Nul.mp4', true, true], ['con.txt', true, true], ['Com1.mkv', true, true],
     ['LPT9.log', true, true], ['COM¹.txt', true, true], ['com².mp4', true, true], ['lpt³', true, true], ['Con.Air', true, true], ['CONIN$', true, true], ['conout$', true, true],
@@ -757,7 +757,7 @@ test('grant는 예상 못 한 파일 시스템 오류와 잘못된 경로 값도
 test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 밖 형제 폴더를 정션으로 읽지 못하게 한다', () => {
   const root = tempDir();
   const target = path.join(root, 'work');
-  // U+212A(켈빈 기호)는 toLowerCase하면 k지만 NTFS에서는 다른 이름이다.
+  // U+212A (the Kelvin sign) is k when toLowerCase is applied, but on NTFS it is a different name.
   const sibling = path.join(root, 'wor\u212A');
   fs.mkdirSync(target);
   fs.mkdirSync(sibling);
@@ -835,7 +835,7 @@ test('grant.read·write는 링크가 든 폴더를 거부하고, 링크 옆의 �
 
 test('grant는 정션을 풀어낸 실제 경로에 해석이 갈리는 이름이 있으면 거부한다', { skip: !isWindows }, () => {
   const { outside, target } = accessFixture();
-  // Node는 끝의 점을 그대로 만들지만, 돌려준 경로를 PowerShell·tar.exe에 넘기면 타겟 밖 정션 weird로 풀린다.
+  // Node creates a trailing dot literally, but if the returned path is passed to PowerShell or tar.exe, it resolves to the junction "weird" outside the target.
   fs.mkdirSync(path.join(target, 'weird.'));
   fs.writeFileSync(path.join(target, 'weird.', 'decoy.txt'), 'decoy');
   linkDir(outside, path.join(target, 'weird'));
@@ -855,7 +855,7 @@ test('resolveTarget은 Windows에서 끝이 점·공백인 폴더를 타겟으�
   assert.throws(() => resolveTarget(path.join(home, 'AppData.')), /(ends|ending) with a dot or space/);
   assert.throws(() => walk(path.join(home, 'Downloads', 'proj.')), /(ends|ending) with a dot or space/);
   assert.throws(() => resolveTarget(path.join(home, 'Downloads', 'proj.', 'inner')), /(ends|ending) with a dot or space/);
-  // 정션으로 감싸도 실제 경로 기준으로 거부한다.
+  // Even wrapped in a junction, it refuses by the real path.
   linkDir(path.join(home, 'AppData.'), path.join(home, 'plain', 'wrapped'));
   assert.throws(() => resolveTarget(path.join(home, 'plain', 'wrapped')), /(ends|ending) with a dot or space/);
   fs.mkdirSync(path.join(home, 'clean'));
@@ -881,7 +881,7 @@ test('grant는 Windows에서 쓸 수 없는 문자와 변형 장치 이름을 �
   for (const p of ['es*/new.txt', 'es?ape/new.txt', 'a*.zip', 'a|b', 'a<b', 'a>b', 'a"b', 'a\x01b', 'COM¹', 'LPT³', 'com¹.txt', 'sub/Con.Air/a.mkv']) {
     assert.throws(() => access.write(p), /interpreted differently on Windows/, p);
   }
-  // 점 앞에 공백이 있는 장치 이름은 Windows 11에서 장치가 아니다(#53).
+  // A device name with a space before the dot is not a device on Windows 11 (#53).
   for (const p of ['NUL .txt', 'CON .log', 'aux .x']) {
     if (WINDOWS_11) assert.strictEqual(access.write(p), path.join(target, p), p);
     else assert.throws(() => access.write(p), /interpreted differently on Windows/, p);

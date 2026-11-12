@@ -9,7 +9,7 @@ const { FcError } = require('../src/commands');
 const { readMp4Metadata } = require('../src/mp4');
 const { avcSps, hevcSps, avcC, hvcC } = require('./spsBuilder');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -42,14 +42,14 @@ function largeBox(type, ...parts) {
 
 const ftyp = () => box('ftyp', latin('isom'), u32(512), latin('isommp42'));
 
-// rotate를 주면 영상 전체의 행렬(mvhd)에 회전을 넣는다. 없으면 예전 시험 파일처럼 0으로 채운다.
+// If rotate is given, it puts the rotation in the whole-movie matrix (mvhd). If absent, it fills with 0 like the old test files.
 function mvhd({ timescale = 1000, duration = 10000, version = 0, rotate } = {}) {
   const tail = [Buffer.alloc(16), matrix(rotate), Buffer.alloc(28)];
   if (version === 1) return box('mvhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(duration), ...tail);
   return box('mvhd', u32(0), u32(0), u32(0), u32(timescale), u32(duration), ...tail);
 }
 
-// 변환 행렬 { a b u / c d v / x y w }. rotate가 없으면 예전 시험 파일처럼 0으로 채운다.
+// The transform matrix { a b u / c d v / x y w }. If rotate is absent, it fills with 0 like the old test files.
 function matrix(rotate) {
   const m = Buffer.alloc(36);
   if (rotate === undefined) return m;
@@ -69,8 +69,8 @@ function hdlr(kind) {
   return box('hdlr', u32(0), u32(0), latin(kind), Buffer.alloc(13));
 }
 
-// pasp는 [가로, 세로] 화소 비율이다. 표본 항목의 자식 박스로 avcC 뒤에 붙인다.
-// config를 주면 그 avcC·hvcC 박스를 쓴다(#113). 주지 않으면 pasp가 있을 때만 빈 avcC를 붙인다.
+// pasp is the [horizontal, vertical] pixel aspect ratio. It is attached after avcC as a child box of the sample entry.
+// If config is given, it uses that avcC or hvcC box (#113). If not given, it attaches an empty avcC only when there is a pasp.
 function stsd(width, height, format = 'avc1', pasp, config) {
   const entry = Buffer.alloc(78);
   entry.writeUInt16BE(width, 24);
@@ -89,13 +89,13 @@ function trak({ kind = 'vide', width = 1920, height = 1080, display, duration = 
   );
 }
 
-// ilst 항목. kind 1은 UTF-8, 2는 UTF-16BE다.
+// An ilst entry. kind 1 is UTF-8 and 2 is UTF-16BE.
 function item(type, text, kind = 1) {
   const value = Buffer.isBuffer(text) ? text : Buffer.from(text, 'utf8');
   return box(type, box('data', u32(kind), u32(0), value));
 }
 
-// keys 번호로 찾는 ilst 항목
+// An ilst entry looked up by keys number
 function numbered(index, text) {
   const value = box('data', u32(1), u32(0), latin(text));
   return Buffer.concat([u32(value.length + 8), u32(index), value]);
@@ -142,7 +142,7 @@ test('찾지 못한 값은 null이다', () => {
 
 test('moov가 mdat 뒤에 있어도 찾고, mdat 내용은 읽지 않는다', () => {
   const dir = tempDir();
-  // mdat 안에 가짜 moov가 있어도 속지 않는다.
+  // It is not fooled even if there is a fake moov inside mdat.
   const fake = box('moov', mvhd({ duration: 99000 }));
   const result = write(dir, ftyp(), box('mdat', fake), box('moov', mvhd()));
   assert.strictEqual(result.duration, 10);
@@ -319,14 +319,14 @@ test('손상된 구조를 거부한다', () => {
   const dir = tempDir();
   const noMoov = /has no moov box/;
   assert.throws(() => write(dir, ftyp()), noMoov);
-  // mdat이 잘린 파일
+  // A file whose mdat is truncated
   assert.throws(() => write(dir, ftyp(), u32(9999), latin('mdat'), Buffer.alloc(8)), noMoov);
-  // 크기가 헤더보다 작은 박스, 파일을 넘는 64비트 크기
+  // A box whose size is smaller than the header, a 64-bit size that goes past the file
   assert.throws(() => write(dir, ftyp(), u32(4), latin('free'), Buffer.alloc(8)), noMoov);
   assert.throws(() => write(dir, ftyp(), u32(1), latin('free'), u64(0xffffffffffffffffn)), noMoov);
-  // moov가 잘린 파일
+  // A file whose moov is truncated
   assert.throws(() => write(dir, ftyp(), u32(9999), latin('moov'), Buffer.alloc(8)), /moov box of the MP4 file is truncated/);
-  // 부모를 넘는 자식
+  // A child that goes past its parent
   const overflow = Buffer.concat([u32(9999), latin('trak'), Buffer.alloc(8)]);
   assert.throws(() => write(dir, ftyp(), box('moov', overflow)), /structure is damaged/);
 });
@@ -401,7 +401,7 @@ test('트랙과 조각 구조의 어느 층이든 틀린 크기는 손상이다'
 
 test('알 수 없는 버전과 안전 범위를 넘는 길이는 없는 값으로 본다', () => {
   const dir = tempDir();
-  // 값은 그대로 두고 버전만 2로 바꾼다. 버전을 보지 않으면 값이 읽힌다.
+  // It leaves the values as they are and changes only the version to 2. If the version is not looked at, the value is read.
   const v2 = (full) => {
     const copy = Buffer.from(full);
     copy[8] = 2;
@@ -439,7 +439,7 @@ test('QuickTime 형식 meta는 hdlr가 먼저 오지 않아도 읽는다', () =>
   assert.strictEqual(write(dir, ftyp(), box('moov', onlyList)).title, 'T');
   const keysFirst = box('meta', box('keys', u32(0), u32(1), box('mdta', latin('com.apple.quicktime.title'))), hdlr('mdta'), box('ilst', numbered(1, 'K')));
   assert.strictEqual(write(dir, ftyp(), box('moov', keysFirst)).title, 'K');
-  // 형식을 가를 4바이트도 없는 meta
+  // A meta that lacks even the 4 bytes that tell the format
   assert.strictEqual(write(dir, ftyp(), box('moov', box('meta', Buffer.alloc(3)))).title, null);
 });
 
@@ -465,14 +465,14 @@ test('keys의 틀린 값은 안전하게 무시한다', () => {
   const dir = tempDir();
   const ilst = box('ilst', numbered(1, 'T'), numbered(0, 'Z'));
   const withKeys = (keys) => write(dir, ftyp(), box('moov', box('meta', hdlr('mdta'), keys, ilst))).title;
-  // 크기 0 항목과 큰 개수: 이름을 끝없이 늘리지 않는다.
+  // A size-0 entry and a large count: the names do not grow endlessly.
   assert.strictEqual(withKeys(box('keys', u32(0), u32(0xffffffff), Buffer.alloc(64))), null);
-  // 개수보다 많은 항목은 읽지 않는다.
+  // It does not read entries beyond the count.
   const title = box('mdta', latin('com.apple.quicktime.title'));
   assert.strictEqual(withKeys(box('keys', u32(0), u32(0), title)), null);
-  // 남은 길이를 넘는 항목
+  // An entry that goes past the remaining length
   assert.strictEqual(withKeys(box('keys', u32(0), u32(1), u32(9999), latin('mdta'))), null);
-  // 너무 큰 keys
+  // A keys that is too large
   assert.strictEqual(withKeys(box('keys', u32(0), u32(1), title, Buffer.alloc(64 * 1024))), null);
 });
 
@@ -510,7 +510,7 @@ test('경로와 입출력 문제는 FcError다', (t) => {
   });
   assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /EBUSY/.test(err.message));
   readSync.mock.restore();
-  // 타겟 폴더를 확인하다 나는 시스템 오류도 같다.
+  // A system error that occurs while checking the target folder is the same.
   t.mock.method(fs.realpathSync, 'native', () => {
     throw Object.assign(new Error('denied'), { code: 'EPERM', syscall: 'realpath' });
   });
@@ -518,7 +518,7 @@ test('경로와 입출력 문제는 FcError다', (t) => {
 });
 
 test('4GiB를 넘는 위치의 moov를 읽는다', (t) => {
-  // 실제로 쓰면 디스크를 6GB 쓰므로 크기와 읽기만 흉내 낸다.
+  // Actually writing would use 6GB of disk, so only the size and the reading are imitated.
   const dir = tempDir();
   const gap = 6 * 2 ** 30;
   const head = Buffer.concat([ftyp(), u32(1), latin('mdat'), u64(gap + 16)]);
@@ -561,7 +561,7 @@ test('보이는 크기: 90·270도 회전이면 너비와 높이를 바꾸고, �
     assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ rotate, version: 1 })))), [1920, 1080, 1080, 1920], `버전 1, ${rotate}도`);
   }
   for (const rotate of [0, 180]) assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ rotate })))), [1920, 1080, 1920, 1080], `${rotate}도`);
-  // 고른 본 영상 트랙의 회전을 쓴다.
+  // It uses the rotation of the chosen main video track.
   const cover = trak({ width: 300, height: 300, duration: 10 });
   assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', cover, trak({ rotate: 90 })))), [1920, 1080, 1080, 1920]);
 });
@@ -569,14 +569,14 @@ test('보이는 크기: 90·270도 회전이면 너비와 높이를 바꾸고, �
 test('보이는 크기: pasp 화소 비율을 너비에 곱하고 회전과 함께 반영한다 (#106)', () => {
   const dir = tempDir();
   const size = (result) => [result.width, result.height, result.displayWidth, result.displayHeight];
-  // DVD 16:9 (720x480, 화소 비율 32:27)
+  // DVD 16:9 (720x480, pixel aspect ratio 32:27)
   assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp: [32, 27] })))), [720, 480, 853, 480]);
   assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp: [32, 27], rotate: 90 })))), [720, 480, 480, 853]);
-  // 1:1과 0이 든 값은 반영하지 않는다.
+  // A value that holds 1:1 and 0 is not reflected.
   for (const pasp of [[1, 1], [0, 1], [1, 0]]) {
     assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', trak({ width: 720, height: 480, pasp })))), [720, 480, 720, 480], pasp.join(':'));
   }
-  // 인코딩 해상도가 0이라 tkhd 크기를 쓰면 그 값이 이미 보이는 크기다.
+  // If the encoded resolution is 0 and the tkhd size is used, that value is already the visible size.
   const shown = trak({ width: 0, height: 0, display: { width: 853, height: 480 }, pasp: [32, 27] });
   assert.deepStrictEqual(size(write(dir, ftyp(), box('moov', shown))), [853, 480, 853, 480]);
 });
@@ -588,11 +588,11 @@ const h265 = (sar) => box('hvcC', hvcC(hevcSps({ width: 720, height: 480, sar })
 test('보이는 크기: pasp가 없으면 avcC·hvcC 안 SPS의 화소 비율을 쓴다 (#113)', () => {
   const dir = tempDir();
   const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
-  // DVD 16:9 (화소 비율 32:27 직접 적음)와 표의 40:33
+  // DVD 16:9 (pixel aspect ratio 32:27 written directly) and 40:33 from the table
   assert.deepStrictEqual(size({ config: h264([32, 27]) }), [720, 480, 853, 480]);
   assert.deepStrictEqual(size({ config: h265(5), format: 'hvc1' }), [720, 480, 873, 480]);
   assert.deepStrictEqual(size({ config: h265([32, 27]), format: 'hev1', rotate: 90 }), [720, 480, 480, 853]);
-  // 비율이 없거나 1:1이거나 읽을 수 없는 SPS는 정사각형 화소로 본다.
+  // An SPS with no ratio, 1:1, or unreadable is seen as square pixels.
   for (const config of [h264(undefined), h264(1), box('avcC', Buffer.alloc(7)), box('hvcC', Buffer.alloc(30))]) {
     assert.deepStrictEqual(size({ config }), [720, 480, 720, 480]);
   }
@@ -603,25 +603,25 @@ test('보이는 크기: tkhd 화면 크기가 인코딩 해상도와 다르면 �
   const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
   assert.deepStrictEqual(size({ display: { width: 853, height: 480 } }), [720, 480, 853, 480]);
   assert.deepStrictEqual(size({ display: { width: 853, height: 480 }, rotate: 270 }), [720, 480, 480, 853]);
-  // 높이를 줄여 늘린 경우도 비율로 본다(720x480을 640x480으로 보여 주면 4:3).
+  // A case stretched by reducing the height is also seen as a ratio (showing 720x480 as 640x480 gives 4:3).
   assert.deepStrictEqual(size({ display: { width: 640, height: 480 } }), [720, 480, 640, 480]);
-  // 너비와 높이를 같은 배율로 줄이면 화소 비율은 1이다.
+  // If the width and height are reduced by the same factor, the pixel aspect ratio is 1.
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ display: { width: 1280, height: 720 } })))), [1920, 1080, 1920, 1080]);
-  // 부호화 크기(1920x1088)를 적고 tkhd에 보이는 크기(1920x1080)를 적은 파일은 tkhd 크기를 그대로 보인다.
+  // A file that writes the coded size (1920x1088) and writes the visible size (1920x1080) in tkhd shows the tkhd size as it is.
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', trak({ width: 1920, height: 1088, display: { width: 1920, height: 1080 } })))), [1920, 1088, 1920, 1080]);
-  // 회전하는 영상인데 tkhd에 회전한 뒤의 크기를 적은 파일은 화소 비율로 보지 않는다(예전과 같이 세로로 보인다).
+  // A file of a rotated video that wrote the size after rotation in tkhd is not seen as a pixel aspect ratio (it shows as portrait, as before).
   for (const rotate of [90, 270]) {
     assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 }, rotate }), [1920, 1080, 1080, 1920], `${rotate}도`);
   }
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ display: { width: 1080, height: 1920 } })))), [1920, 1080, 1080, 1920]);
-  // 회전한 뒤의 크기를 적은 tkhd는 건너뛰고 SPS의 화소 비율을 쓴다(4:3 화소의 1440x1080 = 1920x1080).
+  // A tkhd that wrote the size after rotation is skipped and the SPS pixel aspect ratio is used (1440x1080 with 4:3 pixels = 1920x1080).
   assert.deepStrictEqual(size({ width: 1440, height: 1080, display: { width: 1080, height: 1440 }, rotate: 90, config: h264(14) }), [1440, 1080, 1080, 1920]);
-  // 회전하지 않는 영상의 바뀐 비율은 화소 비율로 본다.
+  // A changed ratio of a video that does not rotate is seen as a pixel aspect ratio.
   assert.deepStrictEqual(size({ width: 1920, height: 1080, display: { width: 1080, height: 1920 } }), [1920, 1080, 1080, 1920]);
-  // tkhd 크기가 0이거나 정수 부분이 0이면(16비트 밀지 않고 적은 값) 쓰지 않는다.
+  // If the tkhd size is 0 or its integer part is 0 (a value written without the 16-bit shift), it is not used.
   const unshifted = box('trak', box('tkhd', u32(3), u32(0), u32(0), u32(1), u32(0), u32(10000), Buffer.alloc(16), matrix(0), u32(1920), u32(1080)), box('mdia', hdlr('vide'), box('minf', box('stbl', stsd(1920, 1088)))));
   assert.deepStrictEqual(shownSize(write(dir, ftyp(), box('moov', unshifted))), [1920, 1088, 1920, 1088]);
-  // tkhd 크기가 0이면 쓰지 않는다.
+  // If the tkhd size is 0, it is not used.
   assert.deepStrictEqual(size({ display: { width: 0, height: 0 }, config: h264([32, 27]) }), [720, 480, 853, 480]);
 });
 
@@ -629,14 +629,14 @@ test('보이는 크기: 화소 비율은 pasp, tkhd, SPS 순으로 고른다 (#1
   const dir = tempDir();
   const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 720, height: 480, ...options }))));
   const wide = { width: 853, height: 480 };
-  // pasp가 있으면 1:1이어도 그 값을 쓴다.
+  // If pasp exists, its value is used even if it is 1:1.
   assert.deepStrictEqual(size({ pasp: [1, 1], display: wide, config: h264(5) }), [720, 480, 720, 480]);
   assert.deepStrictEqual(size({ pasp: [8, 9], display: wide, config: h264(5) }), [720, 480, 640, 480]);
-  // pasp가 없으면 tkhd가 SPS보다 먼저다.
+  // If there is no pasp, tkhd comes before the SPS.
   assert.deepStrictEqual(size({ display: wide, config: h264(5) }), [720, 480, 853, 480]);
-  // tkhd가 인코딩 해상도와 같으면 SPS를 쓴다.
+  // If tkhd is the same as the encoded resolution, the SPS is used.
   assert.deepStrictEqual(size({ config: h264(5) }), [720, 480, 873, 480]);
-  // 0이 든 pasp는 없는 것으로 보고 다음 값을 쓴다.
+  // A pasp that holds 0 is seen as absent and the next value is used.
   assert.deepStrictEqual(size({ pasp: [0, 1], config: h264([32, 27]) }), [720, 480, 853, 480]);
 });
 
@@ -651,12 +651,12 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
   assert.deepStrictEqual(size(90, 90), [1920, 1080, 1920, 1080]);
   assert.deepStrictEqual(size(180, 270), [1920, 1080, 1080, 1920]);
   assert.deepStrictEqual(size(0, 90), [1920, 1080, 1080, 1920]);
-  // mvhd가 트랙 뒤에 있어도 반영한다.
+  // It is reflected even if mvhd is after the tracks.
   assert.deepStrictEqual(size(90, 0, 'trak first'), [1920, 1080, 1080, 1920]);
-  // 버전 1 mvhd
+  // A version 1 mvhd
   const v1 = write(dir, ftyp(), box('moov', mvhd({ version: 1, rotate: 90 }), trak()));
   assert.deepStrictEqual(shownSize(v1), [1920, 1080, 1080, 1920]);
-  // 행렬까지 들어 있지 않은 짧은 mvhd는 회전이 없는 것으로 보고 길이는 읽는다.
+  // A short mvhd that does not include the matrix is seen as having no rotation, and the length is read.
   const short = box('mvhd', u32(0), u32(0), u32(0), u32(1000), u32(10000), Buffer.alloc(20));
   const result = write(dir, ftyp(), box('moov', short, trak()));
   assert.deepStrictEqual([result.duration, ...shownSize(result)], [10, 1920, 1080, 1920, 1080]);
@@ -665,18 +665,18 @@ test('보이는 크기: mvhd 행렬의 회전을 트랙 회전과 함께 반영�
 test('보이는 크기: 화소가 정사각형이 아닌 영상을 회전하고 tkhd에 회전한 뒤의 보이는 크기를 적어도 세로로 본다 (#124)', () => {
   const dir = tempDir();
   const size = (options) => shownSize(write(dir, ftyp(), box('moov', mvhd(), trak({ width: 1440, height: 1080, ...options }))));
-  // 인코딩 1440x1080, 화소 비율 4:3(보이는 크기 1920x1080), 90·270도 회전, tkhd 1080x1920
+  // Encoded 1440x1080, pixel aspect ratio 4:3 (visible size 1920x1080), 90 and 270 degree rotation, tkhd 1080x1920
   for (const rotate of [90, 270]) {
     assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, config: h264(14) }), [1440, 1080, 1080, 1920], `H.264 ${rotate}도`);
     assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, config: h265(14), format: 'hvc1' }), [1440, 1080, 1080, 1920], `HEVC ${rotate}도`);
     assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, rotate, pasp: [4, 3] }), [1440, 1080, 1080, 1920], `pasp ${rotate}도`);
   }
-  // mvhd 쪽 회전도 같다.
+  // The mvhd-side rotation is the same.
   assert.deepStrictEqual(
     shownSize(write(dir, ftyp(), box('moov', mvhd({ rotate: 90 }), trak({ width: 1440, height: 1080, display: { width: 1080, height: 1920 }, config: h264(14) })))),
     [1440, 1080, 1080, 1920],
   );
-  // 회전하지 않으면 tkhd 1920x1080은 화소 비율로 쓰고, 회전하지 않는 1080x1920은 지금처럼 화소 비율로 본다.
+  // If it does not rotate, tkhd 1920x1080 is used as a pixel aspect ratio, and a non-rotating 1080x1920 is seen as a pixel aspect ratio as now.
   assert.deepStrictEqual(size({ display: { width: 1920, height: 1080 }, config: h264(14) }), [1440, 1080, 1920, 1080]);
   assert.deepStrictEqual(size({ display: { width: 1080, height: 1920 }, config: h264(14) }), [1440, 1080, 1080, 1920]);
 });
@@ -690,7 +690,7 @@ test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로
     return box(type, head, bytes);
   };
   const title = (bytes, language) => write(dir, ftyp(), box('moov', box('udta', classic('©nam', Buffer.from(bytes), language)))).title;
-  // Mac 언어 코드: 영어(0) MacRoman, 프랑스어(1) MacRoman, 일본어(11) Shift_JIS, 번체 중국어(19) Big5, 한국어(23) EUC-KR, 러시아어(32) Mac Cyrillic, 간체 중국어(33) GBK
+  // Mac language codes: English (0) MacRoman, French (1) MacRoman, Japanese (11) Shift_JIS, Traditional Chinese (19) Big5, Korean (23) EUC-KR, Russian (32) Mac Cyrillic, Simplified Chinese (33) GBK
   assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0), 'café');
   assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 1), 'café');
   assert.strictEqual(title([0x93, 0xfa, 0x96, 0x7b], 11), '日本');
@@ -698,16 +698,16 @@ test('옛 QuickTime 제목·코멘트를 언어 코드에 맞는 인코딩으로
   assert.strictEqual(title([0xc7, 0xd1, 0xb1, 0xdb], 23), '한글');
   assert.strictEqual(title([0x8c, 0xe8, 0xf0], 32), 'Мир');
   assert.strictEqual(title([0xd6, 0xd0, 0xce, 0xc4], 33), '中文');
-  // 0x7FFF(지정 안 함)도 Mac 인코딩이고, 표에 없는 Mac 언어 코드는 MacRoman이다.
+  // 0x7FFF (unspecified) is also a Mac encoding, and a Mac language code not in the table is MacRoman.
   assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x7fff), 'café');
   assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 25), 'café');
-  // ISO 639-2/T 언어 코드(0x400 이상)는 UTF-8이다. 0x15c7은 kor, 0x55c4는 und다.
+  // An ISO 639-2/T language code (0x400 or more) is UTF-8. 0x15c7 is kor and 0x55c4 is und.
   assert.strictEqual(title(Buffer.from('한글 ABC-123'), 0x15c7), '한글 ABC-123');
   assert.strictEqual(title([0x63, 0x61, 0x66, 0x8e], 0x55c4), 'caf\ufffd');
-  // Mac 언어 코드라도 내용이 올바른 UTF-8이면 UTF-8로 읽는다.
+  // Even for a Mac language code, if the content is valid UTF-8, it is read as UTF-8.
   assert.strictEqual(title(Buffer.from('日本 ABC-123'), 0), '日本 ABC-123');
   assert.strictEqual(title(Buffer.from('ABC-123'), 11), 'ABC-123');
-  // 코멘트도 같다.
+  // The comment is the same.
   const comment = write(dir, ftyp(), box('moov', box('udta', classic('©cmt', Buffer.from([0x93, 0xfa, 0x96, 0x7b]), 11)))).comment;
   assert.strictEqual(comment, '日本');
 });
@@ -723,7 +723,7 @@ test('한중일 언어 코드는 우연히 UTF-8 규칙에 맞는 두 바이트 
   assert.strictEqual(title([0xc4, 0xa1, 0xc5, 0xb2], 23), '치킨');
   assert.strictEqual(title([0xc9, 0xbd, 0xcb, 0xae], 33), '山水');
   assert.strictEqual(title([0xc3, 0xbd], 11), 'ﾃｽ');
-  // UTF-8로 쓴 한중일 글자는 그대로 UTF-8로 읽는다.
+  // CJK letters written in UTF-8 are read as UTF-8 as they are.
   assert.strictEqual(title(Buffer.from('치킨 ABC-123'), 23), '치킨 ABC-123');
   assert.strictEqual(title(Buffer.from('山水'), 33), '山水');
   for (const language of [45, 46, 48, 58]) assert.strictEqual(title([0x8c, 0xe8, 0xf0], language), 'Мир', String(language));
@@ -745,7 +745,7 @@ test('연 파일이 확인한 경로의 파일과 다르면 읽지 않는다 (#9
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
   fs.writeFileSync(path.join(dir, 'other.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
   const original = fs.openSync;
-  // 확인과 열기 사이에 다른 파일로 바뀐 것처럼 다른 파일을 연다.
+  // It opens a different file, as if it were swapped for another file between the check and the open.
   t.mock.method(fs, 'openSync', (p, flags) => original(String(p).endsWith('v.mp4') ? path.join(dir, 'other.mp4') : p, flags));
   assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /The file changed while reading/.test(err.message));
 });
@@ -762,7 +762,7 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
     fs.writeFileSync(file, content);
     let swapped = false;
     const open = t.mock.method(fs, 'openSync', (p, flags) => {
-      // writeFileSync도 openSync를 부르므로 한 번만 바꾼다.
+      // writeFileSync also calls openSync, so it swaps only once.
       if (!swapped && String(p) === file) {
         swapped = true;
         fs.rmSync(file);
@@ -776,9 +776,9 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
       open.mock.restore();
     }
   };
-  // 같은 내용의 새 파일로 바꾼다.
+  // It replaces it with a new file of the same content.
   swapTo(() => fs.writeFileSync(file, content));
-  // 타겟 밖 파일을 가리키는 링크로 바꾼다. 링크를 만들 권한이 없으면 이 경우는 건너뛴다.
+  // It replaces it with a link that points to a file outside the target. If there is no permission to create links, this case is skipped.
   try {
     fs.symlinkSync(path.join(parent, 'secret.mp4'), path.join(parent, 'probe.mp4'));
   } catch (err) {
@@ -790,16 +790,16 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
   swapTo(() => fs.symlinkSync(path.join(parent, 'secret.mp4'), file));
 });
 
-// #179: 길이를 표본 표와 맞춰 보는 시험용 트랙. seconds는 표본 표(stts)의 실제 길이, header는 tkhd·mdhd에 적을 길이다.
-// chunk는 데이터 위치표(stco)가 가리킬 위치다.
-// version 1이면 mdhd를 64비트 시각으로, co64면 위치표를 64비트(co64)로 쓴다. entries를 주면 stts 항목 수를 그 값으로 적는다(내용은 그대로).
+// #179: a test track for cross-checking the length against the sample table. seconds is the real length of the sample table (stts), and header is the length to write in tkhd and mdhd.
+// chunk is the position the data position table (stco) will point to.
+// With version 1, it writes mdhd with 64-bit times, and with co64, the position table as 64-bit (co64). If entries is given, it writes the stts entry count as that value (the content stays the same).
 function dataTrak({ kind = 'vide', seconds, header = seconds, timescale = 1000, chunk = 0, samples = 1, version = 0, co64 = false, entries = 1, pad = false }) {
   const units = Math.round(seconds * timescale);
   const length = Math.round(header * timescale);
   const mdhd = version === 1
     ? box('mdhd', u32(0x01000000), u64(0), u64(0), u32(timescale), u64(length), u32(0))
     : box('mdhd', u32(0), u32(0), u32(0), u32(timescale), u32(length), u32(0));
-  // pad면 나머지 항목을 길이 0으로 채워 항목 수만큼 실제로 있는 큰 표를 만든다.
+  // If pad, it fills the remaining entries with length 0 to make a large table that really has as many entries as the count.
   const stts = box('stts', u32(0), u32(entries), u32(samples), u32(units / samples), Buffer.alloc(pad ? (entries - 1) * 8 : 0));
   const stco = co64 ? box('co64', u32(0), u32(1), u64(chunk)) : box('stco', u32(0), u32(1), u32(chunk));
   const stbl = box('stbl', stsd(kind === 'vide' ? 1920 : 0, kind === 'vide' ? 1080 : 0), stts, stco);
@@ -808,7 +808,7 @@ function dataTrak({ kind = 'vide', seconds, header = seconds, timescale = 1000, 
 
 test('길이 값이 표본 표의 길이보다 훨씬 길면 비트레이트를 믿지 않는다 (#179)', () => {
   const dir = tempDir();
-  // 60초짜리 영상의 mvhd·tkhd·mdhd 길이가 60000초로 적힌 파일
+  // A file where the mvhd, tkhd, and mdhd lengths of a 60-second video are written as 60000 seconds
   const result = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 * 1000 }), dataTrak({ seconds: 60, header: 60000 })), box('mdat', Buffer.alloc(1000)));
   assert.strictEqual(result.duration, 60000);
   assert.strictEqual(result.bitrate, null);
@@ -820,14 +820,14 @@ test('길이 값이 표본 표와 맞거나 조금 다르면 비트레이트를 
   const same = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(same.bitrate > 0);
   assert.strictEqual(same.bitrateNote, null);
-  // 편집 목록의 빈 구간 등으로 조금 긴 것(2배 + 60초 이내)은 그대로 둔다.
+  // One that is slightly longer because of an empty stretch of an edit list and so on (within 2x + 60 seconds) is left as it is.
   const longer = write(dir, ftyp(), box('moov', mvhd({ duration: 170000 }), dataTrak({ seconds: 60, samples: 4 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(longer.bitrate > 0);
-  // 소리 트랙이 영상보다 길면 가장 긴 트랙과 맞춘다.
+  // If the audio track is longer than the video, it matches the longest track.
   const audio = write(dir, ftyp(), box('moov', mvhd({ duration: 3600000 }), dataTrak({ seconds: 60 }), dataTrak({ kind: 'soun', seconds: 3600, timescale: 48000 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(audio.bitrate > 0);
   assert.strictEqual(audio.bitrateNote, null);
-  // 표본 표가 없는 파일(지금까지의 시험 파일)은 맞춰 보지 않는다.
+  // A file with no sample table (the test files so far) is not cross-checked.
   const plain = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), trak()), box('mdat', Buffer.alloc(1000)));
   assert.ok(plain.bitrate > 0);
   assert.strictEqual(plain.bitrateNote, null);
@@ -852,7 +852,7 @@ test('조각 파일(mvex)은 moov의 빈 표본 표와 길이를 맞춰 보지 �
 
 test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽지 않고 비트레이트를 null로 둔다 (#207)', (t) => {
   const dir = tempDir();
-  // 항목 20만 개(1.6MB)짜리 표본 표를 가진 60초 영상
+  // A 60-second video that has a sample table of 200,000 entries (1.6MB)
   const parts = [ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, entries: 200_000, pad: true })), box('mdat', Buffer.alloc(1000))];
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(parts));
   const readBytes = (options) => {
@@ -873,12 +873,12 @@ test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽
   const on = readBytes({ verifyBitrate: true });
   assert.ok(on.result.bitrate > 0);
   assert.ok(on.bytes >= 1_600_000, `${on.bytes}바이트를 읽음`);
-  // 받다 만 파일의 사유도 켰을 때만 적는다.
+  // The reason for a partly downloaded file is also written only when it is turned on.
   const cut = [ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, chunk: 50_000_000 })), box('mdat', Buffer.alloc(1000))];
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(cut));
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').bitrateNote, null);
   assert.match(readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true }).bitrateNote, /may be a partial download/);
-  // 끄면 stts·stco 박스의 머리글 뒤(항목 수와 항목)를 한 번도 읽지 않는다(1차 리뷰). 켜면 읽는다.
+  // If turned off, it never reads after the header of the stts and stco boxes (the entry count and entries) (first review). If turned on, it reads.
   const bytes = Buffer.concat(cut);
   const payloads = ['stts', 'stco'].map((type) => {
     const at = bytes.indexOf(type) - 4;
@@ -892,7 +892,7 @@ test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽
     return payloads.map(([start, end]) => positions.some((at) => at >= start && at < end));
   };
   assert.deepStrictEqual(touched(undefined), [false, false]);
-  // 켜면 위치표에서 받다 만 파일임을 알고 멈추므로 stts까지는 가지 않는다. stts를 읽는 것은 위의 큰 표 시험이 본다.
+  // If turned on, it learns from the position table that it is a partly downloaded file and stops, so it does not get as far as stts. Reading stts is checked by the large table test above.
   assert.deepStrictEqual(touched({ verifyBitrate: true }), [false, true]);
 });
 
@@ -902,7 +902,7 @@ test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (
   assert.match(v1.bitrateNote, /sample table duration \(60 s\)/);
   const cut = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, co64: true, chunk: 2 ** 33 })), box('mdat', Buffer.alloc(1000)));
   assert.match(cut.bitrateNote, /may be a partial download/);
-  // 항목 수가 표 크기보다 크게 적힌 stts는 읽지 않고, 맞춰 보지 못하므로 비트레이트를 그대로 계산한다.
+  // An stts whose entry count is written larger than the table size is not read, and since it cannot be cross-checked, the bitrate is computed as is.
   const odd = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 1, entries: 5 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(odd.bitrate > 0);
   assert.strictEqual(odd.bitrateNote, null);

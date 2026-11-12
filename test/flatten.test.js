@@ -7,27 +7,27 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 
-// 테스트가 사용자 휴지통을 건드리지 않게, commands.js를 불러오기 전에 휴지통 호출을 가짜로 바꿔 둔다.
-// 파일이나 링크가 든 폴더를 지우려 하면 테스트가 실패하도록 빈 폴더 트리만 지운다.
+// So that the test does not touch the user's Recycle Bin, the Recycle Bin call is swapped for a fake before commands.js is imported.
+// It deletes only empty folder trees, so that the test fails if it is asked to delete a folder that holds a file or a link.
 const recycled = [];
-// 휴지통 호출 때 끼어들 동작. 테스트마다 정한다.
+// Behavior to intervene at the Recycle Bin call. Each test decides it.
 let onRecycle = () => {};
 const execFileSync = childProcess.execFileSync;
-// 숨김·시스템 속성 읽기(FC_ROOT)에 끼어들 동작. 값을 돌려주면 PowerShell 대신 그 값을 쓴다.
+// Behavior to intervene at the hidden and system attribute reading (FC_ROOT). If it returns a value, that value is used instead of PowerShell.
 let onAttributes = null;
 let volumeState = 'True|Fixed\r\n';
-// 일괄 이동 한 번에 넘긴 폴더 수
+// The number of folders passed in one batch move
 const batchCalls = [];
-// 일괄 이동 호출을 통째로 바꿀 때 쓴다(시간 초과 흉내 등).
+// Used to swap the whole batch move call (to imitate a timeout and so on).
 let batchOverride = null;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_ROOT !== undefined && onAttributes) {
     const result = onAttributes(options);
     if (result !== undefined) return result;
   }
-  // 휴지통 상태 확인은 기다리지 않게 고정 디스크로 답한다. volumeState를 바꿔 다른 드라이브를 흉내 낸다.
+  // The Recycle Bin state check answers as a fixed disk so it does not wait. Swapping volumeState imitates another drive.
   if (options?.env?.FC_VOLUME !== undefined) return volumeState;
-  // 빈 폴더 일괄 이동(#67). PowerShell이 지우기 직전에 하는 검사(실제 경로, 폴더 여부, 안의 파일·링크)를 흉내 낸다.
+  // Batch move of empty folders (#67). It imitates the check PowerShell does right before deleting (the real path, whether it is a folder, files and links inside).
   if (options?.env?.FC_BATCH !== undefined && batchOverride) return batchOverride(options, file, args);
   if (options?.env?.FC_BATCH !== undefined) {
     assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
@@ -63,7 +63,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   assert.match(args.at(-1), /UserInteractive/, '비대화형 실행을 막는 검사가 있어야 한다');
   recycled.push(options.env.FC_TARGET);
   onRecycle(options.env.FC_TARGET);
-  // 폴더 설정·미리보기 파일(desktop.ini 등)만 남은 폴더는 함께 지운다(#65).
+  // A folder with only folder settings and preview files (desktop.ini and so on) left is deleted together (#65).
   const filled = fs.readdirSync(options.env.FC_TARGET, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory() && !/^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i.test(entry.name));
   if (filled) throw new Error(`비어 있지 않은 폴더를 휴지통으로 보내려 함: ${filled.name}`);
   fs.rmSync(options.env.FC_TARGET, { recursive: true });
@@ -78,8 +78,8 @@ const { spawnSync } = require('node:child_process');
 
 const isWindows = process.platform === 'win32';
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로, 사용자 폴더를 임시 폴더 밖으로 바꿔 둔다.
-// withHome으로 테스트 안에서만 다른 사용자 폴더를 쓸 수 있다(#148).
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is moved outside the temporary folder.
+// With withHome, a different user folder can be used only inside the test (#148).
 let fakeHome = null;
 test.mock.method(os, 'homedir', () => fakeHome ?? path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
@@ -179,7 +179,7 @@ test('planFlatten은 Windows에서 대소문자만 다른 이름도 겹친 것�
   );
 });
 
-// 모든 이동의 대상은 아직 없는 경로이고, 서로 겹치지 않으며, 이름이 경로와 일치해야 한다.
+// The target of every move is a path that does not exist yet, they do not overlap, and the name must match the path.
 function assertSafeMoves(plan) {
   const seen = new Set();
   for (const { to, name } of plan.moves) {
@@ -255,7 +255,7 @@ test('planFlatten은 같은 이름이 많아도 번호를 겹치지 않게 차�
 
 test('planFlatten은 이름 한도까지는 번호를 붙이고 넘으면 건너뛴다', () => {
   const dir = tempDir();
-  // 번호 " (2)"가 4글자이므로 원래 이름이 251자면 딱 255자가 된다.
+  // The number " (2)" is 4 characters, so if the original name is 251 characters, it becomes exactly 255.
   const fits = `${'F'.repeat(247)}.txt`;
   const over = `${'L'.repeat(248)}.txt`;
   make(dir, [fits, `a/${fits}`, over, `b/${over}`]);
@@ -283,7 +283,7 @@ test('planFlatten은 Windows에서 해석이 갈리는 이름을 조용히 빼�
   const dir = tempDir();
   make(dir, ['a/ok.txt', 'a/dot.', 'a/Con.Air.1997.mkv', 'weird./inner.txt']);
   const plan = planFlatten(dir);
-  // Con.Air.1997.mkv는 Windows 11 24H2 이상에서 장치 이름이 아니라 옮긴다(#53). 그 아래 버전에서는 건너뛴다.
+  // Con.Air.1997.mkv is not a device name on Windows 11 24H2 and above, so it is moved (#53). On versions below that, it is skipped.
   const windows11 = deviceNamePattern() === deviceNamePattern('10.0.26200');
   assert.deepStrictEqual(moves(plan), windows11 ? [['a/Con.Air.1997.mkv', 'Con.Air.1997.mkv'], ['a/ok.txt', 'ok.txt']] : [['a/ok.txt', 'ok.txt']]);
   const skipped = [path.join('a', 'dot.'), path.join('weird.', 'inner.txt'), ...(windows11 ? [] : [path.join('a', 'Con.Air.1997.mkv')])];
@@ -358,7 +358,7 @@ test('detailedName은 포함 관계가 없으면 폴더명에만 제품번호가
   assert.strictEqual(detailedName('video.mp4', ['ABC-123 제목']), 'ABC-123 제목.mp4');
   assert.strictEqual(detailedName('ABC-123.mp4', ['여름 휴가 영상']), 'ABC-123.mp4');
   assert.strictEqual(detailedName('XYZ-999.mp4', ['ABC-123']), 'XYZ-999.mp4');
-  // 영숫자가 이어지면 제품번호로 보지 않는다.
+  // If alphanumerics continue, it is not seen as a product number.
   assert.strictEqual(detailedName('x.mp4', ['encoded_1080p']), 'x.mp4');
   assert.strictEqual(detailedName('x.mp4', ['1ABC-123']), 'x.mp4');
 });
@@ -445,7 +445,7 @@ test('detailedName은 폴더명이 다른 확장자로 끝나면 이중 확장�
   assert.strictEqual(detailedName('x.mp4', ['ABC-123.torrent']), 'x.mp4');
   assert.strictEqual(detailedName('x.txt', ['ABC-123.backup']), 'x.txt');
   assert.strictEqual(detailedName('x.mp4', ['ABC-123.7z']), 'x.mp4');
-  // 숫자로 시작하는 끝부분은 확장자로 보지 않는다.
+  // An end that starts with digits is not seen as an extension.
   assert.strictEqual(detailedName('Movie.mp4', ['Movie.2021.1080p']), 'Movie.2021.1080p.mp4');
 });
 
@@ -456,15 +456,15 @@ test('detailedName은 정보가 없는 파일명만 제품번호 폴더 이름�
 });
 
 test('detailedName은 제품번호 규칙을 따라 폴더명을 고른다', () => {
-  // 전각 번호도 찾고, 이름은 폴더에 적힌 그대로 쓴다.
+  // It also finds full-width numbers, and uses the name as written in the folder.
   assert.strictEqual(detailedName('video.mp4', ['ＡＢＣ－１２３']), 'ＡＢＣ－１２３.mp4');
-  // 제품번호가 아닌 폴더 이름도 정보 없는 파일명 대신 쓴다(#71). 한 글자 이름은 제품번호 폴더일 때만 바꾼다.
+  // A folder name that is not a product number is also used instead of a file name with no information (#71). A one-letter name is changed only when it is a product-number folder.
   for (const folder of ['abc-123 제목', 'summer-2023', 'PART-01', 'CD-02', 'IMG-1234', 'Vlog-2024', 'summer-TRIP-20', 'ABCDEFG-123', 'ABC-123456', 'ZZZ-2024-05-01']) {
     assert.strictEqual(detailedName('video.mp4', [folder]), `${folder}.mp4`, folder);
     assert.strictEqual(detailedName('x.mp4', [folder]), 'x.mp4', folder);
   }
   assert.strictEqual(detailedName('video.mp4', ['ABC-123-1080p']), 'ABC-123-1080p.mp4');
-  // 제품번호가 아닌 가까운 폴더가 바깥 폴더의 번호를 밀어내지 않는다.
+  // A nearby folder that is not a product number does not push out the outer folder's number.
   for (const near of ['summer-2023', 'trip-20', 'scan-01', 'CD-02', 'IMG-1234']) {
     assert.strictEqual(detailedName('video.mp4', [near, 'ABC-123 제목']), 'ABC-123 제목.mp4', near);
   }
@@ -483,7 +483,7 @@ test('detailedName은 위 폴더로 올라가며 가장 자세한 이름을 고�
 });
 
 test('detailedName은 NFC와 NFD 한글을 같은 내용으로 본다', () => {
-  // 탐색기에서 똑같아 보이는 이름이 생기지 않도록 폴더 이름은 NFC로 맞춘다.
+  // So that names that look identical in Explorer are not created, the folder name is normalized to NFC.
   assert.strictEqual(detailedName('한글.mp4', ['한글 제목'.normalize('NFD')]), '한글 제목.mp4');
 });
 
@@ -504,7 +504,7 @@ test('planFlatten은 한 갈래로 이어진 폴더까지 거슬러 올라가지
   make(dir, ['ABC-123 제목/video/x.mp4', 'DEF-456 묶음/a/x.mp4', 'DEF-456 묶음/b/y.mp4']);
   assert.deepStrictEqual(moves(planFlatten(dir)), [
     ['ABC-123 제목/video/x.mp4', 'ABC-123 제목.mp4'],
-    // 파일이 여럿인 폴더의 이름으로 바꾸지는 않고, 정보 없는 이름이라 앞에 붙인다(#71).
+    // It does not change to the name of a folder with several files; because it is a name with no information, it prepends (#71).
     ['DEF-456 묶음/a/x.mp4', 'DEF-456 묶음 x.mp4'],
     ['DEF-456 묶음/b/y.mp4', 'DEF-456 묶음 y.mp4'],
   ]);
@@ -515,7 +515,7 @@ test('planFlatten은 링크가 함께 있는 폴더의 파일을 유일한 파�
   const target = path.join(root, 'target');
   make(root, ['outside/o.txt', 'target/ABC-123 제목/video.mp4']);
   linkDir(path.join(root, 'outside'), path.join(target, 'ABC-123 제목', 'link'));
-  // 유일한 파일이 아니라 폴더 이름으로 바꾸지 않고 앞에 붙인다(#71).
+  // It is not the only file, so it does not change to the folder name and prepends (#71).
   assert.deepStrictEqual(planFlatten(target).moves.map((move) => move.name), ['ABC-123 제목 video.mp4']);
 });
 
@@ -546,7 +546,7 @@ test('planFlatten은 Windows에서 해석이 갈리는 폴더 안의 파일을 �
 
 test('planFlatten은 폴더명으로 고른 이름에 번호를 붙여 한도를 넘으면 원래 이름으로 돌아간다', () => {
   const dir = tempDir();
-  // 폴더 이름에서 .mp4를 뺀 이름에 다시 .mp4를 붙이면 자기 부모 폴더와 겹쳐 번호가 필요하다.
+  // If .mp4 is attached again to the folder name with .mp4 removed, it overlaps with its own parent folder and needs a number.
   const folder = `ABC-123 ${'가'.repeat(243)}.mp4`;
   make(dir, [`${folder}/x.mp4`]);
   const plan = planFlatten(dir);
@@ -598,7 +598,7 @@ test('planFlatten은 타겟 바로 아래의 파일 이름을 바꾸지 않는�
   assert.deepStrictEqual(plan.stay, [path.join(dir, 'ABC-123.mp4')]);
 });
 
-// 파일 경로와 내용을 모은다. make는 내용으로 원래 경로를 쓰므로 어느 파일이 어디로 갔는지 알 수 있다.
+// It collects file paths and content. make uses the original path as the content, so you can tell which file went where.
 function contents(dir) {
   return Object.fromEntries(
     fs
@@ -652,7 +652,7 @@ test('flatten은 계획끼리의 8.3 짧은 이름 겹침을 실행 때 잡아 �
   make(dir, ['a/longfilename.txt', 'b/LONGFI~1.TXT']);
   const plan = planFlatten(dir);
   assert.deepStrictEqual(plan.moves.map((move) => move.name), ['longfilename.txt', 'LONGFI~1.TXT']);
-  // 하드링크로 만든 이름에는 8.3 짧은 이름이 생기지 않아(빌드 26200에서 확인) 두 이름이 겹치지 않는다(#73).
+  // A name made by hard link gets no 8.3 short name (confirmed on build 26200), so the two names do not overlap (#73).
   const result = flatten(dir);
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(result.moved.map(({ name, numbered }) => [name, numbered]), [
@@ -683,7 +683,7 @@ test('flatten은 하드링크를 못 만드는 드라이브에서도 8.3 짧은 
   assert.strictEqual(files['LONGFI~1 (2).TXT'], 'b/LONGFI~1.TXT');
 });
 
-// 실행 단계의 첫 이동 직전에 끼어든다. 계획은 이미 끝난 뒤다. 파일은 하드링크로 옮기므로(#73) linkSync 앞이다.
+// It intervenes right before the first move of the run stage. The plan is already finished. Files move by hard link (#73), so it is before linkSync.
 function beforeFirstMove(t, action) {
   const link = fs.linkSync;
   let done = false;
@@ -696,14 +696,14 @@ function beforeFirstMove(t, action) {
   });
 }
 
-// 하드링크를 만들 수 없는 드라이브(FAT32·exFAT 등)처럼 빈 자리표시를 먼저 만드는 방식으로 옮기게 한다.
+// It makes it move the way that first creates an empty placeholder, as on a drive that cannot make hard links (FAT32, exFAT, and so on).
 function noHardLinks(t) {
   t.mock.method(fs, 'linkSync', () => {
     throw Object.assign(new Error('not supported'), { code: 'EPERM' });
   });
 }
 
-// 원본이 잠긴 것처럼 원래 이름을 지우지 못하게 한다. 잠긴 파일도 하드링크는 만들어지고, 원래 이름 지우기만 EBUSY로 실패한다(빌드 26200에서 확인).
+// It makes the original name undeletable, as if the source were locked. Even a locked file can get a hard link, and only deleting the original name fails with EBUSY (confirmed on build 26200).
 function lockSource(t, locked) {
   const unlink = fs.unlinkSync;
   t.mock.method(fs, 'unlinkSync', (p) => {
@@ -712,7 +712,7 @@ function lockSource(t, locked) {
   });
 }
 
-// 파일을 옮긴 직후(원래 이름을 지운 뒤)에 끼어든다.
+// It intervenes right after the file was moved (after the original name was deleted).
 function afterMove(t, action) {
   const unlink = fs.unlinkSync;
   t.mock.method(fs, 'unlinkSync', (p) => {
@@ -727,7 +727,7 @@ test('flatten은 계획 뒤에 대상 이름이 차면 번호를 다시 고르�
   beforeFirstMove(t, () => fs.writeFileSync(path.join(dir, 'v.txt'), 'someone else'));
   const result = flatten(dir);
   assert.deepStrictEqual(result.failed, []);
-  // v (2).txt는 b/v.txt 몫으로 계획됐으므로 a/v.txt는 v (3).txt로 간다.
+  // v (2).txt was planned as b/v.txt's share, so a/v.txt goes to v (3).txt.
   assert.deepStrictEqual(result.moved.map(({ name, numbered }) => [name, numbered]), [
     ['v (3).txt', true],
     ['v (2).txt', true],
@@ -744,7 +744,7 @@ test('flatten은 계획 뒤에 대상이 끊어진 정션이 되면 정션을 �
   assert.deepStrictEqual(plan.moves.map((move) => move.name), ['x.txt']);
   linkDir(path.join(root, 'out', 'gone'), path.join(target, 'x.txt'));
   fs.rmSync(path.join(root, 'out', 'gone'), { recursive: true });
-  // 계획을 다시 세우면 이름을 피하므로, 실행 단계만 시험하도록 첫 lstat을 숨긴다.
+  // If the plan were made again it would avoid the name, so it hides the first lstat to test only the run stage.
   const lstat = fs.lstatSync;
   const hide = test.mock.method(fs, 'lstatSync', (p, options) => {
     if (p === path.join(target, 'x.txt') && hide.mock.calls.filter((call) => call.arguments[0] === p).length <= 1) return undefined;
@@ -795,7 +795,7 @@ test('flatten은 계획 뒤에 부모가 안쪽을 가리키는 정션으로 바
   });
   const result = flatten(dir);
   assert.match(result.failed[0].reason, /path changed/);
-  // b/x.txt는 a의 몫이 아니라 자기 몫으로 옮겨진다.
+  // b/x.txt is moved as its own share, not a's.
   assert.strictEqual(contents(dir)['x (2).txt'], 'b/x.txt');
   assert.ok(!Object.keys(contents(dir)).includes('x.txt'));
 });
@@ -961,7 +961,7 @@ test('fctl flatten을 프로세스로 실행하면 성공은 0, 인자 오류와
   const root = tempDir();
   const home = path.join(root, 'home');
   fs.mkdirSync(home);
-  // 자식 프로세스의 휴지통 호출은 가로챌 수 없으므로, 건너뛰는 파일을 두어 폴더가 비지 않게 한다.
+  // The Recycle Bin call of the child process cannot be intercepted, so a file that gets skipped is left so that the folder is not empty.
   make(root, ['t/a/x.txt', 't/a/keep.', 'wide/sub folder/b/y.txt', 'wide/z/q.txt', 'repo/.git/HEAD', 'repo/a/b.txt']);
   const env = { ...process.env, USERPROFILE: home, HOME: home };
   const bin = path.join(__dirname, '..', 'bin', 'fctl.js');
@@ -970,11 +970,11 @@ test('fctl flatten을 프로세스로 실행하면 성공은 0, 인자 오류와
   assert.strictEqual(ok.status, 0, ok.stderr);
   assert.match(ok.stdout, /Move 1/);
   assert.ok(fs.existsSync(path.join(root, 't', 'x.txt')));
-  // 따옴표 없는 공백 경로: 앞부분인 wide를 평탄화하면 안 된다.
+  // A path with unquoted spaces: flattening the front part, wide, must not happen.
   const split = fctl('flatten', path.join(root, 'wide'), 'sub', 'folder');
   assert.strictEqual(split.status, 1);
   assert.match(split.stderr, /Only one target/);
-  // -- 뒤의 --dry-run은 옵션이 아니므로 실제로 옮기면 안 된다.
+  // --dry-run after -- is not an option, so it must not really move.
   const hidden = fctl('flatten', '--', path.join(root, 'wide'), '--dry-run');
   assert.strictEqual(hidden.status, 1);
   assert.ok(fs.existsSync(path.join(root, 'wide', 'z', 'q.txt')));
@@ -1049,7 +1049,7 @@ test('flatten은 계획 뒤에 원본이 사라지면 그 항목만 실패로 �
   const write = fs.lstatSync;
   let removed = false;
   t.mock.method(fs, 'lstatSync', (p, options) => {
-    // 실행 단계의 첫 원본 검사 직전에 지운다.
+    // It deletes right before the first source check of the run stage.
     if (!removed && p === path.join(dir, 'a', 'gone.txt')) {
       removed = true;
       fs.rmSync(p);
@@ -1069,7 +1069,7 @@ test('flatten은 계획 뒤에 원본이 타겟 밖 링크로 바뀌면 옮기�
   const realpath = fs.realpathSync.native;
   let calls = 0;
   t.mock.method(fs.realpathSync, 'native', (p) => {
-    // 첫 호출은 계획 단계의 읽기 검사다. 실행 단계에서 검사하기 직전에 부모 폴더를 타겟 밖 정션으로 바꾼다.
+    // The first call is the read check of the plan stage. Right before checking in the run stage, it swaps the parent folder with a junction outside the target.
     if (p === path.join(target, 'a', 'x.txt') && ++calls === 2) {
       fs.rmSync(path.join(target, 'a'), { recursive: true });
       linkDir(path.join(root, 'outside'), path.join(target, 'a'));
@@ -1135,7 +1135,7 @@ test('flatten은 파일이 남은 폴더와 그 위 폴더를 남기고, 비어 
   const dir = tempDir();
   make(dir, ['a/b/keep./x.txt', 'a/c/y.txt', 'a/b/z.txt', 'e/w.txt']);
   const result = flatten(dir);
-  // keep. 안의 파일은 건너뛰므로 a, a/b는 남고, a/c와 e는 비어서 보낸다.
+  // keep. Files inside are skipped, so a and a/b stay, and a/c and e become empty and are sent.
   assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'a', 'c'), path.join(dir, 'e')]);
   assert.ok(fs.existsSync(path.join(dir, 'a', 'b', 'keep.', 'x.txt')));
   assert.ok(!fs.existsSync(path.join(dir, 'a', 'c')));
@@ -1309,7 +1309,7 @@ test('rm은 정션을 거친 현재 폴더도 알아보고 그 상위를 지우�
   try {
     assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--dry-run']), /current folder/);
     assert.throws(() => run(['rm', path.join(dir, 't', 'a'), '--permanent']), /current folder/);
-    // 현재 폴더로 들어온 정션 자체를 지우는 것도 막는다.
+    // It also blocks deleting the junction that came into the current folder itself.
     assert.throws(() => run(['rm', path.join(dir, 'j'), '--dry-run']), /current folder/);
   } finally {
     process.chdir(cwd);
@@ -1434,7 +1434,7 @@ test('planFlatten은 파일이 없는 타겟에서 빈 계획을 돌려준다', 
   assert.deepStrictEqual(planFlatten(dir), { target: dir, moves: [], stay: [], skipped: [], guarded: new Set() });
 });
 
-// #73: 파일은 빈 자리표시 없이 하드링크를 만든 뒤 원래 이름을 지워 옮긴다.
+// #73: a file is moved by creating a hard link with no empty placeholder and then deleting the original name.
 test('moveWithoutOverwrite는 파일을 빈 자리표시 없이 옮기고 이미 있는 이름은 건드리지 않는다 (#73)', (t) => {
   const dir = tempDir();
   make(dir, ['a/x.txt', 'a/y.txt', 'taken.txt', 'folder/inner.txt']);
@@ -1518,9 +1518,9 @@ test('flatten은 이전 실행이 남긴 같은 파일의 다른 이름이 있�
   const dir = tempDir();
   make(dir, ['a/x.txt', 'b/y.txt', 'c/z.txt', 'd/w.txt', 'w.txt']);
   fs.linkSync(path.join(dir, 'a', 'x.txt'), path.join(dir, 'x.txt'));
-  // 이전 실행 때 이미 w.txt가 있어 번호를 붙인 이름으로 하드링크한 뒤 멈춘 흔적(2차 리뷰)
+  // A trace of an earlier run that already had w.txt, so it hard-linked under a numbered name and stopped (second review)
   fs.linkSync(path.join(dir, 'd', 'w.txt'), path.join(dir, 'w (2).txt'));
-  // 빈 파일은 정상적인 빈 파일일 수 있어 지금처럼 번호를 붙여 피한다.
+  // An empty file may be a normal empty file, so it avoids it by adding a number as now.
   fs.writeFileSync(path.join(dir, 'y.txt'), '');
   for (const dryRun of [true, false]) {
     const result = flatten(dir, { dryRun });
@@ -1575,7 +1575,7 @@ test('flatten은 읽을 수 없는 하위 폴더가 하나라도 있으면 아�
   assert.deepStrictEqual(contents(dir), { 'a/x.txt': 'a/x.txt', 'locked/y.txt': 'locked/y.txt' });
 });
 
-// #65: 폴더 설정·미리보기 파일, 프로그램·프로젝트 폴더, 숨김·시스템 속성 항목
+// #65: folder settings and preview files, program and project folders, hidden and system attribute items
 test('flatten은 desktop.ini·Thumbs.db를 옮기지 않고 파일 수에서 빼며, 그것만 남은 폴더는 함께 휴지통으로 보낸다', () => {
   const dir = tempDir();
   make(dir, ['ABC-123 제목/abc_123.mp4', 'ABC-123 제목/desktop.ini', 'docs/Thumbs.db', 'docs/memo.txt', 'pics/.DS_Store', 'pics/sub/ehthumbs.db']);
@@ -1589,7 +1589,7 @@ test('flatten은 desktop.ini·Thumbs.db를 옮기지 않고 파일 수에서 빼
   const result = flatten(dir);
   assert.deepStrictEqual(result.removedFolders, [path.join(dir, 'ABC-123 제목'), path.join(dir, 'docs')]);
   assert.deepStrictEqual(recycled, [path.join(dir, 'ABC-123 제목'), path.join(dir, 'docs')]);
-  // 옮긴 파일이 없던 폴더는 설정 파일만 있어도 건드리지 않는다.
+  // A folder that had no moved file is not touched even if only a settings file is there.
   assert.deepStrictEqual(contents(dir), { 'ABC-123 제목.mp4': 'ABC-123 제목/abc_123.mp4', 'memo.txt': 'docs/memo.txt', 'pics/.DS_Store': 'pics/.DS_Store', 'pics/sub/ehthumbs.db': 'pics/sub/ehthumbs.db' });
 });
 
@@ -1646,7 +1646,7 @@ test('flatten은 타겟이 프로젝트·프로그램 폴더이거나 프로그�
   assert.deepStrictEqual(contents(inside), { 'node_modules/pkg/lib/a.js': 'node_modules/pkg/lib/a.js' });
 });
 
-// 사용자 폴더를 home으로 바꿔 fn을 실행한다.
+// It runs fn with the user folder swapped to home.
 function withHome(home, fn) {
   fakeHome = home;
   try {
@@ -1723,7 +1723,7 @@ test('flatten은 타겟의 위 폴더가 프로젝트·프로그램 폴더면 �
   const project = tempDir();
   make(project, ['myproj/package.json', 'myproj/src/lib/a.js', 'myproj/src/b.js']);
   assert.throws(() => flatten(path.join(project, 'myproj', 'src')), /a parent folder looks like a project folder \(contains package\.json\): .*myproj$/);
-  // 몇 단계 위든 막는다.
+  // It blocks at any number of levels up.
   assert.throws(() => flatten(path.join(project, 'myproj', 'src', 'lib'), { dryRun: true }), /a parent folder looks like a project folder/);
   assert.deepStrictEqual(contents(project), { 'myproj/package.json': 'myproj/package.json', 'myproj/src/b.js': 'myproj/src/b.js', 'myproj/src/lib/a.js': 'myproj/src/lib/a.js' });
   const program = tempDir();
@@ -1748,11 +1748,11 @@ test('flatten은 표시 파일이 우연히 놓이는 사용자 폴더·다운�
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'Downloads', 'videos'))), [['a/x.mp4', 'x.mp4']]);
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'OneDrive', 'Desktop', 'pics'))), [['b/y.jpg', 'y.jpg']]);
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'OneDrive - 회사', '문서', 'work'))), [['c/z.txt', 'z.txt']]);
-    // 옆 폴더(data/lib)의 표시 파일은 위 폴더가 아니다.
+    // A marker file in a neighboring folder (data/lib) is not a folder above.
     assert.deepStrictEqual(moves(planFlatten(path.join(home, 'data', 'other'))), [['e/v.mp4', 'v.mp4']]);
-    // 다운로드 아래의 프로젝트 폴더부터는 막는다.
+    // From the project folder under Downloads, it blocks.
     assert.throws(() => planFlatten(path.join(home, 'Downloads', 'proj', 'src')), /a parent folder looks like a project folder \(contains package\.json\)/);
-    // 사용자 폴더나 OneDrive 바로 아래라도 기본 폴더가 아닌 곳(직접 만든 프로젝트)은 본다(1차 리뷰).
+    // Even directly under the user folder or OneDrive, a place that is not a default folder (a project made directly) is looked at (first review).
     assert.throws(() => planFlatten(path.join(home, 'myproj', 'src')), /a parent folder looks like a project folder \(contains package\.json\): .*myproj$/);
     assert.throws(() => planFlatten(path.join(home, 'OneDrive', 'app', 'src')), /a parent folder looks like a project folder \(contains package\.json\): .*app$/);
   });
@@ -1784,7 +1784,7 @@ test('flatten은 경로가 260자를 넘는 숨김 파일도 알아본다', { sk
   const dir = tempDir();
   const deep = path.join('a', 'x'.repeat(120), 'y'.repeat(120));
   make(dir, [path.join(deep, 'long.txt'), path.join(deep, 'plain.txt')]);
-  // attrib는 긴 경로의 속성을 바꾸지 못하고 성공으로 끝나므로 PowerShell로 바꾼다.
+  // attrib cannot change the attributes of a long path and ends as a success, so it is changed with PowerShell.
   execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-Item -LiteralPath $env:FC_FILE -Force).Attributes = "Hidden"'], {
     env: { ...process.env, FC_FILE: `\\\\?\\${path.join(dir, deep, 'long.txt')}` },
   });
@@ -1804,7 +1804,7 @@ test('flatten은 시스템 속성만 있는 폴더(아이콘을 꾸민 폴더)�
   assert.match(plan.skipped[0].reason, /folder settings or preview file/);
 });
 
-// 1차 리뷰: OneDrive 폴더는 ReparsePoint 속성이 있어도 walk가 폴더로 본다. 속성 읽기가 따로 재귀하지 않고 walk가 본 폴더를 모두 받는지 확인한다.
+// First review: the OneDrive folder is seen as a folder by walk even with the ReparsePoint attribute. It checks that the attribute reading does not recurse on its own and receives all the folders walk saw.
 test('flatten은 walk가 폴더로 본 곳을 모두 속성 읽기에 넘기고, 프로그램 폴더 안은 넘기지 않는다', { skip: !isWindows && 'Windows 파일 속성' }, (t) => {
   const dir = tempDir();
   make(dir, ['a/b/c/x.txt', 'd/y.txt', 'p/node_modules/m/i.js']);
@@ -1845,7 +1845,7 @@ test('flatten은 파일이 없는 프로그램 폴더도 남긴다고 알린다'
   assert.ok(fs.existsSync(path.join(dir, 'a', 'node_modules', 'empty')));
 });
 
-// 2차 리뷰: 드라이브 루트(Q:\)처럼 끝에 구분자가 붙은 경로도 상대경로가 잘리지 않는다.
+// Second review: a path with a trailing separator, such as a drive root (Q:\), does not get its relative path cut.
 test('hiddenOrSystemEntries는 끝에 구분자가 붙은 경로에서도 같은 상대경로를 돌려준다', { skip: !isWindows && 'Windows 파일 속성' }, () => {
   const dir = tempDir();
   make(dir, ['sub/a.txt']);
@@ -1855,17 +1855,17 @@ test('hiddenOrSystemEntries는 끝에 구분자가 붙은 경로에서도 같은
   assert.deepStrictEqual(hiddenOrSystemEntries(dir + path.sep, ['', 'sub']), expected);
 });
 
-// #71: 정보 없는 파일명(video.mp4)은 폴더 이름을 잃지 않는다.
+// #71: a file name with no information (video.mp4) does not lose the folder name.
 test('detailedName은 정보 없는 파일명에 제품번호로 인정되지 않는 폴더 이름도 쓴다', () => {
   for (const folder of ['PART-01', 'BD-123', 'Studio-ABC-123', 'ABC-123-01', '1080p-ABC-123', '4K-ABC-123', '여름영상모음', '2021']) {
     assert.strictEqual(detailedName('video.mp4', [folder]), `${folder}.mp4`, folder);
   }
   assert.strictEqual(detailedName('영상.mp4', ['여름영상모음']), '여름영상모음.mp4');
-  // 흔한 폴더 이름, 새 폴더, 화질·코덱만 있는 이름은 정보가 없어 쓰지 않는다.
+  // Common folder names, new folders, and names with only quality or codec have no information and are not used.
   for (const folder of ['새 폴더', '새 폴더 (2)', 'New folder (3)', 'Videos', 'Downloads', 'H264', '1080p', 'BD1080', 'WEB-DL', '4K HDR', 'Movie']) {
     assert.strictEqual(detailedName('video.mp4', [folder]), 'video.mp4', folder);
   }
-  // 정보가 있는 파일명과 한 글자 이름은 그대로다.
+  // A file name with information and a one-letter name stay as they are.
   assert.strictEqual(detailedName('trailer.mp4', ['PART-01']), 'trailer.mp4');
   assert.strictEqual(detailedName('o.txt', ['out']), 'o.txt');
 });
@@ -1908,7 +1908,7 @@ test('flatten은 정보 없는 파일명의 폴더 이름을 결과 이름에 �
   assert.ok(formatFlatten(result).includes(`Move: ${path.join('PART-01', 'video.mp4')} -> PART-01.mp4 (folder name used)`));
 });
 
-// #71 1차 리뷰: 자막 짝, 바깥 폴더로 올라가기, 번호·복사본·전각·한 글자 폴더 이름, 긴 이름
+// #71 first review: subtitle pairs, going up to the outer folder, numbers, copies, full-width, one-letter folder names, long names
 test('prefixedName은 video.en.srt 같은 자막에도 같은 접두어를 붙이고, 정보 없는 가까운 폴더를 건너 위로 올라간다', () => {
   assert.strictEqual(prefixedName('video.en.srt', ['ABC-123']), 'ABC-123 video.en.srt');
   assert.strictEqual(prefixedName('video.ko.srt', ['PART-01']), 'PART-01 video.ko.srt');
@@ -1944,34 +1944,34 @@ test('flatten은 바깥 폴더의 제품번호·제목과 가까운 폴더 이�
 
 test('withOuterFolder·prefixedName은 이미 든 이름, 제품번호가 든 이름, 담는 폴더 이름, 길이 한도를 지킨다 (#150)', () => {
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['ABC-123']), 'ABC-123 CD1.mp4');
-  // 바깥 제품번호 폴더를 먼저 고르고, 그 사이 폴더도 붙인다(1차 리뷰).
+  // It picks the outer product-number folder first and also attaches the folders in between (first review).
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Extras', 'ABC-123']), 'ABC-123 Extras CD1.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Subs', 'ABC-123']), 'ABC-123 CD1.mp4');
-  // 파일과 같은 확장자가 붙은 바깥 폴더는 확장자를 떼고 쓴다(1차 리뷰).
+  // An outer folder with the same extension as the file is used with the extension stripped (first review).
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['ABC-123.mp4']), 'ABC-123 CD1.mp4');
-  // 받은 이름에 이미 제품번호가 있거나 바깥 이름이 들어 있으면 붙이지 않는다.
+  // If the received name already has a product number or the outer name is in it, it is not attached.
   assert.strictEqual(withOuterFolder('video.mp4', 'XYZ-999.mp4', ['ABC-123']), 'XYZ-999.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'Show CD1.mp4', ['Show']), 'Show CD1.mp4');
-  // 정보 있는 파일명, 쓸 만한 바깥 폴더가 없을 때
+  // A file name with information, when there is no usable outer folder
   assert.strictEqual(withOuterFolder('trailer.mp4', 'CD1.mp4', ['ABC-123']), 'CD1.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Videos', '새 폴더']), 'CD1.mp4');
   const long = 'T'.repeat(240);
   assert.strictEqual(withOuterFolder('video.mp4', `${long}.mp4`, ['ABC-123 제목입니다']), `${long}.mp4`);
-  // 사이 폴더: 같은 이름은 한 번만, Subs·Videos는 빼고, 길면 고른 폴더만
+  // In-between folders: the same name only once, Subs and Videos left out, and if long, only the chosen folder
   assert.strictEqual(prefixedName('video.mp4', ['1080p', 'Show 1080p']), 'Show 1080p video.mp4');
   assert.strictEqual(prefixedName('video.en.srt', ['Subs', '1080p', 'Show']), 'Show 1080p video.en.srt');
   assert.strictEqual(prefixedName('video.mp4', ['Videos', 'WEB-DL', 'ABC-123']), 'ABC-123 WEB-DL video.mp4');
   assert.strictEqual(prefixedName('video.mp4', [long, 'ABC-123']), 'ABC-123 video.mp4');
-  // 자막 폴더와 그 아래 폴더, 자막 말이 든 폴더는 붙이지 않는다(1차 리뷰).
+  // A subtitle folder and the folders below it, and a folder with subtitle words, are not attached (first review).
   assert.strictEqual(prefixedName('video.en.srt', ['English', 'Subs', 'ABC-123']), 'ABC-123 video.en.srt');
   assert.strictEqual(prefixedName('video.en.srt', ['English Subs', 'ABC-123']), 'ABC-123 video.en.srt');
-  // 영상 없이 자막만 담은 언어 폴더도 자막 폴더처럼 붙이지 않는다(2차 리뷰). planFlatten이 자막의 폴더 목록에서 미리 뺀다(#233).
+  // A language folder that holds only subtitles without video is also not attached, like a subtitle folder (second review). planFlatten removes it in advance from the subtitle's folder list (#233).
   for (const folder of ['English', '한국어', 'KOR']) {
     const dir = tempDir();
     make(dir, ['ABC-123/video.mp4', `ABC-123/${folder}/video.ko.srt`]);
     assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 video.ko.srt', 'ABC-123 video.mp4'], folder);
   }
-  // 사이 폴더까지 붙이면 길이 한도를 넘을 때는 고른 바깥 폴더만 붙인다(2차 리뷰).
+  // If attaching up to the in-between folders exceeds the length limit, only the chosen outer folder is attached (second review).
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['T'.repeat(240), 'ABC-123']), 'ABC-123 CD1.mp4');
   assert.strictEqual(prefixedName('video.ko.srt', ['한국어', '자막', '1080p', 'ABC-123']), 'ABC-123 1080p video.ko.srt');
 });
@@ -1982,24 +1982,24 @@ test('자막·언어 폴더는 접두어로 고르지 않아 영상과 자막이
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 이슈의 사례: English가 아니라 CD1을 고르고 바깥 Show도 붙여 영상과 같다. 자막 말이 든 폴더, 한국어 언어 폴더, 전각 글자도 같다.
+  // The case in the issue: it picks CD1, not English, and also attaches the outer Show, so it is the same as the video. A folder with subtitle words, a Korean language folder, and full-width letters are the same.
   for (const folder of ['English', 'English Subs', '한국어', 'ＥＮＧＬＩＳＨ', 'Subs']) {
     assert.deepStrictEqual(names(['Show/CD1/video.mp4', `Show/CD1/${folder}/video.ko.srt`]), ['Show CD1 video.ko.srt', 'Show CD1 video.mp4'], folder);
   }
-  // 자막 말이 든 폴더는 폴더 목록만 받는 prefixedName에서도 고르지 않는다.
+  // A folder with subtitle words is not picked even in prefixedName, which receives only the folder list.
   for (const folder of ['English Subs', 'Subs']) assert.strictEqual(prefixedName('video.ko.srt', [folder, 'CD1', 'Show']), 'Show CD1 video.ko.srt', folder);
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show']), 'Show CD1 video.mp4');
-  // 자막 폴더 아래의 폴더(Subs/Forced/)도 고르지 않는다.
+  // A folder under a subtitle folder (Subs/Forced/) is also not picked.
   assert.strictEqual(prefixedName('video.en.srt', ['Forced', 'Subs', 'Show']), 'Show video.en.srt');
-  // 언어 이름만 있는 폴더는 영상 폴더(더빙판, 강의)로 보고 붙인다(#233). 바깥 제목은 언어 폴더가 아닌 것을 먼저 고르고, 없으면 언어 폴더도 쓴다(1차 리뷰).
+  // A folder with only a language name is seen as a video folder (a dubbed version, a lecture) and attached (#233). For the outer title, it picks one that is not a language folder first, and uses a language folder if there is none (first review).
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'English']), 'English CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'English', 'Show']), 'Show English CD1 video.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['English', 'Show']), 'Show English CD1.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['English']), 'English CD1.mp4');
-  // 파일 하나뿐인 자막 언어 폴더의 이름으로 바꾸지 않는다(detailedName의 정보 없는 파일명 경로).
+  // It does not change to the name of a subtitle language folder that has only one file (the file-name-with-no-information path of detailedName).
   assert.deepStrictEqual(names(['English/video.srt']), ['video.srt']);
   assert.deepStrictEqual(names(['Show/English/video.srt']), ['Show.srt']);
-  // 언어 말이 아닌 단어가 함께 있으면 예전처럼 쓴다.
+  // If a word that is not a language word is there together, it is used as before.
   assert.strictEqual(prefixedName('video.mp4', ['English Lesson']), 'English Lesson video.mp4');
 });
 
@@ -2015,20 +2015,20 @@ test('planFlatten은 자막 폴더 안의 폴더 이름을 정보 없는 자막�
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 파일 하나뿐인 Forced/를 자막의 새 이름으로 고르지 않고, 영상과 같은 접두어 뒤에 구분 이름으로 붙인다(#233).
+  // A Forced/ with only one file is not picked as the subtitle's new name, and is attached as a distinguishing name after the same prefix as the video (#233).
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Forced/video.srt']), ['Show video.Forced.srt', 'Show video.mp4']);
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/Subs/Forced/video.srt']), ['Show CD1 video.Forced.srt', 'Show CD1 video.mp4']);
-  // 언어 폴더 아래의 CD 폴더 이름은 남아 서로 구분된다. 영상이 든 언어 폴더 이름도 남는다(#233).
+  // The CD folder name under a language folder stays and they are told apart. The name of a language folder that holds video also stays (#233).
   assert.deepStrictEqual(names(['Show/English/CD1/video.mp4', 'Show/English/CD1/sample.mp4', 'Show/English/CD2/video.mp4', 'Show/English/CD2/sample.mp4']), [
     'Show English CD1 sample.mp4', 'Show English CD1 video.mp4', 'Show English CD2 sample.mp4', 'Show English CD2 video.mp4',
   ]);
-  // 바깥에 언어 폴더뿐이면 그 이름을 쓴다.
+  // If there is only a language folder outside, that name is used.
   assert.deepStrictEqual(names(['Korean/Lesson 1/video.mp4', 'Korean/Lesson 2/video.mp4']), ['Korean Lesson 1.mp4', 'Korean Lesson 2.mp4']);
-  // 자막 말과 다른 말이 함께 든 제목 폴더(하드섭 영상)는 예전처럼 이름으로 쓴다(2차 리뷰).
+  // A title folder with subtitle words and other words together (a hard-subbed video) is used as a name as before (second review).
   assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4']), ['Movie [Eng Sub].mp4']);
   assert.deepStrictEqual(names(['Movie [Eng Sub]/video.mp4', 'Movie [Eng Sub]/sample.mp4']), ['Movie [Eng Sub] sample.mp4', 'Movie [Eng Sub] video.mp4']);
   assert.deepStrictEqual(names(['Movie (Eng Subs)/CD1/video.mp4', 'Movie (Eng Subs)/CD2/video.mp4']), ['Movie (Eng Subs) CD1.mp4', 'Movie (Eng Subs) CD2.mp4']);
-  // 자막·언어 말로만 된 Eng Sub/ 안의 폴더는 여전히 새 이름으로 고르지 않고 구분 이름으로만 붙인다(#233).
+  // A folder inside Eng Sub/, made only of subtitle and language words, is still not picked as a new name and is attached only as a distinguishing name (#233).
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Eng Sub/Forced/video.srt']), ['Show video.Forced.srt', 'Show video.mp4']);
 });
 
@@ -2038,44 +2038,44 @@ test('planFlatten은 자막 폴더 안의 구조를 영상 쪽 폴더와 맞춰 
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 1. 자막 폴더 안을 영상과 같은 구조로 나누면 자막 폴더를 빼고 같은 폴더의 파일로 본다. 영상과 자막이 같은 접두어를 받는다.
+  // 1. If the subtitle folder is split with the same structure as the video, it leaves out the subtitle folder and sees it as a file in the same folder. The video and the subtitle get the same prefix.
   assert.deepStrictEqual(names(['Show/Season 1/video.mp4', 'Show/Season 2/video.mp4', 'Show/Subtitles/Season 1/video.srt', 'Show/Subtitles/Season 2/video.srt']), [
     'Show Season 1 video.mp4', 'Show Season 1 video.srt', 'Show Season 2 video.mp4', 'Show Season 2 video.srt',
   ]);
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD2/video.mp4', 'Subs/Show/CD1/video.srt', 'Subs/Show/CD2/video.srt']), [
     'Show CD1 video.mp4', 'Show CD1 video.srt', 'Show CD2 video.mp4', 'Show CD2 video.srt',
   ]);
-  // 사이의 화질 폴더도 영상과 같게 붙고, 대소문자가 달라도 같은 폴더로 보고 영상 쪽 표기를 쓴다(1차 리뷰).
+  // The quality folder in between is attached the same as the video, and even if the case differs, it is seen as the same folder and the video-side spelling is used (first review).
   assert.deepStrictEqual(names(['Show/1080p/CD1/video.mp4', 'Show/Subtitles/1080P/cd1/video.srt']), ['Show 1080p CD1 video.mp4', 'Show 1080p CD1 video.srt']);
-  // 같은 경로의 폴더가 있어도 영상이 없으면 맞추지 않는다(1차 리뷰). 영상과 같은 접두어를 받는다.
+  // Even if a folder of the same path exists, if it has no video, it does not match (first review). It gets the same prefix as the video.
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/English/notes.txt', 'Show/Subs/English/video.en.srt']), ['Show video.en.srt', 'Show video.mp4', 'notes.txt']);
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Extras/poster.jpg', 'Show/Subs/Extras/video.srt']), ['Show video.Extras.srt', 'Show video.mp4', 'poster.jpg']);
-  // 자막 폴더 안의 제품번호 폴더는 구분 이름으로 붙이지 않고 예전처럼 먼저 고른다(1차 리뷰).
+  // A product-number folder inside a subtitle folder is not attached as a distinguishing name and is picked first as before (first review).
   assert.deepStrictEqual(names(['Subs/ABC-123/video.en.srt', 'Subs/ABC-123/video.ko.srt']), ['ABC-123 video.en.srt', 'ABC-123 video.ko.srt']);
   assert.deepStrictEqual(names(['Subs/ABC-123/video.srt']), ['ABC-123.srt']);
   assert.deepStrictEqual(names(['Pack/video.mp4', 'Pack/Subs/ABC-123/video.srt']), ['ABC-123.srt', 'Pack video.mp4']);
-  // 영상 쪽에 없는 안쪽 폴더(Forced/, Full/)는 첫 점 앞부분 뒤에 구분 이름으로 붙어 서로 구분되고 영상과 짝을 지킨다.
+  // Inner folders not on the video side (Forced/, Full/) are attached as a distinguishing name after the part before the first dot, so they are told apart and keep the pair with the video.
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Forced/video.srt', 'Show/Subs/Full/video.srt']), ['Show video.Forced.srt', 'Show video.Full.srt', 'Show video.mp4']);
   assert.deepStrictEqual(names(['Show/Season 1/video.mp4', 'Show/Subtitles/Season 1/Forced/video.en.srt', 'Show/Subtitles/Season 1/video.en.srt']), [
     'Show Season 1 video.Forced.en.srt', 'Show Season 1 video.en.srt', 'Show Season 1 video.mp4',
   ]);
-  // 구분 이름을 붙이면 255자를 넘을 때는 붙이지 않고 번호로 구분한다. 영상과 같은 접두어는 지킨다(1차 리뷰).
+  // If attaching the distinguishing name exceeds 255 characters, it is not attached and they are told apart by number. The same prefix as the video is kept (first review).
   const long = 'T'.repeat(215);
   assert.deepStrictEqual(names([`${long}/video.mp4`, `${long}/Subs/${'F'.repeat(40)}/video.srt`, `${long}/Subs/${'G'.repeat(40)}/video.srt`]), [
     `${long} video (2).srt`, `${long} video.mp4`, `${long} video.srt`,
   ]);
-  // 영상 없는 언어 폴더 안의 하위 폴더도 구분 이름으로 붙는다(예전에는 Show Ep1.srt).
+  // A subfolder inside a language folder with no video is also attached as a distinguishing name (before, it was Show Ep1.srt).
   assert.deepStrictEqual(names(['Show/English/Ep1/video.srt', 'Show/English/Ep2/video.srt']), ['Show video.Ep1.srt', 'Show video.Ep2.srt']);
-  // 자막·언어 말로만 된 안쪽 폴더(Subs/English/)는 구분 이름으로 붙이지 않는다.
+  // An inner folder made only of subtitle and language words (Subs/English/) is not attached as a distinguishing name.
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/English/video.en.srt']), ['Show video.en.srt', 'Show video.mp4']);
-  // 2. 영상이 든 언어 폴더(더빙판)는 언어 이름으로 구분한다. 그 안의 자막도 같은 접두어를 받는다.
+  // 2. A language folder that holds video (a dubbed version) is told apart by the language name. The subtitles inside it also get the same prefix.
   assert.deepStrictEqual(names(['Show/English/video.mp4', 'Show/Korean/video.mp4']), ['Show English.mp4', 'Show Korean.mp4']);
   assert.deepStrictEqual(names(['Show/English/video.mp4', 'Show/English/video.en.srt', 'Show/Korean/video.mp4', 'Show/Korean/Subs/video.ko.srt']), [
     'Show English video.en.srt', 'Show English video.mp4', 'Show Korean video.ko.srt', 'Show Korean video.mp4',
   ]);
-  // 3. 자막만 담은 언어 폴더 아래의 자막 하위 폴더도 영상과 같은 접두어 뒤에 구분 이름으로 붙는다.
+  // 3. A subtitle subfolder under a language folder that holds only subtitles is also attached as a distinguishing name after the same prefix as the video.
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/English/Forced/video.srt']), ['Show CD1 video.Forced.srt', 'Show CD1 video.mp4']);
-  // 자막이 아닌 파일(Subs/Fonts/font.ttf)은 예전처럼 자막 폴더 안의 폴더 이름을 고르지 않는다.
+  // A file that is not a subtitle (Subs/Fonts/font.ttf) does not pick a folder name inside the subtitle folder, as before.
   assert.deepStrictEqual(names(['Show/video.mp4', 'Show/Subs/Fonts/video.ttf']), ['Show video.mp4', 'Show video.ttf']);
 });
 
@@ -2085,19 +2085,19 @@ test('planFlatten은 파일 하나만 담은 바깥 폴더의 제목도 가까�
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 혼자 있을 때와 CD2가 함께 있을 때 이름이 같은 꼴이다.
+  // The names have the same form when alone and when CD2 is together.
   assert.deepStrictEqual(names(['Show/CD1/video.mp4']), ['Show CD1.mp4']);
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD2/video.mp4']), ['Show CD1.mp4', 'Show CD2.mp4']);
-  // 사이의 화질 폴더, 같은 확장자가 붙은 폴더 이름도 #150과 같은 규칙을 쓴다.
+  // Quality folders in between and folder names with the same extension attached use the same rules as #150.
   assert.deepStrictEqual(names(['Show/1080p/CD1/video.mp4']), ['Show 1080p CD1.mp4']);
   assert.deepStrictEqual(names(['Show/CD1.mp4/video.mp4']), ['Show CD1.mp4']);
-  // 고른 폴더를 찾는 비교가 detailedName과 같아야 한다: NFD 폴더 이름, 대소문자가 다른 확장자(1차 리뷰).
+  // The comparison that finds the chosen folder must be the same as detailedName: NFD folder names, extensions with different case (first review).
   assert.deepStrictEqual(names([`Show/${'씨디'.normalize('NFD')}/video.mp4`]), ['Show 씨디.mp4']);
   assert.deepStrictEqual(names(['Show/CD1.MP4/video.mp4']), ['Show CD1.mp4']);
-  // 바깥이 흔한 폴더 이름이면 붙이지 않고, 제품번호 폴더가 있으면 예전처럼 그 이름을 쓴다.
+  // If the outer is a common folder name, it is not attached, and if there is a product-number folder, that name is used as before.
   assert.deepStrictEqual(names(['Downloads/CD1/video.mp4']), ['CD1.mp4']);
   assert.deepStrictEqual(names(['ABC-123/CD1/video.mp4']), ['ABC-123.mp4']);
-  // 이미 들어 있는 이름은 다시 붙이지 않는다.
+  // A name already in it is not attached again.
   assert.deepStrictEqual(names(['Show/Show CD1/video.mp4']), ['Show CD1.mp4']);
 });
 
@@ -2107,27 +2107,27 @@ test('prefixedName은 고른 폴더가 제품번호 폴더가 아니면 바깥 �
     make(dir, files);
     return planFlatten(dir).moves.map((move) => move.name).sort();
   };
-  // 자막이 있든 없든 Show와 CD1이 함께 남는다.
+  // With or without subtitles, Show and CD1 stay together.
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/video.en.srt']), ['Show CD1 video.en.srt', 'Show CD1 video.mp4']);
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/Subs/video.en.srt']), ['Show CD1 video.en.srt', 'Show CD1 video.mp4']);
   assert.deepStrictEqual(names(['Show/CD1/video.mp4', 'Show/CD1/sample.mp4', 'Show/CD2/video.mp4']), ['Show CD1 sample.mp4', 'Show CD1 video.mp4', 'Show CD2.mp4']);
-  // 사이 화질 폴더는 #150처럼 바깥부터 붙이고, 흔한 바깥 폴더와 제품번호 폴더는 예전 규칙을 따른다.
+  // In-between quality folders are attached from the outside as in #150, and a common outer folder and a product-number folder follow the old rules.
   assert.strictEqual(prefixedName('video.mp4', ['CD1', '1080p', 'Show']), 'Show 1080p CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Downloads']), 'CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'ABC-123']), 'ABC-123 CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show', 'Movies']), 'Show CD1 video.mp4');
-  // 이미 든 이름은 겹치지 않는다. withOuterFolder도 같다.
+  // A name already in it does not overlap. withOuterFolder is the same.
   assert.strictEqual(prefixedName('video.mp4', ['CD1', 'Show CD1']), 'Show CD1 video.mp4');
   assert.strictEqual(prefixedName('video.mp4', ['Show CD1', 'Show']), 'Show CD1 video.mp4');
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['Show CD1']), 'Show CD1.mp4');
-  // 고른 이름 사이에 화질 폴더가 있어도 겹치지 않는다(1차 리뷰).
+  // Even if a quality folder is between the chosen names, it does not overlap (first review).
   assert.strictEqual(prefixedName('video.mp4', ['1080p', 'CD1', 'Show CD1']), 'Show CD1 1080p video.mp4');
   assert.deepStrictEqual(names(['Show CD1/CD1/1080p/video.mp4', 'Show CD1/CD1/1080p/sample.mp4']), ['Show CD1 1080p sample.mp4', 'Show CD1 1080p video.mp4']);
   assert.strictEqual(withOuterFolder('video.mp4', 'CD1.mp4', ['1080p', 'Show CD1']), 'Show CD1 1080p.mp4');
-  // 길이 한도를 넘으면 바깥 이름을 빼고 예전 이름으로 돌아간다.
+  // If it exceeds the length limit, it drops the outer name and goes back to the old name.
   const long = 'L'.repeat(250);
   assert.strictEqual(prefixedName('video.mp4', ['CD1', long]), 'CD1 video.mp4');
-  // 한도 근처에서도 영상과 자막이 같은 접두어를 받는다(1차 리뷰). 길이는 첫 점 앞부분으로 판단한다.
+  // Even near the limit, the video and the subtitle get the same prefix (first review). The length is judged by the part before the first dot.
   for (let size = 200; size <= 250; size++) {
     const outer = 'L'.repeat(size);
     const video = prefixedName('video.mp4', ['CD1', outer]);
@@ -2154,19 +2154,19 @@ test('planFlatten은 접두어를 붙인 이름이 너무 길면 원래 이름�
   assert.ok(plan.moves.every((move) => !move.fromFolder));
 });
 
-// #71 2차 리뷰: 자막 폴더, 접두어도 제품번호 폴더 먼저
+// #71 second review: subtitle folders, prefix also product-number folder first
 test('flatten은 자막 폴더 이름을 붙이지 않고, 접두어도 바깥 제품번호 폴더를 먼저 쓴다', () => {
   assert.strictEqual(prefixedName('video.en.srt', ['Subs', 'Show']), 'Show video.en.srt');
   for (const folder of ['Sub', 'Subtitles', '자막']) assert.strictEqual(prefixedName('video.en.srt', [folder, 'Show']), 'Show video.en.srt', folder);
   assert.strictEqual(prefixedName('video.mp4', ['Extras', 'ABC-123']), 'ABC-123 Extras video.mp4');
-  // 고른 폴더(Extras)가 제품번호 폴더가 아니면 바깥 제목 폴더도 붙인다(#178).
+  // If the chosen folder (Extras) is not a product-number folder, the outer title folder is also attached (#178).
   assert.strictEqual(prefixedName('video.mp4', ['Extras', 'Show']), 'Show Extras video.mp4');
   const dir = tempDir();
   make(dir, ['Show/video.mp4', 'Show/Subs/video.en.srt', 'ABC-123/Extras/video.mp4', 'ABC-123/Extras/sample.mp4']);
   assert.deepStrictEqual(planFlatten(dir).moves.map((move) => move.name).sort(), ['ABC-123 Extras sample.mp4', 'ABC-123 Extras video.mp4', 'Show video.en.srt', 'Show video.mp4']);
 });
 
-// #67: 빈 폴더를 묶어서 휴지통으로, 진행 보고, 휴지통 없는 드라이브, 시간 제한
+// #67: empty folders to the Recycle Bin in batches, progress reports, drives without a Recycle Bin, time limit
 test('flatten은 빈 폴더를 100개씩 묶어 PowerShell 한 번에 휴지통으로 보낸다', () => {
   const dir = tempDir();
   make(dir, Array.from({ length: 250 }, (_, i) => `d${String(i).padStart(3, '0')}/f${i}.txt`));
@@ -2187,7 +2187,7 @@ test('flatten은 고정 디스크가 아니거나 종류를 모르는 드라이�
     ['True|Removable\r\n', /drive \(Removable\)/],
     ['', /unknown type/],
     ['False|Fixed\r\n', /outside an interactive session/],
-    // 휴지통 설정이 "바로 제거"면 빈 폴더도 영구 삭제된다(#81).
+    // If the Recycle Bin setting is "remove immediately", empty folders are also deleted permanently (#81).
     ['True|Fixed|1|26427\r\n', /set to remove files immediately/],
   ]) {
     const dir = tempDir();
@@ -2202,7 +2202,7 @@ test('flatten은 고정 디스크가 아니거나 종류를 모르는 드라이�
   }
 });
 
-// 묶음 호출을 흉내 낸다. hang에 든 이름의 폴더에서 멈춘 것처럼 시간 제한 오류를 낸다. 그 앞 폴더는 지우고 보고한다.
+// It imitates the batch call. It raises a timeout error as if it stalled at the folder whose name is in hang. The folders before it are deleted and reported.
 function fakeBatch(hang) {
   return (options) => {
     const lines = [];
@@ -2271,7 +2271,7 @@ test('flatten은 시간 제한이 아닌 실패로 일부만 보고되면 나머
   batchOverride = (options) => {
     const [first] = options.input.split('\n');
     fs.rmSync(Buffer.from(first, 'base64').toString('utf16le'), { recursive: true });
-    // 휴지통 이동이 실패한 폴더 안에 장치 이름 그대로인 빈 폴더가 생긴 것처럼 만든다.
+    // It sets it up as if an empty folder that is exactly a device name appeared inside the folder where the Recycle Bin move failed.
     fs.mkdirSync('\\\\?\\' + path.join(dir, 'b', 'NUL'));
     throw Object.assign(new Error('Command failed'), { status: 1, stdout: 'ok ' + first + '\r\n' });
   };
@@ -2327,7 +2327,7 @@ test('flatten은 휴지통으로 보낼 수 없는 긴 경로의 폴더를 묶�
   assert.match(result.keptFolders[0].reason, /cannot be sent to the Recycle Bin \(up to 259\)/);
 });
 
-// 1차 리뷰: 테스트가 묶음 호출을 흉내만 내면 스크립트의 오타나 판정 오류를 놓친다. 휴지통 이동만 출력으로 바꿔 실제 PowerShell로 돌린다.
+// First review: if a test only imitates the batch call, it misses typos and judgment errors in the script. Only the Recycle Bin move is swapped for output and it runs with real PowerShell.
 test('recycleEmptyFolders의 PowerShell 스크립트는 지우기 직전 검사를 실제로 한다', { skip: !isWindows && 'PowerShell' }, (t) => {
   const dir = tempDir();
   const p = (...xs) => path.join(dir, ...xs);
@@ -2346,7 +2346,7 @@ test('recycleEmptyFolders의 PowerShell 스크립트는 지우기 직전 검사�
   const folders = ['empty', 'meta', 'filled', 'notdir', 'gone', 'hasjunction', path.join('swapped', 'b'), '한글 이모지😀'].map((name) => p(name));
   const result = recycleEmptyFolders(folders, { allowedNames: ['desktop.ini'], script });
   assert.deepStrictEqual(result.map((item) => item.status), ['ok', 'ok', 'filled', 'notdir', 'gone', 'filled', 'moved', 'ok']);
-  // 휴지통 이동을 바꿨으므로 아무것도 지워지지 않았다.
+  // The Recycle Bin move was swapped, so nothing was deleted.
   assert.ok(fs.existsSync(p('empty', 'deep')) && fs.existsSync(p('other', 'b', 'z.txt')));
 });
 
