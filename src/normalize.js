@@ -51,12 +51,12 @@ function remainder(base, ranges) {
 function normalizeName(fileName) {
   const unchanged = (reason, number = null, inferred = false) => ({ name: fileName, number, inferred, reason });
   // 파일 이름은 255자를 넘을 수 없다. 긴 입력에서 정규식이 느려지거나 괄호 되풀이가 깊어지지 않게 먼저 거른다.
-  if (fileName.length > MAX_NAME) return unchanged('파일 이름이 너무 깁니다.');
+  if (fileName.length > MAX_NAME) return unchanged('The file name is too long.');
   // 점으로 시작하는 이름은 숨김 파일이고, 앞에 번호를 붙이면 숨김이 풀린다. ~로 시작하는 이름은 Office 잠금 파일(~$)과
   // 임시 파일(~WRL0001.tmp, ~abc-123.mp4)이다. 만든 프로그램이 그 이름으로 찾으므로 바꾸지 않는다(#94).
-  if (fileName.startsWith('.') || fileName.startsWith('~')) return unchanged('숨김이나 임시 파일 이름은 바꾸지 않습니다.');
-  if (NOT_A_NAME.test(fileName)) return unchanged('파일 이름에 쓸 수 없는 문자가 있습니다.');
-  if (ENDS_BADLY.test(fileName)) return unchanged('끝이 점이나 공백인 이름은 바꾸지 않습니다.');
+  if (fileName.startsWith('.') || fileName.startsWith('~')) return unchanged('Hidden and temporary file names are not changed.');
+  if (NOT_A_NAME.test(fileName)) return unchanged('The file name contains characters that cannot be used.');
+  if (ENDS_BADLY.test(fileName)) return unchanged('Names ending with a dot or space are not changed.');
   const extension = EXTENSION.exec(fileName)?.[0] ?? '';
   const base = fileName.slice(0, fileName.length - extension.length);
 
@@ -65,14 +65,14 @@ function normalizeName(fileName) {
   if (ranges.length === 0) return unchanged(null);
   const inferred = upper.length === 0;
   const numbers = new Set(ranges.map((range) => range.number));
-  if (numbers.size > 1) return unchanged(`번호가 여럿이라 고르지 않습니다: ${[...numbers].join(', ')}`);
+  if (numbers.size > 1) return unchanged(`Several numbers, so none is chosen: ${[...numbers].join(', ')}`);
 
   const [{ number, start, end }] = ranges;
   const keepsDot = ranges.length === 1 && start === 0 && base[end] === '.';
   const rest = keepsDot ? base.slice(end).replace(TRAILING, '').replace(/^\.+/, '.') : remainder(base, ranges);
   const body = keepsDot || rest === '' ? `${number}${rest}` : `${number} ${rest}`;
   const name = `${body}${extension}`;
-  if (name.length > MAX_NAME) return unchanged(`정규화하면 이름이 너무 깁니다: ${name.length}자`, number, inferred);
+  if (name.length > MAX_NAME) return unchanged(`The name is too long once normalized: ${name.length} characters`, number, inferred);
   // 결과에 새로 생긴 꼬리 앞의 구분 문자처럼 첫 실행에서 정리되지 않은 것을 마저 정리한다. 이름이 줄어들거나 같아지므로 끝난다.
   return { name: name === fileName ? name : normalizeName(name).name, number, inferred, reason: null };
 }

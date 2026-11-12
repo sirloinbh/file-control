@@ -111,10 +111,10 @@ test('mv --force는 Windows에서 대소문자나 8.3 이름만 다른 같은 �
   const dir = tempDir();
   const file = path.join(dir, 'long-file-name.txt');
   fc.writeFile(file, 'keep');
-  assert.throws(() => fc.move([file], path.join(dir, 'LONG-FILE-NAME.TXT'), { force: true }), /원본과 대상이 같습니다/);
+  assert.throws(() => fc.move([file], path.join(dir, 'LONG-FILE-NAME.TXT'), { force: true }), /source and destination are the same/);
   const short = execFileSync('cmd.exe', ['/d', '/c', 'for %I in (long-file-name.txt) do @echo %~sI'], { cwd: dir, encoding: 'utf8' }).trim();
   // 8.3 이름이 꺼진 드라이브에서는 긴 이름이 그대로 나오는데, 그래도 같은 파일이므로 거부되어야 한다.
-  assert.throws(() => fc.move([file], short, { force: true }), /원본과 대상이 같습니다/);
+  assert.throws(() => fc.move([file], short, { force: true }), /source and destination are the same/);
   assert.strictEqual(fc.readFile(file), 'keep');
 });
 
@@ -124,8 +124,8 @@ test('mv --force는 정션을 거쳐 같은 항목을 가리켜도 거부하고,
   fc.writeFile(p('real', 'x.txt'), 'x');
   fc.writeFile(p('real', 'y', 'z.txt'), 'z');
   fs.symlinkSync(p('real'), p('alias'), isWindows ? 'junction' : 'dir');
-  assert.throws(() => fc.move([p('real', 'x.txt')], p('alias', 'x.txt'), { force: true }), /원본과 대상이 같습니다/);
-  assert.throws(() => fc.move([p('real')], p('alias', 'y'), { force: true }), /자기 안으로/);
+  assert.throws(() => fc.move([p('real', 'x.txt')], p('alias', 'x.txt'), { force: true }), /source and destination are the same/);
+  assert.throws(() => fc.move([p('real')], p('alias', 'y'), { force: true }), /into itself/);
   assert.throws(() => fc.move([p('real', 'y')], p('alias'), { force: true }), fc.FcError);
   assert.strictEqual(fc.readFile(p('real', 'x.txt')), 'x');
   assert.strictEqual(fc.readFile(p('real', 'y', 'z.txt')), 'z');
@@ -161,8 +161,8 @@ test('mv --force는 링크를 자기가 가리키는 곳이나 그 상위 위로
   linkDir(p('real'), p('other', 'real'));
   linkDir(p('parent', 'child'), p('other', 'parent'));
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.move([p('other', 'real')], dir, { force: true, dryRun }), /원본과 대상이 같습니다/);
-    assert.throws(() => fc.move([p('other', 'parent')], dir, { force: true, dryRun }), /링크가 가리키는 곳/);
+    assert.throws(() => fc.move([p('other', 'real')], dir, { force: true, dryRun }), /source and destination are the same/);
+    assert.throws(() => fc.move([p('other', 'parent')], dir, { force: true, dryRun }), /where the link points/);
   }
   assert.strictEqual(fc.readFile(p('real', 'x.txt')), 'x');
   assert.strictEqual(fc.readFile(p('parent', 'child', 'y.txt')), 'y');
@@ -285,7 +285,7 @@ test('mv --force는 다른 드라이브 복사 뒤 원본 정리가 실패하면
     if (target === p('src.txt')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
     return rm(target, options);
   });
-  assert.throws(() => fc.move([p('src.txt')], p('target.txt'), { force: true }), /이전 대상은/);
+  assert.throws(() => fc.move([p('src.txt')], p('target.txt'), { force: true }), /previous destination is/);
   assert.strictEqual(fc.readFile(p('target.txt')), 'new');
   const aside = fs.readdirSync(dir).find((name) => name.includes('.fctl-old-'));
   assert.strictEqual(fc.readFile(p(aside)), 'old');
@@ -313,8 +313,8 @@ test('mv·zip은 실제 경로를 확인할 수 없으면 지우지 않고 거�
   t.mock.method(fs.realpathSync, 'native', () => {
     throw Object.assign(new Error('denied'), { code: 'EPERM' });
   });
-  assert.throws(() => fc.move([p('a.txt')], p('b.txt'), { force: true }), /실제 경로를 확인할 수 없습니다/);
-  assert.throws(() => fc.zip(p('b.txt'), [p('a.txt')], { force: true }), /실제 경로를 확인할 수 없습니다/);
+  assert.throws(() => fc.move([p('a.txt')], p('b.txt'), { force: true }), /Cannot check the real path/);
+  assert.throws(() => fc.zip(p('b.txt'), [p('a.txt')], { force: true }), /Cannot check the real path/);
   assert.strictEqual(fc.readFile(p('a.txt')), 'A');
   assert.strictEqual(fc.readFile(p('b.txt')), 'B');
 });
@@ -324,8 +324,8 @@ test('mv·zip은 대체 데이터 스트림 경로를 거부한다', { skip: !is
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('bb'), 'body');
   fs.writeFileSync(`${p('bb')}:st`, 'stream');
-  assert.throws(() => fc.move([`${p('bb')}:st`], p('bb'), { force: true }), /대체 데이터 스트림/);
-  assert.throws(() => fc.zip(`${p('bb')}:st`, [p('bb')], { force: true }), /대체 데이터 스트림/);
+  assert.throws(() => fc.move([`${p('bb')}:st`], p('bb'), { force: true }), /Alternate data streams/);
+  assert.throws(() => fc.zip(`${p('bb')}:st`, [p('bb')], { force: true }), /Alternate data streams/);
   assert.strictEqual(fc.readFile(p('bb')), 'body');
 });
 
@@ -342,7 +342,7 @@ test('mv·zip은 UNC 별칭으로 같은 항목을 가리켜도 내용을 잃지
   assert.strictEqual(fc.readFile(p('d', 'sub', 'g.txt')), 'g');
   fc.zip(p('b.zip'), [p('a.txt')]);
   const size = fs.statSync(p('b.zip')).size;
-  assert.throws(() => fc.zip(unc(p('b.zip')), [p('b.zip')], { force: true }), /압축 파일 자신/);
+  assert.throws(() => fc.zip(unc(p('b.zip')), [p('b.zip')], { force: true }), /archive into itself/);
   assert.strictEqual(fs.statSync(p('b.zip')).size, size);
 });
 
@@ -358,12 +358,12 @@ test('mv·cp는 UNC 별칭으로 폴더를 자기 안으로 옮기거나 복사�
     throw new Error('복사가 시작됨');
   });
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /자기 안으로/);
-    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub')), { force: true, dryRun }), /자기 안으로/);
-    assert.throws(() => fc.move([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /into itself/);
+    assert.throws(() => fc.move([p('d')], unc(p('d', 'sub')), { force: true, dryRun }), /into itself/);
+    assert.throws(() => fc.move([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /into itself/);
     assert.throws(() => fc.move([p('d', 'sub')], unc(p('d')), { force: true, dryRun }), fc.FcError);
-    assert.throws(() => fc.copy([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /자기 안으로/);
-    assert.throws(() => fc.copy([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /자기 안으로/);
+    assert.throws(() => fc.copy([p('d')], unc(p('d', 'sub', 'x')), { force: true, dryRun }), /into itself/);
+    assert.throws(() => fc.copy([unc(p('d'))], p('d', 'sub', 'x'), { force: true, dryRun }), /into itself/);
   }
   assert.strictEqual(fc.readFile(p('d', 'f.txt')), 'f');
   assert.strictEqual(fc.readFile(p('d', 'sub', 'g.txt')), 'g');
@@ -375,8 +375,8 @@ test('mv·cp는 링크 자체를 그것이 가리키는 폴더 안으로 옮기�
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('real', 'x.txt'), 'x');
   linkDir(p('real'), p('alias'));
-  assert.match(fc.move([p('alias')], p('real', 'k'), { dryRun: true })[0], /미리보기/);
-  assert.match(fc.copy([p('alias')], p('real', 'k'), { dryRun: true })[0], /미리보기/);
+  assert.match(fc.move([p('alias')], p('real', 'k'), { dryRun: true })[0], /Preview/);
+  assert.match(fc.copy([p('alias')], p('real', 'k'), { dryRun: true })[0], /Preview/);
 });
 
 test('mv --force는 대상 이름이 길어도 치워 두었다가 덮어쓴다', () => {
@@ -423,7 +423,7 @@ test('mv --force는 되돌리기도 실패하면 치워 둔 위치를 알려 준
     if (from === p('a') || to === p('b')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
     return rename(from, to);
   });
-  assert.throws(() => fc.move([p('a')], p('b'), { force: true }), /이전 대상은 .*\.fctl-old-/);
+  assert.throws(() => fc.move([p('a')], p('b'), { force: true }), /previous destination is .*\.fctl-old-/);
   t.mock.restoreAll();
   assert.strictEqual(fc.readFile(p('a')), 'new');
   const aside = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-old-'));
@@ -441,7 +441,7 @@ test('mv는 여러 항목 중간에 실패하면 이미 처리한 항목을 오�
     if (from === p('b')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
     return rename(from, to);
   });
-  assert.throws(() => fc.move([p('a'), p('b')], p('dest')), (err) => err instanceof fc.FcError && err.message.includes('locked') && err.message.includes('이미 처리한 항목') && err.message.includes(p('a')));
+  assert.throws(() => fc.move([p('a'), p('b')], p('dest')), (err) => err instanceof fc.FcError && err.message.includes('locked') && err.message.includes('Items already handled') && err.message.includes(p('a')));
   assert.strictEqual(fc.readFile(p('dest', 'a')), 'A');
   assert.strictEqual(fc.readFile(p('b')), 'B');
 });
@@ -464,8 +464,8 @@ test('zip --force는 압축 파일 자신을 묶으려 하면 내용을 지우�
   fc.zip(archive, [p('a.txt')]);
   const size = fs.statSync(archive).size;
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(archive, [archive], { force: true, dryRun }), /압축 파일 자신/);
-    assert.throws(() => fc.zip(archive, [p('a.txt'), archive], { force: true, dryRun }), /압축 파일 자신/);
+    assert.throws(() => fc.zip(archive, [archive], { force: true, dryRun }), /archive into itself/);
+    assert.throws(() => fc.zip(archive, [p('a.txt'), archive], { force: true, dryRun }), /archive into itself/);
   }
   assert.strictEqual(fs.statSync(archive).size, size);
   fc.unzip(archive, p('out'));
@@ -618,7 +618,7 @@ test('zip은 tar가 비정상 종료하면 FcError로 알린다', (t) => {
   const mocked = loadWithTar(t, () => {
     throw Object.assign(new Error('crash'), { status: 0xc0000005 });
   });
-  assert.throws(() => mocked.zip(p('new.zip'), [p('a.txt')]), (err) => err instanceof mocked.FcError && err.message.includes('비정상 종료'));
+  assert.throws(() => mocked.zip(p('new.zip'), [p('a.txt')]), (err) => err instanceof mocked.FcError && err.message.includes('exited abnormally'));
   assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
 });
 
@@ -649,7 +649,7 @@ test('zip --force는 되돌리기도 실패하면 기존 압축 파일의 위치
     if (to === p('b.zip')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
     return rename(from, to);
   });
-  assert.throws(() => fc.zip(p('b.zip'), [p('a.txt')], { force: true }), /기존 압축 파일은 .*\.fctl-old-/);
+  assert.throws(() => fc.zip(p('b.zip'), [p('a.txt')], { force: true }), /existing archive is at .*\.fctl-old-/);
   t.mock.restoreAll();
   const aside = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-old-'));
   assert.deepStrictEqual(fs.readFileSync(p(aside)), before);
@@ -713,7 +713,7 @@ test('코드페이지 검사는 ANSI와 OEM 중 어느 한쪽에서라도 바뀌
   assert.deepStrictEqual(codes(fc.unsupportedChars('¹가é😀', [949, 949])), ['e9', '1f600']);
   assert.deepStrictEqual(fc.unsupportedChars('plain ascii', [437]), []);
   // 코드페이지를 확인하지 못하면 검사 없이 통과하지 않고 실행을 거부한다.
-  assert.throws(() => fc.unsupportedChars('é', [99999]), (err) => err instanceof fc.FcError && /코드페이지를 확인하지 못해/.test(err.message));
+  assert.throws(() => fc.unsupportedChars('é', [99999]), (err) => err instanceof fc.FcError && /Could not check the system code page/.test(err.message));
   assert.throws(() => fc.unsupportedChars('é', [949, 0]), fc.FcError);
 });
 
@@ -734,8 +734,8 @@ test('zip·unzip은 OEM 코드페이지에서 바뀌는 문자를 zip·cpio 항�
   const before = fs.readdirSync(dir).sort();
   for (const dryRun of [true, false]) {
     for (const archive of ['o.zip', 'O.ZIP', 'o.cpio']) {
-      assert.throws(() => fc.zip(p(archive), [p(`s${char}.tar.gz`)], { dryRun }), /처리할 수 없는 문자/, archive);
-      assert.throws(() => fc.zip(p(archive), [p('tree')], { dryRun }), /처리할 수 없는 문자/, archive);
+      assert.throws(() => fc.zip(p(archive), [p(`s${char}.tar.gz`)], { dryRun }), /characters tar\.exe cannot handle/, archive);
+      assert.throws(() => fc.zip(p(archive), [p('tree')], { dryRun }), /characters tar\.exe cannot handle/, archive);
     }
   }
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), before);
@@ -768,7 +768,7 @@ test('zip은 여러 겹 압축 이름의 항목 이름을 가장 안쪽 형식�
     assert.strictEqual(fc.readFile(p(`out-${archive}`, 'tree', `a${char}.txt`)), 'T', archive);
   }
   for (const archive of ['o.cpio.gz.xz', 'o.zip.gz.gz']) {
-    assert.throws(() => fc.zip(p(archive), [p('tree')]), /처리할 수 없는 문자/, archive);
+    assert.throws(() => fc.zip(p(archive), [p('tree')]), /characters tar\.exe cannot handle/, archive);
     assert.ok(!fs.existsSync(p(archive)), archive);
   }
 });
@@ -819,10 +819,10 @@ test('zip·unzip은 코드페이지에 없는 문자가 든 이름을 실행 전
   const entries = fs.readdirSync(dir).sort();
   for (const dryRun of [true, false]) {
     const options = { force: true, dryRun };
-    assert.throws(() => fc.zip(p('b.zip'), [p(`${emoji}.txt`)], options), /처리할 수 없는 문자/);
-    assert.throws(() => fc.zip(p('b.zip'), [p('tree')], options), /처리할 수 없는 문자/);
-    assert.throws(() => fc.zip(p(`${emoji}.zip`), [p('a.txt')], options), /처리할 수 없는 문자/);
-    assert.throws(() => fc.unzip(p('b.zip'), p(`${emoji}-out`), { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('b.zip'), [p(`${emoji}.txt`)], options), /characters tar\.exe cannot handle/);
+    assert.throws(() => fc.zip(p('b.zip'), [p('tree')], options), /characters tar\.exe cannot handle/);
+    assert.throws(() => fc.zip(p(`${emoji}.zip`), [p('a.txt')], options), /characters tar\.exe cannot handle/);
+    assert.throws(() => fc.unzip(p('b.zip'), p(`${emoji}-out`), { dryRun }), /characters tar\.exe cannot handle/);
   }
   assert.deepStrictEqual(fs.readFileSync(p('b.zip')), before);
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), entries);
@@ -837,8 +837,8 @@ test('zip은 원본이 정션이어도 그 안의 이름을 코드페이지로 �
   linkDir(p('real'), p('holder', 'inner'));
   for (const dryRun of [true, false]) {
     assert.throws(() => fc.zip(p('a.zip'), [p('srcj')], { dryRun }), /U\+1F600\(😀\)/);
-    assert.throws(() => fc.zip(p('a.zip'), [`${p('srcj')}${path.sep}`], { dryRun }), /처리할 수 없는 문자/);
-    assert.throws(() => fc.zip(p('a.zip'), [p('holder')], { dryRun }), /처리할 수 없는 문자/);
+    assert.throws(() => fc.zip(p('a.zip'), [`${p('srcj')}${path.sep}`], { dryRun }), /characters tar\.exe cannot handle/);
+    assert.throws(() => fc.zip(p('a.zip'), [p('holder')], { dryRun }), /characters tar\.exe cannot handle/);
   }
   assert.ok(!fs.existsSync(p('a.zip')));
 });
@@ -871,11 +871,11 @@ test('zip·unzip은 끝이 점이나 공백인 이름을 실행 전에 거부하
   const entries = fs.readdirSync(dir).sort();
   for (const dryRun of [true, false]) {
     for (const name of ['x.zip.', 'x.zip ', 'n3.zip ', 'n2.zip.']) {
-      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /끝이 점이나 공백/, name);
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /ending with a dot or space/, name);
     }
-    assert.throws(() => fc.zip(p('new.zip'), [p('a.txt.')], { dryRun }), /끝이 점이나 공백/);
-    assert.throws(() => fc.zip(p('new.zip'), [p('tree')], { dryRun }), /끝이 점이나 공백/);
-    assert.throws(() => fc.unzip(p('x.zip'), p('out '), { dryRun }), /끝이 점이나 공백/);
+    assert.throws(() => fc.zip(p('new.zip'), [p('a.txt.')], { dryRun }), /ending with a dot or space/);
+    assert.throws(() => fc.zip(p('new.zip'), [p('tree')], { dryRun }), /ending with a dot or space/);
+    assert.throws(() => fc.unzip(p('x.zip'), p('out '), { dryRun }), /ending with a dot or space/);
   }
   assert.deepStrictEqual(fs.readFileSync(p('x.zip')), before);
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), entries);
@@ -921,7 +921,7 @@ test('zip --force는 기존 압축 파일을 지우지 못하면 위치를 알�
     if (path.basename(target).startsWith('.fctl-old')) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
     return rm(target, options);
   });
-  assert.throws(() => fc.zip(p('c.zip'), [p('b.txt')], { force: true }), /압축했지만 기존 압축 파일을 지우지 못했습니다: .*\.fctl-old-/);
+  assert.throws(() => fc.zip(p('c.zip'), [p('b.txt')], { force: true }), /Compressed, but could not delete the existing archive: .*\.fctl-old-/);
   t.mock.restoreAll();
   fc.unzip(p('c.zip'), p('out'));
   assert.deepStrictEqual(fs.readdirSync(p('out')), ['b.txt']);
@@ -943,7 +943,7 @@ test('zip은 맨 위 이름이 같은 원본을 미리보기와 실제 모두 �
   }
   for (const dryRun of [true, false]) {
     for (const sources of cases) {
-      assert.throws(() => fc.zip(p('o.zip'), sources, { dryRun }), /이름이 같은 원본/, sources.join(' '));
+      assert.throws(() => fc.zip(p('o.zip'), sources, { dryRun }), /Sources with the same name/, sources.join(' '));
     }
   }
   assert.ok(!fs.existsSync(p('o.zip')));
@@ -960,7 +960,7 @@ test('zip은 드라이브 루트를 훑기 전에 거부한다', (t) => {
     throw new Error('드라이브를 훑음');
   });
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(path.join(dir, 'o.zip'), [path.parse(dir).root], { dryRun }), /드라이브 루트/);
+    assert.throws(() => fc.zip(path.join(dir, 'o.zip'), [path.parse(dir).root], { dryRun }), /drive root/);
   }
 });
 
@@ -1040,7 +1040,7 @@ test('unzip은 목록 크기가 남은 공간보다 크면 미리보기와 실�
   const p = (...parts) => path.join(dir, ...parts);
   fs.writeFileSync(p('huge.zip'), '#mtree\nbig type=file size=99999999999999\n');
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.unzip(p('huge.zip'), p('out'), { dryRun }), (err) => err instanceof fc.FcError && /풀면 약 90\.9TB가 되어/.test(err.message));
+    assert.throws(() => fc.unzip(p('huge.zip'), p('out'), { dryRun }), (err) => err instanceof fc.FcError && /Extracting would take about 90\.9TB/.test(err.message));
   }
   assert.ok(!fs.existsSync(p('out')));
 });
@@ -1060,9 +1060,9 @@ test('unzip은 풀고 나서 1GB보다 적게 남으면 거부하고, 남은 공
   fc.unzip(p('a.zip'), p('ok'));
   assert.strictEqual(fc.readFile(p('ok', 'a.txt')), 'A');
   free -= 512n;
-  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /1\.0GB보다 적게 남으므로 풀지 않았습니다/);
+  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /leave less than 1\.0GB free on the disk, so it was not extracted/);
   free = null;
-  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /남은 디스크 공간을 확인하지 못해 풀지 않았습니다.*ENOSYS/);
+  assert.throws(() => fc.unzip(p('a.zip'), p('no')), /Could not check the free disk space, so it was not extracted.*ENOSYS/);
   assert.ok(!fs.existsSync(p('no')));
 });
 
@@ -1075,7 +1075,7 @@ test('unzip은 목록에서 크기를 읽지 못하면 풀지 않는다 (#77)', 
     calls.push(args[0]);
     return Buffer.from('-rw-r--r--  0 some user  group 5 Jan  1  2020 a.txt\n');
   });
-  assert.throws(() => mocked.unzip(p('a.zip'), p('out')), /크기를 읽지 못해 풀지 않았습니다/);
+  assert.throws(() => mocked.unzip(p('a.zip'), p('out')), /Could not read the size from the archive listing, so it was not extracted/);
   assert.deepStrictEqual(calls, ['-tvf']);
   assert.ok(!fs.existsSync(p('out')));
 });
@@ -1085,7 +1085,7 @@ test('unzip은 권한 칸 끝에 ACL 표시(+)가 붙은 목록 줄의 크기도
   const p = (...parts) => path.join(dir, ...parts);
   fs.writeFileSync(p('a.tar'), 'x');
   const mocked = loadWithTar(t, () => Buffer.from('-rw-r--r--+ 0 0      0    99999999999999 Jan  1  2020 acl.txt\n'));
-  assert.throws(() => mocked.unzip(p('a.tar'), p('out'), { dryRun: true }), /풀면 약 90\.9TB가 되어/);
+  assert.throws(() => mocked.unzip(p('a.tar'), p('out'), { dryRun: true }), /Extracting would take about 90\.9TB/);
 });
 
 test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위로 올려 센다 (#77)', (t) => {
@@ -1096,7 +1096,7 @@ test('unzip은 클러스터가 4KB보다 큰 볼륨에서는 클러스터 단위
   const statfs = fs.statfsSync;
   t.mock.method(fs, 'statfsSync', (target, options) => ({ ...statfs(target, options), bavail: 1n << 40n, bsize: 131072n }));
   // 1바이트 파일 2개를 128KB씩 올리고 항목마다 1KB를 더한다.
-  assert.match(mocked.unzip(p('a.zip'), p('out'), { dryRun: true }), /풀린 크기 약 258\.0KB/);
+  assert.match(mocked.unzip(p('a.zip'), p('out'), { dryRun: true }), /extracted size about 258\.0KB/);
 });
 
 // 8.3 짧은 이름(#159). 풀 볼륨이 짧은 이름을 만들면 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 된다.
@@ -1136,7 +1136,7 @@ test('원래 8.3 형식인 이름은 ~N 이름과 함께 묶고 풀어도 겹치
   assert.strictEqual(fc.readFile(p('out', 'src', 'NOEXT~1')), 'tilde2');
   // 짧은 이름을 받는 긴 이름과는 여전히 묶지 않는다.
   fc.writeFile(p('src', 'photograph.jpg'), 'long');
-  assert.throws(() => fc.zip(p('b.zip'), [p('src')]), /8\.3 짧은 이름으로 겹칠 수 있는/);
+  assert.throws(() => fc.zip(p('b.zip'), [p('src')]), /could collide through 8\.3 short names/);
 });
 
 test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름이 있으면 묶지 않는다 (#159)', { skip: !isWindows }, () => {
@@ -1150,7 +1150,7 @@ test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름�
   fc.writeFile(p('ok', 'foo~1.txt'), '5');
   fc.writeFile(p('ok', 'bar.txt'), '6');
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('a.zip'), [p('tree')], { dryRun }), /8\.3 짧은 이름으로 겹칠 수 있는 이름.*LONGER~1\.TXT.*longername\.txt/);
+    assert.throws(() => fc.zip(p('a.zip'), [p('tree')], { dryRun }), /Names that could collide through 8\.3 short names.*LONGER~1\.TXT.*longername\.txt/);
     // 맨 위에서 겹치면 원본 경로로 알린다.
     assert.throws(() => fc.zip(p('a.tar.gz'), [p('top', 'LONGER~1.TXT'), p('longername.txt')], { dryRun }), (err) => err.message.includes(`${p('top', 'LONGER~1.TXT')}, ${p('longername.txt')}`));
   }
@@ -1168,7 +1168,7 @@ test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 �
   fc.writeFile(p('q', 'longername.txt'), 'Q');
   if (!fs.existsSync(p('p', 'LONGER~1.TXT'))) return t.skip('이 볼륨은 8.3 짧은 이름을 만들지 않는다');
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('a.zip'), [p('q', 'longername.txt'), p('p', 'LONGER~1.TXT')], { dryRun }), /8\.3 짧은 이름으로 겹칠 수 있는/);
+    assert.throws(() => fc.zip(p('a.zip'), [p('q', 'longername.txt'), p('p', 'LONGER~1.TXT')], { dryRun }), /could collide through 8\.3 short names/);
   }
   assert.ok(!fs.existsSync(p('a.zip')));
   // 이름이 짧아 처음부터 해시 형식인 짧은 이름(XAD1C~1.VER 같은)도 잡는다.
@@ -1177,7 +1177,7 @@ test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 �
   const listing = childProcess.execFileSync('cmd.exe', ['/c', 'dir', '/x', p('p')], { encoding: 'latin1' });
   const hashed = /\s(\S+~\d+\.VER)\s+x\.verylongext/i.exec(listing);
   assert.ok(hashed, listing);
-  assert.throws(() => fc.zip(p('c.zip'), [p('q', 'x.verylongext'), p('p', hashed[1])]), /8\.3 짧은 이름으로 겹칠 수 있는/);
+  assert.throws(() => fc.zip(p('c.zip'), [p('q', 'x.verylongext'), p('p', hashed[1])]), /could collide through 8\.3 short names/);
   assert.ok(!fs.existsSync(p('c.zip')));
   // 하나만 짧은 이름으로 주면 tar.exe가 그 짧은 이름으로 적는다.
   fc.zip(p('b.zip'), [p('p', 'LONGER~1.TXT')]);
@@ -1218,14 +1218,14 @@ test('unzip은 압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이
   const tar = path.join(process.env.SystemRoot, 'System32', 'tar.exe');
   execFileSync(tar, ['-a', '-cf', p('a.zip'), '-C', p('src'), 'deep']);
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.unzip(p('a.zip'), p('out'), { dryRun }), /압축 안에 8\.3 짧은 이름으로 겹칠 수 있는 항목.*deep\/LONGER~1\.TXT, deep\/longername\.txt/);
+    assert.throws(() => fc.unzip(p('a.zip'), p('out'), { dryRun }), /The archive contains items that could collide through 8\.3 short names.*deep\/LONGER~1\.TXT, deep\/longername\.txt/);
   }
   assert.ok(!fs.existsSync(p('out', 'deep')));
 });
 
 test('rejectExtractShortNameClash 어림: 깨진 글자는 무엇이든 될 수 있다고 보고, 겹칠 수 없는 이름은 통과한다 (#188)', () => {
   const dir = tempDir();
-  assert.throws(() => fc.rejectExtractShortNameClash(['ABC~1.TXT', '???.txt'], path.join(dir, 'none')), /겹칠 수 있는 항목/);
+  assert.throws(() => fc.rejectExtractShortNameClash(['ABC~1.TXT', '???.txt'], path.join(dir, 'none')), /could collide through 8\.3 short names/);
   assert.throws(() => fc.rejectExtractShortNameClash(['a/LONGER~1.TXT', 'a/longername.txt'], path.join(dir, 'none')), /a\/LONGER~1\.TXT/);
   // Windows는 대소문자를 가리지 않으므로 a/와 A/는 같은 폴더다(1차 리뷰).
   assert.throws(() => fc.rejectExtractShortNameClash(['a/longername.txt', 'A/LONGER~1.TXT'], path.join(dir, 'none')), /a\/LONGER~1\.TXT, a\/longername\.txt/);
@@ -1253,10 +1253,10 @@ test('unzip은 한글 ~N 항목 하나만 든 압축을 새 폴더에 풀고, �
   fc.unzip(p('a.zip'), p('fresh'));
   assert.deepStrictEqual(fs.readdirSync(p('fresh')), ['한글긴~1.TXT']);
   fc.writeFile(p('out', '한글긴파일이름입니다.txt'), 'old');
-  assert.throws(() => fc.unzip(p('a.zip'), p('out')), /8\.3 짧은 이름으로 이미 있는 항목을 가리킬 수 있어.*확인할 수 없습니다.*깨져 보일 수 있습니다/);
+  assert.throws(() => fc.unzip(p('a.zip'), p('out')), /may point to an item that already exists through an 8\.3 short name.*cannot be confirmed.*may look garbled/);
   assert.strictEqual(fs.readFileSync(p('out', '한글긴파일이름입니다.txt'), 'utf8'), 'old');
   // 같은 압축을 같은 폴더에 다시 풀어도 이름을 확인할 수 없어 거부한다(README에 적은 한계, 2차 리뷰).
-  assert.throws(() => fc.unzip(p('a.zip'), p('fresh')), /이름이 그대로 같은 항목일 수도 있지만/);
+  assert.throws(() => fc.unzip(p('a.zip'), p('fresh')), /might be an item with exactly the same name/);
 });
 
 // tar.exe는 x.cpio.gz를 gzip 안의 cpio로 만든다. 임시 파일에도 두 확장자를 붙여 이름과 내용이 같게 한다(#164).
@@ -1308,9 +1308,9 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   fc.writeFile(p('a.txt'), 'A');
   fc.zip(p('ok.zip'), [p('a.txt')]);
   const long = 'a'.repeat(256);
-  const tooLong = (err) => err instanceof fc.FcError && /256자인 이름이 있어 만들 수 없습니다\(이름 한 칸은 255자까지\)/.test(err.message);
+  const tooLong = (err) => err instanceof fc.FcError && /name of 256 characters, so it cannot be created \(one name can be up to 255 characters\)/.test(err.message);
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p(`${long}.zip`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /260자인 이름/.test(err.message));
+    assert.throws(() => fc.zip(p(`${long}.zip`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /name of 260 characters/.test(err.message));
     assert.throws(() => fc.zip(p(long, 'x.zip'), [p('a.txt')], { dryRun }), tooLong);
     assert.throws(() => fc.unzip(p('ok.zip'), p(long), { dryRun }), tooLong);
     assert.throws(() => fc.unzip(p('ok.zip'), p(long, 'in'), { dryRun }), tooLong);
@@ -1329,12 +1329,12 @@ test('zip·unzip은 255자를 넘는 이름이나 tar.exe가 옮겨 갈 수 없�
   fc.writeFile(path.join(deepParent, 'x.txt'), 'X');
   // 긴 경로가 켜진 CI에서도 tar.exe는 259자 -C 폴더로 옮겨 가지 못했으므로 설정과 상관없이 거부한다(2차 리뷰).
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.unzip(p('ok.zip'), destOf(259), { dryRun }), (err) => err instanceof fc.FcError && /풀 폴더 경로가 259자라 tar\.exe가 그 폴더로 옮겨 갈 수 없습니다\(258자까지\)/.test(err.message));
+    assert.throws(() => fc.unzip(p('ok.zip'), destOf(259), { dryRun }), (err) => err instanceof fc.FcError && /extraction folder path is 259 characters, so tar\.exe cannot change into that folder \(up to 258\)/.test(err.message));
   }
   assert.ok(!fs.existsSync(destOf(259)));
   // 원본의 상위 폴더도 -C로 넘어가므로 259자부터 거부한다.
   for (const dryRun of [true, false]) {
-    assert.throws(() => fc.zip(p('deep.zip'), [path.join(deepParent, 'x.txt')], { dryRun }), (err) => err instanceof fc.FcError && /원본의 상위 폴더 경로가 260자라/.test(err.message));
+    assert.throws(() => fc.zip(p('deep.zip'), [path.join(deepParent, 'x.txt')], { dryRun }), (err) => err instanceof fc.FcError && /source's parent folder path is 260 characters/.test(err.message));
   }
   assert.ok(!fs.existsSync(p('deep.zip')));
   // 상위 폴더를 원본으로 주면(-C는 258자 폴더) 그대로 묶인다.
@@ -1356,7 +1356,7 @@ test('unzip은 외부 프로그램이 필요한 압축(lz4·lzop)을 그 프로�
   process.env.PATH = p('nothing');
   for (const [name, [data, program]] of Object.entries(samples)) {
     fs.writeFileSync(p(name), data);
-    const missing = (err) => err instanceof fc.FcError && err.message.includes(`외부 프로그램 ${program}이 필요한데 실행하지 못했습니다`);
+    const missing = (err) => err instanceof fc.FcError && err.message.includes(`needs the external program ${program}, but it could not be run`);
     assert.throws(() => fc.unzip(p(name), p(`out-${name}`)), missing, name);
     assert.throws(() => fc.unzip(p(name), p(`out-${name}`), { dryRun: true }), missing, name);
     assert.throws(() => fc.archiveEntries(p(name)), missing, name);
@@ -1377,7 +1377,7 @@ test('unzip은 외부 프로그램이 필요한 압축(lz4·lzop)을 그 프로�
   };
   const fake = Buffer.concat([header('../unable to run program "lz4 x"'), Buffer.from('x'), Buffer.alloc(511), Buffer.alloc(1024)]);
   fs.writeFileSync(p('fake.tar'), fake);
-  assert.throws(() => fc.unzip(p('fake.tar'), p('out-fake')), (err) => !String(err.message).includes('외부 프로그램'));
+  assert.throws(() => fc.unzip(p('fake.tar'), p('out-fake')), (err) => !String(err.message).includes('external program'));
 });
 
 // tar.exe는 외부 압축 프로그램을 SearchPath로 찾아 현재 폴더의 것을 PATH보다 먼저 실행한다. fctl은 tar.exe를 System32에서 실행한다(#242).
@@ -1419,7 +1419,7 @@ test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 
   const cases = { 'x.tar.lz4': 'lz4', 'x.lz4': 'lz4', 'x.tar.lzo': 'lzop', 'x.tar.lrz': 'lrzip', 'x.tar.grz': 'grzip', 'x.cpio.lz4': 'lz4', 'x.tar.gz.lz4': 'lz4', 'X.TAR.LZ4': 'lz4', 'x.tzo': 'lzop', 'X.TZO': 'lzop', 'x.tzo.gz': 'lzop' };
   for (const [name, program] of Object.entries(cases)) {
     for (const dryRun of [true, false]) {
-      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`외부 프로그램 ${program}이 필요한데 PATH에서 찾지 못했습니다`), name);
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`needs the external program ${program}, but it was not found on PATH`), name);
     }
   }
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a.txt', 'bin']);
@@ -1429,13 +1429,13 @@ test('zip은 외부 프로그램이 필요한 압축(.lz4·.lzo·.lrz·.grz)을 
   // 프로그램이 PATH에 있으면 거부하지 않고 tar.exe에 맡긴다(미리보기로 이 검사만 본다).
   fs.writeFileSync(p('bin', 'lz4.exe'), '');
   process.env.PATH = p('bin');
-  assert.match(fc.zip(p('y.tar.lz4'), [p('a.txt')], { dryRun: true }), /\[미리보기\] 압축/);
+  assert.match(fc.zip(p('y.tar.lz4'), [p('a.txt')], { dryRun: true }), /\[Preview\] Compress/);
   // PATH의 상대 경로 항목은 tar.exe가 System32 기준으로 풀므로 보지 않는다(#242 1차 리뷰).
   const saved = process.cwd();
   process.chdir(p('bin'));
   t.after(() => process.chdir(saved));
   process.env.PATH = '.';
-  assert.throws(() => fc.zip(p('z.tar.lz4'), [p('a.txt')], { dryRun: true }), /외부 프로그램 lz4이 필요한데/);
+  assert.throws(() => fc.zip(p('z.tar.lz4'), [p('a.txt')], { dryRun: true }), /needs the external program lz4/);
   process.chdir(saved);
 });
 
@@ -1445,19 +1445,19 @@ test('zip은 임시 이름이 255자를 넘거나 tar.exe가 풀 수 없는 겹 
   fc.writeFile(p('a.txt'), 'A');
   for (const dryRun of [true, false]) {
     // 마지막 확장자 하나가 아주 길면 임시 이름이 255자를 넘는다.
-    assert.throws(() => fc.zip(p(`x.${'a'.repeat(240)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /확장자가 너무 길어\(241자\).*255자를 넘습니다/.test(err.message));
+    assert.throws(() => fc.zip(p(`x.${'a'.repeat(240)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && /extension is too long \(241 characters\).*exceeds 255 characters/.test(err.message));
     // 25겹부터는 tar.exe가 다시 풀지 못한다(80겹은 이슈의 예).
     for (const layers of [25, 80]) {
-      assert.throws(() => fc.zip(p(`x${'.gz'.repeat(layers)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`${layers}겹이라 tar.exe가 다시 풀 수 없습니다(24겹까지)`));
+      assert.throws(() => fc.zip(p(`x${'.gz'.repeat(layers)}`), [p('a.txt')], { dryRun }), (err) => err instanceof fc.FcError && err.message.includes(`${layers} layers, so tar.exe cannot extract it again (up to 24 layers)`));
     }
-    assert.throws(() => fc.zip(p(`x.${'tbz2.'.repeat(24)}tzst`), [p('a.txt')], { dryRun }), /25겹이라/);
+    assert.throws(() => fc.zip(p(`x.${'tbz2.'.repeat(24)}tzst`), [p('a.txt')], { dryRun }), /has 25 layers/);
   }
   // 경계: 임시 이름 길이 = 고정 부분 + 번호 여유 4자 + 확장자. 한도에 꼭 맞는 확장자는 묶고, 한 글자 더 길면 거부한다(1차 리뷰).
   const fixed = `.fctl-new-${process.pid}-${Date.now()}-0`.length + 4;
   const edge = `e.${'b'.repeat(255 - fixed - 1)}`;
   fc.zip(p(edge), [p('a.txt')]);
   fs.rmSync(p(edge));
-  assert.throws(() => fc.zip(p(`e.${'b'.repeat(255 - fixed)}`), [p('a.txt')], { dryRun: true }), /확장자가 너무 길어/);
+  assert.throws(() => fc.zip(p(`e.${'b'.repeat(255 - fixed)}`), [p('a.txt')], { dryRun: true }), /extension is too long/);
   assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);
   // 24겹은 묶고 다시 풀 수 있다.
   const fits = `y${'.gz'.repeat(24)}`;
@@ -1505,7 +1505,7 @@ test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 
   fc.writeFile(p('a.txt'), 'A');
   for (const name of ['s.7z.gz', 'S.7Z.XZ', 's.7z.Z', 's.7z.gz.xz', 'S.7Z.GZ.GZ']) {
     for (const dryRun of [true, false]) {
-      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /7z 압축 파일은 다른 압축으로 한 번 더 쌀 수 없습니다/, name);
+      assert.throws(() => fc.zip(p(name), [p('a.txt')], { dryRun }), /A 7z archive cannot be wrapped in another archive/, name);
     }
   }
   assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt']);

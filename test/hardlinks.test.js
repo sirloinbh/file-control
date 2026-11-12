@@ -14,7 +14,7 @@ const isWindows = process.platform === 'win32';
 // 임시 폴더가 AppData 아래라 grant가 보호 경로로 거부하므로 사용자 폴더를 가짜 경로로 바꿔 둔다(target.test.js와 같다).
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-const HARD_LINKED = /하드링크라 내용을 바꾸면 같은 파일의 다른 이름 \d+개도 함께 바뀌어 쓰지 않았습니다/;
+const HARD_LINKED = /changing the content of a hard link would also change \d+ other name\(s\) of the same file/;
 
 // outside/secret.txt와 같은 파일인 target/hard.txt를 만든다.
 function fixture() {
@@ -67,7 +67,7 @@ test('cp --force는 여러 원본 중 하나라도 하드링크를 덮어쓰면 
   assert.deepStrictEqual(fs.readdirSync(target), ['hard.txt']);
   assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
   // --force가 없으면 원래처럼 이미 있다고 알린다.
-  assert.throws(() => fc.copy([path.join(root, 'hard.txt')], target), /이미 있습니다/);
+  assert.throws(() => fc.copy([path.join(root, 'hard.txt')], target), /Already exists/);
 });
 
 test('cp --force로 폴더를 합칠 때 원본 안의 끊어진 링크는 하드링크 검사를 막지 않는다 (#48)', () => {

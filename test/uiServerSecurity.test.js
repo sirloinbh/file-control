@@ -98,12 +98,12 @@ test('다른 Origin·다른 사이트에서 보낸 POST, 토큰 없음·틀림�
   for (const origin of ['https://evil.example', 'null', `http://localhost:${port + 1}`]) {
     const res = await post({ origin }, `token=${token}&text=x`);
     assert.strictEqual(res.status, 403, origin);
-    assert.match(res.body, /다른 사이트에서 보낸 요청/);
+    assert.match(res.body, /Requests sent from another site/);
   }
   assert.strictEqual((await post({ 'sec-fetch-site': 'cross-site' }, `token=${token}&text=x`)).status, 403);
   const missing = await post({ origin: url.slice(0, -1) }, 'text=x');
   assert.strictEqual(missing.status, 403);
-  assert.match(missing.body, /화면을 새로 열어/);
+  assert.match(missing.body, /Reopen the page/);
   assert.strictEqual((await post({}, 'token=wrong&text=x')).status, 403);
   assert.strictEqual((await post({}, `token=${token.slice(1)}&text=x`)).status, 403);
   // 폼 형식이 아니거나 한도를 넘는 본문도 거부한다.

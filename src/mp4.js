@@ -32,9 +32,9 @@ function makeReader(file, p) {
   let reads = 0;
   return (offset, length) => {
     reads += 1;
-    if (reads > MAX_READS) throw new FcError(`MP4 박스가 너무 많아 읽기를 멈췄습니다: ${p}`);
+    if (reads > MAX_READS) throw new FcError(`Stopped reading because there are too many MP4 boxes: ${p}`);
     const buffer = file.read(offset, length);
-    if (buffer.length < length) throw new FcError(`MP4 파일을 끝까지 읽지 못했습니다: ${p}`);
+    if (buffer.length < length) throw new FcError(`Could not read the MP4 file to the end: ${p}`);
     return buffer;
   };
 }
@@ -70,7 +70,7 @@ function* boxes(read, p, start, end, strict) {
     const box = readBoxHeader(read, offset, end, false);
     if (!box) {
       // 크기 0은 끝 표시라 손상이 아니다.
-      if (strict && read(offset, 4).readUInt32BE(0) !== 0) throw new FcError(`MP4 구조가 손상됐습니다: ${p} (${offset}바이트 위치)`);
+      if (strict && read(offset, 4).readUInt32BE(0) !== 0) throw new FcError(`The MP4 structure is damaged: ${p} (at byte ${offset})`);
       return;
     }
     yield box;
@@ -88,14 +88,14 @@ function findMoov(read, p, size) {
     if (first && !FIRST_BOXES.has(type)) break;
     first = false;
     if (!box) {
-      if (type === 'moov') throw new FcError(`MP4 파일의 moov 박스가 잘렸습니다: ${p}`);
-      throw new FcError(`MP4 파일에 moov 박스가 없습니다. 파일이 잘렸을 수 있습니다: ${p}`);
+      if (type === 'moov') throw new FcError(`The moov box of the MP4 file is truncated: ${p}`);
+      throw new FcError(`The MP4 file has no moov box. The file may be truncated: ${p}`);
     }
     if (type === 'moov') return box;
     offset = box.end;
   }
-  if (first) throw new FcError(`MP4/MOV 형식이 아닙니다: ${p}`);
-  throw new FcError(`MP4 파일에 moov 박스가 없습니다. 파일이 잘렸을 수 있습니다: ${p}`);
+  if (first) throw new FcError(`Not an MP4/MOV format: ${p}`);
+  throw new FcError(`The MP4 file has no moov box. The file may be truncated: ${p}`);
 }
 
 // 값이 박스 안에 다 들어 있으면 그 값을, 아니면 null을 돌려준다.
@@ -416,7 +416,7 @@ function readMp4Metadata(dir, p, options = {}) {
     const access = grant(dir, ['read']);
     return parseMp4(access.target, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
-    if (err.syscall) throw new FcError(`MP4 파일을 읽을 수 없습니다: ${p} (${err.code})`);
+    if (err.syscall) throw new FcError(`Cannot read the MP4 file: ${p} (${err.code})`);
     throw err;
   }
 }
@@ -500,18 +500,18 @@ function checkTrack(read, trak, size) {
   const mdia = findChild(read, trak, 'mdia');
   const minf = mdia && findChild(read, mdia, 'minf');
   const stbl = minf && findChild(read, minf, 'stbl');
-  if (!stbl) return unsound('트랙에 mdia, minf, stbl 박스가 온전하지 않습니다.');
+  if (!stbl) return unsound('The mdia, minf, and stbl boxes of the track are not intact.');
   if (isExternalTrack(read, minf)) return null;
   const table = childBoxes(read, stbl.start, stbl.end).list.find((box) => box.type === 'stco' || box.type === 'co64');
-  if (!table) return unsound('트랙에 데이터 위치표(stco, co64)가 없습니다.');
-  if (table.end - table.start < 8) return unsound('데이터 위치표가 잘렸습니다.');
+  if (!table) return unsound('The track has no data location table (stco, co64).');
+  if (table.end - table.start < 8) return unsound('The data location table is truncated.');
   const count = read(table.start + 4, 4).readUInt32BE(0);
   if (count === 0) return null;
   const width = table.type === 'co64' ? 8 : 4;
-  if (8 + count * width > table.end - table.start) return unsound('데이터 위치표가 잘렸습니다.');
+  if (8 + count * width > table.end - table.start) return unsound('The data location table is truncated.');
   const at = read(table.start + 8 + (count - 1) * width, width);
   const last = width === 8 ? at.readBigUInt64BE(0) : BigInt(at.readUInt32BE(0));
-  return last >= BigInt(size) ? { outside: true, reason: '데이터 위치표가 파일 끝 너머를 가리킵니다. 잘린 파일일 수 있습니다.' } : null;
+  return last >= BigInt(size) ? { outside: true, reason: 'The data location table points past the end of the file. It may be truncated.' } : null;
 }
 
 // 표본 표(stts) 항목 수 한도. 한 항목이 8바이트라 8MB다. 가변 프레임 영상도 표본마다 한 항목이면 몇 시간 분량이 들어간다.
@@ -545,12 +545,12 @@ function trackDataSeconds(read, trak) {
 //   트랙끼리의 길이 차이는 이보다 작다. 적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
 // 조각 파일(mvex)은 moov의 표본 표가 비어 있어 길이를 맞춰 보지 않는다.
 function bitrateDoubt(read, traks, size, duration, fragmented) {
-  if (traks.some((trak) => checkTrack(read, trak, size)?.outside)) return '데이터 위치표가 파일 끝 너머를 가리켜, 받다 만 파일일 수 있어 비트레이트를 믿을 수 없습니다.';
+  if (traks.some((trak) => checkTrack(read, trak, size)?.outside)) return 'The data location table points past the end of the file, so it may be a partial download and the bitrate cannot be trusted.';
   if (fragmented || !duration) return null;
   const seconds = traks.map((trak) => trackDataSeconds(read, trak)).filter((value) => value !== null);
   if (seconds.length === 0) return null;
   const data = Math.max(...seconds);
-  if (duration > data * 2 + 60) return `길이 값(${Math.round(duration)}초)이 표본 표의 길이(${Math.round(data)}초)보다 훨씬 길어 비트레이트를 믿을 수 없습니다.`;
+  if (duration > data * 2 + 60) return `The duration value (${Math.round(duration)} s) is much longer than the sample table duration (${Math.round(data)} s), so the bitrate cannot be trusted.`;
   return null;
 }
 
@@ -576,7 +576,7 @@ function checkOpenedMp4(file, p) {
   while (size - offset >= 8) {
     const box = readBoxHeader(read, offset, size, true);
     const type = box ? box.type : fourcc(read(offset, 8), 4);
-    if (!box && CONTENT_BOXES.has(type)) return broken(`${type} 박스가 파일 끝을 넘습니다. 잘린 파일일 수 있습니다.`);
+    if (!box && CONTENT_BOXES.has(type)) return broken(`The ${type} box runs past the end of the file. It may be truncated.`);
     if (!box || /[\x00-\x1f]/.test(type)) {
       trailing = true;
       break;
@@ -586,23 +586,23 @@ function checkOpenedMp4(file, p) {
     offset = box.end;
   }
   // DASH, HLS의 미디어 조각은 moov 없이 moof만 있다. 초기화 파일이 따로 있으므로 이 파일만으로는 판단할 수 없다.
-  if (!moov && fragment) return { status: 'suspect', reason: 'moov 없이 조각(moof)만 있는 파일입니다. 스트리밍 조각일 수 있습니다.' };
-  if (!moov) return broken('moov 박스가 없습니다. 끝까지 받지 못했거나 내용이 손상된 파일일 수 있습니다.');
+  if (!moov && fragment) return { status: 'suspect', reason: 'The file has only fragments (moof) and no moov. It may be a streaming fragment.' };
+  if (!moov) return broken('The moov box is missing. The file may not be fully downloaded or may be damaged.');
   const { list, complete } = childBoxes(read, moov.start, moov.end);
   if (list.some((box) => box.type === 'cmov' || box.type === 'rmra')) return null;
-  if (!list.some((box) => box.type === 'mvhd')) return broken('moov 박스에 mvhd가 없습니다.');
+  if (!list.some((box) => box.type === 'mvhd')) return broken('The moov box has no mvhd.');
   const tracks = list.filter((box) => box.type === 'trak');
   if (tracks.length === 0) {
-    if (list.some((box) => box.type === 'mvex')) return { status: 'suspect', reason: 'moov 박스에 트랙이 없습니다.' };
-    return broken('moov 박스에 트랙이 없습니다.');
+    if (list.some((box) => box.type === 'mvex')) return { status: 'suspect', reason: 'The moov box has no tracks.' };
+    return broken('The moov box has no tracks.');
   }
   const problems = tracks.map((trak) => checkTrack(read, trak, size)).filter((problem) => problem !== null);
   const outside = problems.find((problem) => problem.outside);
   if (outside) return broken(outside.reason);
   if (problems.length === tracks.length) return broken(problems[0].reason);
   if (problems.length > 0) return { status: 'suspect', reason: problems[0].reason };
-  if (!complete) return { status: 'suspect', reason: 'moov 박스 끝에 박스가 아닌 데이터가 있습니다. 트랙은 온전합니다.' };
-  return trailing ? { status: 'suspect', reason: `${offset}바이트 위치부터 뒤에 박스가 아닌 데이터가 있습니다. 구조는 온전합니다.` } : null;
+  if (!complete) return { status: 'suspect', reason: 'There is non-box data at the end of the moov box. The tracks are intact.' };
+  return trailing ? { status: 'suspect', reason: `There is non-box data after byte ${offset}. The structure is intact.` } : null;
 }
 
 module.exports = { readMp4Metadata, checkMp4Structure, FIRST_BOXES };

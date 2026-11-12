@@ -16,13 +16,13 @@ const RECENT_MS = 5 * 60 * 1000;
 // 볼륨의 휴지통 설정(최대 크기, 바로 제거)으로 판단하고(#100, #219), 설정을 읽지 못했을 때만 이 크기부터 남긴다.
 const MAX_RECYCLE_SIZE = UNKNOWN_RECYCLE_LIMIT;
 
-const reasonOf = (err) => (err instanceof FcError ? err.message : `파일을 확인할 수 없습니다. (${err.code ?? err.message})`);
+const reasonOf = (err) => (err instanceof FcError ? err.message : `Cannot check the file. (${err.code ?? err.message})`);
 
 // 복사한 파일은 수정 시각을 보존하므로 생성과 변경 시각까지 함께 본다.
 function holdReason(stat, now) {
   const latest = Math.max(...[stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs].map(Number));
-  if (latest > now) return '시각이 미래인 파일이라 언제 바뀌었는지 알 수 없어 남겼습니다.';
-  return now - latest < RECENT_MS ? '방금 바뀐 파일이라 받는 중일 수 있어 남겼습니다.' : null;
+  if (latest > now) return 'Kept because its time is in the future, so it is unknown when it changed.';
+  return now - latest < RECENT_MS ? 'Kept because it changed just now and may still be downloading.' : null;
 }
 
 // 깨짐으로 판별한 파일 중 지울 파일을 고른다. 파일은 건드리지 않는다.
@@ -52,8 +52,8 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       const hold = holdReason(stat, checkedAt);
       const marker = hold === null ? markerReason(markerOf(real)) : null;
       const sameFile = stat.nlink > 1n ? linked.get(`${stat.dev}:${stat.ino}`) : undefined;
-      if (real !== item.path || !stat.isFile() || fileStamp(stat) !== item.stamp) keep('판별한 뒤 파일이 바뀌어 남겼습니다.');
-      else if (real.length > MAX_RECYCLE_PATH) keep(`경로가 ${real.length}자라 휴지통으로 보낼 수 있는 ${MAX_RECYCLE_PATH}자를 넘어 남겼습니다. 이름을 줄이거나 위 폴더로 옮긴 뒤 다시 실행하세요.`);
+      if (real !== item.path || !stat.isFile() || fileStamp(stat) !== item.stamp) keep('Kept because the file changed after it was judged.');
+      else if (real.length > MAX_RECYCLE_PATH) keep(`Kept because the path is ${real.length} characters, over the ${MAX_RECYCLE_PATH} that can be sent to the Recycle Bin. Shorten the name or move it to a parent folder and run again.`);
       else if (hold !== null) keep(hold);
       else if (marker !== null) keep(marker);
       else if (sameFile !== undefined) linkKept.push({ path: item.path, other: sameFile });
@@ -73,7 +73,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   // 변경 시각이 없는 볼륨(exFAT 등)에서는 확인값과 5분 보호가 바꿔치기를 막지 못해 지우지 않는다(#184).
   const volumeReason = driveType === 'Fixed' ? stampVolumeReason(access.target) : null;
   if (driveType !== 'Fixed' || volumeReason !== null) {
-    const reason = volumeReason ?? (driveType === null ? '볼륨 종류를 확인하지 못해 남겼습니다.' : `고정 디스크가 아니라(${driveType}) 영구 삭제될 수 있어 남겼습니다.`);
+    const reason = volumeReason ?? (driveType === null ? 'Kept because the volume type could not be checked.' : `Kept because the drive is not a fixed disk (${driveType}), so it could be permanently deleted.`);
     plan.kept.push(...[...plan.removals, ...linkKept].map((item) => ({ path: item.path, reason })));
     plan.removals = [];
     return plan;
@@ -83,17 +83,17 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   plan.removals = plan.removals.filter((item) => {
     const why = permanentDeleteReason(state, Number(item.size), maxSize);
     if (why === null) return true;
-    plan.kept.push({ path: item.path, reason: `${why} 남겼습니다.` });
+    plan.kept.push({ path: item.path, reason: `Kept ${why}.` });
     dropped.set(item.path, why);
     return false;
   });
   // 한 실행에서 같은 파일의 이름을 하나씩만 지우므로, 이름이 셋 이상이면 실행할 때마다 하나씩 줄어든다.
   for (const item of linkKept) {
     if (dropped.has(item.other)) {
-      plan.kept.push({ path: item.path, reason: `${dropped.get(item.other)} 남겼습니다.` });
+      plan.kept.push({ path: item.path, reason: `Kept ${dropped.get(item.other)}.` });
       continue;
     }
-    const reason = `같은 파일의 다른 이름(하드링크: ${path.relative(access.target, item.other)})을 이번에 먼저 지우므로 파일의 변경 시각이 바뀌어 함께 지울 수 없어 남겼습니다. 5분 뒤 다시 실행할 때마다 이름을 하나씩 지웁니다.`;
+    const reason = `Kept because another name of the same file (hard link: ${path.relative(access.target, item.other)}) is deleted first in this run, which changes the file's modification time, so it cannot be deleted together. Each time you run again after 5 minutes, one name is deleted.`;
     plan.kept.push({ path: item.path, reason });
   }
   return plan;
@@ -110,9 +110,9 @@ function confirmationCode(plan) {
 // 묶음 안에서도 PowerShell이 파일마다 지우기 직전에 실제 경로와 fileStamp를 다시 본다(recycleFiles, #194).
 function checkOne(access, item) {
   const real = access.delete(item.path);
-  if (real !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${real}`);
+  if (real !== item.path) throw new FcError(`Not deleted because the path changed after it was judged: ${item.path} -> ${real}`);
   const stat = fs.lstatSync(real, { bigint: true });
-  if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${real}`);
+  if (!stat.isFile() || fileStamp(stat) !== item.stamp) throw new FcError(`Not deleted because the file changed after it was judged: ${real}`);
   // 볼륨 휴지통 설정은 계획 단계에서 봤다(#100). 여기서 다시 보지 않고, 묶음 스크립트(recycleFiles)가 지우기 직전에 다시 본다(#236).
   remove([real], { dryRun: true, checkVolume: false });
   return { path: recycleTarget(real), stamp: item.stamp };
@@ -125,20 +125,20 @@ function batchFailure(file, { status, reason }, keep) {
     case 'ok':
       return undefined;
     case 'keepchanged':
-      return `남길 파일이 바뀌었거나 없어져 지우지 않았습니다: ${keep}`;
+      return `Not deleted because the file to keep changed or disappeared: ${keep}`;
     case 'moved':
-      return `판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${file}`;
+      return `Not deleted because the path changed after it was judged: ${file}`;
     case 'notfile':
     case 'changed':
-      return `판별한 뒤 파일이 바뀌어 지우지 않았습니다: ${file}`;
+      return `Not deleted because the file changed after it was judged: ${file}`;
     case 'gone':
-      return `판별한 뒤 파일이 사라져 지우지 않았습니다: ${file}`;
+      return `Not deleted because the file disappeared after it was judged: ${file}`;
     case 'permanent':
       return permanentRefusal(file, reason);
     case 'error':
       return recycleFailureMessage(file, reason);
     default:
-      return `휴지통으로 보냈는지 알 수 없습니다: ${file} (${reason}). 휴지통과 원래 자리를 확인하세요.`;
+      return `It is unknown whether it was sent to the Recycle Bin: ${file} (${reason}). Check the Recycle Bin and the original location.`;
   }
 }
 
@@ -149,8 +149,8 @@ const FILE_BATCH = 100;
 // PowerShell 오류 문구에는 스크립트 전문과 깨진 글자가 들어 있어 쓰지 않는다.
 function recycleFailure(err) {
   if (err instanceof FcError) return err.message;
-  const cause = err.code ?? (err.status == null ? '알 수 없는 오류' : `종료 코드 ${err.status}`);
-  return `휴지통으로 보내지 못했습니다. (${cause})`;
+  const cause = err.code ?? (err.status == null ? 'unknown error' : `exit code ${err.status}`);
+  return `Could not send to the Recycle Bin. (${cause})`;
 }
 
 // 타겟 아래 깨진 파일을 휴지통으로 보낸다. confirm이 없거나 dryRun이면 목록만 만들고 아무것도 바꾸지 않는다.
@@ -168,9 +168,9 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
   if (confirm !== code) return { ...result, mismatch: true };
   if (plan.removals.length === 0) return result;
   // 비대화형에서는 휴지통으로 보낼 수 없으므로 기록만 쌓이지 않게 기록 전에 멈춘다.
-  if (plan.interactive !== true) throw new FcError('대화형 세션인지 확인되지 않아 휴지통으로 보낼 수 없습니다. 아무것도 지우지 않았습니다.');
+  if (plan.interactive !== true) throw new FcError('Cannot send to the Recycle Bin because it was not confirmed that this is an interactive session. Nothing was deleted.');
   result.confirmed = true;
-  const log = writeRemovalLog(plan.target, '깨진 파일', plan.removals.map(({ path: file, reason }) => ({ path: file, reason })));
+  const log = writeRemovalLog(plan.target, 'broken files', plan.removals.map(({ path: file, reason }) => ({ path: file, reason })));
   result.log = log.path;
   const access = grant(plan.target, ['delete']);
   const total = plan.removals.length;
@@ -183,15 +183,15 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
       // 진행 표시는 결과에 영향을 주지 않는다.
     }
   };
-  report(`휴지통으로 보내는 중: ${total}개 (${FILE_BATCH}개씩 묶어 보냅니다)`);
+  report(`Sending to the Recycle Bin: ${total} (in batches of ${FILE_BATCH})`);
   recycleInBatches(plan.removals, log, (item) => checkOne(access, item), {
     removed: (item, step) => {
       result.removed.push(item);
-      report(`${step} 휴지통으로 이동: ${relative(item.path)}`);
+      report(`${step} Move to the Recycle Bin: ${relative(item.path)}`);
     },
     failed: (item, reason, step) => {
       result.failed.push({ path: item.path, reason });
-      report(`${step} 실패: ${relative(item.path)} (${reason})`);
+      report(`${step} Failed: ${relative(item.path)} (${reason})`);
     },
   });
   return result;
@@ -210,7 +210,7 @@ function recycleInBatches(removals, log, prepare, on) {
       const step = `${index + 1}/${total}`;
       try {
         const logged = log.items[index].path;
-        if (logged !== item.path) throw new FcError(`판별한 뒤 경로가 바뀌어 지우지 않았습니다: ${item.path} -> ${logged}`);
+        if (logged !== item.path) throw new FcError(`Not deleted because the path changed after it was judged: ${item.path} -> ${logged}`);
         batch.push({ item, step, send: prepare(item) });
       } catch (err) {
         on.failed(item, recycleFailure(err), step);
@@ -236,22 +236,22 @@ function formatRemoveBroken(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [];
   if (result.confirmed) {
-    for (const item of result.removed) lines.push(`휴지통으로 이동: ${relative(item.path)} (${item.reason})`);
+    for (const item of result.removed) lines.push(`Move to the Recycle Bin: ${relative(item.path)} (${item.reason})`);
   } else {
-    for (const item of result.removals) lines.push(`지울 파일: ${relative(item.path)} (${item.reason})`);
+    for (const item of result.removals) lines.push(`To delete: ${relative(item.path)} (${item.reason})`);
   }
-  for (const item of result.kept) lines.push(`남김: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.suspect) lines.push(`의심, 지우지 않음: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`판단 못함, 지우지 않음: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
-  if (result.log) lines.push(`제거 기록: ${result.log}`);
-  const counts = `남김 ${result.kept.length}개, 의심 ${result.suspect.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`;
+  for (const item of result.kept) lines.push(`Kept: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.suspect) lines.push(`Suspect, not deleted: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  if (result.log) lines.push(`Removal log: ${result.log}`);
+  const counts = `kept ${result.kept.length}, suspect ${result.suspect.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`휴지통 ${result.removed.length}개, 실패 ${result.failed.length}개, ${counts}`);
+    lines.push(`Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
   } else {
-    lines.push(`지울 파일 ${result.removals.length}개, ${counts}`);
-    if (result.removals.length > 0) lines.push(`아직 지우지 않았습니다. 목록을 확인한 뒤 ${result.dryRun ? '--dry-run 없이 ' : ''}--yes=${result.code}를 붙여 다시 실행하면 휴지통으로 보냅니다.`);
+    lines.push(`To delete ${result.removals.length}, ${counts}`);
+    if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with --yes=${result.code} to send them to the Recycle Bin.`);
   }
   return lines.join('\n');
 }

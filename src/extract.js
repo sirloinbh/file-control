@@ -56,28 +56,28 @@ function planExtractions(dir) {
     if (entry.type === 'dir') continue;
     const skip = (reason) => plan.skipped.push({ path: entry.path, reason });
     if (entry.type === 'link') {
-      skip('링크는 풀지 않습니다.');
+      skip('Links are not extracted.');
       continue;
     }
     const name = folderName(path.basename(entry.path));
     if (name === null) continue;
     const parts = entry.relative.split(path.sep);
     try {
-      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('이전 작업의 잔여물이라 풀지 않습니다.');
-      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Windows 시스템 폴더 안의 파일이라 풀지 않습니다.');
-      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('저장소 폴더 안의 파일이라 풀지 않습니다.');
+      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('Not extracted because it is a leftover from an earlier job.');
+      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Not extracted because it is inside a Windows system folder.');
+      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('Not extracted because it is inside a repository folder.');
       // 풀린 폴더가 .git 같은 이름이 되면 다른 명령이 특별 취급한다. 잔여물 이름은 위에서 압축 파일 이름으로 걸러진다.
-      if (SYSTEM_FOLDER.test(name) || REPOSITORY_FOLDER.test(name)) throw new FcError(`특별한 폴더 이름이 되어 풀지 않습니다: ${name}`);
-      if (name.length > MAX_NAME) throw new FcError(`폴더 이름이 너무 깁니다: ${name}`);
+      if (SYSTEM_FOLDER.test(name) || REPOSITORY_FOLDER.test(name)) throw new FcError(`Not extracted because the folder would get a special name: ${name}`);
+      if (name.length > MAX_NAME) throw new FcError(`The folder name is too long: ${name}`);
       const archive = access.read(entry.path);
       const dest = path.join(path.dirname(archive), name);
       const key = dest.toLowerCase();
-      if (planned.has(key) || fs.lstatSync(dest, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 풀지 않습니다: ${name}`);
+      if (planned.has(key) || fs.lstatSync(dest, { throwIfNoEntry: false })) throw new FcError(`Not extracted because the name already exists: ${name}`);
       planned.add(key);
       plan.extractions.push({ archive, dest: access.write(dest), name });
     } catch (err) {
       if (err instanceof FcError) skip(err.message);
-      else if (err.syscall) skip(`파일을 확인할 수 없습니다. (${err.code})`);
+      else if (err.syscall) skip(`Cannot check the file. (${err.code})`);
       else throw err;
     }
   }
@@ -92,7 +92,7 @@ function rejectLongTempDir(archive) {
   const name = `.fctl-new-${process.pid}-${Date.now()}-0`;
   const limit = MAX_TAR_DIR - TEMP_SERIAL_RESERVE - name.length - 1;
   if (folder.length > limit) {
-    throw new FcError(`압축 파일이 있는 폴더의 경로가 ${folder.length}자라, 풀 때 그 안에 만드는 임시 폴더로 tar.exe가 옮겨 갈 수 없습니다(-C 폴더는 ${MAX_TAR_DIR}자까지). 압축 파일을 ${limit}자 이하인 폴더로 옮긴 뒤 다시 실행하세요.`);
+    throw new FcError(`The path of the folder holding the archive is ${folder.length} characters, so tar.exe cannot change into the temporary folder created inside it when extracting (the -C folder can be up to ${MAX_TAR_DIR} characters). Move the archive to a folder of ${limit} characters or fewer and run again.`);
   }
 }
 
@@ -102,9 +102,9 @@ function rejectLongTempDir(archive) {
 function inspectArchive(archive, dest) {
   rejectLongTempDir(archive);
   const entries = archiveEntries(archive);
-  if (entries.length === 0) throw new FcError('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.');
+  if (entries.length === 0) throw new FcError('The archive has no entries. It may be empty or not fully downloaded.');
   const special = entries.find((entry) => !'-hd'.includes(entry[0]));
-  if (special !== undefined) throw new FcError(`압축 파일에 링크나 장치 같은 항목이 들어 있습니다. (종류 ${JSON.stringify(special[0])})`);
+  if (special !== undefined) throw new FcError(`The archive contains an item such as a link or device. (type ${JSON.stringify(special[0])})`);
   ensureRoomToExtract(dest, entries);
   // 끝이 /인 항목은 데이터가 있어도 폴더로 풀린다.
   const files = entries.filter((entry) => entry[0] !== 'd' && !entry.trimEnd().endsWith('/')).length;
@@ -118,35 +118,35 @@ function checkExtracted(temp, fileCount) {
   for (const entry of fs.readdirSync(temp, { recursive: true, withFileTypes: true })) {
     const relative = path.relative(temp, path.join(entry.parentPath, entry.name));
     rejectAmbiguousNames(relative, relative);
-    if (entry.isSymbolicLink()) throw new FcError(`압축 파일에 링크가 들어 있습니다: ${relative}`);
+    if (entry.isSymbolicLink()) throw new FcError(`The archive contains a link: ${relative}`);
     if (entry.isFile()) files += 1;
   }
-  if (files !== fileCount) throw new FcError(`압축 파일 목록과 풀린 결과가 다릅니다. 이름이 겹치는 항목이 있을 수 있습니다. (목록 ${fileCount}개, 결과 ${files}개)`);
+  if (files !== fileCount) throw new FcError(`The archive listing and the extracted result differ. Some items may have colliding names. (listing ${fileCount}, result ${files})`);
 }
 
 function removeTemp(temp, cause) {
   try {
     fs.rmSync(temp, { recursive: true, force: true });
   } catch (err) {
-    throw new FcError(`${cause.message} 임시 폴더를 지우지 못했습니다: ${temp} (${err.code})`);
+    throw new FcError(`${cause.message} Could not delete the temporary folder: ${temp} (${err.code})`);
   }
 }
 
 // 임시 폴더에 다 푼 뒤에 이름을 바꾼다. 실패해도 일부만 풀린 폴더가 결과처럼 남지 않는다.
 function extractOne(item, access) {
   const archive = access.read(item.archive);
-  if (archive !== item.archive) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${item.archive} -> ${archive}`);
-  if (!fs.lstatSync(archive).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${archive}`);
-  if (fs.lstatSync(item.dest, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 풀지 않습니다: ${item.name}`);
+  if (archive !== item.archive) throw new FcError(`The path changed after planning: ${item.archive} -> ${archive}`);
+  if (!fs.lstatSync(archive).isFile()) throw new FcError(`No longer a file after planning: ${archive}`);
+  if (fs.lstatSync(item.dest, { throwIfNoEntry: false })) throw new FcError(`Not extracted because the name already exists: ${item.name}`);
   const dest = access.write(item.dest);
-  if (dest !== item.dest) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${item.dest} -> ${dest}`);
+  if (dest !== item.dest) throw new FcError(`The path changed after planning: ${item.dest} -> ${dest}`);
   const { entries, files } = inspectArchive(archive, path.dirname(item.dest));
   const temp = freshPath(archive, '.fctl-new');
   try {
     unzip(archive, temp, { checkSpace: false });
     checkExtracted(temp, files);
     // renameSync는 대상이 파일이면 덮어쓴다. 푸는 동안 같은 이름이 생겼을 수 있으므로 덮어쓰지 않는 이동을 쓴다.
-    if (!moveWithoutOverwrite(temp, dest)) throw new FcError(`같은 이름이 이미 있어 풀지 않습니다: ${item.name}`);
+    if (!moveWithoutOverwrite(temp, dest)) throw new FcError(`Not extracted because the name already exists: ${item.name}`);
   } catch (err) {
     removeTemp(temp, err instanceof FcError ? err : new FcError(failureReason(err)));
     throw err;
@@ -185,18 +185,18 @@ function decodeOemName(bytes) {
 // locatorAt은 32비트 끝 레코드 바로 앞의 Zip64 위치 표시 자리다.
 function readZip64End(target, archive, locatorAt) {
   const locator = readRange(target, archive, { offset: locatorAt, length: ZIP64_LOCATOR_SIZE });
-  if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) return 'Kept because it may be a piece of a split archive.';
   const recordOffset = safeNumber(locator.readBigUInt64LE(8));
   const record = recordOffset === null ? Buffer.alloc(0) : readRange(target, archive, { offset: recordOffset, length: ZIP64_END_SIZE });
-  if (record.length < ZIP64_END_SIZE || record.readUInt32LE(0) !== ZIP64_END) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+  if (record.length < ZIP64_END_SIZE || record.readUInt32LE(0) !== ZIP64_END) return 'Kept because the Zip64 structure could not be read.';
   // 레코드 크기(앞 12바이트를 뺀 길이)만큼 지나면 바로 위치 표시가 나와야 한다.
   const recordSize = safeNumber(record.readBigUInt64LE(4));
-  if (recordSize === null || recordOffset + 12 + recordSize !== locatorAt) return 'Zip64 구조가 파일 크기와 맞지 않아 남겼습니다.';
-  if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0 || record.readBigUInt64LE(24) !== record.readBigUInt64LE(32)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  if (recordSize === null || recordOffset + 12 + recordSize !== locatorAt) return 'Kept because the Zip64 structure does not match the file size.';
+  if (record.readUInt32LE(16) !== 0 || record.readUInt32LE(20) !== 0 || record.readBigUInt64LE(24) !== record.readBigUInt64LE(32)) return 'Kept because it may be a piece of a split archive.';
   const total = safeNumber(record.readBigUInt64LE(32));
   const directorySize = safeNumber(record.readBigUInt64LE(40));
   const directoryOffset = safeNumber(record.readBigUInt64LE(48));
-  if (total === null || directorySize === null || directoryOffset === null) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+  if (total === null || directorySize === null || directoryOffset === null) return 'Kept because the Zip64 structure could not be read.';
   return { total, directorySize, directoryOffset, directoryEnd: recordOffset };
 }
 
@@ -219,30 +219,30 @@ function checkZipLayout(target, archive, entries, directoryOffset) {
   const read = chunkReader(target, archive);
   const sorted = [...entries].sort((a, b) => a.offset - b.offset);
   // 첫 항목이 파일 처음에서 시작하지 않으면 앞쪽에 목록에 없는 항목이 있을 수 있다. 이어 붙인 뒤 오프셋을 고친 zip이 이렇다.
-  if (sorted.length > 0 && sorted[0].offset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
+  if (sorted.length > 0 && sorted[0].offset !== 0) return 'Kept because there is data at the start of the zip that is not in the directory.';
   for (const [i, entry] of sorted.entries()) {
     const expected = i + 1 < sorted.length ? sorted[i + 1].offset : directoryOffset;
     const local = read(entry.offset, ZIP_LOCAL_SIZE);
-    if (local.length < ZIP_LOCAL_SIZE || !local.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'zip 구조를 읽지 못해 남겼습니다.';
+    if (local.length < ZIP_LOCAL_SIZE || !local.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'Kept because the zip structure could not be read.';
     const dataEnd = entry.offset + ZIP_LOCAL_SIZE + local.readUInt16LE(26) + local.readUInt16LE(28) + entry.compressed;
     const gap = expected - dataEnd;
     if ((local.readUInt16LE(6) & 0x8) === 0) {
-      if (gap !== 0) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+      if (gap !== 0) return gap < 0 ? 'Kept because zip entries overlap.' : 'Kept because there is data between zip entries that is not in the directory.';
       continue;
     }
-    if (gap === 0) return 'zip 항목에 데이터 설명자 표시가 있는데 설명자가 없어 남겼습니다.';
+    if (gap === 0) return 'Kept because a zip entry has the data descriptor flag but no descriptor.';
     // 데이터 설명자는 서명(4바이트)이 있을 수도 없을 수도 있고, 크기 칸이 4바이트나 8바이트다(tar.exe의 Zip64는 8바이트).
     // 그래서 길이는 다음 항목까지의 거리로 정하고, CRC와 압축된 크기가 중앙 디렉터리와 같은지 본다.
     const layout = { 12: [false, false], 16: [true, false], 20: [false, true], 24: [true, true] }[gap];
-    if (!layout) return gap < 0 ? 'zip 항목이 서로 겹쳐 남겼습니다.' : 'zip 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.';
+    if (!layout) return gap < 0 ? 'Kept because zip entries overlap.' : 'Kept because there is data between zip entries that is not in the directory.';
     const [signed, wide] = layout;
     const descriptor = read(dataEnd, gap);
-    if (descriptor.length !== gap || (signed && descriptor.readUInt32LE(0) !== ZIP_DESCRIPTOR)) return 'zip 구조를 읽지 못해 남겼습니다.';
+    if (descriptor.length !== gap || (signed && descriptor.readUInt32LE(0) !== ZIP_DESCRIPTOR)) return 'Kept because the zip structure could not be read.';
     const at = signed ? 4 : 0;
     const compressed = wide ? safeNumber(descriptor.readBigUInt64LE(at + 4)) : descriptor.readUInt32LE(at + 4);
-    if (descriptor.readUInt32LE(at) !== entry.crc || compressed !== entry.compressed) return 'zip 데이터 설명자가 중앙 디렉터리와 달라 남겼습니다. 항목 사이에 다른 데이터가 끼었을 수 있습니다.';
+    if (descriptor.readUInt32LE(at) !== entry.crc || compressed !== entry.compressed) return 'Kept because a zip data descriptor differs from the central directory. Other data may sit between entries.';
   }
-  if (sorted.length === 0 && directoryOffset !== 0) return 'zip 앞쪽에 목록에 없는 데이터가 있어 남겼습니다.';
+  if (sorted.length === 0 && directoryOffset !== 0) return 'Kept because there is data at the start of the zip that is not in the directory.';
   return null;
 }
 
@@ -254,13 +254,13 @@ function readZipEntries(target, archive, entryCount) {
   const tailOffset = Math.max(0, size - ZIP_TAIL);
   const tail = readRange(target, archive, { offset: tailOffset, length: ZIP_TAIL });
   const at = tail.lastIndexOf(ZIP_END);
-  if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'zip 끝 표시가 없어 잘린 파일일 수 있어 남겼습니다.';
+  if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'Kept because the zip end marker is missing and the file may be truncated.';
   const end = tailOffset + at;
-  if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'zip 끝 표시 뒤에 다른 데이터가 있어 남겼습니다.';
+  if (end + ZIP_END_SIZE + tail.readUInt16LE(at + 20) !== size) return 'Kept because there is other data after the zip end marker.';
   const disk = tail.readUInt16LE(at + 4);
   const directoryDisk = tail.readUInt16LE(at + 6);
   // 이 디스크의 항목 수와 전체 항목 수가 다르면 tar.exe는 중앙 디렉터리 대신 로컬 헤더를 차례로 읽는다(1차 리뷰에서 실측).
-  if (tail.readUInt16LE(at + 8) !== tail.readUInt16LE(at + 10)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+  if (tail.readUInt16LE(at + 8) !== tail.readUInt16LE(at + 10)) return 'Kept because it may be a piece of a split archive.';
   let total = tail.readUInt16LE(at + 10);
   let directorySize = tail.readUInt32LE(at + 12);
   let directoryOffset = tail.readUInt32LE(at + 16);
@@ -271,33 +271,33 @@ function readZipEntries(target, archive, entryCount) {
     // 32비트 끝 레코드의 값은 Zip64 표시(모두 1인 값)이거나 Zip64 끝 레코드와 같아야 한다.
     const zip64 = readZip64End(target, archive, locatorAt);
     if (typeof zip64 === 'string') return zip64;
-    if ((disk !== 0 && disk !== 0xffff) || (directoryDisk !== 0 && directoryDisk !== 0xffff)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+    if ((disk !== 0 && disk !== 0xffff) || (directoryDisk !== 0 && directoryDisk !== 0xffff)) return 'Kept because it may be a piece of a split archive.';
     const agrees = (short, full, marker) => short === marker || short === full;
     if (!agrees(total, zip64.total, 0xffff) || !agrees(directorySize, zip64.directorySize, ZIP_MAX) || !agrees(directoryOffset, zip64.directoryOffset, ZIP_MAX)) {
-      return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
+      return 'Kept because the zip structure does not match the file size. It may be truncated or have another file appended.';
     }
     ({ total, directorySize, directoryOffset, directoryEnd } = zip64);
   } else {
-    if (disk !== 0 || directoryDisk !== 0) return '분할 압축의 조각일 수 있어 남겼습니다.';
-    if (total === 0xffff || directorySize === ZIP_MAX || directoryOffset === ZIP_MAX) return 'Zip64 표시가 있는데 Zip64 끝 레코드가 없어 남겼습니다.';
+    if (disk !== 0 || directoryDisk !== 0) return 'Kept because it may be a piece of a split archive.';
+    if (total === 0xffff || directorySize === ZIP_MAX || directoryOffset === ZIP_MAX) return 'Kept because it has Zip64 markers but no Zip64 end record.';
   }
-  if (directoryOffset + directorySize !== directoryEnd) return 'zip 구조가 파일 크기와 맞지 않아 남겼습니다. 잘렸거나 다른 파일이 이어 붙었을 수 있습니다.';
-  if (total !== entryCount) return `zip 항목 수가 풀린 목록과 달라 남겼습니다. (${total}개, ${entryCount}개)`;
+  if (directoryOffset + directorySize !== directoryEnd) return 'Kept because the zip structure does not match the file size. It may be truncated or have another file appended.';
+  if (total !== entryCount) return `Kept because the number of zip entries differs from the extracted list. (${total}, ${entryCount})`;
   const directory = readRange(target, archive, { offset: directoryOffset, length: directorySize });
   const entries = [];
   let pos = 0;
   while (pos < directory.length) {
-    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'zip 구조를 읽지 못해 남겼습니다.';
+    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return 'Kept because the zip structure could not be read.';
     const nameEnd = pos + ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28);
     const extraEnd = nameEnd + directory.readUInt16LE(pos + 30);
     const entryEnd = extraEnd + directory.readUInt16LE(pos + 32);
-    if (entryEnd > directory.length) return 'zip 구조를 읽지 못해 남겼습니다.';
+    if (entryEnd > directory.length) return 'Kept because the zip structure could not be read.';
     const bytes = directory.subarray(pos + ZIP_CENTRAL_SIZE, nameEnd);
     const unicode = (directory.readUInt16LE(pos + 8) & 0x800) !== 0;
     let name = bytes.toString('utf8');
     if (!unicode && bytes.some((byte) => byte >= 0x80)) {
       name = decodeOemName(bytes);
-      if (name === null) return '코드페이지에 따라 이름이 달라질 수 있는 항목이 있어 남겼습니다.';
+      if (name === null) return 'Kept because there is an item whose name may differ depending on the code page.';
     }
     // 32비트 칸이 모두 1이면 Zip64 extra 필드에 원래 크기, 압축된 크기, 로컬 헤더 위치, 디스크 번호 순으로 그 칸만 들어 있다.
     let size = directory.readUInt32LE(pos + 24);
@@ -306,7 +306,7 @@ function readZipEntries(target, archive, entryCount) {
     const startDisk = directory.readUInt16LE(pos + 34);
     if (size === ZIP_MAX || compressed === ZIP_MAX || offset === ZIP_MAX || startDisk === 0xffff) {
       const extra = extraField(directory.subarray(nameEnd, extraEnd), ZIP64_EXTRA);
-      if (!extra) return 'Zip64 구조를 읽지 못해 남겼습니다.';
+      if (!extra) return 'Kept because the Zip64 structure could not be read.';
       let at64 = 0;
       const take = () => {
         if (at64 + 8 > extra.length) return null;
@@ -317,15 +317,15 @@ function readZipEntries(target, archive, entryCount) {
       if (size === ZIP_MAX) size = take();
       if (compressed === ZIP_MAX) compressed = take();
       if (offset === ZIP_MAX) offset = take();
-      if (size === null || compressed === null || offset === null) return 'Zip64 구조를 읽지 못해 남겼습니다.';
-      if (startDisk === 0xffff && (at64 + 4 > extra.length || extra.readUInt32LE(at64) !== 0)) return '분할 압축의 조각일 수 있어 남겼습니다.';
+      if (size === null || compressed === null || offset === null) return 'Kept because the Zip64 structure could not be read.';
+      if (startDisk === 0xffff && (at64 + 4 > extra.length || extra.readUInt32LE(at64) !== 0)) return 'Kept because it may be a piece of a split archive.';
     } else if (startDisk !== 0) {
-      return '분할 압축의 조각일 수 있어 남겼습니다.';
+      return 'Kept because it may be a piece of a split archive.';
     }
     entries.push({ name, size, compressed, offset, crc: directory.readUInt32LE(pos + 16) });
     pos = entryEnd;
   }
-  if (pos !== directory.length || entries.length !== total) return 'zip 구조를 읽지 못해 남겼습니다.';
+  if (pos !== directory.length || entries.length !== total) return 'Kept because the zip structure could not be read.';
   const layout = checkZipLayout(target, archive, entries, directoryOffset);
   if (layout !== null) return layout;
   return entries.map(({ name, size }) => ({ name, size }));
@@ -335,14 +335,14 @@ function readZipEntries(target, archive, entryCount) {
 // 미리보기에서는 풀린 결과가 없으니 이름 글자만 본다. size가 없으면 크기는 보지 않는다.
 function checkEntryNames(entries, dest, dryRun) {
   for (const { name, size } of entries) {
-    if (CHANGED_NAME.test(name)) return `풀면 이름이 바뀌는 항목이 있어 남겼습니다: ${JSON.stringify(name)}`;
+    if (CHANGED_NAME.test(name)) return `Kept because an item would get a different name when extracted: ${JSON.stringify(name)}`;
     const relative = name.replaceAll('\\', '/').replace(/^(?:\.\/)+/, '');
     const folder = relative === '' || relative.endsWith('/');
-    if (folder && size > 0) return `폴더 항목에 내용이 있어 남겼습니다: ${JSON.stringify(name)}`;
+    if (folder && size > 0) return `Kept because a folder entry has content: ${JSON.stringify(name)}`;
     if (dryRun) continue;
     const stat = fs.lstatSync(path.join(dest, relative), { throwIfNoEntry: false });
-    if (!stat) return `같은 이름으로 풀리지 않은 항목이 있어 남겼습니다: ${JSON.stringify(name)}`;
-    if (folder ? !stat.isDirectory() : size !== undefined && (!stat.isFile() || stat.size !== size)) return `풀린 크기가 달라 남겼습니다: ${JSON.stringify(name)}`;
+    if (!stat) return `Kept because an item was not extracted under the same name: ${JSON.stringify(name)}`;
+    if (folder ? !stat.isDirectory() : size !== undefined && (!stat.isFile() || stat.size !== size)) return `Kept because the extracted size differs: ${JSON.stringify(name)}`;
   }
   return null;
 }
@@ -352,43 +352,43 @@ function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
   const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
   if (ZIP.test(archive)) {
-    if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return '내용이 zip으로 시작하지 않아 남겼습니다.';
+    if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'Kept because the content does not start as a zip.';
     const entries = readZipEntries(access.target, archive, entryCount);
     return typeof entries === 'string' ? entries : checkEntryNames(entries, dest, dryRun);
   }
   if (SEVEN_ZIP.test(archive)) {
-    if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return '내용이 7z로 시작하지 않아 남겼습니다.';
+    if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return 'Kept because the content does not start as a 7z.';
     // 헤더(압축된 헤더 포함)를 읽어 UTF-16 이름과 크기, 항목마다 CRC가 있는지 본다(#198). tar.exe는 첫 7z만 읽으므로
     // 머리글이 가리키는 끝이 파일 끝과 맞는지, 본문 사이에 목록에 없는 데이터가 없는지도 본다.
     const size = fileSizeInside(access.target, archive);
     const scan = readSevenZip((offset, length) => readRange(access.target, archive, { offset, length }), size);
     if (scan.reason !== undefined) return scan.reason;
-    if (scan.entries.length !== entryCount) return `7z 항목 수가 tar.exe 목록과 달라 남겼습니다. (${scan.entries.length}개, 목록 ${entryCount}개)`;
+    if (scan.entries.length !== entryCount) return `Kept because the number of 7z entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
     return checkEntryNames(scan.entries.map(({ name, size: entrySize, folder }) => ({ name: folder ? `${name}/` : name, size: entrySize })), dest, dryRun);
   }
   if (TAR_GZ.test(archive)) {
-    if (head[0] !== 0x1f || head[1] !== 0x8b) return '내용이 gzip으로 시작하지 않아 남겼습니다.';
+    if (head[0] !== 0x1f || head[1] !== 0x8b) return 'Kept because the content does not start as gzip.';
     // gzip CRC·길이, tar 헤더 체크섬·끝 표시를 처음부터 끝까지 확인한다(#197). 항목 수는 tar.exe 목록과 같아야 한다.
     const scan = scanTarGzSync(archive);
     if (scan.reason !== undefined) return scan.reason;
-    if (scan.entries.length !== entryCount) return `tar 항목 수가 tar.exe 목록과 달라 남겼습니다. (${scan.entries.length}개, 목록 ${entryCount}개)`;
+    if (scan.entries.length !== entryCount) return `Kept because the number of tar entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
     return checkEntryNames(scan.entries.map(({ name, size }) => ({ name, size: size ?? undefined })), dest, dryRun);
   }
-  return '이 형식은 풀린 내용이 온전한지 확인할 수 없어 남겼습니다.';
+  return 'Kept because it cannot be confirmed that the extracted content of this format is intact.';
 }
 
 // 푼 압축 파일이 그 뒤로 바뀌었으면 지우지 않는다. 지우는 것은 내용을 확인한 그 파일이어야 한다.
 // before는 풀기 전에 잡은 fileStamp다. 변경 시각까지 보므로 같은 크기로 제자리에서 다시 쓰고 수정 시각을 되돌려도 알아챈다.
 function removeArchive(access, item, before, dryRun) {
   const archive = access.delete(item.archive);
-  if (archive !== item.archive) throw new FcError(`풀고 난 뒤 경로가 바뀌어 지우지 않았습니다: ${item.archive} -> ${archive}`);
+  if (archive !== item.archive) throw new FcError(`Not deleted because the path changed after extracting: ${item.archive} -> ${archive}`);
   const stat = fs.lstatSync(archive, { bigint: true });
-  if (!stat.isFile() || fileStamp(stat) !== before) throw new FcError(`풀고 난 뒤 파일이 바뀌어 지우지 않았습니다: ${archive}`);
+  if (!stat.isFile() || fileStamp(stat) !== before) throw new FcError(`Not deleted because the file changed after extracting: ${archive}`);
   try {
     remove([archive], { dryRun });
   } catch (err) {
     // 휴지통 이동의 FcError는 사유만 담으므로 풀린 뒤라는 맥락을 붙인다(#185). 다른 오류는 removalFailure가 붙인다.
-    if (err instanceof FcError) throw new FcError(`${dryRun ? '풀어도 원본을 지울 수 없습니다.' : '풀었지만 원본을 지우지 못했습니다.'} ${err.message}`);
+    if (err instanceof FcError) throw new FcError(`${dryRun ? 'Even if extracted, the original cannot be deleted.' : 'Extracted, but could not delete the original.'} ${err.message}`);
     throw err;
   }
 }
@@ -396,14 +396,14 @@ function removeArchive(access, item, before, dryRun) {
 // 미리보기는 실제로 풀지 않았으므로 "풀어도"로 알린다(#185 1차 리뷰).
 function removalFailure(err, dryRun) {
   if (err instanceof FcError) return err.message;
-  return `${dryRun ? '풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다.' : '풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다.'} (${err.code ?? err.status})`;
+  return `${dryRun ? 'Even if extracted, the original cannot be checked or sent to the Recycle Bin.' : 'Extracted, but could not check the original or send it to the Recycle Bin.'} (${err.code ?? err.status})`;
 }
 
 function failureReason(err) {
   if (err instanceof FcError) return err.message;
   // tar.exe의 오류는 코드페이지로 나와 한글이 깨지므로 종료 코드만 쓴다.
-  if (err.status !== undefined && err.status !== null) return `압축을 풀지 못했습니다. 손상됐거나, 암호가 걸렸거나, 타겟 밖을 가리키는 경로나 쓸 수 없는 이름이 있을 수 있습니다. (tar 종료 코드 ${err.status})`;
-  return `압축을 풀지 못했습니다. (${err.code})`;
+  if (err.status !== undefined && err.status !== null) return `Could not extract. The archive may be damaged, encrypted, or contain a path that points outside the target or a name that cannot be used. (tar exit code ${err.status})`;
+  return `Could not extract. (${err.code})`;
 }
 
 // 타겟 아래 압축 파일을 각각 새 폴더에 푼다. 풀려 나온 압축 파일을 다시 풀지는 않는다.
@@ -449,15 +449,15 @@ function applyExtractions(plan, { dryRun = false, removeArchives = false } = {})
 
 function formatExtractions(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.extracted) lines.push(`${prefix}압축 해제: ${relative(item.archive)} -> ${relative(item.dest)} (항목 ${item.entries}개)`);
-  for (const archive of result.removed) lines.push(`${prefix}휴지통으로 이동: ${relative(archive)}`);
-  for (const item of result.kept) lines.push(`${prefix}남김: ${relative(item.archive)} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.archive)} (${item.reason})`);
-  const removal = result.removeArchives ? `, 휴지통 ${result.removed.length}개, 남김 ${result.kept.length}개` : '';
-  lines.push(`${prefix}압축 해제 ${result.extracted.length}개${removal}, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
+  for (const item of result.extracted) lines.push(`${prefix}Extract: ${relative(item.archive)} -> ${relative(item.dest)} (${item.entries} items)`);
+  for (const archive of result.removed) lines.push(`${prefix}Move to the Recycle Bin: ${relative(archive)}`);
+  for (const item of result.kept) lines.push(`${prefix}Kept: ${relative(item.archive)} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.archive)} (${item.reason})`);
+  const removal = result.removeArchives ? `, Recycle Bin ${result.removed.length}, kept ${result.kept.length}` : '';
+  lines.push(`${prefix}Extract ${result.extracted.length}${removal}, skipped ${result.skipped.length}, failed ${result.failed.length}`);
   return lines.join('\n');
 }
 

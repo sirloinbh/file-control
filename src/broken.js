@@ -81,8 +81,8 @@ function checkRiff(head, size) {
   if (head.length < 8 || text(head, 0, 4) !== 'RIFF') return null;
   const declared = head.readUInt32LE(4);
   if (declared === 0 || declared === 0xffffffff) return null;
-  if (declared > size && declared >= RIFF_UNKNOWN_SIZE) return suspect('RIFF 머리글의 크기가 크기를 모른 채 쓴 값일 수 있습니다.');
-  return declared > size ? broken('RIFF 머리글의 크기보다 파일이 작습니다. 잘린 파일일 수 있습니다.') : null;
+  if (declared > size && declared >= RIFF_UNKNOWN_SIZE) return suspect('The RIFF header size may be a value written without knowing the size.');
+  return declared > size ? broken('The file is smaller than the size in the RIFF header. It may be truncated.') : null;
 }
 
 // 끝 레코드 후보를 뒤에서부터 찾아 위치 목록으로 돌려준다. 주석 길이가 파일 끝과 맞는 것을 앞에 둔다.
@@ -106,16 +106,16 @@ function checkZipEnd(target, real, tail, tailOffset, at) {
   const directorySize = tail.readUInt32LE(at + 12);
   const directoryOffset = tail.readUInt32LE(at + 16);
   if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return null;
-  if (directoryOffset + directorySize > tailOffset + at) return broken('zip 목록이 끝 표시를 넘습니다. 파일이 손상됐습니다.');
-  if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`zip 목록이 너무 커 판단하지 않았습니다: ${directorySize}바이트`);
+  if (directoryOffset + directorySize > tailOffset + at) return broken('The zip directory runs past the end marker. The file is damaged.');
+  if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`The zip directory is too large to judge: ${directorySize} bytes`);
   const directory = readRange(target, real, { offset: directoryOffset, length: directorySize });
   let pos = 0;
   for (let index = 0; index < total; index += 1) {
-    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('zip 목록이 손상됐습니다.');
+    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('The zip directory is damaged.');
     const offset = directory.readUInt32LE(pos + 42);
     if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
       const local = readRange(target, real, { offset, length: 4 });
-      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return broken('zip 항목의 머리글이 목록과 맞지 않습니다. 파일이 손상됐습니다.');
+      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return broken('A zip entry header does not match the directory. The file is damaged.');
     }
     pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
   }
@@ -127,7 +127,7 @@ function checkZip(target, real, size) {
   const tailOffset = Math.max(0, size - ZIP_TAIL);
   const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
   const { exact, others } = findZipEnds(tail);
-  if (exact.length === 0 && others.length === 0) return broken('zip 끝 표시가 없습니다. 잘린 파일일 수 있습니다.');
+  if (exact.length === 0 && others.length === 0) return broken('The zip end marker is missing. The file may be truncated.');
   let first = null;
   for (const at of exact) {
     const found = checkZipEnd(target, real, tail, tailOffset, at);
@@ -136,7 +136,7 @@ function checkZip(target, real, size) {
   }
   for (const at of others) {
     const found = checkZipEnd(target, real, tail, tailOffset, at);
-    if (found === null) return suspect('zip 끝 표시 뒤에 다른 데이터가 있습니다.');
+    if (found === null) return suspect('There is other data after the zip end marker.');
     first ??= found;
   }
   return first;
@@ -144,37 +144,37 @@ function checkZip(target, real, size) {
 
 // 7z 시작 머리글의 CRC와, 머리글이 가리키는 끝이 파일 안인지 본다. 내용은 읽지 않는다.
 function check7z(head, size) {
-  if (head.length < SEVEN_ZIP_HEADER) return broken('7z 머리글이 잘렸습니다.');
-  if (zlib.crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return broken('7z 머리글이 손상됐습니다.');
+  if (head.length < SEVEN_ZIP_HEADER) return broken('The 7z header is truncated.');
+  if (zlib.crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return broken('The 7z header is damaged.');
   const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
-  return end > BigInt(size) ? broken('7z 머리글이 가리키는 끝보다 파일이 작습니다. 잘린 파일일 수 있습니다.') : null;
+  return end > BigInt(size) ? broken('The file is smaller than the end the 7z header points to. It may be truncated.') : null;
 }
 
 // tar.exe로 끝까지 읽어 본다. 손상 문구가 있을 때만 깨졌다고 하고, 그 밖의 실패는 파일 탓인지 알 수 없어 판단 못함으로 나간다.
 function checkTarListing(real) {
   const { error, status, stderr, entries } = probeArchive(real, TAR_LIMITS);
-  if (error) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (${error.code})`);
-  if (TAR_DAMAGED.test(stderr)) return broken('tar가 파일이 잘렸거나 손상됐다고 알렸습니다.');
-  if (TAR_UNRECOGNIZED.test(stderr)) return suspect('tar로 읽을 수 없는 형식입니다. tar가 아닌 파일이거나 앞부분이 손상됐을 수 있습니다.');
+  if (error) throw new FcError(`Could not read with tar, so it was not judged. (${error.code})`);
+  if (TAR_DAMAGED.test(stderr)) return broken('tar reported that the file is truncated or damaged.');
+  if (TAR_UNRECOGNIZED.test(stderr)) return suspect('tar cannot read this format. It may not be a tar file, or its beginning may be damaged.');
   // lz4·lzop 등으로 압축된 파일은 tar.exe가 외부 프로그램으로 푼다(#241). 프로그램이 없으면 파일 탓이 아니므로 판단 못함으로 두고 이름을 밝힌다(#245).
   // tar.exe가 실패로 끝났을 때만 본다. 정상 종료한 출력에 섞인 흉내 줄로 멀쩡한 파일을 판단 못함으로 두지 않는다(1차 리뷰).
   const program = status !== 0 ? missingProgram(stderr) : null;
-  if (program !== null) throw new FcError(`압축을 풀 외부 프로그램 ${program}이 없어 판단하지 않았습니다. ${program}.exe를 PATH에 두면 확인할 수 있습니다.`);
+  if (program !== null) throw new FcError(`The external program ${program} needed to extract it is missing, so it was not judged. Put ${program}.exe on PATH to check it.`);
   // 프로그램은 있는데 실패하면 파일 손상인지 프로그램 문제인지 가를 수 없으므로 깨짐으로 보지 않는다(remove-broken이 지우지 않게).
   // 압축을 연 뒤 읽는 도중에 실패하면 "Error opening archive:" 없이 이 줄만 나온다(1차 리뷰).
   const child = status !== 0 ? /^[ \t]*\S*tar(?:\.exe)?: (?:Error opening archive: )?Child process exited with status (\d+)\r?$/m.exec(stderr) : null;
-  if (child) throw new FcError(`압축을 푸는 외부 프로그램이 실패해(종료 코드 ${child[1]}) 판단하지 않았습니다. 파일이 손상됐거나 프로그램에 문제가 있을 수 있습니다.`);
-  if (status !== 0) throw new FcError(`tar로 읽지 못해 판단하지 않았습니다. (종료 코드 ${status}: ${stderr.split(/\r?\n/)[0].replace(/[^\x00-\x7f]+/g, '?')})`);
-  return entries === 0 ? suspect('압축 파일에 항목이 없습니다. 비어 있거나 끝까지 받지 못한 파일일 수 있습니다.') : null;
+  if (child) throw new FcError(`The external extraction program failed (exit code ${child[1]}), so it was not judged. The file may be damaged or the program may have a problem.`);
+  if (status !== 0) throw new FcError(`Could not read with tar, so it was not judged. (exit code ${status}: ${stderr.split(/\r?\n/)[0].replace(/[^\x00-\x7f]+/g, '?')})`);
+  return entries === 0 ? suspect('The archive has no entries. It may be empty or not fully downloaded.') : null;
 }
 
 // 앞 바이트가 형식과 맞지 않는 파일을 판별한다. 전부 0이거나 웹 페이지면 내용이 없는 것이 확실하므로 깨졌다고 한다. 그 밖에는 정상일 수 있다.
 function checkMismatch(format, head) {
   const actual = FORMATS.find((other) => other.match(head));
-  if (actual) return suspect(`확장자는 ${format.name}인데 내용은 ${actual.name}입니다. 이름만 바뀐 파일일 수 있습니다.`);
-  if (head.every((byte) => byte === 0)) return broken('앞부분이 모두 0입니다. 내용이 없거나 받다 멈춘 파일일 수 있습니다.');
-  if (/^\s*<(?:!doctype html|html)/i.test(text(head, 0, head.length))) return broken(`${format.name} 파일이 아니라 웹 페이지입니다. 내려받기가 잘못됐을 수 있습니다.`);
-  return suspect(`내용이 ${format.name} 형식으로 시작하지 않습니다. 암호나 다른 포장을 쓴 파일일 수 있습니다.`);
+  if (actual) return suspect(`The extension says ${format.name} but the content is ${actual.name}. It may only have been renamed.`);
+  if (head.every((byte) => byte === 0)) return broken('The beginning is all zeros. The file may be empty or its download stopped midway.');
+  if (/^\s*<(?:!doctype html|html)/i.test(text(head, 0, head.length))) return broken(`This is a web page, not a ${format.name} file. The download may have gone wrong.`);
+  return suspect(`The content does not start in ${format.name} format. It may be encrypted or wrapped in something else.`);
 }
 
 // 파일 하나를 판별해 { status, reason }을 돌려준다. 문제를 찾지 못하면 null이다. 입출력 문제는 예외로 나간다.
@@ -186,7 +186,7 @@ function inspect(target, real, size) {
   const listed = TAR_LISTED.test(real);
   if (size === 0) {
     // __init__.py, .gitkeep처럼 빈 파일이 뜻을 갖는 경우가 많아, 내용이 꼭 있어야 하는 형식만 깨졌다고 본다.
-    return format || listed ? broken('크기가 0입니다.') : suspect('크기가 0입니다.');
+    return format || listed ? broken('The size is 0.') : suspect('The size is 0.');
   }
   if (!format && !listed) return null;
   const head = readRange(target, real, { length: HEAD_SIZE });
@@ -202,8 +202,8 @@ function inspect(target, real, size) {
 
 function skipReason(entry) {
   const parts = entry.relative.split(path.sep);
-  if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 보지 않습니다.';
-  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 보지 않습니다.';
+  if (parts.some((part) => LEFTOVER.test(part))) return 'Not checked because it is a leftover from an earlier job.';
+  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Not checked because it is inside a Windows system folder.';
   return null;
 }
 
@@ -223,7 +223,7 @@ function findBroken(dir) {
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part)) || REMOVAL_LOG.test(path.basename(entry.path))) continue;
     if (entry.type === 'link') {
-      result.skipped.push({ path: entry.path, reason: '링크는 보지 않습니다.' });
+      result.skipped.push({ path: entry.path, reason: 'Links are not checked.' });
       continue;
     }
     const reason = skipReason(entry);
@@ -241,7 +241,7 @@ function findBroken(dir) {
     } catch (err) {
       if (err instanceof FcError) result.unreadable.push({ path: entry.path, reason: err.message });
       // 파일 하나의 문제로 다른 파일의 결과까지 잃지 않게 어떤 예외든 그 파일만 판단 못함으로 둔다.
-      else result.unreadable.push({ path: entry.path, reason: `파일을 읽을 수 없습니다. (${err.code ?? err.message})` });
+      else result.unreadable.push({ path: entry.path, reason: `Cannot read the file. (${err.code ?? err.message})` });
     }
   }
   return result;
@@ -250,11 +250,11 @@ function findBroken(dir) {
 function formatBroken(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [];
-  for (const item of result.broken) lines.push(`깨짐: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.suspect) lines.push(`의심: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
-  lines.push(`살펴본 파일 ${result.checked}개, 깨짐 ${result.broken.length}개, 의심 ${result.suspect.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`);
+  for (const item of result.broken) lines.push(`Broken: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.suspect) lines.push(`Suspect: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  lines.push(`Checked ${result.checked} files, ${result.broken.length} broken, ${result.suspect.length} suspect, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`);
   return lines.join('\n');
 }
 

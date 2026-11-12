@@ -18,7 +18,7 @@ function withOpenFile(target, real, fn) {
   const fd = fs.openSync(real, 'r');
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
-    if (!opened.isFile() || opened.ino !== named.ino || opened.dev !== named.dev) throw new FcError(`읽는 사이에 파일이 바뀌었습니다: ${real}`);
+    if (!opened.isFile() || opened.ino !== named.ino || opened.dev !== named.dev) throw new FcError(`The file changed while reading: ${real}`);
     const size = Number(opened.size);
     return fn({ size, read: (offset, length) => readAt(fd, size, offset, length) });
   } finally {
@@ -28,9 +28,9 @@ function withOpenFile(target, real, fn) {
 
 // offset부터 length바이트를 읽는다. 파일 끝을 넘는 부분은 읽지 않으므로 돌려준 길이가 더 짧을 수 있다.
 function readAt(fd, size, offset, length) {
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`offset이 올바르지 않습니다: ${offset}`);
-  if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`length가 올바르지 않습니다: ${length}`);
-  if (length > MAX_READ) throw new FcError(`한 번에 읽을 수 있는 길이(${MAX_READ}바이트)를 넘습니다: ${length}`);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`Invalid offset: ${offset}`);
+  if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`Invalid length: ${length}`);
+  if (length > MAX_READ) throw new FcError(`Exceeds the length that can be read at once (${MAX_READ} bytes): ${length}`);
   const buffer = Buffer.alloc(Math.min(length, Math.max(0, size - offset)));
   let read = 0;
   while (read < buffer.length) {

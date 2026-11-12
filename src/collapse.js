@@ -40,8 +40,8 @@ function skipReason(chain, entries) {
   const leaf = chain.at(-1);
   const inside = entries.filter((entry) => under(entry, leaf));
   // 맨 아래 폴더를 통째로 옮기므로 그 안의 잔여물과 시스템 폴더도 따라간다. 메시지가 알려 준 위치에 있어야 복구할 수 있다.
-  if (inside.some((entry) => hasPart(entry, LEFTOVER))) return '안에 이전 작업의 잔여물이 있어 접지 않습니다.';
-  if (inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Windows 시스템 폴더가 관련되어 접지 않습니다.';
+  if (inside.some((entry) => hasPart(entry, LEFTOVER))) return 'Not collapsed because there is a leftover from an earlier job inside.';
+  if (inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Not collapsed because a Windows system folder is involved.';
   // 접으면 가운데 폴더 이름이 사라진다. product-number는 그 이름에서 번호를 찾으므로, 파일 이름에 이미 들어간 번호만 사라져도 되는 것으로 본다.
   // 영상이 있으면 영상 전부에, 없으면 파일 전부에 있어야 한다. 표지 하나에만 있으면 나머지 영상이 번호를 잃는다.
   const kept = new Set(extractProductNumbers(path.basename(chain[0].path)));
@@ -49,7 +49,7 @@ function skipReason(chain, entries) {
   const videos = files.filter((name) => isVideoName(name));
   const named = videos.length > 0 ? videos : files;
   const lost = chain.slice(1).flatMap((entry) => extractProductNumbers(path.basename(entry.path))).filter((number) => !kept.has(number) && !named.every((name) => containsNumber(name, number)));
-  if (lost.length > 0) return `접으면 폴더 이름의 제품번호가 사라집니다: ${[...new Set(lost)].join(', ')}. 파일 이름에 넣은 뒤 다시 실행하세요. product-number는 영상 파일에 넣습니다.`;
+  if (lost.length > 0) return `Collapsing would lose the product number in the folder name: ${[...new Set(lost)].join(', ')}. Put it in the file name and run again. product-number adds it to video files.`;
   return null;
 }
 
@@ -62,7 +62,7 @@ function skipReason(chain, entries) {
 function hiddenReason(chain, attributes) {
   const hidden = chain.filter((entry) => (attributes.get(entry.relative) ?? 0) & 2);
   if (hidden.length === 0) return null;
-  return `숨김 속성 폴더가 있어 접지 않습니다(접으면 폴더 속성이 맨 아래 폴더의 것이 됩니다): ${hidden.map((entry) => entry.relative).join(', ')}`;
+  return `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${hidden.map((entry) => entry.relative).join(', ')}`;
 }
 
 // 타겟 아래에서 폴더 하나만 이어지는 구간을 찾는다. 맨 위 폴더 이름을 남기고 맨 아래 폴더의 내용을 그 자리로 올린다.
@@ -81,7 +81,7 @@ function planCollapse(dir) {
     if (entry.type !== 'dir') continue;
     // 잔여물은 맨 위 하나만 알리고 안쪽은 보지 않는다. 되돌리지 못한 파일이 여기에 있을 수 있다.
     if (hasPart(entry, LEFTOVER)) {
-      if (LEFTOVER.test(path.basename(entry.path)) && !hasPart({ relative: path.dirname(entry.relative) }, LEFTOVER)) plan.skipped.push({ path: entry.path, reason: '이전 작업의 잔여물이라 접지 않습니다.' });
+      if (LEFTOVER.test(path.basename(entry.path)) && !hasPart({ relative: path.dirname(entry.relative) }, LEFTOVER)) plan.skipped.push({ path: entry.path, reason: 'Not collapsed because it is a leftover from an earlier job.' });
       continue;
     }
     if (!soleFolder(children, entry.relative)) continue;
@@ -116,7 +116,7 @@ function planCollapse(dir) {
       const folders = chain.map((item) => item.path);
       // 링크가 든 폴더나 끝이 점인 이름처럼 다룰 수 없는 구간은 계획에서 알린다. 실행과 미리보기의 결과가 같아진다.
       for (const folder of folders) {
-        if (access.delete(folder) !== folder) throw new FcError(`링크를 거치는 경로입니다: ${folder}`);
+        if (access.delete(folder) !== folder) throw new FcError(`The path goes through a link: ${folder}`);
       }
       plan.collapses.push({ top: folders[0], leaf: folders.at(-1), folders });
     } catch (err) {
@@ -134,11 +134,11 @@ function planCollapse(dir) {
 function checkChain(item, access) {
   for (const [index, folder] of item.folders.entries()) {
     const real = access.delete(folder);
-    if (real !== folder) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${folder} -> ${real}`);
-    if (!fs.lstatSync(real).isDirectory()) throw new FcError(`계획 뒤에 폴더가 아니게 됐습니다: ${real}`);
+    if (real !== folder) throw new FcError(`The path changed after planning: ${folder} -> ${real}`);
+    if (!fs.lstatSync(real).isDirectory()) throw new FcError(`No longer a folder after planning: ${real}`);
     if (index === item.folders.length - 1) break;
     const inside = fs.readdirSync(real);
-    if (inside.length !== 1 || inside[0] !== path.basename(item.folders[index + 1])) throw new FcError(`계획 뒤에 폴더 내용이 바뀌었습니다: ${real}`);
+    if (inside.length !== 1 || inside[0] !== path.basename(item.folders[index + 1])) throw new FcError(`The folder content changed after planning: ${real}`);
   }
 }
 
@@ -153,7 +153,7 @@ function restore(steps, cause) {
       left.push(`${from} -> ${to} (${err.code ?? err.message})`);
     }
   }
-  if (left.length > 0) throw new FcError(`접지 못했고 되돌리지도 못했습니다. (${cause.code ?? cause.message}) ${left.join(', ')}`);
+  if (left.length > 0) throw new FcError(`Could not collapse and could not undo it either. (${cause.code ?? cause.message}) ${left.join(', ')}`);
 }
 
 // 폴더 통째로 이름을 바꾸므로 안쪽 항목의 이름이 가운데 폴더 이름과 같아도 충돌하지 않는다.
@@ -182,13 +182,13 @@ function collapseOne(item, access) {
 // 빈 폴더만 휴지통으로 보낸다. 파일이 있으면 지우지 않는다.
 function removeEmptied(emptied) {
   const filled = fs.readdirSync(emptied, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
-  if (filled) throw new FcError(`접었지만 치운 폴더에 파일이 있어 지우지 않았습니다: ${emptied}`);
+  if (filled) throw new FcError(`Collapsed, but not deleted because the emptied folder contains files: ${emptied}`);
   remove([emptied]);
 }
 
 function emptiedFailure(emptied, err) {
-  if (err instanceof FcError && err.message.startsWith('접었지만')) return err.message;
-  return `접었지만 빈 폴더를 휴지통으로 보내지 못했습니다: ${emptied} (${err instanceof FcError ? err.message : err.code ?? err.status})`;
+  if (err instanceof FcError && err.message.startsWith('Collapsed, but')) return err.message;
+  return `Collapsed, but could not send the empty folder to the Recycle Bin: ${emptied} (${err instanceof FcError ? err.message : err.code ?? err.status})`;
 }
 
 // 폴더 하나만 이어지는 구간을 접는다. 덮어쓰지 않고, 한 구간이 실패해도 나머지는 계속한다.
@@ -222,7 +222,7 @@ function applyCollapse(plan, { dryRun = false } = {}) {
   for (const item of plan.collapses) {
     // 안쪽 구간이 실패했으면 메시지가 알려 준 위치가 그대로 있어야 복구할 수 있으므로 품고 있는 구간을 옮기지 않는다.
     if (result.failed.some((failure) => failure.path === item.leaf || failure.path.startsWith(item.leaf + path.sep))) {
-      result.failed.push({ path: item.top, reason: '안쪽 구간이 실패해 접지 않았습니다.' });
+      result.failed.push({ path: item.top, reason: 'Not collapsed because an inner section failed.' });
       continue;
     }
     let emptied;
@@ -230,7 +230,7 @@ function applyCollapse(plan, { dryRun = false } = {}) {
       emptied = collapseOne(item, access);
       result.collapsed.push(item);
     } catch (err) {
-      result.failed.push({ path: item.top, reason: err instanceof FcError ? err.message : `접지 못했습니다. (${err.code})` });
+      result.failed.push({ path: item.top, reason: err instanceof FcError ? err.message : `Could not collapse. (${err.code})` });
       continue;
     }
     try {
@@ -244,12 +244,12 @@ function applyCollapse(plan, { dryRun = false } = {}) {
 
 function formatCollapse(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.collapsed) lines.push(`${prefix}접기: ${relative(item.leaf)} -> ${relative(item.dest)}`);
-  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.path)} (${item.reason})`);
-  lines.push(`${prefix}접기 ${result.collapsed.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`);
+  for (const item of result.collapsed) lines.push(`${prefix}Collapse: ${relative(item.leaf)} -> ${relative(item.dest)}`);
+  for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
+  lines.push(`${prefix}Collapse ${result.collapsed.length}, skipped ${result.skipped.length}, failed ${result.failed.length}`);
   return lines.join('\n');
 }
 

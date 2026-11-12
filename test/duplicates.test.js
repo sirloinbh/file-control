@@ -135,8 +135,8 @@ test('findDuplicateNames: 영상 파일을 번호와 이름으로 묶고 하나�
   ]);
   // 시험 파일은 영상 구조가 아니라 모두 읽지 못한 파일이다. 그래서 크기로 고르고, 읽지 않는 형식(.avi)은 읽지 못한 .mp4보다 앞선다.
   assert.deepStrictEqual(result.groups.map((group) => group.keep), [
-    { path: a, reason: '크기가 가장 큼', doubt: null },
-    { path: d, reason: '길이나 해상도를 읽지 못한 파일을 뺌', doubt: null },
+    { path: a, reason: 'largest size', doubt: null },
+    { path: d, reason: 'excludes files whose duration or resolution could not be read', doubt: null },
   ]);
   // 영상 구조가 아닌 시험 파일이라 길이를 모른다. 읽지 못한 사유는 note에 남지만 묶음에서 빠지지는 않는다.
   assert.strictEqual(result.groups[0].files[0].duration, null);
@@ -196,7 +196,7 @@ test('findDuplicateNames: 링크는 건너뛴다', (t) => {
   }
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups, []);
-  assert.deepStrictEqual(result.skipped.map((item) => item.reason), ['링크는 보지 않습니다.']);
+  assert.deepStrictEqual(result.skipped.map((item) => item.reason), ['Links are not checked.']);
 });
 
 test('findDuplicateNames: 영상 확장자가 아닌 폴더 링크도 건너뛰었다고 보고한다', (t) => {
@@ -212,7 +212,7 @@ test('findDuplicateNames: 영상 확장자가 아닌 폴더 링크도 건너뛰�
   }
   const result = findDuplicateNames(dir);
   assert.deepStrictEqual(result.groups, []);
-  assert.deepStrictEqual(result.skipped, [{ path: path.join(dir, 'movies'), reason: '링크는 보지 않습니다.' }]);
+  assert.deepStrictEqual(result.skipped, [{ path: path.join(dir, 'movies'), reason: 'Links are not checked.' }]);
 });
 
 test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
@@ -227,22 +227,22 @@ test('formatDuplicateNames: 묶음과 크기, 요약을 보여 준다', () => {
   // 시험 파일은 영상 구조가 아니라 길이를 읽지 못한다. 그 보고는 다른 테스트에서 본다.
   const report = formatDuplicateNames(findDuplicateNames(dir))
     .split('\n')
-    .filter((line) => !line.startsWith('길이·해상도 못 읽음: '))
+    .filter((line) => !line.startsWith('Could not read duration/resolution: '))
     .join('\n');
   assert.strictEqual(
     report,
     [
-      '중복 후보 (번호 ABC-123, 2개):',
+      'Duplicate candidates (number ABC-123, 2 files):',
       '  ABC-123 1080p.mkv (2B)',
-      '  ABC-123.mp4 (4B) [남김: 크기가 가장 큼]',
-      '중복 후보 (번호 ABC-123 조각 2, 2개):',
+      '  ABC-123.mp4 (4B) [kept: largest size]',
+      'Duplicate candidates (number ABC-123 part 2, 2 files):',
       '  ABC-123 CD2 copy.mp4 (1B)',
-      '  ABC-123 CD2.mp4 (1B) [남김: 이름이 가장 짧음]',
-      '중복 후보 (이름 "trip", 2개):',
-      '  trip.avi (1B) [남김: 길이나 해상도를 읽지 못한 파일을 뺌]',
+      '  ABC-123 CD2.mp4 (1B) [kept: shortest name]',
+      'Duplicate candidates (name "trip", 2 files):',
+      '  trip.avi (1B) [kept: excludes files whose duration or resolution could not be read]',
       '  Trip.mp4 (1B)',
-      '번호가 여럿: ABC-123 XYZ-456.mp4 (ABC-123, XYZ-456)',
-      '살펴본 영상 7개, 중복 후보 묶음 3개(파일 6개, 확인 필요 0개), 길이가 같은 묶음 0개(파일 0개), 길이 모름 7개, 번호가 여럿 1개, 판단 못함 0개, 건너뜀 0개',
+      'Several numbers: ABC-123 XYZ-456.mp4 (ABC-123, XYZ-456)',
+      'Checked 7 videos, 3 duplicate candidate groups (6 files, 0 need checking), 0 same-duration groups (0 files), 7 with unknown duration, 1 with several numbers, 0 undetermined, 0 skipped',
     ].join('\n'),
   );
 });
@@ -251,12 +251,12 @@ test('fctl find-duplicates: 목록을 내고, 타겟 검사와 옵션 검사를 
   const dir = tempDir();
   put(dir, 'ABC-123.mp4');
   put(dir, 'ABC-123 HD.mkv');
-  assert.match(run(['find-duplicates', dir]), /중복 후보 \(번호 ABC-123, 2개\)/);
-  assert.throws(() => run(['find-duplicates']), /사용법: fctl find-duplicates <타겟>/);
-  assert.throws(() => run(['find-duplicates', dir, 'extra']), /타겟은 하나만/);
-  assert.throws(() => run(['find-duplicates', dir, '--force']), /--force, --permanent를 쓸 수 없습니다/);
-  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes는 remove-broken, remove-duplicates, remove-low-quality에서만/);
-  assert.match(run(['--help']), /find-duplicates <타겟>/);
+  assert.match(run(['find-duplicates', dir]), /Duplicate candidates \(number ABC-123, 2 files\)/);
+  assert.throws(() => run(['find-duplicates']), /Usage: fctl find-duplicates <target>/);
+  assert.throws(() => run(['find-duplicates', dir, 'extra']), /Only one target/);
+  assert.throws(() => run(['find-duplicates', dir, '--force']), /so --force and --permanent cannot be used/);
+  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality/);
+  assert.match(run(['--help']), /find-duplicates <target>/);
 });
 
 // 길이 기준 묶기 시험용 MP4·MKV. 머리 구조만 있으면 길이와 해상도를 읽는다.
@@ -406,10 +406,10 @@ test('findDuplicateNames: 회전한 MP4와 표시 크기가 있는 MKV를 보이
   const phoneInfo = result.metadataGroups[0].files[0];
   assert.deepStrictEqual([phoneInfo.width, phoneInfo.height, phoneInfo.displayWidth, phoneInfo.displayHeight], [1920, 1080, 1080, 1920]);
   const report = formatDuplicateNames(result);
-  assert.match(report, /^ {2}phone\.mp4 \(\d+B, 1920x1080\(보이는 크기 1080x1920\), 10:00\)/m);
-  assert.match(report, /^ {2}dvd\.mkv \(\d+B, 720x480\(보이는 크기 853x480\), 15:00\)/m);
+  assert.match(report, /^ {2}phone\.mp4 \(\d+B, 1920x1080 \(displayed size 1080x1920\), 10:00\)/m);
+  assert.match(report, /^ {2}dvd\.mkv \(\d+B, 720x480 \(displayed size 853x480\), 15:00\)/m);
   assert.match(report, /^ {2}hd\.mp4 \(\d+B, 1920x1080, 15:00\)/m);
-  assert.match(report, /^길이가 같은 영상 \(10:00, 화면 비율 0\.6, 크기도 같음, 2개\):$/m);
+  assert.match(report, /^Videos with the same duration \(10:00, aspect ratio 0\.6, same size too, 2 files\):$/m);
 });
 
 test('findDuplicateNames: 이름이 달라도 길이와 화면 비율이 같은 MP4·MKV를 묶는다', () => {
@@ -455,8 +455,8 @@ test('findDuplicateNames: 이름 묶음에 이미 든 파일만 있는 길이 �
   );
   assert.ok(result.metadataGroups[0].files.some((file) => file.path === other));
   const report = formatDuplicateNames(result);
-  assert.strictEqual(report.match(/^길이가 같은 영상/gm).length, 1);
-  assert.match(report, /길이가 같은 묶음 1개\(파일 3개\)/);
+  assert.strictEqual(report.match(/^Videos with the same duration/gm).length, 1);
+  assert.match(report, /1 same-duration groups \(3 files\)/);
 });
 
 test('findDuplicateNames: 하나뿐인 이름이나 번호가 여럿인 이름의 파일도 길이로 묶는다', () => {
@@ -477,7 +477,7 @@ test('findDuplicateNames: 길이를 읽지 못한 MP4는 예외 없이 사유와
   assert.strictEqual(result.unknownMetadata, 2);
   // 읽지 못하는 형식(avi)은 사유가 없고, 읽을 수 있는 형식인데 못 읽은 파일만 사유를 남긴다.
   assert.deepStrictEqual(result.metadataErrors.map((item) => item.path), [broken]);
-  assert.match(formatDuplicateNames(result), /^길이·해상도 못 읽음: broken\.mp4 \(.+\)$/m);
+  assert.match(formatDuplicateNames(result), /^Could not read duration\/resolution: broken\.mp4 \(.+\)$/m);
 });
 
 test('findDuplicateNames: 예외 없이 길이나 해상도가 빠진 MP4도 사유와 함께 보고한다', () => {
@@ -490,15 +490,15 @@ test('findDuplicateNames: 예외 없이 길이나 해상도가 빠진 MP4도 사
   assert.deepStrictEqual(result.metadataGroups, []);
   assert.strictEqual(result.unknownMetadata, 1);
   const reasons = new Map(result.metadataErrors.map((item) => [item.path, item.reason]));
-  assert.match(reasons.get(noLength), /^길이 정보가 없습니다\.$|^길이와 해상도 정보가 없습니다\.$/);
-  assert.strictEqual(reasons.get(noSize), '해상도 정보가 없습니다.');
+  assert.match(reasons.get(noLength), /^The duration information is missing\.$|^The duration and resolution information is missing\.$/);
+  assert.strictEqual(reasons.get(noSize), 'The resolution information is missing.');
 });
 
 test('formatDuplicateNames: 길이를 반올림해 시·분·초로 쓴다', () => {
   const dir = tempDir();
   put(dir, 'a.mp4', mp4({ seconds: 3599.6 }));
   put(dir, 'b.mp4', mp4({ seconds: 3599.6 }));
-  assert.match(formatDuplicateNames(findDuplicateNames(dir)), /^길이가 같은 영상 \(1:00:00, /m);
+  assert.match(formatDuplicateNames(findDuplicateNames(dir)), /^Videos with the same duration \(1:00:00, /m);
 });
 
 test('formatDuplicateNames: 해상도와 길이, 길이가 같은 묶음을 보여 준다', () => {
@@ -509,13 +509,13 @@ test('formatDuplicateNames: 해상도와 길이, 길이가 같은 묶음을 보�
   put(dir, 'b.mp4', mp4({ seconds: 95 }));
   const report = formatDuplicateNames(findDuplicateNames(dir));
   const lines = report.split('\n');
-  assert.strictEqual(lines[0], '중복 후보 (번호 ABC-123, 2개):');
+  assert.strictEqual(lines[0], 'Duplicate candidates (number ABC-123, 2 files):');
   assert.match(lines[1], /^ {2}ABC-123 720p\.mkv \(\d+B, 1280x720, 1:02:05\)$/);
-  assert.match(lines[2], /^ {2}ABC-123\.mp4 \(\d+B, 1920x1080, 1:02:05\) \[남김: 해상도가 가장 높음\]$/);
-  assert.strictEqual(lines[3], '길이가 같은 영상 (1:35, 화면 비율 1.8, 크기도 같음, 2개):');
-  assert.match(lines[4], /^ {2}a\.mp4 \(\d+B, 1920x1080, 1:35\) \[남김: 모두 같아 경로 순으로 첫 파일\]$/);
+  assert.match(lines[2], /^ {2}ABC-123\.mp4 \(\d+B, 1920x1080, 1:02:05\) \[kept: highest resolution\]$/);
+  assert.strictEqual(lines[3], 'Videos with the same duration (1:35, aspect ratio 1.8, same size too, 2 files):');
+  assert.match(lines[4], /^ {2}a\.mp4 \(\d+B, 1920x1080, 1:35\) \[kept: all equal, first by path\]$/);
   assert.match(lines[5], /^ {2}b\.mp4 \(\d+B, 1920x1080, 1:35\)$/);
-  assert.strictEqual(lines.at(-1), '살펴본 영상 4개, 중복 후보 묶음 1개(파일 2개, 확인 필요 0개), 길이가 같은 묶음 1개(파일 2개), 길이 모름 0개, 번호가 여럿 0개, 판단 못함 0개, 건너뜀 0개');
+  assert.strictEqual(lines.at(-1), 'Checked 4 videos, 1 duplicate candidate groups (2 files, 0 need checking), 1 same-duration groups (2 files), 0 with unknown duration, 0 with several numbers, 0 undetermined, 0 skipped');
 });
 
 // 남길 파일 고르기(#34). 경로는 파일 이름만 쓴다.
@@ -524,12 +524,12 @@ const clip = (name, { size = 100, duration = 600, width = 1920, height = 1080, n
 test('chooseKeeper: 해상도가 가장 높은 파일을 고르고, 해상도가 같으면 크기가 큰 파일을 고른다', () => {
   assert.deepStrictEqual(chooseKeeper([clip('a.mp4', { size: 900, width: 1280, height: 720 }), clip('b.mkv', { size: 500 })]), {
     path: 'b.mkv',
-    reason: '해상도가 가장 높음',
+    reason: 'highest resolution',
     doubt: null,
   });
   assert.deepStrictEqual(chooseKeeper([clip('a.mp4', { size: 300 }), clip('b.mp4', { size: 700 }), clip('c.mp4', { size: 900, width: 640, height: 360 })]), {
     path: 'b.mp4',
-    reason: '해상도가 가장 높음, 크기가 가장 큼',
+    reason: 'highest resolution, largest size',
     doubt: null,
   });
   // 해상도를 모르는 파일은 아는 파일보다 뒤다.
@@ -540,7 +540,7 @@ test('chooseKeeper: 길이·해상도를 읽지 못한 파일은 해상도가 �
   const broken = clip('big.mp4', { size: 9000, duration: null, width: null, height: null, note: '구조가 깨졌습니다.' });
   assert.deepStrictEqual(chooseKeeper([broken, clip('small.mp4', { width: 640, height: 360 })]), {
     path: 'small.mp4',
-    reason: '길이나 해상도를 읽지 못한 파일을 뺌',
+    reason: 'excludes files whose duration or resolution could not be read',
     doubt: null,
   });
   // 읽지 않는 형식(note 없음)은 빼지 않는다.
@@ -550,16 +550,16 @@ test('chooseKeeper: 길이·해상도를 읽지 못한 파일은 해상도가 �
 
 test('chooseKeeper: 가장 긴 파일보다 1초 넘게 짧은 파일은 해상도가 높아도 뒤로 빼고 같은 영상이 아닐 수 있다고 알린다', () => {
   const keep = chooseKeeper([clip('ABC-123 4K.mp4', { duration: 300, width: 3840, height: 2160 }), clip('ABC-123.mp4', { duration: 7200 })]);
-  assert.deepStrictEqual(keep, { path: 'ABC-123.mp4', reason: '길이가 가장 김', doubt: '길이가 서로 달라 같은 영상이 아닐 수 있습니다.' });
+  assert.deepStrictEqual(keep, { path: 'ABC-123.mp4', reason: 'longest duration', doubt: 'The durations differ, so they may not be the same video.' });
   // 1초 이내 차이는 같은 길이로 보고 알리지 않는다. 길이를 모르는 파일은 빼지 않는다.
   assert.deepStrictEqual(chooseKeeper([clip('a.mp4', { duration: 600, width: 3840, height: 2160 }), clip('b.mp4', { duration: 600.9 })]), {
     path: 'a.mp4',
-    reason: '해상도가 가장 높음',
+    reason: 'highest resolution',
     doubt: null,
   });
   assert.deepStrictEqual(chooseKeeper([clip('a.avi', { size: 900, duration: null }), clip('b.mp4', { duration: 600 })]), {
     path: 'a.avi',
-    reason: '크기가 가장 큼',
+    reason: 'largest size',
     doubt: null,
   });
 });
@@ -567,26 +567,26 @@ test('chooseKeeper: 가장 긴 파일보다 1초 넘게 짧은 파일은 해상�
 test('chooseKeeper: 나머지가 같으면 이름이 짧은 파일, 그것도 같으면 경로 순으로 첫 파일을 고른다', () => {
   assert.deepStrictEqual(chooseKeeper([clip('movie - 복사본.mp4'), clip('movie (1).mp4'), clip('movie.mp4')]), {
     path: 'movie.mp4',
-    reason: '이름이 가장 짧음',
+    reason: 'shortest name',
     doubt: null,
   });
   assert.deepStrictEqual(chooseKeeper([clip(path.join('b', 'x.mp4')), clip(path.join('a', 'x.mp4'))]), {
     path: path.join('a', 'x.mp4'),
-    reason: '모두 같아 경로 순으로 첫 파일',
+    reason: 'all equal, first by path',
     doubt: null,
   });
-  assert.strictEqual(chooseKeeper([clip('b.mp4', { size: 50 }), clip('c.mp4'), clip('a.mp4')]).reason, '크기가 가장 큼, 나머지는 같아 경로 순으로 첫 파일');
+  assert.strictEqual(chooseKeeper([clip('b.mp4', { size: 50 }), clip('c.mp4'), clip('a.mp4')]).reason, 'largest size, the rest equal, first by path');
   // 경로 순은 보고와 같이 대소문자를 먼저 무시한다. 그래서 a가 B보다 앞이다.
   assert.strictEqual(chooseKeeper([clip(path.join('B', 'x.mp4')), clip(path.join('a', 'x.mp4'))]).path, path.join('a', 'x.mp4'));
 });
 
 test('chooseKeeper: 길이를 읽지 못한 것으로 빠진 파일의 길이로는 남은 파일을 짧다고 보지 않는다', () => {
   // 길이는 있지만 해상도가 없어 빠진 파일이 가장 길어도, 남은 파일끼리 길이를 비교한다.
-  const noSize = clip('x.mp4', { duration: 7200, width: null, height: null, note: '해상도 정보가 없습니다.' });
+  const noSize = clip('x.mp4', { duration: 7200, width: null, height: null, note: 'The resolution information is missing.' });
   assert.deepStrictEqual(chooseKeeper([noSize, clip('long.mp4', { duration: 7000, width: 1280, height: 720 }), clip('short.mp4', { duration: 300 })]), {
     path: 'long.mp4',
-    reason: '길이나 해상도를 읽지 못한 파일을 뺌, 길이가 가장 김',
-    doubt: '길이가 서로 달라 같은 영상이 아닐 수 있습니다.',
+    reason: 'excludes files whose duration or resolution could not be read, longest duration',
+    doubt: 'The durations differ, so they may not be the same video.',
   });
   const avi = clip('a.avi', { duration: null, width: null, height: null });
   assert.strictEqual(chooseKeeper([noSize, clip('b.mp4'), avi]).path, 'b.mp4');
@@ -594,7 +594,7 @@ test('chooseKeeper: 길이를 읽지 못한 것으로 빠진 파일의 길이로
 
 test('chooseKeeper: 파일이 없으면 null, 하나뿐이면 그 파일을 고른다', () => {
   assert.strictEqual(chooseKeeper([]), null);
-  assert.deepStrictEqual(chooseKeeper([clip('a.mp4')]), { path: 'a.mp4', reason: '파일이 하나뿐', doubt: null });
+  assert.deepStrictEqual(chooseKeeper([clip('a.mp4')]), { path: 'a.mp4', reason: 'only one file', doubt: null });
 });
 
 test('findDuplicateNames: 이름 묶음과 길이 묶음에 남길 파일을 붙이고, 길이가 다른 이름 묶음은 주의를 보여 준다', () => {
@@ -604,15 +604,15 @@ test('findDuplicateNames: 이름 묶음과 길이 묶음에 남길 파일을 붙
   put(dir, 'x.mp4', mp4({ seconds: 900 }));
   const bigger = put(dir, 'y.mkv', mkv({ seconds: 900.5, width: 3840, height: 2160 }));
   const result = findDuplicateNames(dir);
-  assert.deepStrictEqual(result.groups[0].keep, { path: full, reason: '길이가 가장 김', doubt: '길이가 서로 달라 같은 영상이 아닐 수 있습니다.' });
-  assert.deepStrictEqual(result.metadataGroups[0].keep, { path: bigger, reason: '해상도가 가장 높음', doubt: null });
+  assert.deepStrictEqual(result.groups[0].keep, { path: full, reason: 'longest duration', doubt: 'The durations differ, so they may not be the same video.' });
+  assert.deepStrictEqual(result.metadataGroups[0].keep, { path: bigger, reason: 'highest resolution', doubt: null });
   const lines = formatDuplicateNames(result).split('\n');
-  assert.strictEqual(lines[0], '중복 후보 (번호 ABC-123, 2개):');
-  assert.match(lines[1], /^ {2}ABC-123\.mp4 \(\d+B, 1280x720, 2:00:00\) \[남김: 길이가 가장 김\]$/);
+  assert.strictEqual(lines[0], 'Duplicate candidates (number ABC-123, 2 files):');
+  assert.match(lines[1], /^ {2}ABC-123\.mp4 \(\d+B, 1280x720, 2:00:00\) \[kept: longest duration\]$/);
   assert.match(lines[2], /^ {2}new[\\/]ABC-123 4K\.mp4 \(\d+B, 3840x2160, 5:00\)$/);
-  assert.strictEqual(lines[3], '  주의: 길이가 서로 달라 같은 영상이 아닐 수 있습니다.');
-  assert.strictEqual(lines[4], '길이가 같은 영상 (15:00, 화면 비율 1.8, 2개):');
-  assert.match(lines[6], /^ {2}y\.mkv \(\d+B, 3840x2160, 15:01\) \[남김: 해상도가 가장 높음\]$/);
+  assert.strictEqual(lines[3], '  Caution: The durations differ, so they may not be the same video.');
+  assert.strictEqual(lines[4], 'Videos with the same duration (15:00, aspect ratio 1.8, 2 files):');
+  assert.match(lines[6], /^ {2}y\.mkv \(\d+B, 3840x2160, 15:01\) \[kept: highest resolution\]$/);
 });
 
 test('titleWords: 번호 묶음의 제목 낱말에서 번호, 조각, 화질·배포 표시, 복사본 꼬리를 뺀다 (#103)', () => {
@@ -680,8 +680,8 @@ test('findDuplicateNames: 번호는 같은데 제목이 다른 묶음과 카메�
   });
   const report = formatDuplicateNames(result);
   const blockOf = (label) => report.split('\n').slice(report.split('\n').indexOf(label)).join('\n');
-  assert.match(blockOf('중복 후보 (번호 WWE-2023, 2개):'), /^중복 후보 \(번호 WWE-2023, 2개\):\n {2}.+\n {2}.+\n {2}주의: 번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음에서 남길 파일과 제목 낱말이 똑같은 파일만 지웁니다\.\n/);
-  assert.match(blockOf('중복 후보 (이름 "img 0001", 2개):'), /^중복 후보 \(이름 "img 0001", 2개\):\n {2}.+\n {2}.+\n {2}주의: 카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다\. remove-duplicates는 이 묶음을 지우지 않습니다\.\n/);
-  assert.match(blockOf('중복 후보 (번호 ABC-123, 2개):'), /^중복 후보 \(번호 ABC-123, 2개\):\n {2}.+\n {2}.+\n중복 후보/);
-  assert.match(report, /중복 후보 묶음 10개\(파일 20개, 확인 필요 7개\)/);
+  assert.match(blockOf('Duplicate candidates (number WWE-2023, 2 files):'), /^Duplicate candidates \(number WWE-2023, 2 files\):\n {2}.+\n {2}.+\n {2}Caution: The number is the same but the titles differ, so they may be different videos\. remove-duplicates deletes only files whose title words are identical to the file to keep in this group\.\n/);
+  assert.match(blockOf('Duplicate candidates (name "img 0001", 2 files):'), /^Duplicate candidates \(name "img 0001", 2 files\):\n {2}.+\n {2}.+\n {2}Caution: This is a common name such as a camera or sequence name, so videos with the same name may be different videos\. remove-duplicates does not delete this group\.\n/);
+  assert.match(blockOf('Duplicate candidates (number ABC-123, 2 files):'), /^Duplicate candidates \(number ABC-123, 2 files\):\n {2}.+\n {2}.+\nDuplicate candidates/);
+  assert.match(report, /10 duplicate candidate groups \(20 files, 7 need checking\)/);
 });

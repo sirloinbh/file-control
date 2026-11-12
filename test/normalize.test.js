@@ -105,24 +105,24 @@ test('다른 번호가 여럿이면 그대로 두고 사유를 알린다', () =>
     const result = normalizeName(input);
     assert.strictEqual(result.name, input);
     assert.strictEqual(result.number, null);
-    assert.match(result.reason, /번호가 여럿/);
+    assert.match(result.reason, /Several numbers/);
   }
 });
 
 test('바꾸면 안 되는 이름은 그대로 두고 사유를 알린다', () => {
   const unchanged = {
-    '.abc-123.MP4': /숨김이나 임시/,
-    '~$abc-123.docx': /숨김이나 임시/,
-    'abc-123.': /끝이 점이나 공백/,
-    'abc-123...': /끝이 점이나 공백/,
-    'abc-123. ': /끝이 점이나 공백/,
-    'abc-123.mp4 ': /끝이 점이나 공백/,
-    'abc-123.mp4　': /끝이 점이나 공백/,
-    'abc-123\u0085': /끝이 점이나 공백/,
-    'C:\\x\\abc-123.mp4': /쓸 수 없는 문자/,
-    'abc/def abc-123.mp4': /쓸 수 없는 문자/,
-    'abc-123.mp4:stream': /쓸 수 없는 문자/,
-    'abc-123\u0001.mp4': /쓸 수 없는 문자/,
+    '.abc-123.MP4': /Hidden and temporary/,
+    '~$abc-123.docx': /Hidden and temporary/,
+    'abc-123.': /Names ending with a dot or space/,
+    'abc-123...': /Names ending with a dot or space/,
+    'abc-123. ': /Names ending with a dot or space/,
+    'abc-123.mp4 ': /Names ending with a dot or space/,
+    'abc-123.mp4　': /Names ending with a dot or space/,
+    'abc-123\u0085': /Names ending with a dot or space/,
+    'C:\\x\\abc-123.mp4': /characters that cannot be used/,
+    'abc/def abc-123.mp4': /characters that cannot be used/,
+    'abc-123.mp4:stream': /characters that cannot be used/,
+    'abc-123\u0001.mp4': /characters that cannot be used/,
   };
   for (const [input, reason] of Object.entries(unchanged)) {
     const result = normalizeName(input);
@@ -138,7 +138,7 @@ test('이름이 너무 길어지면 그대로 두고 사유를 알린다', () =>
   assert.strictEqual(result.name, atLimit);
   assert.strictEqual(result.number, 'ABC-123');
   assert.strictEqual(result.inferred, true);
-  assert.match(result.reason, /이름이 너무 깁니다/);
+  assert.match(result.reason, /name is too long/);
   assert.strictEqual(normalizeName(`${'가'.repeat(243)}abc-123.mp4`).reason, null);
 });
 
@@ -147,7 +147,7 @@ test('파일 이름 한도를 넘는 입력은 처리하지 않고 바로 돌려
     const started = Date.now();
     const result = normalizeName(input);
     assert.strictEqual(result.name, input);
-    assert.match(result.reason, /너무 깁니다/);
+    assert.match(result.reason, /too long/);
     assert.ok(Date.now() - started < 1000);
   }
 });
@@ -201,6 +201,6 @@ test('비ASCII 라틴 문자가 붙은 단어 중간은 번호로 보지 않고,
 
 test('~로 시작하는 이름은 임시 파일로 보고 바꾸지 않는다 (#94)', () => {
   for (const input of ['~abc-123.mp4', '~ABC-123.mp4', '~WRL0001 ABC-123.tmp']) {
-    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: '숨김이나 임시 파일 이름은 바꾸지 않습니다.' }, input);
+    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: 'Hidden and temporary file names are not changed.' }, input);
   }
 });

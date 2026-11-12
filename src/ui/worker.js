@@ -17,7 +17,7 @@ function runOnce(argv, send) {
       progress: (line) => send({ type: 'progress', line: String(line) }),
       // 화면에는 표준 입력이 없다. 기다리면 작업이 끝나지 않으므로 바로 거부한다.
       readStdin: () => {
-        throw new fc.FcError('화면에서는 파일 내용을 함께 입력하세요.');
+        throw new fc.FcError('In the UI, also enter the file contents.');
       },
     });
     send({ type: 'done', outcome: toPlain(outcome) });
@@ -31,7 +31,7 @@ if (require.main === module) {
     const argv = message && Array.isArray(message.argv) ? message.argv.map(String) : null;
     const finish = () => process.disconnect();
     if (!argv) {
-      process.send({ type: 'error', error: { name: 'FcError', message: '실행할 명령이 없습니다.' } }, finish);
+      process.send({ type: 'error', error: { name: 'FcError', message: 'No command to run.' } }, finish);
       return;
     }
     let last;

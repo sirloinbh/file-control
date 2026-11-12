@@ -97,13 +97,13 @@ test('lowQualityCriteria는 기본으로 짧은 쪽 360화소를 쓰고, 정수�
 test('judgeQuality는 보이는 크기의 짧은 쪽으로 해상도를 보고, 한 기준이라도 미만이면 저화질이다 (#30)', () => {
   const criteria = lowQualityCriteria({ minBitrate: 500 });
   assert.deepStrictEqual(judgeQuality(saneInfo(info({ width: 640, height: 360 })), criteria), { status: 'ok', reasons: [] });
-  assert.deepStrictEqual(judgeQuality(saneInfo(info({ width: 480, height: 270 })), criteria).reasons, ['화면의 짧은 쪽 270화소 < 360']);
+  assert.deepStrictEqual(judgeQuality(saneInfo(info({ width: 480, height: 270 })), criteria).reasons, ['short side 270 px < 360']);
   // 세로 영상(회전 반영 보이는 크기 360x640)은 짧은 쪽이 360이라 저화질이 아니다.
   assert.strictEqual(judgeQuality(saneInfo(info({ width: 640, height: 360, displayWidth: 360, displayHeight: 640 })), criteria).status, 'ok');
   // 화소 비율로 보이는 크기가 줄면 그 크기로 본다.
   assert.strictEqual(judgeQuality(saneInfo(info({ width: 720, height: 480, displayWidth: 720, displayHeight: 300 })), criteria).status, 'low');
-  assert.deepStrictEqual(judgeQuality(saneInfo(info({ bitrate: 300000 })), criteria).reasons, ['비트레이트 300kbps < 500kbps']);
-  assert.deepStrictEqual(judgeQuality(saneInfo(info({ width: 320, height: 240, bitrate: 300000 })), criteria).reasons, ['화면의 짧은 쪽 240화소 < 360', '비트레이트 300kbps < 500kbps']);
+  assert.deepStrictEqual(judgeQuality(saneInfo(info({ bitrate: 300000 })), criteria).reasons, ['bitrate 300 kbps < 500 kbps']);
+  assert.deepStrictEqual(judgeQuality(saneInfo(info({ width: 320, height: 240, bitrate: 300000 })), criteria).reasons, ['short side 240 px < 360', 'bitrate 300 kbps < 500 kbps']);
   // 비트레이트 기준이 없으면 비트레이트는 보지 않는다.
   assert.strictEqual(judgeQuality(saneInfo(info({ bitrate: 300000 })), lowQualityCriteria()).status, 'ok');
 });
@@ -113,7 +113,7 @@ test('깨진 메타데이터 값은 저화질로 보지 않고 판단 못함으�
   // 길이가 비정상으로 커서 비트레이트가 0에 가까운 경우
   const longer = judgeQuality(saneInfo(info({ duration: 8.5e12, bitrate: 0 })), criteria);
   assert.strictEqual(longer.status, 'unknown');
-  assert.match(longer.reasons.join(' '), /7일을 넘어 깨진 값/);
+  assert.match(longer.reasons.join(' '), /over 7 days and may be corrupt/);
   // 비트레이트가 1kbps 미만
   assert.strictEqual(judgeQuality(saneInfo(info({ bitrate: 200 })), criteria).status, 'unknown');
   // 길이 1초 미만이면 비트레이트를 믿지 않는다.
@@ -121,27 +121,27 @@ test('깨진 메타데이터 값은 저화질로 보지 않고 판단 못함으�
   // 해상도가 범위 밖이면 해상도를 모르는 것으로 본다.
   const tiny = judgeQuality(saneInfo(info({ width: 4, height: 2 })), lowQualityCriteria());
   assert.strictEqual(tiny.status, 'unknown');
-  assert.match(tiny.reasons.join(' '), /정상 범위를 벗어나/);
+  assert.match(tiny.reasons.join(' '), /outside the normal range/);
   assert.strictEqual(judgeQuality(saneInfo(info({ width: null, height: null })), lowQualityCriteria()).status, 'unknown');
   // 보이는 크기가 인코딩 해상도와 2배 넘게 다르면 깨진 값이다. tkhd가 깨져 1920x1080이 1920x100으로 보이는 경우(1차 리뷰).
   const squashed = judgeQuality(saneInfo(info({ width: 1920, height: 1080, displayWidth: 1920, displayHeight: 100 })), lowQualityCriteria());
   assert.strictEqual(squashed.status, 'unknown');
-  assert.match(squashed.reasons.join(' '), /1920x1080, 보이는 크기 1920x100\)이 정상 범위를 벗어나/);
+  assert.match(squashed.reasons.join(' '), /1920x1080, displayed size 1920x100\) is outside the normal range/);
   // 정상인 화소 비율과 회전, 2:1 아나모픽은 그대로 믿는다.
   for (const [width, height, displayWidth, displayHeight, status] of [[720, 480, 853, 480, 'ok'], [1440, 1080, 1920, 1080, 'ok'], [1920, 1080, 1080, 1920, 'ok'], [1920, 1080, 3840, 1080, 'ok'], [640, 352, 320, 352, 'low']]) {
     assert.strictEqual(judgeQuality(saneInfo(info({ width, height, displayWidth, displayHeight })), lowQualityCriteria()).status, status, `${width}x${height} -> ${displayWidth}x${displayHeight}`);
   }
   // 길이가 있는데 비트레이트만 없으면 그렇게 알린다.
   const noBitrate = judgeQuality(saneInfo(info({ bitrate: null })), criteria);
-  assert.deepStrictEqual(noBitrate, { status: 'unknown', reasons: ['비트레이트를 알 수 없어 판단하지 못했습니다.', '비트레이트 정보가 없습니다.'] });
+  assert.deepStrictEqual(noBitrate, { status: 'unknown', reasons: ['Could not judge because the bitrate could not be determined.', 'There is no bitrate information.'] });
   // 해상도가 이미 미만이면 비트레이트를 몰라도 저화질이다.
   assert.strictEqual(judgeQuality(saneInfo(info({ width: 320, height: 240, duration: null, bitrate: null })), criteria).status, 'low');
 });
 
 test('읽기에서 길이를 믿지 못한 파일은 비트레이트로 저화질이 되지 않고 판단 못함이다 (#179)', () => {
   const criteria = lowQualityCriteria({ minBitrate: 500 });
-  const doubted = judgeQuality(saneInfo(info({ width: 1920, height: 1080, bitrate: 5000, bitrateNote: '길이 값을 믿을 수 없습니다.' })), criteria);
-  assert.deepStrictEqual(doubted, { status: 'unknown', reasons: ['비트레이트를 알 수 없어 판단하지 못했습니다.', '길이 값을 믿을 수 없습니다.'] });
+  const doubted = judgeQuality(saneInfo(info({ width: 1920, height: 1080, bitrate: 5000, bitrateNote: 'The duration value cannot be trusted.' })), criteria);
+  assert.deepStrictEqual(doubted, { status: 'unknown', reasons: ['Could not judge because the bitrate could not be determined.', 'The duration value cannot be trusted.'] });
 
   const dir = tempDir();
   // 60초짜리 1080p 파일의 길이가 60000초로 적힌 경우: 파일 전체로 계산하면 약 5kbps라 500kbps 기준에 걸린다.
@@ -156,8 +156,8 @@ test('읽기에서 길이를 믿지 못한 파일은 비트레이트로 저화�
   assert.deepStrictEqual(names(dir, result.low), ['starved.mp4']);
   assert.deepStrictEqual(names(dir, result.unreadable), ['partial.mp4', 'stretched.mkv', 'stretched.mp4']);
   const report = formatLowQuality(result);
-  assert.match(report, /^판단 못함: stretched\.mp4 \(비트레이트를 알 수 없어 판단하지 못했습니다\. 길이 값\(60000초\)이 표본 표의 길이\(60초\)보다 훨씬 길어/m);
-  assert.match(report, /^판단 못함: partial\.mp4 \(.*받다 만 파일일 수 있어/m);
+  assert.match(report, /^Undetermined: stretched\.mp4 \(Could not judge because the bitrate could not be determined\. The duration value \(60000 s\) is much longer than the sample table duration \(60 s\)/m);
+  assert.match(report, /^Undetermined: partial\.mp4 \(.*may be a partial download/m);
 });
 
 test('findLowQuality는 MP4·MKV의 해상도와 비트레이트를 읽어 기준 미만을 고르고 파일은 건드리지 않는다 (#30)', () => {
@@ -191,24 +191,24 @@ test('findLowQuality는 MP4·MKV의 해상도와 비트레이트를 읽어 기�
   assert.deepStrictEqual(fs.readdirSync(dir, { recursive: true }).sort(), before);
 
   const report = formatLowQuality(byBitrate);
-  assert.match(report, /^기준: 화면의 짧은 쪽 360화소 또는 비트레이트 500kbps 미만$/m);
-  assert.match(report, /^저화질: starved\.mp4 \(.*1280x720, 1:00, \d+kbps\) \[비트레이트 \d+kbps < 500kbps\]$/m);
-  assert.match(report, /^판단 못함: old\.avi \(\.avi 형식은 해상도를 읽지 못합니다\.\)$/m);
-  assert.match(report, /^영상 7개 확인, 저화질 3개, 판단 못함 2개, 건너뜀 0개$/m);
+  assert.match(report, /^Criteria: below short side 360 px or bitrate 500 kbps$/m);
+  assert.match(report, /^Low quality: starved\.mp4 \(.*1280x720, 1:00, \d+kbps\) \[bitrate \d+ kbps < 500 kbps\]$/m);
+  assert.match(report, /^Undetermined: old\.avi \(Cannot read the resolution of the \.avi format\.\)$/m);
+  assert.match(report, /^Checked 7 videos, 3 low quality, 2 undetermined, 0 skipped$/m);
 });
 
 test('find-low-quality 명령은 기준 옵션을 받고, 잘못된 값과 다른 명령의 기준 옵션을 거부한다 (#30)', () => {
   const dir = tempDir();
   put(dir, 'a.mp4', mp4({ seconds: 60, width: 854, height: 480 }));
-  assert.match(run(['find-low-quality', dir]), /저화질 0개/);
-  assert.match(run(['find-low-quality', dir, '--min-height=720']), /^저화질: a\.mp4 .*\[화면의 짧은 쪽 480화소 < 720\]$/m);
-  assert.match(run(['find-low-quality', '--min-bitrate=5000', dir]), /비트레이트 5000kbps 미만/);
-  assert.throws(() => run(['find-low-quality', dir, '--min-height=abc']), /--min-height는 1부터 100000까지의 정수로 쓰세요: "abc"$/);
-  assert.throws(() => run(['find-low-quality', dir, '--min-height=']), /--min-height는 1부터 .*: ""$/);
-  assert.throws(() => run(['find-low-quality', dir, '--min-height=720=3']), /--min-height는 1부터 .*: "720=3"$/);
-  assert.throws(() => run(['find-low-quality', dir, '--min-bitrate=1.5']), /--min-bitrate는 1부터 1000000까지의 정수로 쓰세요: "1\.5"$/);
+  assert.match(run(['find-low-quality', dir]), /0 low quality/);
+  assert.match(run(['find-low-quality', dir, '--min-height=720']), /^Low quality: a\.mp4 .*\[short side 480 px < 720\]$/m);
+  assert.match(run(['find-low-quality', '--min-bitrate=5000', dir]), /bitrate 5000 kbps/);
+  assert.throws(() => run(['find-low-quality', dir, '--min-height=abc']), /--min-height must be an integer from 1 to 100000: "abc"$/);
+  assert.throws(() => run(['find-low-quality', dir, '--min-height=']), /--min-height must be an integer from 1 to .*: ""$/);
+  assert.throws(() => run(['find-low-quality', dir, '--min-height=720=3']), /--min-height must be an integer from 1 to .*: "720=3"$/);
+  assert.throws(() => run(['find-low-quality', dir, '--min-bitrate=1.5']), /--min-bitrate must be an integer from 1 to 1000000: "1\.5"$/);
   // -- 뒤의 --min-height=720은 옵션이 아니라 이름이라 타겟이 둘이 된다.
-  assert.throws(() => run(['find-low-quality', dir, '--', '--min-height=720']), /타겟은 하나만 받습니다/);
-  assert.throws(() => run(['find-low-quality', dir, '--min-height']), /--min-height에는 값을/);
-  assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height는 find-low-quality, remove-low-quality에서만/);
+  assert.throws(() => run(['find-low-quality', dir, '--', '--min-height=720']), /Only one target is accepted/);
+  assert.throws(() => run(['find-low-quality', dir, '--min-height']), /Attach a value to --min-height/);
+  assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height can be used only with find-low-quality and remove-low-quality/);
 });

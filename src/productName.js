@@ -79,7 +79,7 @@ function planProductNames(dir) {
     const skip = (reason) => plan.skipped.push({ path: entry.path, reason });
     // 폴더를 가리키는 링크는 확장자가 없어도 그 안을 보지 않았음을 알린다.
     if (entry.type === 'link') {
-      skip('링크는 바꾸지 않습니다.');
+      skip('Links are not renamed.');
       continue;
     }
     const name = path.basename(entry.path);
@@ -92,14 +92,14 @@ function planProductNames(dir) {
       const from = access.read(entry.path);
       // 영상이 아닌 .ts는 어디에 있든 보고하지 않는다. 그래서 건너뛸지 보기 전에 내용을 확인한다.
       if (transport && !isTransportStream(access.target, entry.relative)) continue;
-      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('이전 작업의 잔여물이라 바꾸지 않습니다.');
-      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Windows 시스템 폴더 안의 파일이라 바꾸지 않습니다.');
-      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('저장소 폴더 안의 파일이라 바꾸지 않습니다.');
-      if (name.startsWith('.')) throw new FcError('점으로 시작하는 파일은 번호를 앞에 붙이면 숨김 이름이 아니게 되어 바꾸지 않습니다.');
+      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('Not renamed because it is a leftover from an earlier job.');
+      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a Windows system folder.');
+      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a repository folder.');
+      if (name.startsWith('.')) throw new FcError('Not renamed because adding the number in front of a name that starts with a dot would make it no longer a hidden name.');
       const inName = extractProductNumbers(name);
       if (inName.length > 0) {
         // 예전 방식의 이동이 중간에 멈추면 번호가 든 이름의 빈 파일이 남았다(#73). 이미 바꾼 영상으로 세지 않고 따로 알린다.
-        if (fs.lstatSync(from).size === 0) throw new FcError('빈 파일입니다. 이전 실행이 중간에 멈추며 남긴 자리표시일 수 있으니 확인한 뒤 지우세요.');
+        if (fs.lstatSync(from).size === 0) throw new FcError('The file is empty. It may be a placeholder left when an earlier run stopped midway; check it and delete it.');
         plan.already.push({ path: entry.path, number: inName[0] });
         continue;
       }
@@ -131,13 +131,13 @@ function planProductNames(dir) {
       }
       // 파일 안의 글은 쓰지 않고 형식을 통과한 번호만 이름에 넣으므로 제목의 경로·제어 문자가 이름에 들어오지 않는다.
       const desired = `${chosen.number} ${base}${ext}`;
-      if (desired.length > MAX_NAME) throw new FcError(`번호를 넣으면 이름이 너무 깁니다: ${desired}`);
+      if (desired.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${desired}`);
       const to = path.join(path.dirname(from), desired);
-      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${desired}${leftoverNote(from, to)}`);
+      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`Not renamed because the name already exists: ${desired}${leftoverNote(from, to)}`);
       plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source, note: metadataError ?? null });
     } catch (err) {
       if (err instanceof FcError) skip(err.message);
-      else if (err.syscall) skip(`파일을 확인할 수 없습니다. (${err.code})`);
+      else if (err.syscall) skip(`Cannot check the file. (${err.code})`);
       else throw err;
     }
   }
@@ -147,13 +147,13 @@ function planProductNames(dir) {
 // 계획과 실행 사이에 원본이 링크로 바뀌었거나 이름이 찼으면 바꾸지 않는다. 덮어쓰지 않고, 번호를 붙여 피하지도 않는다.
 function applyRename(rename, access) {
   const from = access.delete(rename.from);
-  if (from !== rename.from) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.from} -> ${from}`);
-  if (!fs.lstatSync(from).isFile()) throw new FcError(`계획 뒤에 파일이 아니게 됐습니다: ${from}`);
+  if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
+  if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
   // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
-  const taken = () => new FcError(`같은 이름이 이미 있어 바꾸지 않습니다: ${rename.name}${leftoverNote(from, rename.to)}`);
+  const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
   const to = access.write(rename.to);
-  if (to !== rename.to) throw new FcError(`계획 뒤에 경로가 바뀌었습니다: ${rename.to} -> ${to}`);
+  if (to !== rename.to) throw new FcError(`The path changed after planning: ${rename.to} -> ${to}`);
   if (!moveWithoutOverwrite(from, to)) throw taken();
 }
 
@@ -173,26 +173,26 @@ function applyProductNames(plan, { dryRun = false } = {}) {
       applyRename(rename, access);
       result.renamed.push(rename);
     } catch (err) {
-      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `이름을 바꾸지 못했습니다. (${err.code})` });
+      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `Could not rename. (${err.code})` });
     }
   }
   return result;
 }
 
-const SOURCE_NAMES = { title: '제목', comment: '코멘트', folder: '폴더명' };
+const SOURCE_NAMES = { title: 'title', comment: 'comment', folder: 'folder name' };
 
 function formatProductNumbers(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const prefix = result.dryRun ? '[미리보기] ' : '';
+  const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.renamed) lines.push(`${prefix}이름 변경: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]}${item.note ? `, 메타데이터를 읽지 못함: ${item.note}` : ''})`);
-  for (const item of result.already) lines.push(`${prefix}이미 있음: ${relative(item.path)} (${item.number})`);
-  for (const item of result.notFound) lines.push(`${prefix}못 찾음: ${relative(item.path)}${item.note ? ` (${item.note})` : ''}`);
-  for (const item of result.conflicts) lines.push(`${prefix}번호가 엇갈림: ${relative(item.path)} (${item.numbers.join(', ')}${item.note ? `, 메타데이터를 읽지 못함: ${item.note}` : ''})`);
-  for (const item of result.skipped) lines.push(`${prefix}건너뜀: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.failed) lines.push(`실패: ${relative(item.from)} (${item.reason})`);
+  for (const item of result.renamed) lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]}${item.note ? `, could not read metadata: ${item.note}` : ''})`);
+  for (const item of result.already) lines.push(`${prefix}Already present: ${relative(item.path)} (${item.number})`);
+  for (const item of result.notFound) lines.push(`${prefix}Not found: ${relative(item.path)}${item.note ? ` (${item.note})` : ''}`);
+  for (const item of result.conflicts) lines.push(`${prefix}Numbers disagree: ${relative(item.path)} (${item.numbers.join(', ')}${item.note ? `, could not read metadata: ${item.note}` : ''})`);
+  for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.failed) lines.push(`Failed: ${relative(item.from)} (${item.reason})`);
   lines.push(
-    `${prefix}이름 변경 ${result.renamed.length}개, 이미 있음 ${result.already.length}개, 못 찾음 ${result.notFound.length}개, 엇갈림 ${result.conflicts.length}개, 건너뜀 ${result.skipped.length}개, 실패 ${result.failed.length}개`,
+    `${prefix}Rename ${result.renamed.length}, already present ${result.already.length}, not found ${result.notFound.length}, disagree ${result.conflicts.length}, skipped ${result.skipped.length}, failed ${result.failed.length}`,
   );
   return lines.join('\n');
 }

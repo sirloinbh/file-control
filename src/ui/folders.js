@@ -85,9 +85,9 @@ function commonPlaces({ home = os.homedir(), env = process.env, exists = isDirec
   const registered = shell();
   const first = (key) => (registered[key] ? [registered[key]] : []);
   const candidates = [
-    { label: '다운로드', paths: [...first('downloads'), path.join(home, 'Downloads')] },
-    { label: '바탕화면', paths: [...first('desktop'), ...oneDrive.flatMap((dir) => [path.join(dir, 'Desktop'), path.join(dir, '바탕 화면')]), path.join(home, 'Desktop')] },
-    { label: '문서', paths: [...first('documents'), ...oneDrive.flatMap((dir) => [path.join(dir, 'Documents'), path.join(dir, '문서')]), path.join(home, 'Documents')] },
+    { label: 'Downloads', paths: [...first('downloads'), path.join(home, 'Downloads')] },
+    { label: 'Desktop', paths: [...first('desktop'), ...oneDrive.flatMap((dir) => [path.join(dir, 'Desktop'), path.join(dir, '바탕 화면')]), path.join(home, 'Desktop')] },
+    { label: 'Documents', paths: [...first('documents'), ...oneDrive.flatMap((dir) => [path.join(dir, 'Documents'), path.join(dir, '문서')]), path.join(home, 'Documents')] },
   ];
   const places = [];
   for (const { label, paths } of candidates) {
@@ -102,7 +102,7 @@ function commonPlaces({ home = os.homedir(), env = process.env, exists = isDirec
 function protection(dir) {
   if (process.platform === 'win32') {
     const name = dir.slice(path.parse(dir).root.length).split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part));
-    if (name !== undefined) return `끝이 점이나 공백인 이름(${name})`;
+    if (name !== undefined) return `name ending with a dot or space (${name})`;
   }
   try {
     return protectedReason(dir);
@@ -123,17 +123,17 @@ function isNetworkOrDevicePath(p) {
 // 입력 경로를 실제 폴더 경로로 바꾼다(1차 리뷰). 8.3 짧은 이름(C:\PROGRA~1), 대소문자, 정션·심볼릭 링크를 풀어
 // 보호 판정과 고른 값이 실제 폴더를 가리키게 한다. 네트워크·장치 경로와 그리로 이어지는 링크는 거부한다.
 function realFolder(dir) {
-  if (typeof dir !== 'string' || !path.isAbsolute(dir) || dir.includes('\0')) throw new FcError(`절대경로가 아닙니다: ${dir}`);
-  if (isNetworkOrDevicePath(dir)) throw new FcError(`네트워크·장치 경로는 열지 않습니다: ${dir}`);
+  if (typeof dir !== 'string' || !path.isAbsolute(dir) || dir.includes('\0')) throw new FcError(`Not an absolute path: ${dir}`);
+  if (isNetworkOrDevicePath(dir)) throw new FcError(`Network and device paths are not opened: ${dir}`);
   const resolved = path.resolve(dir);
-  if (!isDirectory(resolved)) throw new FcError(`폴더가 아니거나 없습니다: ${resolved}`);
+  if (!isDirectory(resolved)) throw new FcError(`Not a folder or does not exist: ${resolved}`);
   let real;
   try {
     real = fs.realpathSync.native(resolved);
   } catch (err) {
-    throw new FcError(`폴더를 확인할 수 없습니다: ${resolved} (${err.code ?? err.message})`);
+    throw new FcError(`Cannot check the folder: ${resolved} (${err.code ?? err.message})`);
   }
-  if (isNetworkOrDevicePath(real)) throw new FcError(`네트워크 경로로 이어지는 폴더는 열지 않습니다: ${resolved}`);
+  if (isNetworkOrDevicePath(real)) throw new FcError(`Folders that lead to a network path are not opened: ${resolved}`);
   return real;
 }
 
@@ -141,8 +141,8 @@ function realFolder(dir) {
 // 부모가 보호 폴더 "안"이면(시스템 폴더, 설정 폴더 등) 자식도 같다. 부모가 보호 폴더를 "포함"해 막혔거나(드라이브 루트, 사용자 폴더 자체)
 // 사유를 알 수 없었으면 자식마다 다르므로 null이다.
 function inheritedProtection(parentReason) {
-  if (parentReason === null || parentReason.endsWith('를 포함')) return null;
-  return /^(?:시스템 폴더|사용자 설정 폴더|다른 사용자의 설정 폴더|기본 사용자 프로필|끝이 점이나 공백인 이름)/.test(parentReason) ? parentReason : null;
+  if (parentReason === null || parentReason.startsWith('contains ')) return null;
+  return /^(?:system folder|user settings folder|another user's settings folder|default user profile|name ending with a dot or space)/.test(parentReason) ? parentReason : null;
 }
 
 // 화면에 보여 줄 하위 폴더 수 한도. 큰 폴더(C:\Windows\WinSxS 등)에서 화면이 지나치게 커지고 서버가 오래 멈추지 않게 한다(1차 리뷰).
@@ -161,7 +161,7 @@ function browseFolder(dir) {
     entries = list(resolved);
   } catch (err) {
     if (err instanceof FcError) throw err;
-    throw new FcError(`폴더를 읽을 수 없습니다: ${resolved} (${err.code ?? err.message})`);
+    throw new FcError(`Cannot read the folder: ${resolved} (${err.code ?? err.message})`);
   }
   const own = protection(resolved);
   const inherited = inheritedProtection(own);

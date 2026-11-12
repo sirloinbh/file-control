@@ -156,7 +156,7 @@ test('겹치게 만든 SeekHead로 메모리를 고갈시키지 못한다', () =
   let inner = el(0xec, Buffer.alloc(1024 * 1024));
   for (let index = 100; index >= 0; index -= 1) inner = el(0x114d9b74, seekEntry((index + 1) * step), inner);
   const file = write(dir, 'a.mkv', header(), segment(inner));
-  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /너무 많아/.test(err.message));
+  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /too many/.test(err.message));
 });
 
 test('SeekHead의 같은 항목은 한 번만 보고 순환해도 끝난다', () => {
@@ -276,7 +276,7 @@ test('MKV/WebM이 아니면 FcError를 낸다', () => {
   const cases = { 'text.mkv': Buffer.from('not mkv'), 'empty.mkv': Buffer.alloc(0), 'other.mkv': Buffer.concat([header('other'), segment()]), 'noseg.mkv': header(), 'mp4.mkv': Buffer.from('00000018667479706d703432', 'hex') };
   for (const [name, data] of Object.entries(cases)) {
     fs.writeFileSync(path.join(dir, name), data);
-    assert.throws(() => readMkvMetadata(dir, name), (err) => err instanceof FcError && /MKV\/WebM 형식이 아닙니다/.test(err.message), name);
+    assert.throws(() => readMkvMetadata(dir, name), (err) => err instanceof FcError && /Not an MKV\/WebM format/.test(err.message), name);
   }
 });
 
@@ -334,7 +334,7 @@ test('product-number가 MKV의 제목과 코멘트에서 번호를 찾는다', (
   fs.writeFileSync(path.join(dir, 'broken.mkv'), 'not mkv');
   const result = addProductNumbers(dir);
   assert.deepStrictEqual(result.renamed.map((item) => [item.name, item.source]).sort(), [['ABC-123 a.mkv', 'title'], ['XYZ-999 b.webm', 'comment']]);
-  assert.match(result.notFound[0].note, /MKV\/WebM 형식이 아닙니다/);
+  assert.match(result.notFound[0].note, /Not an MKV\/WebM format/);
 });
 
 test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한다 (#106)', () => {
@@ -434,7 +434,7 @@ test('읽기 한도에 닿는 MKV도 파일을 한 번만 열고 빨리 끝낸�
   const file = write(dir, 'void.mkv', header(), segment(voids));
   const open = t.mock.method(fs, 'openSync');
   const started = Date.now();
-  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /너무 많아/.test(err.message));
+  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /too many/.test(err.message));
   assert.strictEqual(open.mock.callCount(), 1);
   assert.ok(Date.now() - started < 5000, `${Date.now() - started}ms`);
 });
@@ -459,13 +459,13 @@ test('폴더 번호를 찾아도 메타데이터를 읽지 못한 사유를 보�
   fs.writeFileSync(path.join(dir, 'AAA-111 BBB-222', 'bad.mkv'), 'not mkv');
   const result = addProductNumbers(dir, { dryRun: true });
   const notes = Object.fromEntries(result.renamed.map((item) => [path.basename(item.from), item.note]));
-  assert.match(notes['over.mkv'], /MKV 요소가 너무 많아/);
+  assert.match(notes['over.mkv'], /too many MKV elements/);
   assert.strictEqual(notes['ok.mkv'], null);
-  assert.match(result.conflicts[0].note, /MKV\/WebM 형식이 아닙니다/);
+  assert.match(result.conflicts[0].note, /Not an MKV\/WebM format/);
   const report = formatProductNumbers(result);
-  assert.match(report, /이름 변경: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(폴더명, 메타데이터를 읽지 못함: MKV 요소가 너무 많아/);
-  assert.match(report, /이름 변경: ABC-123[\\/]ok\.mkv -> ABC-123 ok\.mkv \(폴더명\)\n/);
-  assert.match(report, /번호가 엇갈림: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, 메타데이터를 읽지 못함: MKV\/WebM 형식이 아닙니다/);
+  assert.match(report, /Rename: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(folder name, could not read metadata: Stopped reading because there are too many MKV elements/);
+  assert.match(report, /Rename: ABC-123[\\/]ok\.mkv -> ABC-123 ok\.mkv \(folder name\)\n/);
+  assert.match(report, /Numbers disagree: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, could not read metadata: Not an MKV\/WebM format/);
 });
 
 // #179: 탐색 표(Cues). points는 [시각(ms), Cluster 위치] 목록이다.
@@ -500,7 +500,7 @@ test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트
     assert.ok(positions.every((at) => at < cuesAt), '탐색 표 위치를 읽음');
   }
   const on = readBytes({ verifyBitrate: true });
-  assert.match(on.result.bitrateNote, /탐색 표의 마지막 시각/);
+  assert.match(on.result.bitrateNote, /last time in the seek table/);
   // 첫 Cluster 앞에 있어 순서대로 만나는 탐색 표도 끄면 본문을 읽지 않는다(1차 리뷰).
   const before = write(dir, 'b.mkv', header(), segment(info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cues(...points), cluster()));
   const sizeOf = (options) => {
@@ -515,7 +515,7 @@ test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트
   assert.strictEqual(off.result.bitrateNote, null);
   assert.ok(off.bytes < 64 * 1024, `${off.bytes}바이트를 읽음`);
   const onBefore = sizeOf({ verifyBitrate: true });
-  assert.match(onBefore.result.bitrateNote, /탐색 표의 마지막 시각/);
+  assert.match(onBefore.result.bitrateNote, /last time in the seek table/);
   assert.ok(onBefore.bytes > cues(...points).length, `${onBefore.bytes}바이트를 읽음`);
   assert.ok(on.positions.some((at) => at >= cuesAt), '켜면 탐색 표를 읽는다');
   assert.ok(on.bytes > cues(...points).length, `${on.bytes}바이트를 읽음`);
@@ -531,7 +531,7 @@ test('길이 값이 탐색 표의 마지막 시각보다 훨씬 길면 비트레
   const result = readMkvMetadata(dir, file, { verifyBitrate: true });
   assert.strictEqual(result.duration, 60000);
   assert.strictEqual(result.bitrate, null);
-  assert.match(result.bitrateNote, /^길이 값\(60000초\)이 탐색 표의 마지막 시각\(58초\)보다 훨씬 길어/);
+  assert.match(result.bitrateNote, /^The duration value \(60000 s\) is much longer than the last time in the seek table \(58 s\)/);
 });
 
 test('길이 값이 탐색 표와 맞거나 탐색 표가 없으면 비트레이트를 계산한다 (#179)', () => {
@@ -550,14 +550,14 @@ test('Segment나 탐색 표가 파일 끝 너머를 가리키는 받다 만 파�
   fs.writeFileSync(path.join(dir, 'cut.mkv'), whole.subarray(0, whole.length - 3000));
   const cut = readMkvMetadata(dir, 'cut.mkv', { verifyBitrate: true });
   assert.strictEqual(cut.bitrate, null);
-  assert.match(cut.bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(cut.bitrateNote, /may be a partial download/);
   // 크기를 모르는 Segment(실시간 녹화)라도 탐색 표의 Cluster 위치가 파일 끝을 넘으면 받다 만 파일이다.
   const open = Buffer.concat([header(), Buffer.from('18538067', 'hex'), Buffer.from('01FFFFFFFFFFFFFF', 'hex')]);
   const live = write(dir, 'live.mkv', open, info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cues([0, 10], [55000, 90_000_000]), cluster());
-  assert.match(readMkvMetadata(dir, live, { verifyBitrate: true }).bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(readMkvMetadata(dir, live, { verifyBitrate: true }).bitrateNote, /may be a partial download/);
   // SeekHead가 파일 끝 너머의 탐색 표를 가리키는 경우
   const far = readMkvMetadata(dir, write(dir, 'far.mkv', header(), segment(cuesHead(90_000_000), info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cluster())), { verifyBitrate: true });
-  assert.match(far.bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(far.bitrateNote, /may be a partial download/);
 });
 
 test('탐색 항목이 하나뿐이거나 마지막 시각이 0이면 길이를 맞춰 보지 않는다 (#179, 1차 리뷰)', () => {

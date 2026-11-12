@@ -47,9 +47,9 @@ function markerFinder() {
 // markerFinder가 찾은 표시를 남기는 사유로 쓴다. keeper를 주면 남길 파일의 표시로 적는다.
 function markerReason(found, { keeper = false } = {}) {
   if (found === null) return null;
-  if (found.folder !== undefined) return `${keeper ? '남길 파일이 ' : ''}받기 도구의 표시 폴더(${found.folder}) 안에 있어 아직 받는 중일 수 있어 남겼습니다.`;
-  if (found.error !== undefined) return `받기 도구의 표시 파일을 확인하려고 ${keeper ? '남길 파일의 ' : ''}폴더를 읽지 못해 남겼습니다. (${found.error})`;
-  return `받기 도구의 표시 파일(${found.marker})이 ${keeper ? '남길 파일 ' : ''}옆에 있어 아직 받는 중일 수 있어 남겼습니다. 받기를 그만뒀다면 표시 파일을 지운 뒤 다시 실행합니다.`;
+  if (found.folder !== undefined) return `Kept because ${keeper ? 'the file to keep is' : 'the file is'} inside the download tool's marker folder (${found.folder}) and may still be downloading.`;
+  if (found.error !== undefined) return `Kept because the folder ${keeper ? 'of the file to keep ' : ''}could not be read to check for the download tool's marker file. (${found.error})`;
+  return `Kept because the download tool's marker file (${found.marker}) is next to ${keeper ? 'the file to keep' : 'the file'} and it may still be downloading. If you gave up the download, delete the marker file and run again.`;
 }
 
 module.exports = { DOWNLOAD_MARKER, downloadMarkers, markerFinder, markerReason };

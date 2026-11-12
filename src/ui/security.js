@@ -60,22 +60,22 @@ function isAllowedOrigin(origin, port) {
 // 상태를 바꾸지 않는 요청(GET 화면)의 검사. Host만 본다. 맞지 않으면 RequestError를 던진다.
 // mutating이 true면(파일을 바꾸는 주소) POST가 아닌 요청도 거부한다. GET으로 바꾸기를 시도하는 링크·이미지를 막는다.
 function checkRequest({ method, headers }, { port, mutating = false }) {
-  if (!isAllowedHost(headers.host, port)) throw new RequestError(403, '이 서버 주소(127.0.0.1 또는 localhost)로 들어온 요청만 받습니다.');
+  if (!isAllowedHost(headers.host, port)) throw new RequestError(403, 'Only requests to this server address (127.0.0.1 or localhost) are accepted.');
   if (!mutating) return;
-  if (method !== 'POST') throw new RequestError(405, '파일을 바꾸는 요청은 화면의 버튼(POST)으로만 받습니다.');
+  if (method !== 'POST') throw new RequestError(405, 'Requests that change files are accepted only from the page buttons (POST).');
   checkPostHeaders(headers, port);
 }
 
 // POST 요청 헤더 검사. Origin이 있으면 같은 주소여야 하고, 브라우저가 다른 사이트에서 보냈다고 알리면(Sec-Fetch-Site) 거부한다.
 // 폼은 application/x-www-form-urlencoded로만 받는다.
 function checkPostHeaders(headers, port) {
-  if (!isAllowedOrigin(headers.origin, port)) throw new RequestError(403, '다른 사이트에서 보낸 요청이라 받지 않습니다.');
+  if (!isAllowedOrigin(headers.origin, port)) throw new RequestError(403, 'Requests sent from another site are not accepted.');
   const site = headers['sec-fetch-site'];
-  if (site !== undefined && site !== 'same-origin' && site !== 'none') throw new RequestError(403, '다른 사이트에서 보낸 요청이라 받지 않습니다.');
+  if (site !== undefined && site !== 'same-origin' && site !== 'none') throw new RequestError(403, 'Requests sent from another site are not accepted.');
   const type = String(headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-  if (type !== 'application/x-www-form-urlencoded') throw new RequestError(415, '화면의 폼으로 보낸 요청만 받습니다.');
+  if (type !== 'application/x-www-form-urlencoded') throw new RequestError(415, 'Only requests sent from the page form are accepted.');
   const length = headers['content-length'];
-  if (length !== undefined && Number(length) > MAX_BODY) throw new RequestError(413, `요청이 너무 큽니다(최대 ${MAX_BODY}바이트).`);
+  if (length !== undefined && Number(length) > MAX_BODY) throw new RequestError(413, `The request is too large (max ${MAX_BODY} bytes).`);
 }
 
 // 폼 토큰이 서버 토큰과 같으면 true. 길이가 다르거나 없으면 false. 비교 시간으로 토큰을 알아내지 못하게 한다.
@@ -89,7 +89,7 @@ function isValidToken(given, token) {
 // 폼 값(URLSearchParams)의 토큰을 확인한다. 없거나 틀리면 RequestError(403)를 던진다.
 function checkToken(form, token) {
   const values = form.getAll(TOKEN_FIELD);
-  if (values.length !== 1 || !isValidToken(values[0], token)) throw new RequestError(403, '화면이 오래되었거나 다른 곳에서 보낸 요청입니다. 화면을 새로 열어 다시 시도하세요.');
+  if (values.length !== 1 || !isValidToken(values[0], token)) throw new RequestError(403, 'The page is out of date or the request came from elsewhere. Reopen the page and try again.');
 }
 
 // 요청 본문을 한도까지 읽어 문자열로 돌려준다. 한도를 넘으면 더 읽지 않고 RequestError(413)로 거부한다.
@@ -109,7 +109,7 @@ function readBody(stream, limit = MAX_BODY) {
       size += chunk.length;
       if (size > limit) {
         stream.pause();
-        finish(reject, new RequestError(413, `요청이 너무 큽니다(최대 ${limit}바이트).`));
+        finish(reject, new RequestError(413, `The request is too large (max ${limit} bytes).`));
         return;
       }
       chunks.push(chunk);
@@ -130,7 +130,7 @@ async function readForm(req, { port, token, limit = MAX_BODY }) {
 
 // 폼에 넣을 숨은 토큰 필드. 토큰은 base64url 글자만 있어 이스케이프가 필요 없지만, 다른 값이 오면 거부한다.
 function tokenField(token) {
-  if (!/^[A-Za-z0-9_-]+$/.test(token)) throw new Error('토큰 형식이 아닙니다.');
+  if (!/^[A-Za-z0-9_-]+$/.test(token)) throw new Error('Not a token format.');
   return `<input type="hidden" name="${TOKEN_FIELD}" value="${token}">`;
 }
 

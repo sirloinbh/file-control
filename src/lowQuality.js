@@ -37,7 +37,7 @@ const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
 function lowQualityCriteria({ minHeight = DEFAULT_MIN_HEIGHT, minBitrate = null } = {}) {
   const check = (value, name, limit) => {
     const number = typeof value === 'string' ? (/^\d+$/.test(value) ? Number(value) : Number.NaN) : value;
-    if (!Number.isInteger(number) || number < 1 || number > limit) throw new FcError(`${name}는 1부터 ${limit}까지의 정수로 쓰세요: ${JSON.stringify(value)}`);
+    if (!Number.isInteger(number) || number < 1 || number > limit) throw new FcError(`${name} must be an integer from 1 to ${limit}: ${JSON.stringify(value)}`);
     return number;
   };
   return {
@@ -63,17 +63,17 @@ function saneInfo(info) {
     const shown = [displayWidth, displayHeight].sort((a, b) => a - b);
     const scaled = coded.some((side, index) => Math.max(side, shown[index]) / Math.min(side, shown[index]) > MAX_DISPLAY_SCALE);
     if (Math.min(...sides) < MIN_SIDE || Math.max(...sides) > MAX_SIDE || scaled) {
-      notes.push(`해상도 값(${width}x${height}, 보이는 크기 ${displayWidth}x${displayHeight})이 정상 범위를 벗어나 깨진 값일 수 있습니다.`);
+      notes.push(`The resolution value (${width}x${height}, displayed size ${displayWidth}x${displayHeight}) is outside the normal range and may be corrupt.`);
       width = height = displayWidth = displayHeight = null;
     } else {
       shortSide = Math.min(displayWidth, displayHeight);
     }
   } else {
-    notes.push('해상도 정보가 없습니다.');
+    notes.push('There is no resolution information.');
   }
   let duration = number(info.duration);
   if (duration !== null && duration > MAX_DURATION) {
-    notes.push(`길이 값(${Math.round(duration)}초)이 7일을 넘어 깨진 값일 수 있습니다.`);
+    notes.push(`The duration value (${Math.round(duration)} s) is over 7 days and may be corrupt.`);
     duration = null;
   }
   let bitrate = duration === null || duration < MIN_BITRATE_DURATION ? null : number(info.bitrate);
@@ -83,10 +83,10 @@ function saneInfo(info) {
     bitrate = null;
   }
   if (bitrate !== null && bitrate < MIN_BITRATE) {
-    notes.push(`비트레이트 값(${bitrate}bps)이 너무 작아 깨진 값일 수 있습니다.`);
+    notes.push(`The bitrate value (${bitrate} bps) is too small and may be corrupt.`);
     bitrate = null;
   }
-  if (bitrate === null && !notes.some((note) => /길이|비트레이트/.test(note))) notes.push(duration === null ? '길이 정보가 없어 비트레이트를 알 수 없습니다.' : duration < MIN_BITRATE_DURATION ? '길이가 1초 미만이라 비트레이트를 믿을 수 없습니다.' : '비트레이트 정보가 없습니다.');
+  if (bitrate === null && !notes.some((note) => /duration|bitrate/i.test(note))) notes.push(duration === null ? 'There is no duration information, so the bitrate is unknown.' : duration < MIN_BITRATE_DURATION ? 'The duration is under 1 second, so the bitrate cannot be trusted.' : 'There is no bitrate information.');
   return { width, height, displayWidth, displayHeight, shortSide, duration, bitrate, notes };
 }
 
@@ -96,20 +96,20 @@ function saneInfo(info) {
 function judgeQuality(info, criteria) {
   const reasons = [];
   const unknown = [];
-  if (info.shortSide === null) unknown.push('해상도');
-  else if (info.shortSide < criteria.minHeight) reasons.push(`화면의 짧은 쪽 ${info.shortSide}화소 < ${criteria.minHeight}`);
+  if (info.shortSide === null) unknown.push('resolution');
+  else if (info.shortSide < criteria.minHeight) reasons.push(`short side ${info.shortSide} px < ${criteria.minHeight}`);
   if (criteria.minBitrate !== null) {
-    if (info.bitrate === null) unknown.push('비트레이트');
-    else if (info.bitrate < criteria.minBitrate * 1000) reasons.push(`비트레이트 ${Math.round(info.bitrate / 1000)}kbps < ${criteria.minBitrate}kbps`);
+    if (info.bitrate === null) unknown.push('bitrate');
+    else if (info.bitrate < criteria.minBitrate * 1000) reasons.push(`bitrate ${Math.round(info.bitrate / 1000)} kbps < ${criteria.minBitrate} kbps`);
   }
   if (reasons.length > 0) return { status: 'low', reasons, byResolution: info.shortSide !== null && info.shortSide < criteria.minHeight };
-  if (unknown.length > 0) return { status: 'unknown', reasons: [`${unknown.join('와 ')}를 알 수 없어 판단하지 못했습니다.`, ...info.notes] };
+  if (unknown.length > 0) return { status: 'unknown', reasons: [`Could not judge because the ${unknown.join(' and ')} could not be determined.`, ...info.notes] };
   return { status: 'ok', reasons: [] };
 }
 
 function skipReason(parts) {
-  if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 보지 않습니다.';
-  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 보지 않습니다.';
+  if (parts.some((part) => LEFTOVER.test(part))) return 'Not checked because it is a leftover from an earlier job.';
+  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Not checked because it is inside a Windows system folder.';
   return null;
 }
 
@@ -128,7 +128,7 @@ function findLowQuality(dir, options = {}) {
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;
     if (entry.type === 'link') {
-      result.skipped.push({ path: entry.path, reason: '링크는 보지 않습니다.' });
+      result.skipped.push({ path: entry.path, reason: 'Links are not checked.' });
       continue;
     }
     const extension = path.extname(entry.path).toLowerCase();
@@ -145,7 +145,7 @@ function findLowQuality(dir, options = {}) {
       result.checked += 1;
       const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
       if (reader === null) {
-        result.unreadable.push({ path: real, reason: `${extension} 형식은 해상도를 읽지 못합니다.` });
+        result.unreadable.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
         continue;
       }
       const size = fileSizeInside(access.target, real);
@@ -157,7 +157,7 @@ function findLowQuality(dir, options = {}) {
       const { width, height, displayWidth, displayHeight, duration, bitrate } = info;
       result.low.push({ path: real, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons: judged.reasons, byResolution: judged.byResolution });
     } catch (err) {
-      result.unreadable.push({ path: entry.path, reason: err instanceof FcError ? err.message : `파일을 읽을 수 없습니다. (${err.code ?? err.message})` });
+      result.unreadable.push({ path: entry.path, reason: err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})` });
     }
   }
   return result;
@@ -170,18 +170,18 @@ function describeLowQuality(file) {
 }
 
 function criteriaText(criteria) {
-  const parts = [`화면의 짧은 쪽 ${criteria.minHeight}화소`];
-  if (criteria.minBitrate !== null) parts.push(`비트레이트 ${criteria.minBitrate}kbps`);
-  return `${parts.join(' 또는 ')} 미만`;
+  const parts = [`short side ${criteria.minHeight} px`];
+  if (criteria.minBitrate !== null) parts.push(`bitrate ${criteria.minBitrate} kbps`);
+  return `below ${parts.join(' or ')}`;
 }
 
 function formatLowQuality(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
-  const lines = [`기준: ${criteriaText(result.criteria)}`];
-  for (const file of result.low) lines.push(`저화질: ${relative(file.path)} (${describeLowQuality(file)}) [${file.reasons.join(', ')}]`);
-  for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
-  lines.push(`영상 ${result.checked}개 확인, 저화질 ${result.low.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`);
+  const lines = [`Criteria: ${criteriaText(result.criteria)}`];
+  for (const file of result.low) lines.push(`Low quality: ${relative(file.path)} (${describeLowQuality(file)}) [${file.reasons.join(', ')}]`);
+  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  lines.push(`Checked ${result.checked} videos, ${result.low.length} low quality, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`);
   return lines.join('\n');
 }
 

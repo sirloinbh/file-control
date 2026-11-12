@@ -167,7 +167,7 @@ test('크기 0인 마지막 최상위 박스는 파일 끝까지다', () => {
   moov.writeUInt32BE(0, 0);
   assert.strictEqual(write(dir, ftyp(), moov).duration, 10);
   const mdat = Buffer.concat([u32(0), latin('mdat'), Buffer.alloc(32)]);
-  assert.throws(() => write(dir, ftyp(), mdat), /moov 박스가 없습니다/);
+  assert.throws(() => write(dir, ftyp(), mdat), /has no moov box/);
 });
 
 test('ftyp이 없는 옛 QuickTime 파일을 읽는다', () => {
@@ -311,13 +311,13 @@ test('제목 쪽이 손상돼도 찾은 값과 나머지 값을 돌려준다', (
 test('MP4/MOV가 아니면 거부한다', () => {
   const dir = tempDir();
   for (const bad of [Buffer.alloc(0), Buffer.from('abc'), Buffer.from('%PDF-1.7 aaaaaaaaaaaaaaaa'), Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0, 0, 0, 0, 0])]) {
-    assert.throws(() => write(dir, bad), (err) => err instanceof FcError && /MP4\/MOV 형식이 아닙니다/.test(err.message));
+    assert.throws(() => write(dir, bad), (err) => err instanceof FcError && /Not an MP4\/MOV format/.test(err.message));
   }
 });
 
 test('손상된 구조를 거부한다', () => {
   const dir = tempDir();
-  const noMoov = /moov 박스가 없습니다/;
+  const noMoov = /has no moov box/;
   assert.throws(() => write(dir, ftyp()), noMoov);
   // mdat이 잘린 파일
   assert.throws(() => write(dir, ftyp(), u32(9999), latin('mdat'), Buffer.alloc(8)), noMoov);
@@ -325,10 +325,10 @@ test('손상된 구조를 거부한다', () => {
   assert.throws(() => write(dir, ftyp(), u32(4), latin('free'), Buffer.alloc(8)), noMoov);
   assert.throws(() => write(dir, ftyp(), u32(1), latin('free'), u64(0xffffffffffffffffn)), noMoov);
   // moov가 잘린 파일
-  assert.throws(() => write(dir, ftyp(), u32(9999), latin('moov'), Buffer.alloc(8)), /moov 박스가 잘렸습니다/);
+  assert.throws(() => write(dir, ftyp(), u32(9999), latin('moov'), Buffer.alloc(8)), /moov box of the MP4 file is truncated/);
   // 부모를 넘는 자식
   const overflow = Buffer.concat([u32(9999), latin('trak'), Buffer.alloc(8)]);
-  assert.throws(() => write(dir, ftyp(), box('moov', overflow)), /구조가 손상됐습니다/);
+  assert.throws(() => write(dir, ftyp(), box('moov', overflow)), /structure is damaged/);
 });
 
 test('값이 잘린 필수 박스는 없는 값으로 본다', () => {
@@ -346,7 +346,7 @@ test('작은 박스를 끝없이 늘어놓은 파일은 읽기를 멈춘다', ()
     many.writeUInt32BE(8, i * 8);
     many.write('free', i * 8 + 4, 'latin1');
   }
-  assert.throws(() => write(dir, ftyp(), many), /박스가 너무 많아/);
+  assert.throws(() => write(dir, ftyp(), many), /too many MP4 boxes/);
 });
 
 test('타겟 밖과 없는 파일, 폴더는 거부한다', () => {
@@ -354,9 +354,9 @@ test('타겟 밖과 없는 파일, 폴더는 거부한다', () => {
   const outside = tempDir();
   fs.writeFileSync(path.join(outside, 'o.mp4'), Buffer.concat([ftyp(), box('moov', mvhd())]));
   fs.mkdirSync(path.join(dir, 'd'));
-  assert.throws(() => readMp4Metadata(dir, path.join(outside, 'o.mp4')), /타겟 폴더 밖/);
+  assert.throws(() => readMp4Metadata(dir, path.join(outside, 'o.mp4')), /outside the target folder/);
   assert.throws(() => readMp4Metadata(dir, 'none.mp4'), FcError);
-  assert.throws(() => readMp4Metadata(dir, 'd'), /파일이 아닙니다/);
+  assert.throws(() => readMp4Metadata(dir, 'd'), /Not a file/);
 });
 
 test('mehd가 있으면 mvhd보다 먼저 쓴다', () => {
@@ -395,7 +395,7 @@ test('트랙과 조각 구조의 어느 층이든 틀린 크기는 손상이다'
     box('moov', box('trak', box('mdia', box('minf', box('stbl', bad))))),
     box('moov', box('mvex', bad)),
   ]) {
-    assert.throws(() => write(dir, ftyp(), moov), /구조가 손상됐습니다/);
+    assert.throws(() => write(dir, ftyp(), moov), /structure is damaged/);
   }
 });
 
@@ -451,14 +451,14 @@ test('안쪽 박스의 크기 0은 끝 표시이고, 다른 틀린 크기는 str
   const tagged = write(dir, ftyp(), box('moov', mvhd(), box('udta', isoMeta(item('©nam', 'T')), zeros)));
   assert.strictEqual(tagged.title, 'T');
   for (const bad of [Buffer.concat([u32(4), latin('free')]), Buffer.concat([u32(7), latin('free')]), Buffer.concat([u32(1), latin('free')])]) {
-    assert.throws(() => write(dir, ftyp(), box('moov', bad)), /구조가 손상됐습니다/);
+    assert.throws(() => write(dir, ftyp(), box('moov', bad)), /structure is damaged/);
     assert.strictEqual(write(dir, ftyp(), box('moov', mvhd(), box('udta', bad))).duration, 10);
   }
 });
 
 test('8바이트만 남은 64비트 크기 박스는 FcError다', () => {
   const dir = tempDir();
-  assert.throws(() => write(dir, ftyp(), u32(1), latin('free')), (err) => err instanceof FcError && /moov 박스가 없습니다/.test(err.message));
+  assert.throws(() => write(dir, ftyp(), u32(1), latin('free')), (err) => err instanceof FcError && /has no moov box/.test(err.message));
 });
 
 test('keys의 틀린 값은 안전하게 무시한다', () => {
@@ -747,7 +747,7 @@ test('연 파일이 확인한 경로의 파일과 다르면 읽지 않는다 (#9
   const original = fs.openSync;
   // 확인과 열기 사이에 다른 파일로 바뀐 것처럼 다른 파일을 연다.
   t.mock.method(fs, 'openSync', (p, flags) => original(String(p).endsWith('v.mp4') ? path.join(dir, 'other.mp4') : p, flags));
-  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+  assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /The file changed while reading/.test(err.message));
 });
 
 test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟 밖을 가리키는 링크로 바뀌면 읽지 않는다 (1차 리뷰, #90)', (t) => {
@@ -771,7 +771,7 @@ test('경로를 확인한 뒤 열기 전에 파일이 다른 파일이나 타겟
       return original(p, flags);
     });
     try {
-      assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /읽는 사이에 파일이 바뀌었습니다/.test(err.message));
+      assert.throws(() => readMp4Metadata(dir, 'v.mp4'), (err) => err instanceof FcError && /The file changed while reading/.test(err.message));
     } finally {
       open.mock.restore();
     }
@@ -812,7 +812,7 @@ test('길이 값이 표본 표의 길이보다 훨씬 길면 비트레이트를 
   const result = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 * 1000 }), dataTrak({ seconds: 60, header: 60000 })), box('mdat', Buffer.alloc(1000)));
   assert.strictEqual(result.duration, 60000);
   assert.strictEqual(result.bitrate, null);
-  assert.match(result.bitrateNote, /^길이 값\(60000초\)이 표본 표의 길이\(60초\)보다 훨씬 길어/);
+  assert.match(result.bitrateNote, /^The duration value \(60000 s\) is much longer than the sample table duration \(60 s\)/);
 });
 
 test('길이 값이 표본 표와 맞거나 조금 다르면 비트레이트를 계산한다 (#179)', () => {
@@ -838,7 +838,7 @@ test('데이터 위치표가 파일 끝 너머를 가리키는 받다 만 파일
   const result = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, chunk: 50_000_000 })), box('mdat', Buffer.alloc(1000)));
   assert.strictEqual(result.duration, 60);
   assert.strictEqual(result.bitrate, null);
-  assert.match(result.bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(result.bitrateNote, /may be a partial download/);
 });
 
 test('조각 파일(mvex)은 moov의 빈 표본 표와 길이를 맞춰 보지 않는다 (#179)', () => {
@@ -877,7 +877,7 @@ test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽
   const cut = [ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, chunk: 50_000_000 })), box('mdat', Buffer.alloc(1000))];
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat(cut));
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').bitrateNote, null);
-  assert.match(readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true }).bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(readMp4Metadata(dir, 'v.mp4', { verifyBitrate: true }).bitrateNote, /may be a partial download/);
   // 끄면 stts·stco 박스의 머리글 뒤(항목 수와 항목)를 한 번도 읽지 않는다(1차 리뷰). 켜면 읽는다.
   const bytes = Buffer.concat(cut);
   const payloads = ['stts', 'stco'].map((type) => {
@@ -899,9 +899,9 @@ test('verifyBitrate를 켜지 않으면 표본 표와 데이터 위치표를 읽
 test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (#179, 1차 리뷰)', () => {
   const dir = tempDir();
   const v1 = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 * 1000 }), dataTrak({ seconds: 60, timescale: 90000, version: 1 })), box('mdat', Buffer.alloc(1000)));
-  assert.match(v1.bitrateNote, /표본 표의 길이\(60초\)/);
+  assert.match(v1.bitrateNote, /sample table duration \(60 s\)/);
   const cut = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 60, co64: true, chunk: 2 ** 33 })), box('mdat', Buffer.alloc(1000)));
-  assert.match(cut.bitrateNote, /받다 만 파일일 수 있어/);
+  assert.match(cut.bitrateNote, /may be a partial download/);
   // 항목 수가 표 크기보다 크게 적힌 stts는 읽지 않고, 맞춰 보지 못하므로 비트레이트를 그대로 계산한다.
   const odd = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 1, entries: 5 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(odd.bitrate > 0);

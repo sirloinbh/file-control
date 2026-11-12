@@ -143,8 +143,8 @@ function isGenericGroup(group) {
 function groupCautions(group) {
   const cautions = [];
   if (group.keep?.doubt) cautions.push(group.keep.doubt);
-  if (group.generic) cautions.push('카메라·순번처럼 흔한 이름이라 이름이 같아도 다른 영상일 수 있습니다. remove-duplicates는 이 묶음을 지우지 않습니다.');
-  if (group.differentTitles) cautions.push('번호는 같지만 제목이 서로 달라 다른 영상일 수 있습니다. remove-duplicates는 이 묶음에서 남길 파일과 제목 낱말이 똑같은 파일만 지웁니다.');
+  if (group.generic) cautions.push('This is a common name such as a camera or sequence name, so videos with the same name may be different videos. remove-duplicates does not delete this group.');
+  if (group.differentTitles) cautions.push('The number is the same but the titles differ, so they may be different videos. remove-duplicates deletes only files whose title words are identical to the file to keep in this group.');
   return cautions;
 }
 
@@ -174,8 +174,8 @@ function duplicateKey(fileName) {
 }
 
 function skipReason(parts) {
-  if (parts.some((part) => LEFTOVER.test(part))) return '이전 작업의 잔여물이라 보지 않습니다.';
-  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Windows 시스템 폴더 안의 파일이라 보지 않습니다.';
+  if (parts.some((part) => LEFTOVER.test(part))) return 'Not checked because it is a leftover from an earlier job.';
+  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Not checked because it is inside a Windows system folder.';
   return null;
 }
 
@@ -195,11 +195,11 @@ function readVideoInfo(target, real) {
     info.displayWidth = shown ? displayWidth : info.width;
     info.displayHeight = shown ? displayHeight : info.height;
     // 예외 없이 값이 빠진 경우도 사유를 남긴다. 길이를 쓰지 않는 조각 MP4, 녹화가 중단된 MKV/WebM이 그렇다.
-    const missing = [info.duration === null && '길이', (info.width === null || info.height === null) && '해상도'].filter(Boolean);
-    return { ...info, note: missing.length === 0 ? null : `${missing.join('와 ')} 정보가 없습니다.` };
+    const missing = [info.duration === null && 'duration', (info.width === null || info.height === null) && 'resolution'].filter(Boolean);
+    return { ...info, note: missing.length === 0 ? null : `The ${missing.join(' and ')} information is missing.` };
   } catch (err) {
     if (err instanceof FcError) return unknown(err.message);
-    return unknown(`메타데이터를 읽을 수 없습니다. (${err.code ?? err.message})`);
+    return unknown(`Cannot read the metadata. (${err.code ?? err.message})`);
   }
 }
 
@@ -274,18 +274,18 @@ function chooseKeeper(files) {
   const durations = files.map((file) => file.duration).filter((value) => value !== null);
   // 기준은 남은 후보를 받아 점수 함수를 돌려준다. 길이 기준은 1에서 빠진 파일의 길이를 보지 않도록 남은 후보로 가장 긴 길이를 잰다.
   const criteria = [
-    ['길이나 해상도를 읽지 못한 파일을 뺌', () => (file) => (file.note === null ? 1 : 0)],
+    ['excludes files whose duration or resolution could not be read', () => (file) => (file.note === null ? 1 : 0)],
     [
-      '길이가 가장 김',
+      'longest duration',
       (candidates) => {
         const known = candidates.map((file) => file.duration).filter((value) => value !== null);
         const longest = known.length === 0 ? null : Math.max(...known);
         return (file) => (file.duration !== null && longest - file.duration > DURATION_TOLERANCE ? 0 : 1);
       },
     ],
-    ['해상도가 가장 높음', () => (file) => (file.width === null || file.height === null ? -1 : file.width * file.height)],
-    ['크기가 가장 큼', () => (file) => file.size],
-    ['이름이 가장 짧음', () => (file) => -path.basename(file.path).length],
+    ['highest resolution', () => (file) => (file.width === null || file.height === null ? -1 : file.width * file.height)],
+    ['largest size', () => (file) => file.size],
+    ['shortest name', () => (file) => -path.basename(file.path).length],
   ];
   let candidates = [...files].sort((a, b) => compareRelative(a.path, b.path));
   const reasons = [];
@@ -296,9 +296,9 @@ function chooseKeeper(files) {
     if (kept.length < candidates.length) reasons.push(reason);
     candidates = kept;
   }
-  if (files.length === 1) reasons.push('파일이 하나뿐');
-  else if (candidates.length > 1) reasons.push(reasons.length === 0 ? '모두 같아 경로 순으로 첫 파일' : '나머지는 같아 경로 순으로 첫 파일');
-  const doubt = durations.length > 1 && Math.max(...durations) - Math.min(...durations) > DURATION_TOLERANCE ? '길이가 서로 달라 같은 영상이 아닐 수 있습니다.' : null;
+  if (files.length === 1) reasons.push('only one file');
+  else if (candidates.length > 1) reasons.push(reasons.length === 0 ? 'all equal, first by path' : 'the rest equal, first by path');
+  const doubt = durations.length > 1 && Math.max(...durations) - Math.min(...durations) > DURATION_TOLERANCE ? 'The durations differ, so they may not be the same video.' : null;
   return { path: candidates[0].path, reason: reasons.join(', '), doubt };
 }
 
@@ -330,7 +330,7 @@ function findDuplicateNames(dir) {
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;
     // 폴더를 가리키는 링크도 확장자와 관계없이 그 안을 보지 않았음을 알린다.
     if (entry.type === 'link') {
-      result.skipped.push({ path: entry.path, reason: '링크는 보지 않습니다.' });
+      result.skipped.push({ path: entry.path, reason: 'Links are not checked.' });
       continue;
     }
     const name = path.basename(entry.path);
@@ -364,7 +364,7 @@ function findDuplicateNames(dir) {
       byKey.get(id).files.push(file);
       nameGroupOf.set(file, id);
     } catch (err) {
-      const message = err instanceof FcError ? err.message : `파일을 읽을 수 없습니다. (${err.code ?? err.message})`;
+      const message = err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})`;
       result.unreadable.push({ path: entry.path, reason: message });
     }
   }
@@ -397,7 +397,7 @@ function formatDuration(seconds) {
 
 // 이름 묶음의 이름. 번호 ABC-123, 번호 ABC-123 조각 2, 이름 "trip"
 function groupLabel(group) {
-  return group.kind === 'number' ? `번호 ${group.number}${group.part === null ? '' : ` 조각 ${group.part}`}` : `이름 "${group.key}"`;
+  return group.kind === 'number' ? `number ${group.number}${group.part === null ? '' : ` part ${group.part}`}` : `name "${group.key}"`;
 }
 
 function describe(file) {
@@ -405,7 +405,7 @@ function describe(file) {
   if (file.width !== null && file.height !== null) {
     // 회전이나 화소 비율로 보이는 크기가 다르면 함께 쓴다. 1920x1080(보이는 크기 1080x1920)
     const shown = file.displayWidth != null && file.displayHeight != null && (file.displayWidth !== file.width || file.displayHeight !== file.height);
-    parts.push(shown ? `${file.width}x${file.height}(보이는 크기 ${file.displayWidth}x${file.displayHeight})` : `${file.width}x${file.height}`);
+    parts.push(shown ? `${file.width}x${file.height} (displayed size ${file.displayWidth}x${file.displayHeight})` : `${file.width}x${file.height}`);
   }
   if (file.duration !== null) parts.push(formatDuration(file.duration));
   return parts.join(', ');
@@ -417,33 +417,33 @@ function formatDuplicateNames(result) {
   // 묶음의 파일 줄. 남길 파일에는 고른 까닭을 붙인다.
   const pushFiles = (group) => {
     for (const file of group.files) {
-      const keep = file.path === group.keep.path ? ` [남김: ${group.keep.reason}]` : '';
+      const keep = file.path === group.keep.path ? ` [kept: ${group.keep.reason}]` : '';
       lines.push(`  ${relative(file.path)} (${describe(file)})${keep}`);
     }
   };
   // 이름 묶음은 같은 영상이 아닐 수 있는 까닭(길이가 다름, 흔한 이름, 제목이 다름)을 주의 줄로 덧붙인다(#103).
   for (const group of result.groups) {
     const label = groupLabel(group);
-    lines.push(`중복 후보 (${label}, ${group.files.length}개):`);
+    lines.push(`Duplicate candidates (${label}, ${group.files.length} files):`);
     pushFiles(group);
-    for (const caution of groupCautions(group)) lines.push(`  주의: ${caution}`);
+    for (const caution of groupCautions(group)) lines.push(`  Caution: ${caution}`);
   }
   const metadataGroups = result.metadataGroups.filter((group) => !group.alsoNamed);
   for (const group of metadataGroups) {
-    const same = group.sameSize ? ', 크기도 같음' : '';
-    lines.push(`길이가 같은 영상 (${formatDuration(group.duration)}, 화면 비율 ${group.aspect}${same}, ${group.files.length}개):`);
+    const same = group.sameSize ? ', same size too' : '';
+    lines.push(`Videos with the same duration (${formatDuration(group.duration)}, aspect ratio ${group.aspect}${same}, ${group.files.length} files):`);
     pushFiles(group);
-    if (group.keep.doubt !== null) lines.push(`  주의: ${group.keep.doubt}`);
+    if (group.keep.doubt !== null) lines.push(`  Caution: ${group.keep.doubt}`);
   }
-  for (const item of result.conflicts) lines.push(`번호가 여럿: ${relative(item.path)} (${item.numbers.join(', ')})`);
-  for (const item of result.metadataErrors) lines.push(`길이·해상도 못 읽음: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`판단 못함: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.skipped) lines.push(`건너뜀: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.conflicts) lines.push(`Several numbers: ${relative(item.path)} (${item.numbers.join(', ')})`);
+  for (const item of result.metadataErrors) lines.push(`Could not read duration/resolution: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   const files = result.groups.reduce((sum, group) => sum + group.files.length, 0);
   const cautious = result.groups.filter((group) => groupCautions(group).length > 0).length;
   const metadataFiles = metadataGroups.reduce((sum, group) => sum + group.files.length, 0);
   lines.push(
-    `살펴본 영상 ${result.checked}개, 중복 후보 묶음 ${result.groups.length}개(파일 ${files}개, 확인 필요 ${cautious}개), 길이가 같은 묶음 ${metadataGroups.length}개(파일 ${metadataFiles}개), 길이 모름 ${result.unknownMetadata}개, 번호가 여럿 ${result.conflicts.length}개, 판단 못함 ${result.unreadable.length}개, 건너뜀 ${result.skipped.length}개`,
+    `Checked ${result.checked} videos, ${result.groups.length} duplicate candidate groups (${files} files, ${cautious} need checking), ${metadataGroups.length} same-duration groups (${metadataFiles} files), ${result.unknownMetadata} with unknown duration, ${result.conflicts.length} with several numbers, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`,
   );
   return lines.join('\n');
 }
