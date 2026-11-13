@@ -54,24 +54,24 @@ const ID = {
 };
 
 const WANTED = new Set([ID.SEEK_HEAD, ID.INFO, ID.TRACKS, ID.TAGS, ID.CUES]);
-// 어디에나 올 수 있는 요소 (Void, CRC-32)
+// Elements that can appear anywhere (Void, CRC-32)
 const GLOBAL_ELEMENTS = new Set([0xec, 0xbf]);
-// 머리 요소를 찾는 데 필요한 읽기 횟수 한도. 손상된 파일이 작은 요소를 끝없이 늘어놓아도 멈춘다.
+// The limit of reads needed to find the head elements. Even if a damaged file lines up small elements endlessly, it stops.
 const MAX_READS = 20000;
-// 한 요소를 메모리에 올리는 한도. 더 크면 없는 것으로 본다. 정상 파일의 Info, Tracks, Tags는 이보다 훨씬 작다.
+// The limit for loading one element into memory. If larger, it is treated as absent. The Info, Tracks, and Tags of a normal file are much smaller than this.
 const MAX_ELEMENT = 16 * 1024 * 1024;
-// 파일 하나에서 읽는 총량 한도. 겹치게 만든 SeekHead가 같은 내용을 되풀이해 읽게 해도 메모리가 고갈되지 않는다.
+// The limit of the total amount read from one file. Even if an overlapping SeekHead makes it read the same content repeatedly, memory does not run out.
 const MAX_TOTAL = 64 * 1024 * 1024;
-// SeekHead에서 받는 항목 수 한도. 정상 파일은 열 개 안팎이다.
+// The limit of the number of entries taken from SeekHead. A normal file has about ten.
 const MAX_SEEK = 1024;
 const MAX_TEXT = 64 * 1024;
 const MAX_HEADER = 12;
 const DEFAULT_SCALE = 1000000;
 const VIDEO_TRACK = 1;
-// 영화나 에피소드 수준. 값이 없으면 이 수준이다. 70은 묶음, 30은 곡이나 챕터라 파일의 제목이 아니다.
+// The movie or episode level. If there is no value, it is this level. 70 is a collection, and 30 is a track or chapter, so it is not the file's title.
 const MOVIE_LEVEL = 50;
 
-// 앞 바이트의 첫 1 비트 위치가 길이를 정한다. 틀리면 null이다.
+// The position of the first 1 bit of the leading byte decides the length. If wrong, it is null.
 function vintLength(first, max) {
   for (let length = 1; length <= max; length += 1) {
     if (first & (0x80 >> (length - 1))) return length;
@@ -79,7 +79,7 @@ function vintLength(first, max) {
   return null;
 }
 
-// 요소 머리글을 풀어 { id, start, size }를 돌려준다. size가 null이면 크기를 모르는 요소다. 틀리면 null이다.
+// It decodes an element header and returns { id, start, size }. If size is null, it is an element of unknown size. If wrong, it is null.
 function readHeader(buffer, offset) {
   if (offset >= buffer.length) return null;
   const idLength = vintLength(buffer[offset], 4);
@@ -98,7 +98,7 @@ function readHeader(buffer, offset) {
   return { id, start: sizeOffset + sizeLength, size: unknown ? null : Number(value) };
 }
 
-// 메모리에 올린 요소의 자식을 차례로 내놓는다. 구조가 어긋나면 거기서 멈춘다. 찾은 값까지는 쓸 수 있다.
+// It yields the children of an element loaded into memory in order. If the structure is off, it stops there. Values found so far can be used.
 function* children(buffer) {
   let offset = 0;
   while (offset < buffer.length) {
@@ -134,7 +134,7 @@ function parseInfo(body, found) {
   let scale = DEFAULT_SCALE;
   let ticks = null;
   for (const child of children(body)) {
-    // 빈 요소는 기본값으로 읽는다. 0은 규격 위반이라 없는 값으로 본다.
+    // An empty element is read as the default. 0 is a specification violation, so it is treated as absent.
     if (child.id === ID.TIMECODE_SCALE) scale = child.body.length === 0 ? DEFAULT_SCALE : readUint(child.body) || null;
     if (child.id === ID.DURATION) ticks = readFloat(child.body);
     if (child.id === ID.TITLE) found.title ??= readText(child.body);
@@ -144,8 +144,8 @@ function parseInfo(body, found) {
   found.scale ??= scale;
 }
 
-// 탐색 표(Cues)에서 가장 늦은 시각(시간 단위 수)과 가장 뒤의 Cluster 위치(Segment 안 바이트)를 모은다(#179).
-// 탐색 표는 보통 영상의 키프레임마다 있어 마지막 항목이 영상 끝 가까이에 있다.
+// From the seek table (Cues), it gathers the latest time (in time units) and the position of the last Cluster (bytes inside the Segment) (#179).
+// The seek table usually has an entry for each keyframe of the video, so the last entry is near the end of the video.
 function parseCues(body, found) {
   for (const point of children(body)) {
     if (point.id !== ID.CUE_POINT) continue;
@@ -164,12 +164,12 @@ function parseCues(body, found) {
   }
 }
 
-// 머리글의 길이로 계산한 비트레이트를 믿을 수 없으면 사유를, 믿을 수 있으면 null을 돌려준다(#179).
-// - Segment의 크기나 SeekHead·탐색 표가 가리키는 위치가 파일 끝을 넘으면 받다 만 파일이다. 파일 크기가 적어 비트레이트가 낮게 나온다.
-// - 적힌 길이가 탐색 표의 마지막 시각의 2배에 60초를 더한 것보다 길면 길이가 깨졌다고 본다. 키프레임 간격은 이보다 짧다.
-//   적힌 길이가 짧은 쪽은 비트레이트가 높게 나와 저화질로 잘못 잡지 않으므로 보지 않는다.
-// 탐색 표가 없거나 항목이 하나뿐이거나 마지막 시각이 0이면 길이는 맞춰 보지 않는다. 키프레임을 처음에만 넣은 화면 녹화나
-// 정지 그림 한 장을 영상 트랙으로 넣은 음악 파일이 그렇다(1차 리뷰). 마지막 Cluster를 찾으려면 영상 데이터를 훑어야 해서 보지 않는다.
+// If the bitrate computed from the header length cannot be trusted, it returns the reason; if it can be trusted, null (#179).
+// - If the Segment size or a position that SeekHead or the seek table points to goes past the end of the file, it is a partly downloaded file. The written file size is small and the bitrate comes out low.
+// - If the written length is longer than 2 times the last time of the seek table plus 60 seconds, the length is seen as broken. The keyframe interval is shorter than this.
+//   A written length that is shorter gives a high bitrate and is not wrongly caught as low quality, so it is not looked at.
+// If the seek table is absent, has only one entry, or has a last time of 0, the length is not cross-checked. A screen recording that put keyframes only at the start and
+// a music file that has a single still picture as a video track are such cases (first review). Finding the last Cluster would require scanning the video data, so it is not looked at.
 function bitrateDoubt(found, beyondEnd, duration) {
   if (beyondEnd) return 'The Segment size or an element position runs past the end of the file, so it may be a partial download and the bitrate cannot be trusted.';
   if (!found.lastCue || (found.cuePoints ?? 0) < 2 || !found.scale) return null;
@@ -178,7 +178,7 @@ function bitrateDoubt(found, beyondEnd, duration) {
   return null;
 }
 
-// 부호 있는 실수. 빈 요소는 기본값 0이다. 읽을 수 없으면 null이다.
+// A signed real number. An empty element has the default 0. If it cannot be read, it is null.
 function readSignedFloat(body) {
   if (body.length === 0) return 0;
   let value = null;
@@ -187,11 +187,11 @@ function readSignedFloat(body) {
   return Number.isFinite(value) ? value : null;
 }
 
-// 보이는 크기. 잘라 낼 화소(PixelCrop)를 먼저 뺀다. DisplayWidth와 DisplayHeight는 자른 뒤의 크기이고, 없으면 자른 크기와 같다(규격의 기본값, #113).
-// 단위(DisplayUnit)가 화소(0)면 그 값을 쓰고, cm(1)·인치(2)·화면 비율(3)이면 비율만 뜻이 있어 높이를 자른 높이에 맞춘다.
-// 단위를 모르면(4 등) 자른 크기를 쓴다. 화소 단위에서 한쪽만 있으면 다른 쪽은 자른 크기를 쓴다(규격의 기본값).
-// 화소가 아닌 단위는 기본값이 없으므로 한쪽만 있으면 비율을 알 수 없어 자른 크기를 쓴다.
-// 자르고 남는 화소가 없으면 틀린 값이라 자르지 않는다.
+// The visible size. It first subtracts the pixels to crop (PixelCrop). DisplayWidth and DisplayHeight are the size after cropping, and if absent they equal the cropped size (the default in the specification, #113).
+// If the unit (DisplayUnit) is pixels (0), it uses the value; for cm (1), inches (2), or aspect ratio (3), only the ratio has meaning, so it fits the height to the cropped height.
+// If the unit is unknown (4 and so on), it uses the cropped size. In pixel units, if only one side exists, the other side uses the cropped size (the default in the specification).
+// Non-pixel units have no default, so if only one side exists, the ratio cannot be known, so it uses the cropped size.
+// If no pixels would remain after cropping, the value is wrong, so it does not crop.
 function displaySize(width, height, shownWidth, shownHeight, unit, crop) {
   const croppedWidth = width - crop.left - crop.right;
   const croppedHeight = height - crop.top - crop.bottom;
@@ -203,9 +203,9 @@ function displaySize(width, height, shownWidth, shownHeight, unit, crop) {
   return [Math.max(1, Math.round((baseHeight * w) / h)), baseHeight];
 }
 
-// Projection의 회전이 90·270도이면 참이다(#113). FFmpeg는 회전 정보를 평면(ProjectionType 0) 투영의 ProjectionPoseRoll로 적는다.
-// 360도 영상(평면이 아닌 투영)이나 위아래로 기운(Pitch) 투영, 좌우를 180도가 아닌 각으로 돌린(Yaw) 투영은 화면 회전이 아니므로 보지 않는다.
-// Roll은 1도 안쪽으로 90의 배수에 가까울 때만 쓴다. 그 밖의 각도는 너비와 높이를 바꾸지 않는 것으로 본다.
+// True if the rotation of Projection is 90 or 270 degrees (#113). FFmpeg writes rotation information as ProjectionPoseRoll of a flat (ProjectionType 0) projection.
+// A projection of 360-degree video (not flat), a projection tilted up and down (Pitch), and a projection turned left and right by an angle other than 180 degrees (Yaw) are not screen rotation, so it does not look at them.
+// Roll is used only when it is within 1 degree of a multiple of 90. Other angles are seen as not swapping the width and height.
 function projectionQuarterTurn(body) {
   let type = 0;
   let yaw = 0;
@@ -245,16 +245,16 @@ function parseTracks(body, found) {
       if (child.id === ID.PIXEL_HEIGHT) height = readUint(child.body);
       if (child.id === ID.DISPLAY_WIDTH) shownWidth = readUint(child.body);
       if (child.id === ID.DISPLAY_HEIGHT) shownHeight = readUint(child.body);
-      // 빈 요소는 기본값(0, 화소)이다.
+      // An empty element is the default (0, pixels).
       if (child.id === ID.DISPLAY_UNIT) unit = child.body.length === 0 ? 0 : readUint(child.body);
-      // 잘라 낼 화소의 기본값은 0이다. 읽을 수 없는 값도 0으로 본다.
+      // The default of the pixels to crop is 0. An unreadable value is also seen as 0.
       if (child.id === ID.PIXEL_CROP_TOP) crop.top = readUint(child.body) ?? 0;
       if (child.id === ID.PIXEL_CROP_BOTTOM) crop.bottom = readUint(child.body) ?? 0;
       if (child.id === ID.PIXEL_CROP_LEFT) crop.left = readUint(child.body) ?? 0;
       if (child.id === ID.PIXEL_CROP_RIGHT) crop.right = readUint(child.body) ?? 0;
       if (child.id === ID.PROJECTION) quarterTurn = projectionQuarterTurn(child.body);
     }
-    // 표지 같은 작은 영상 트랙이 앞에 있어도 가장 큰 트랙을 본 영상으로 친다.
+    // Even if a small video track such as a cover is in front, the largest track is counted as the main video.
     if (width && height && width * height > (found.width ?? 0) * (found.height ?? 0)) {
       found.width = width;
       found.height = height;
@@ -264,8 +264,8 @@ function parseTracks(body, found) {
   }
 }
 
-// 특정 트랙이나 챕터에 붙은 태그, 영화 수준이 아닌 태그는 파일의 제목이 아니다.
-// UID는 64비트 난수일 수 있어 숫자로 바꾸지 않고 0이 아닌 바이트가 있는지 본다.
+// A tag attached to a specific track or chapter, or a tag that is not at the movie level, is not the file's title.
+// A UID can be a 64-bit random number, so it is not converted to a number; it looks at whether there is a nonzero byte.
 function isFileTag(targets) {
   if (!targets) return true;
   for (const child of children(targets)) {
@@ -307,7 +307,7 @@ function parseSeekHead(body, positions) {
   }
 }
 
-// file은 withOpenFile이 연 파일이다. 읽기 횟수와 읽은 양을 센다.
+// file is the file opened by withOpenFile. It counts the number of reads and the amount read.
 function makeReader(file, p) {
   const { size } = file;
   let reads = 0;
@@ -321,13 +321,13 @@ function makeReader(file, p) {
   };
 }
 
-// 파일의 offset에 있는 요소 머리글을 읽는다.
+// It reads the element header at the offset of the file.
 function headerAt(read, offset) {
   const header = readHeader(read(offset, MAX_HEADER), 0);
   return header && { ...header, start: offset + header.start };
 }
 
-// 첫 요소가 EBML 머리글이고 문서 형식이 matroska나 webm일 때만 받는다. 머리글의 끝 위치를 돌려준다.
+// It accepts only when the first element is an EBML header and the document type is matroska or webm. It returns the end position of the header.
 function checkHeader(read, p) {
   const header = headerAt(read, 0);
   if (!header || header.id !== ID.EBML || header.size === null || header.size > MAX_ELEMENT) throw new FcError(`Not an MKV/WebM format: ${p}`);
@@ -338,16 +338,16 @@ function checkHeader(read, p) {
   return header.start + header.size;
 }
 
-// 타겟 안 MKV/WebM 파일의 메타데이터를 읽어 { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }를 돌려준다.
-// 찾지 못한 값은 null이다. duration은 초, bitrate는 파일 전체 크기로 계산한 초당 비트다.
-// 받다 만 파일이거나 길이가 탐색 표(Cues)와 크게 다르면 bitrate는 null이고 bitrateNote에 사유를 적는다(bitrateDoubt, #179).
-// bitrate와 bitrateNote는 options.verifyBitrate가 true일 때만 채운다(#207). 끄면 둘 다 null이고 탐색 표(Cues, 최대 16MB)를 읽지 않는다.
-// 비트레이트를 쓰지 않는 중복·제품번호 찾기가 큰 탐색 표를 읽느라 입출력과 읽기 한도(MAX_TOTAL)를 쓰지 않게 하기 위해서다.
-// width, height는 화소 크기(PixelWidth/Height)이고, displayWidth, displayHeight는 잘라 낼 화소(PixelCrop), DisplayWidth/Height,
-// 평면 투영의 90·270도 회전(ProjectionPoseRoll)을 반영한 보이는 크기다(#106, #113). 영상 데이터(CodecPrivate의 SPS) 안의 화소 비율은 보지 않는다. 규격상 DisplayWidth/Height가 없으면 자른 화소 크기가 보이는 크기다.
-// FFmpeg 9.0도 SPS에 32:27이 있고 DisplayWidth가 없는 MKV를 1:1로 본다(#123에서 확인).
-// 첫 Cluster 앞의 요소를 읽고, 그 뒤에 있는 요소는 SeekHead로 찾아간다. 영상 데이터는 읽지 않는다.
-// 경로나 입출력 문제, MKV/WebM이 아닌 파일은 FcError를 낸다. 읽기 한도를 넘어도 FcError를 낸다. 요소 안쪽의 손상은 찾은 값까지만 돌려준다. 깨진 파일 판별기는 아니다.
+// It reads the metadata of an MKV/WebM file inside the target and returns { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }.
+// A value not found is null. duration is in seconds, and bitrate is the bits per second computed from the whole file size.
+// If the file is partly downloaded or the length differs greatly from the seek table (Cues), bitrate is null and the reason is written in bitrateNote (bitrateDoubt, #179).
+// bitrate and bitrateNote are filled only when options.verifyBitrate is true (#207). If off, both are null and the seek table (Cues, up to 16MB) is not read.
+// This is so that the duplicate and product-number search, which does not use the bitrate, does not spend I/O and the read limit (MAX_TOTAL) on reading a large seek table.
+// width and height are the pixel size (PixelWidth/Height), and displayWidth and displayHeight are the visible size reflecting the pixels to crop (PixelCrop), DisplayWidth/Height,
+// and the 90 and 270 degree rotation of a flat projection (ProjectionPoseRoll) (#106, #113). It does not look at the pixel aspect ratio inside the video data (the SPS in CodecPrivate). By the specification, if DisplayWidth/Height are absent, the cropped pixel size is the visible size.
+// FFmpeg 9.0 also sees an MKV that has 32:27 in the SPS and no DisplayWidth as 1:1 (confirmed in #123).
+// It reads the elements before the first Cluster and goes to the elements after it through SeekHead. It does not read the video data.
+// A path or I/O problem, or a file that is not MKV/WebM, raises an FcError. Exceeding the read limit also raises an FcError. For damage inside an element, it returns only the values found so far. It is not a broken-file judge.
 function readMkvMetadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
@@ -385,7 +385,7 @@ function parseOpenedMkv(file, p, verifyBitrate) {
   };
   let beyondEnd = segment.size !== null && segment.start + segment.size > size;
 
-  // 크기를 모르는 요소나 첫 Cluster를 만나면 순서대로 읽기를 멈춘다. 영상 데이터를 훑지 않기 위해서다.
+  // On meeting an element of unknown size or the first Cluster, it stops reading in order. This is so as not to scan the video data.
   let offset = segment.start;
   while (offset < segmentEnd) {
     const header = headerAt(read, offset);
@@ -397,11 +397,11 @@ function parseOpenedMkv(file, p, verifyBitrate) {
     offset = header.start + header.size;
   }
 
-  // SeekHead가 다른 SeekHead를 가리킬 수 있어 목록이 늘어나는 동안 계속 본다. 본 위치는 다시 읽지 않으니 끝난다.
+  // A SeekHead can point to another SeekHead, so it keeps looking while the list grows. A position already seen is not read again, so it ends.
   for (const { id, position } of positions) {
     const at = segment.start + position;
     if (at >= size) beyondEnd = true;
-    // 비트레이트를 검증하지 않으면 탐색 표는 머리글도 읽지 않는다(#207).
+    // If the bitrate is not verified, the seek table's header is not even read (#207).
     if (at >= segmentEnd || seen.has(at) || (id === ID.CUES && !verifyBitrate)) continue;
     seen.add(at);
     const header = headerAt(read, at);
@@ -425,10 +425,10 @@ function parseOpenedMkv(file, p, verifyBitrate) {
   };
 }
 
-// MKV/WebM의 구조가 온전한지 본다. 손상이면 { status: 'broken', reason }을, 의심스러우면 { status: 'suspect', reason }을, 문제를 찾지 못하면 null을 돌려준다.
-// 입출력 문제와 읽기 한도 초과는 예외로 나간다.
-// Segment 바로 아래 요소의 머리글을 차례로 건너뛰며 파일 끝을 넘는 요소와 Tracks를 본다. 영상 데이터는 읽지 않으므로 Cluster 안의 손상은 찾지 못한다.
-// 크기를 모르는 요소(실시간 녹화)를 만나면 끝을 알 수 없으므로 거기서 판단을 멈춘다.
+// It checks whether the MKV/WebM structure is intact. For damage it returns { status: 'broken', reason }, for suspicion { status: 'suspect', reason }, and if it finds no problem, null.
+// I/O problems and exceeding the read limit go out as exceptions.
+// It skips over the headers of the elements right under the Segment in order and looks at elements that go past the end of the file and at Tracks. It does not read the video data, so damage inside a Cluster is not found.
+// On meeting an element of unknown size (a live recording), the end cannot be known, so it stops judging there.
 function checkMkvStructure(target, real, p) {
   return withOpenFile(target, real, (file) => checkOpenedMkv(file, p));
 }
@@ -440,7 +440,7 @@ function checkOpenedMkv(file, p) {
   const ebml = headerAt(read, 0);
   if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('The EBML header is damaged.');
   if (ebml.start + ebml.size > size) return broken('The EBML header is truncated.');
-  // Segment 앞에 Void나 CRC가 올 수 있다.
+  // A Void or CRC can come before the Segment.
   let segment = headerAt(read, ebml.start + ebml.size);
   while (segment && GLOBAL_ELEMENTS.has(segment.id) && segment.size !== null) segment = headerAt(read, segment.start + segment.size);
   if (!segment || segment.id !== ID.SEGMENT) return broken('The Segment element is missing. The file may not be fully downloaded.');
@@ -451,7 +451,7 @@ function checkOpenedMkv(file, p) {
   while (offset < end) {
     const header = headerAt(read, offset);
     if (!header) {
-      // Tracks까지 읽었으면 뒤쪽 패딩일 수 있다.
+      // If it has read up to Tracks, what follows may be padding.
       if (tracks) return { status: 'suspect', reason: `There is non-element data from byte ${offset}.` };
       return broken(`The element at byte ${offset} is damaged.`);
     }

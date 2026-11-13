@@ -1,20 +1,20 @@
 'use strict';
 
-// UI 작업 관리(#253). 명령을 자식 프로세스(worker.js)로 실행하고 진행 줄과 결과를 모은다.
-// 같은 폴더를 두 작업이 함께 바꾸지 않게 한 번에 하나만 실행한다.
+// UI job management (#253). It runs the command in a child process (worker.js) and collects the progress lines and the result.
+// It runs only one at a time so that two jobs do not change the same folder together.
 const childProcess = require('node:child_process');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const fc = require('../commands');
 
 const WORKER = path.join(__dirname, 'worker.js');
-// 끝난 작업은 결과 페이지를 다시 볼 수 있게 몇 개만 남긴다.
+// It keeps only a few finished jobs so that the result page can be viewed again.
 const KEEP_FINISHED = 20;
-// 진행 줄이 아주 많아도 메모리를 다 쓰지 않게 앞뒤 일부만 남긴다.
+// Even with a huge number of progress lines, it keeps only part of the front and back so as not to use up memory.
 const MAX_LINES = 2000;
-// 줄을 버릴 때도 처음 이만큼은 남긴다(무엇을 시작했는지 보이게). 결과 페이지가 생략 표시 자리로 쓴다.
+// Even when dropping lines, it keeps this many at the start (so you can see what was started). The result page uses it as the place of the omission mark.
 const KEPT_HEAD_LINES = 100;
-// 자식이 결과 없이 죽었을 때 사유로 보여 줄 표준 오류의 끝부분 길이.
+// The length of the end of standard error to show as the reason when the child died without a result.
 const MAX_STDERR = 4000;
 
 class BusyError extends fc.FcError {
@@ -25,7 +25,7 @@ class BusyError extends fc.FcError {
   }
 }
 
-// fork·env는 테스트에서 바꿔 넣을 수 있다(env는 작업 프로세스의 환경 변수). now는 경과 시간 계산에 쓴다.
+// fork and env can be swapped in tests (env is the worker process's environment variables). now is used for the elapsed time calculation.
 function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.now, keep = KEEP_FINISHED, env = process.env } = {}) {
   const jobs = new Map();
   let active = null;
@@ -35,7 +35,7 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     for (const job of finished.slice(0, Math.max(0, finished.length - keep))) jobs.delete(job.id);
   }
 
-  // argv는 CLI와 같은 인자 배열이다. 실행 중인 작업이 있으면 BusyError를 던진다.
+  // argv is the same argument array as the CLI. If a job is running, it throws BusyError.
   function start(argv) {
     if (active) throw new BusyError(active);
     const job = {
@@ -91,12 +91,12 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       if (active === job) active = null;
       forget();
     };
-    // 결과 메시지를 받아도 프로세스가 끝날 때까지는 다음 작업을 받지 않는다.
-    // exit는 아직 읽지 않은 메시지보다 먼저 올 수 있으므로, IPC 채널과 표준 오류까지 닫힌 뒤의 close에서 마무리한다.
+    // Even after receiving the result message, it does not accept the next job until the process ends.
+    // exit can come before messages not yet read, so it finishes at close, after the IPC channel and standard error are also closed.
     let childError = null;
     child.on('close', (code, signal) => settle(code, signal, childError));
-    // error는 프로세스가 살아 있어도(메시지 보내기 실패 등) 올 수 있다. 그때 풀면 두 작업이 함께 돌 수 있으므로,
-    // 띄우기 자체가 실패해 pid가 없을 때만 바로 정리하고, 그 밖에는 사유만 두고 close를 기다린다.
+    // error can come even while the process is alive (a message send failure and so on). Releasing then could let two jobs run together, so
+    // it cleans up right away only when the launch itself failed and there is no pid, and otherwise it leaves only the reason and waits for close.
     child.on('error', (err) => {
       childError = err;
       if (child.pid === undefined) settle(null, null, err);
@@ -116,13 +116,13 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
 function addLine(job, line) {
   job.lines.push(String(line));
   if (job.lines.length > MAX_LINES) {
-    // 처음 몇 줄은 무엇을 시작했는지 보여 주므로 남기고, 그 뒤를 버린다.
+    // The first few lines show what was started, so they are kept and what follows is dropped.
     job.lines.splice(KEPT_HEAD_LINES, 1);
     job.droppedLines += 1;
   }
 }
 
-// 경과 시간을 '1시간 2분 3초'처럼 보여 준다. 1초 미만은 0초다.
+// It shows the elapsed time like "1h 2m 3s". Under 1 second is "0s".
 function formatElapsed(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(total / 3600);

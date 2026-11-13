@@ -8,7 +8,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const { spawnSync } = require('node:child_process');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 const fc = require('../src/commands');
@@ -22,8 +22,8 @@ function tempDir() {
 
 const SECRET = 'FAKE-SECRET-XYZ';
 
-// tar.exe는 확장자가 아니라 내용으로 형식을 고르므로 이 글을 mtree로 읽는다.
-// contents= 경로의 파일은 mtree:checkfs를 켰을 때만 읽는다. fctl은 이 옵션을 넘기지 않는다.
+// tar.exe picks the format by content, not by extension, so it reads this text as mtree.
+// The file at the contents= path is read only when mtree:checkfs is turned on. fctl does not pass this option.
 function mtree(secret, { signature = true } = {}) {
   const line = `leak.txt type=file mode=0644 size=${SECRET.length} contents=${secret.replaceAll('\\', '/')}\n`;
   return Buffer.from(signature ? `#mtree\n${line}` : line);
@@ -31,7 +31,7 @@ function mtree(secret, { signature = true } = {}) {
 
 const TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
 
-// 이 tar.exe가 글을 mtree로 읽고 checkfs를 켜면 정말 복사하는지 본다. 그렇지 않으면 아래 시험은 아무것도 증명하지 못한다.
+// It checks whether this tar.exe really copies when it reads the text as mtree and checkfs is turned on. Otherwise the test below proves nothing.
 function fixtureCopiesWithCheckfs(archive) {
   const out = tempDir();
   spawnSync(TAR, ['-xf', archive, '-C', out, '--options', 'mtree:checkfs'], { stdio: 'ignore' });
@@ -69,7 +69,7 @@ for (const [label, make] of [
   });
 }
 
-// 환경 변수로 tar.exe 옵션을 켤 수 있다. fctl은 이 변수를 tar.exe에 물려주지 않는다(#87).
+// tar.exe options can be turned on with environment variables. fctl does not pass these variables on to tar.exe (#87).
 function withEnv(t, name, value) {
   const saved = process.env[name];
   process.env[name] = value;
@@ -86,9 +86,9 @@ test('TAR_READER_OPTIONS=mtree:checkfs가 설정돼도 contents= 파일의 내�
   const dir = tempDir();
   const archive = path.join(dir, 'x.zip');
   fs.writeFileSync(archive, mtree(secret));
-  // 소문자 이름도 Windows에서는 같은 변수다.
+  // A lowercase name is also the same variable on Windows.
   withEnv(t, process.platform === 'win32' ? 'tar_reader_options' : 'TAR_READER_OPTIONS', 'mtree:checkfs');
-  // 이 tar.exe가 변수를 정말 읽는지 먼저 본다. 읽지 않으면 아래 시험은 아무것도 증명하지 못한다.
+  // It first checks whether this tar.exe really reads the variable. If it does not, the test below proves nothing.
   const probe = tempDir();
   spawnSync(TAR, ['-xf', archive, '-C', probe], { stdio: 'ignore' });
   const probed = path.join(probe, 'leak.txt');

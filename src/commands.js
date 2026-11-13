@@ -6,7 +6,7 @@ const { execFileSync, spawnSync } = require('node:child_process');
 const { BARE_DEVICE_NAME, deviceNamePart, isDeviceName } = require('./windowsNames');
 
 const isWindows = process.platform === 'win32';
-// Git Bash 등에 들어 있는 GNU tar 대신 zip을 다룰 수 있는 Windows 기본 bsdtar를 쓴다.
+// Instead of the GNU tar that comes with Git Bash and the like, it uses the Windows default bsdtar, which can handle zip.
 const TAR = isWindows ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
@@ -24,9 +24,9 @@ function ensureFree(p, force) {
   if (exists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
 }
 
-// Node는 nul.mp4·con.txt 같은 이름을 글자 그대로 만들지만 PowerShell·탐색기는 장치로 열어, 만든 파일을 다른 프로그램에서 열거나 지울 수 없다(#135).
-// 이미 있는 항목은 이름을 바꿔 꺼낼 수 있게 두고, 새로 만드는 이름만 거부한다. 이미 있는 위 폴더(Con.Air 등)는 따지지 않는다.
-// 판단은 grant와 같은 규칙(windowsNames.js)으로 한다.
+// Node creates names such as nul.mp4 and con.txt literally, but PowerShell and Explorer open them as devices, so the created file cannot be opened or deleted by other programs (#135).
+// It leaves existing items so that they can be brought out by renaming, and refuses only names it newly creates. It does not examine an existing folder above (such as Con.Air).
+// The judgment uses the same rule as grant (windowsNames.js).
 function rejectNewDeviceName(p) {
   if (!isWindows) return;
   let existing = path.resolve(p);
@@ -41,10 +41,10 @@ function rejectNewDeviceName(p) {
   if (part !== undefined) throw new FcError(`Not created because Windows opens this name as a device: ${JSON.stringify(part)} (${p})`);
 }
 
-// 하드링크(링크 수 2 이상)의 내용을 바꾸면 같은 파일의 다른 이름도 함께 바뀐다. 다른 이름은 타겟 밖일 수 있어 내용은 쓰지 않는다(#48).
-// 이름만 지우거나 바꾸는 것(rm, mv --force의 교체, unzip이 기존 파일을 바꾸는 것)은 다른 이름의 내용을 그대로 두므로 막지 않는다.
-// 빌드 26200에서 write --force·내용 추가·cp --force로 폴더를 합칠 때는 다른 이름의 내용이 바뀌었고,
-// cp --force 파일 하나·mv --force·unzip은 바뀌지 않았다. cp는 Linux에서 제자리에 쓰므로 파일 하나도 막는다.
+// Changing the content of a hard link (link count 2 or more) also changes the other names of the same file. The other name may be outside the target, so it does not write content (#48).
+// Things that only delete or rename (rm, the replacement of mv --force, unzip changing an existing file) leave the content under the other name as it is, so they are not blocked.
+// On build 26200, with write --force, appending content, and merging folders with cp --force, the content under the other name changed,
+// while cp --force on a single file, mv --force, and unzip did not change it. cp writes in place on Linux, so it blocks even a single file.
 function rejectHardLinkedWrite(p) {
   const stat = fs.statSync(p, { throwIfNoEntry: false });
   if (stat && stat.isFile() && stat.nlink > 1) {
@@ -52,11 +52,11 @@ function rejectHardLinkedWrite(p) {
   }
 }
 
-// cp --force가 덮어쓸 파일 중 하드링크가 있으면 아무것도 복사하기 전에 거부한다. 폴더는 합쳐지므로 안쪽 파일까지 본다.
-// 폴더를 합칠 때 fs.cpSync는 안쪽에서 종류가 어긋나면 Node를 오류 없이 끝내거나(폴더 위에 파일 자리, 정션 위에 파일 자리) 일부를 복사한 뒤
-// 실패하고(파일 위에 폴더 자리), 대상 안의 정션을 따라 그 밖에 쓴다(#140, 빌드 26200·Node 24.21에서 확인). 그래서 복사 전에 모두 찾아 거부한다.
-// 원본과 대상을 함께 내려가며 보되 링크 안으로는 들어가지 않는다. cpSync는 원본의 링크를 링크로 복사한다.
-// hardLinks가 false면 하드링크 검사를 하지 않는다. 같은 이름의 앞 원본을 대상으로 볼 때 쓴다(그 파일은 새로 복사되므로).
+// If any file that cp --force would overwrite is a hard link, it refuses before copying anything. Folders are merged, so it looks at the files inside too.
+// When merging folders, if the kinds mismatch inside, fs.cpSync either ends Node without an error (a file where a folder is, a file where a junction is) or copies part and then
+// fails (a folder where a file is), and it writes outside by following a junction inside the target (#140, confirmed on build 26200 and Node 24.21). So it finds all of them and refuses before copying.
+// It looks while descending the source and the target together, but does not enter links. cpSync copies a link in the source as a link.
+// If hardLinks is false, it does not check hard links. It is used when an earlier source of the same name is seen as the target (because that file will be newly copied).
 function checkOverwrite(src, target, { hardLinks = true } = {}) {
   const there = fs.lstatSync(target, { throwIfNoEntry: false });
   if (!there) return;
@@ -83,8 +83,8 @@ function checkOverwrite(src, target, { hardLinks = true } = {}) {
   }
 }
 
-// 장치 이름 그대로(nul, CON)가 든 경로는 tar.exe가 인자로 받으면 장치를 열고, 휴지통 이동은 실패한다(#135).
-// 휴지통 이동은 그런 폴더 안의 파일(CON\a.txt)도 실패하는 것을 빌드 26200에서 확인해 경로의 모든 이름을 본다.
+// A path that holds exactly a device name (nul, CON) opens a device when tar.exe receives it as an argument, and the Recycle Bin move fails (#135).
+// On build 26200 it was confirmed that the Recycle Bin move also fails for a file inside such a folder (CON\a.txt), so it looks at every name in the path.
 function bareDeviceName(p) {
   return deviceNamePart(p, BARE_DEVICE_NAME);
 }
@@ -94,7 +94,7 @@ function rejectBareDeviceArgs(paths, what) {
   if (found !== undefined) throw new FcError(`A path containing the device name (${JSON.stringify(bareDeviceName(found))}) ${what}: ${found}. Rename it with fctl rename and run again.`);
 }
 
-// 미리보기면 작업을 실행하지 않고 할 일만 알려 준다. 모든 변경 명령이 이 함수를 거친다.
+// In a preview, it does not run the work and only tells what would be done. Every changing command goes through this function.
 function perform(message, dryRun, action) {
   if (dryRun) return `[Preview] ${message}`;
   action();
@@ -114,8 +114,8 @@ function isSameOrUnder(parentKey, key) {
   return key === parentKey || key.startsWith(parentKey.endsWith(path.sep) ? parentKey : parentKey + path.sep);
 }
 
-// 실제 실행이라면 앞 항목을 처리한 뒤에 실패할 경우를 미리보기에서도 찾기 위해, 이미 다룬 경로를 기억한다.
-// 앞 항목이 폴더면 그 안의 경로도 함께 처리되어 사라지므로 겹친 것으로 본다.
+// To find in the preview too the case that fails after an earlier item is handled in a real run, it remembers the paths already handled.
+// If the earlier item is a folder, the paths inside it are handled and disappear together, so it counts as an overlap.
 function claim(planned, p) {
   const key = pathKey(p);
   for (const earlier of planned) {
@@ -124,7 +124,7 @@ function claim(planned, p) {
   planned.add(key);
 }
 
-// 미리보기용: 같은 대상으로 모이는 항목과 이미 있는 대상을 찾아 표시할 문구를 돌려준다.
+// For the preview: it finds items that gather into the same target and targets that already exist, and returns the text to show.
 function targetNote(planned, target, force, dirNote) {
   const key = pathKey(target);
   if (planned.has(key)) {
@@ -136,12 +136,12 @@ function targetNote(planned, target, force, dirNote) {
   return fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
 }
 
-// 미리보기용: 폴더를 자기 안으로, 파일을 자기 자신으로 옮기거나 복사하면 실제 실행에서 실패한다.
+// For the preview: moving or copying a folder into itself, or a file onto itself, fails in a real run.
 function ensureNotIntoSelf(src, target) {
   if (isSameOrUnder(pathKey(src), pathKey(target))) throw new FcError(`Cannot move or copy onto itself or into itself: ${src} -> ${target}`);
 }
 
-// 미리보기용 검사: 만들려는 폴더 경로 위에 파일이 있으면 실제 실행에서 실패한다.
+// Preview check: if a file exists on the folder path to be created, it fails in a real run.
 function ensureCanMakeDir(dir) {
   let current = path.resolve(dir);
   while (!exists(current)) {
@@ -152,7 +152,7 @@ function ensureCanMakeDir(dir) {
   if (!fs.statSync(current).isDirectory()) throw new FcError(`Cannot create below a file: ${dir} (${current})`);
 }
 
-// 미리보기용 검사: 부모 폴더를 만들어 주지 않는 명령(mv, zip)은 부모가 있어야 한다.
+// Preview check: for commands that do not create the parent folder (mv, zip), the parent must exist.
 function ensureParentDir(p) {
   const parent = path.dirname(path.resolve(p));
   if (!exists(parent) || !fs.statSync(parent).isDirectory()) throw new FcError(`The parent folder of the destination does not exist: ${parent}`);
@@ -175,7 +175,7 @@ function list(dir = '.') {
     .readdirSync(dir, { withFileTypes: true })
     .map((entry) => {
       const full = path.join(dir, entry.name);
-      // 잠긴 시스템 파일(C:\DumpStack.log.tmp, pagefile.sys)은 정보를 읽지 못한다(EPERM·EBUSY). 목록 전체를 실패시키지 않고 크기·시각만 비운다(#254).
+      // Locked system files (C:\DumpStack.log.tmp, pagefile.sys) cannot have their information read (EPERM, EBUSY). It does not fail the whole list and only blanks the size and time (#254).
       let stat;
       try {
         stat = fs.statSync(full, { throwIfNoEntry: false });
@@ -228,7 +228,7 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
   rejectNewDeviceName(dest);
-  // 자기 자신의 대소문자만 바꾸는 경우는 덮어쓰기가 아니다.
+  // Changing only the case of itself is not an overwrite.
   if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
   return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
@@ -237,9 +237,9 @@ function moveOne(src, dest) {
   try {
     fs.renameSync(src, dest);
   } catch (err) {
-    // 다른 드라이브로 옮길 때는 rename이 안 되므로 복사 후 원본을 지운다.
+    // When moving to another drive, rename does not work, so it deletes the original after copying.
     if (err.code !== 'EXDEV') throw err;
-    // 복사로 옮기므로 cp와 같게 끝나지 않는 링크를 먼저 거부한다(#142). 아무것도 복사하지 않았으므로 원본과 대상은 그대로다.
+    // Because it moves by copying, it first refuses links that never end, the same as cp (#142). Nothing was copied, so the source and the target stay as they were.
     rejectLoopingLinks(src, dest);
     try {
       fs.cpSync(src, dest, { recursive: true });
@@ -251,7 +251,7 @@ function moveOne(src, dest) {
   }
 }
 
-// 이름 길이 한도에 걸리지 않게 대상 이름을 쓰지 않고, 이미 있는 항목을 덮어쓰지 않게 비어 있는 이름을 고른다.
+// It does not use the target name, so that it does not hit the name length limit, and it picks a free name so that it does not overwrite an existing item.
 function freshPath(target, prefix, ext = '') {
   const dir = path.dirname(path.resolve(target));
   let serial = 0;
@@ -266,7 +266,7 @@ function asidePath(target) {
   return freshPath(target, '.fctl-old');
 }
 
-// 대상을 먼저 지우면 이동이 실패할 때(파일 잠금 등) 대상을 잃으므로, 치워 두었다가 이동이 끝난 뒤에 지운다.
+// If the target is deleted first and the move fails (a file lock and so on), the target is lost, so it sets it aside and deletes it after the move finishes.
 function moveReplacing(src, target) {
   if (!exists(target)) return moveOne(src, target);
   const aside = asidePath(target);
@@ -274,7 +274,7 @@ function moveReplacing(src, target) {
   try {
     moveOne(src, target);
   } catch (err) {
-    // 복사가 끝나 대상이 생겼다면 원본 정리만 실패한 것이므로 되돌리지 않는다.
+    // If the copy finished and the target exists, only the cleanup of the source failed, so it does not roll back.
     if (exists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
     try {
       fs.renameSync(aside, target);
@@ -290,7 +290,7 @@ function moveReplacing(src, target) {
   }
 }
 
-// 없는 경로는 있는 부모까지 올라가 실제 경로를 구한다. 그 밖의 오류는 겹침을 판단할 수 없으니 거부한다.
+// For a path that does not exist, it goes up to the parent that exists and gets the real path. Any other error makes it impossible to judge overlap, so it refuses.
 function realKey(p) {
   const full = path.resolve(p);
   try {
@@ -302,7 +302,7 @@ function realKey(p) {
   }
 }
 
-// 지우거나 옮기는 항목 자체를 가리키는 키. 링크는 가리키는 곳이 아니라 링크 자체로 본다.
+// A key that points to the item itself that is deleted or moved. A link is seen as the link itself, not the place it points to.
 function entryKey(p) {
   const full = path.resolve(p);
   const stat = fs.lstatSync(full, { throwIfNoEntry: false });
@@ -310,14 +310,14 @@ function entryKey(p) {
   return realKey(full);
 }
 
-// \\localhost\C$처럼 실제 경로로는 다르게 보이는 별칭도 잡도록 볼륨과 파일 번호로 비교한다.
+// It compares by volume and file ID so that it also catches aliases such as \\localhost\C$ that look different as real paths.
 function isSameFile(a, b) {
   const statA = fs.statSync(a, { bigint: true, throwIfNoEntry: false });
   const statB = fs.statSync(b, { bigint: true, throwIfNoEntry: false });
   return Boolean(statA && statB) && statA.ino !== 0n && statA.dev === statB.dev && statA.ino === statB.ino;
 }
 
-// p의 상위 폴더 중에 dir과 같은 폴더가 있는지 파일 번호로 본다.
+// It checks by file ID whether one of the parent folders of p is the same folder as dir.
 function hasAncestorSameAs(dir, p) {
   let current = path.resolve(p);
   for (let parent = path.dirname(current); parent !== current; parent = path.dirname(current)) {
@@ -327,18 +327,18 @@ function hasAncestorSameAs(dir, p) {
   return false;
 }
 
-// 원본 폴더 안의 링크가 원본이나 대상과 겹치는 곳을 가리키면 아무것도 복사하기 전에 거부한다(#142).
-// fs.cpSync는 Windows에서 정션을 따라가 그 안의 내용을 복사한다(폴더 심볼릭 링크는 링크로 복사한다, 빌드 26200·Node 24.21에서 확인).
-// 그래서 원본 자신이나 그 위 폴더, 대상이나 그 위 폴더를 가리키는 정션은 복사가 끝나지 않고 경로가 길어지다가 Node가 오류 없이 끝난다.
-// 대상 안을 가리키는 링크도 복사하는 동안 읽는 내용이 바뀌므로 함께 거부한다. Node로는 정션과 폴더 심볼릭 링크를 구분하지 못해 둘 다 본다.
-// cpSync처럼 링크를 따라 걸으며, 지나온 폴더(원본 안의 위 폴더, 정션 너머의 폴더와 그 실제 위 폴더 포함)를 가리키는 링크를 찾는다(1차 리뷰).
-// src/a/b/up -> src/a, src/out -> X와 X/self -> X, src/out -> X와 X/back -> src가 모두 고리다.
-// 경로 글자 대신 폴더의 파일 번호로 비교한다. UNC 별칭(\\localhost\C$)으로 준 원본도 정션의 실제 경로와 맞춰 볼 수 있다.
-// 한 번 걸은 폴더는 다시 걷지 않는다. 끊어진 링크와 파일 링크는 따라갈 폴더가 없어 보지 않는다.
+// If a link inside the source folder points to a place that overlaps the source or the target, it refuses before copying anything (#142).
+// fs.cpSync on Windows follows a junction and copies the content inside it (a folder symbolic link is copied as a link, confirmed on build 26200 and Node 24.21).
+// So with a junction that points to the source itself or a folder above it, or to the target or a folder above it, the copy never ends, the path keeps getting longer, and Node ends without an error.
+// A link that points inside the target is also refused, because what is read changes while copying. Node cannot tell a junction from a folder symbolic link, so it looks at both.
+// Like cpSync, it walks following links and looks for a link that points to a folder it already passed (including a parent folder inside the source, and a folder beyond a junction and its real parent folders) (first review).
+// src/a/b/up -> src/a, src/out -> X with X/self -> X, and src/out -> X with X/back -> src are all loops.
+// It compares by the folder's file ID instead of the path text. A source given by a UNC alias (\\localhost\C$) can also be matched against the junction's real path.
+// A folder that was walked once is not walked again. Broken links and file links have no folder to follow, so it does not look at them.
 function rejectLoopingLinks(src, target) {
   const here = fs.lstatSync(src, { throwIfNoEntry: false });
   if (!here || !here.isDirectory()) return;
-  // 지금 걷는 경로 위의 폴더 식별값 -> 겹친 수
+  // Identification value of a folder on the path being walked now -> the number of overlaps
   const onPath = new Map();
   const add = (ids) => ids.forEach((id) => onPath.set(id, (onPath.get(id) ?? 0) + 1));
   const drop = (ids) => ids.forEach((id) => (onPath.get(id) === 1 ? onPath.delete(id) : onPath.set(id, onPath.get(id) - 1)));
@@ -389,7 +389,7 @@ function rejectLoopingLinks(src, target) {
   walkDir(path.resolve(src));
 }
 
-// 폴더의 식별값(볼륨과 파일 번호). 링크는 따라간다. 폴더가 아니거나 없으면 null이다.
+// The identification value of a folder (volume and file ID). It follows links. If it is not a folder or does not exist, it is null.
 function dirId(p) {
   try {
     const stat = fs.statSync(p, { bigint: true, throwIfNoEntry: false });
@@ -399,7 +399,7 @@ function dirId(p) {
   }
 }
 
-// p 자신과 그 위 폴더들의 식별값. 없는 경로는 있는 위 폴더부터 센다.
+// The identification values of p itself and the folders above it. For a path that does not exist, it counts from the parent folder that exists.
 function selfAndAncestorIds(p) {
   const ids = [];
   for (let current = path.resolve(p); ; current = path.dirname(current)) {
@@ -410,41 +410,41 @@ function selfAndAncestorIds(p) {
   return ids;
 }
 
-// UNC 별칭은 실제 경로로 드러나지 않고 다른 드라이브처럼 보여서, 폴더를 자기 안으로 복사하기 시작하면 끝나지 않는다.
-// 링크는 링크 자체만 옮기거나 복사하므로 가리키는 곳으로 따지지 않는다.
+// A UNC alias is not revealed as a real path and looks like another drive, so if copying a folder into itself starts, it never ends.
+// A link moves or copies only the link itself, so it is not judged by what it points to.
 function rejectCopyIntoSelf(src, target) {
   if (!fs.lstatSync(src).isSymbolicLink() && hasAncestorSameAs(src, target)) throw new FcError(`Cannot move or copy into itself: ${src} -> ${target}`);
 }
 
-// Windows의 대체 데이터 스트림(a.txt:st)은 파일 안의 일부라, 대상 파일을 치우면 원본도 함께 움직인다.
+// A Windows alternate data stream (a.txt:st) is part of the file, so when the target file is cleared, the source moves along with it.
 function rejectStreamPath(p) {
   if (!isWindows) return;
   const full = path.resolve(p);
   if (full.slice(path.parse(full).root.length).includes(':')) throw new FcError(`Alternate data streams are not supported: ${p}`);
 }
 
-// 현재 폴더나 그 상위는 옮기거나 치울 수 없어 실패하거나 일부만 처리된다.
+// The current folder or a folder above it cannot be moved or cleared, so it fails or is only partly handled.
 function rejectCurrentDir(p) {
   if (isSameOrUnder(realKey(p), realKey(process.cwd()))) throw new FcError(`Cannot move the current folder or its parents: ${p}`);
 }
 
-// 대상과 원본이 겹치면 대상을 치우면서 원본도 함께 움직이거나, 원본을 옮겨 대상을 망가뜨린다.
-// 8.3 이름, 대소문자, 정션을 거쳐도 같은 항목이면 잡히도록 실제 경로로 비교한다.
+// If the target and the source overlap, clearing the target also moves the source along, or moving the source ruins the target.
+// It compares by real path so that the same item is caught even through an 8.3 name, case, or a junction.
 function rejectMoveOverlap(src, target) {
   const srcKey = entryKey(src);
   const targetKey = entryKey(target);
   const stat = fs.statSync(src, { bigint: true, throwIfNoEntry: false });
-  // 하드링크끼리는 같은 파일 번호여도 서로 다른 항목이라 이동해도 내용을 잃지 않는다.
+  // Hard links to each other are different items even with the same file ID, so moving them does not lose content.
   if (srcKey === targetKey || (exists(target) && isSameFile(src, target) && stat.nlink === 1n)) throw new FcError(`The source and destination are the same: ${src} -> ${target}`);
   if (isSameOrUnder(srcKey, targetKey)) throw new FcError(`Cannot move into itself: ${src} -> ${target}`);
   rejectCopyIntoSelf(src, target);
   const targetIsLink = exists(target) && fs.lstatSync(target).isSymbolicLink();
   if (isSameOrUnder(targetKey, srcKey) || (exists(target) && !targetIsLink && hasAncestorSameAs(target, src))) throw new FcError(`Cannot move because the destination contains the source: ${src} -> ${target}`);
-  // 링크를 자기가 가리키는 곳 위로 옮기면, 대상을 지우는 순간 링크가 가리키던 내용이 사라진다.
+  // If a link is moved onto the place it points to, the moment the target is deleted, the content the link pointed to disappears.
   if (fs.lstatSync(src).isSymbolicLink() && isSameOrUnder(targetKey, realKey(src))) throw new FcError(`Cannot overwrite where the link points: ${src} -> ${target}`);
 }
 
-// 앞 항목을 처리한 뒤 뒤 항목이 망가지는 조합을 아무것도 옮기기 전에 찾는다.
+// It finds, before moving anything, the combinations where a later item is ruined after an earlier item is handled.
 function rejectBatchOverlap(items) {
   const keys = items.map(({ src, target }) => ({ src: entryKey(src), target: entryKey(target) }));
   keys.forEach((a, i) => {
@@ -458,7 +458,7 @@ function rejectBatchOverlap(items) {
   });
 }
 
-// dest가 이미 있는 폴더면 그 안으로, 아니면 dest라는 이름으로 옮긴다.
+// If dest is an existing folder, it moves inside it; otherwise it moves under the name dest.
 function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
@@ -467,12 +467,12 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
-  // 전체를 검사한 뒤에 실행해서, 실패하면 아무것도 옮겨지지 않게 한다.
+  // It runs after checking everything, so that if it fails, nothing has been moved.
   const items = sources.map((src) => {
     ensureExists(src);
     rejectStreamPath(src);
     rejectCurrentDir(src);
-    // d/.처럼 끝나는 원본도 d와 같은 대상을 쓰도록 이름을 풀어서 구한다.
+    // It resolves the names so that a source ending in d/. uses the same target as d.
     const target = resolveDest(path.resolve(src), dest);
     rejectStreamPath(target);
     rejectCurrentDir(target);
@@ -490,7 +490,7 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     try {
       done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
     } catch (err) {
-      // 앞 항목은 이미 옮겨졌으니, 오류만 내면 무엇이 옮겨졌는지 알 수 없다.
+      // The earlier items have already been moved, so just raising an error would not tell what was moved.
       if (done.length === 0) throw err;
       throw new FcError(`${err.message}\nItems already handled:\n${done.join('\n')}`);
     }
@@ -502,8 +502,8 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To copy several items, the destination must be an existing folder: ${dest}`);
   }
-  // 덮어쓰기·합치기(--force일 때만 일어난다)는 여러 원본 중 하나에만 문제가 있어도 아무것도 복사하지 않도록 먼저 모두 본다(#48, #140).
-  // 같은 대상으로 모이는 원본은 앞 원본이 복사된 뒤의 대상과도 합쳐지므로, 앞 원본을 대상으로 보고도 확인한다.
+  // For overwriting and merging (which happen only with --force), it first looks at everything so that nothing is copied even if only one of several sources has a problem (#48, #140).
+  // Sources that gather into the same target are also merged with the target after an earlier source was copied, so it also checks while seeing the earlier source as the target.
   if (force) {
     const earlier = new Map();
     for (const src of sources) {
@@ -517,7 +517,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
-  // 원본 안의 링크 때문에 복사가 끝나지 않는 경우(#142)는 미리보기에서도, 여러 원본 중 하나만 그래도 아무것도 복사하지 않는다.
+  // When copying never ends because of a link inside a source (#142), nothing is copied, even in the preview and even if only one of several sources is like that.
   for (const src of sources) {
     ensureExists(src);
     rejectLoopingLinks(src, resolveDest(src, dest));
@@ -542,12 +542,12 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   });
 }
 
-// 타겟 아래 주어진 폴더들의 바로 안 항목 중 숨김(2)이나 시스템(4) 속성이 있는 것을 { 타겟 기준 상대경로 -> 속성 비트 } Map으로 돌려준다(#65).
-// Node는 파일 속성을 읽지 못해 PowerShell을 한 번 부른다. 어느 폴더를 볼지는 walk가 정한 폴더 목록(상대경로, 타겟 자신은 '')을 받는다.
-// PowerShell이 따로 재귀하면 OneDrive 폴더처럼 ReparsePoint 속성이 있지만 링크가 아닌 폴더에서 판단이 갈린다(1차 리뷰).
-// 이름은 코드페이지에 상관없이 주고받도록 UTF-16을 base64로 바꿔 stdin과 stdout으로 넘긴다. 260자를 넘어도 읽도록 \\?\ 경로를 쓴다.
-// 폴더 하나라도 읽지 못하면 일부만 보고 진행하지 않게 오류를 낸다. Windows가 아니면 빈 Map이다.
-// 드라이브 루트(Q:\)처럼 끝에 구분자가 남는 경로도 상대경로가 잘리지 않게 끝 구분자를 뗀다(1차 리뷰).
+// Among the items directly inside the folders given under the target, it returns, as a Map of { relative path from the target -> attribute bits }, those that have the hidden (2) or system (4) attribute (#65).
+// Node cannot read file attributes, so it calls PowerShell once. Which folders to look at is the folder list that walk decided (relative paths, '' for the target itself).
+// If PowerShell recursed on its own, the judgment would split on folders that have the ReparsePoint attribute but are not links, such as the OneDrive folder (first review).
+// Names are passed through stdin and stdout as UTF-16 converted to base64, so that they are exchanged regardless of the code page. It uses a \\?\ path so that it reads even past 260 characters.
+// If even one folder cannot be read, it raises an error so that it does not proceed with only a partial view. If it is not Windows, it is an empty Map.
+// It strips the trailing separator so that a path that keeps a trailing separator, such as a drive root (Q:\), does not get its relative path cut (first review).
 function hiddenOrSystemEntries(dir, folders = ['']) {
   if (!isWindows) return new Map();
   const full = path.resolve(dir).replace(/[\\/]+$/, '');
@@ -557,7 +557,7 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
     'foreach ($line in $input) { if (-not $line) { continue }; $rel = $u.GetString([Convert]::FromBase64String($line)); if ($rel -eq ".") { $rel = "" }; ' +
     'foreach ($e in [IO.DirectoryInfo]::new($root + "\\" + $rel).EnumerateFileSystemInfos()) { $a = [int]$e.Attributes -band 6; ' +
     'if ($a) { $name = if ($rel) { $rel + "\\" + $e.Name } else { $e.Name }; "$a " + [Convert]::ToBase64String($u.GetBytes($name)) } } } } catch { exit 3 }';
-  // 빈 상대경로는 빈 줄이 되므로 타겟 자신은 '.'으로 넘긴다. 실제 폴더 이름은 '.'일 수 없다.
+  // An empty relative path becomes an empty line, so the target itself is passed as '.'. A real folder name cannot be '.'.
   const input = folders.map((folder) => Buffer.from(folder === '' ? '.' : folder, 'utf16le').toString('base64')).join('\n') + '\n';
   let output;
   try {
@@ -579,17 +579,17 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
   return found;
 }
 
-// 휴지통 이동(Microsoft.VisualBasic DeleteFile)이 받는 경로 길이의 한도. MAX_PATH(260, 끝의 NUL 포함)를 넘으면
-// 파일 이름이 한글이든 영문이든 항상 실패한다(#101에서 확인). 길이는 UTF-16 글자 수다.
+// The limit of the path length that the Recycle Bin move (Microsoft.VisualBasic DeleteFile) accepts. If it exceeds MAX_PATH (260, including the trailing NUL),
+// it always fails whether the file name is Korean or English (confirmed in #101). The length is the number of UTF-16 characters.
 const MAX_RECYCLE_PATH = 259;
 
-// 휴지통 이동에는 시간 제한을 두지 않는다(#97). 잠긴 파일과 잠긴 파일이 든 폴더는 대화상자 없이 1~2초 안에 실패했고
-// (빌드 26200, 대화형 세션에서 확인), 휴지통 이동은 같은 볼륨에서도 파일 수에 비례해 걸린다(5만 개 폴더 15~25초).
-// 도중에 PowerShell을 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않았다(1차 리뷰에서 실측).
+// There is no time limit on the Recycle Bin move (#97). A locked file and a folder that holds a locked file failed within 1 to 2 seconds without a dialog
+// (build 26200, checked in an interactive session), and the Recycle Bin move takes time in proportion to the number of files even on the same volume (15 to 25 seconds for a 50,000-file folder).
+// When PowerShell was ended midway, some files in the folder were left in neither the original place nor the Recycle Bin (measured in the first review).
 
-// 파일이나 폴더 안에서 다른 프로그램이 쓰기·삭제를 막고 연 파일을 찾는다(#97). 그런 파일은 쓰기로 열면 EBUSY가 난다.
-// 휴지통 이동이 실패했을 때만 사유를 알리려고 부른다. 항목(파일과 폴더)이 많으면 limit개를 본 뒤 그만 읽는다.
-// 링크·정션은 따라가지 않는다. 읽기 전용 파일은 EPERM이라 사용 중으로 보지 않고, 여는 것만으로는 내용이 바뀌지 않는다.
+// It finds a file, inside a file or folder, that another program opened while blocking writes and deletes (#97). Opening such a file for writing gives EBUSY.
+// It is called only to report the reason when the Recycle Bin move failed. If there are many items (files and folders), it stops reading after limit of them.
+// It does not follow links or junctions. A read-only file gives EPERM, so it is not seen as in use, and opening it alone does not change the content.
 const MAX_BUSY_PROBE = 10000;
 function busyInside(target, limit = MAX_BUSY_PROBE) {
   const busy = (file) => {
@@ -621,14 +621,14 @@ function busyInside(target, limit = MAX_BUSY_PROBE) {
   }
 }
 
-// 휴지통 이동에 넘길 경로를 돌려준다. 보낼 수 없는 것이 확실하면 사유를 밝혀 거부한다(#129).
-// rm은 미리보기와 여러 대상 실행 전에 이것으로 모두 검사해, 미리보기와 실제 결과가 같고 일부만 지운 채 멈추지 않게 한다.
-// - \\?\D:\... 접두어: 휴지통 이동은 이 꼴을 받지 못하고 항상 실패한다. 접두어를 떼도 같은 파일을 가리킬 때만 뗀다.
-//   Node가 정리한 접두어 경로와 뗀 경로가 다르면(\\?\C:\x\..\..\y 등) 거부한다. \\?\UNC\·\\.\ 같은 다른 꼴도 거부한다.
-//   장치 이름은 remove가 rejectBareDeviceArgs로 먼저 거부한다.
-// - 끝이 점이나 공백인 이름이 든 경로: 접두어가 있든 없든 거부한다(1차 리뷰). Node는 글자 그대로의 dot.을 보지만
-//   휴지통 이동(PowerShell 5.1)은 끝의 점·공백을 지운 dot을 열어, 옆에 dot이 있으면 그 파일을 휴지통으로 보냈다(실측).
-// - 259자(MAX_RECYCLE_PATH)를 넘는 경로
+// It returns the path to pass to the Recycle Bin move. If it is certain that it cannot be sent, it refuses and states the reason (#129).
+// rm checks everything with this before the preview and before running on several targets, so that the preview and the real result are the same and it does not stop after deleting only part.
+// - \\?\D:\... prefix: the Recycle Bin move cannot accept this form and always fails. It strips the prefix only when it still points to the same file after stripping.
+//   If the prefixed path Node normalized differs from the stripped path (\\?\C:\x\..\..\y and so on), it refuses. Other forms such as \\?\UNC\ and \\.\ are also refused.
+//   remove refuses device names first with rejectBareDeviceArgs.
+// - A path that holds a name ending in a dot or a space: refused with or without the prefix (first review). Node sees the literal dot.,
+//   but the Recycle Bin move (PowerShell 5.1) opens dot with the trailing dot and space removed, so if a dot is beside it, it sent that file to the Recycle Bin (measured).
+// - A path longer than 259 characters (MAX_RECYCLE_PATH)
 function recycleTarget(target) {
   let plain = target;
   const prefixed = /^[\\/]{2}[?.][\\/]/.test(target);
@@ -643,7 +643,7 @@ function recycleTarget(target) {
   const full = path.resolve(plain);
   const odd = full.split(path.sep).slice(1).find((part) => /[. ]$/.test(part));
   if (odd !== undefined) {
-    // UNC 경로(\\server\share)는 \\?\UNC\server\share 꼴이 접두어 경로다(2차 리뷰).
+    // For a UNC path (\\server\share), the \\?\UNC\server\share form is the prefixed path (second review).
     const long = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
     const how = prefixed ? '' : ` To rename it, give fctl rename the \\\\?\\ prefixed path (${long}).`;
     throw new FcError(`It cannot be sent to the Recycle Bin because of a name ending with a dot or space (${odd}). Sending to the Recycle Bin points to another name with the trailing dot or space removed.${how || ' Give fctl rename this prefixed path, rename it, and delete again.'} To skip the Recycle Bin, use --permanent: ${target}`);
@@ -654,11 +654,11 @@ function recycleTarget(target) {
 
 function moveToRecycleBin(target, { permanentHint = false } = {}) {
   const full = recycleTarget(target);
-  // 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 거부한다.
-  // 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
-  // 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
-  // 지우기 직전에 PowerShell 안에서 볼륨의 휴지통 설정과 크기를 보고, 영구 삭제될 것이면 지우지 않고 78로 끝낸다(#81).
-  // 경로는 따옴표 문제를 피하려고 환경 변수로 넘긴다.
+  // In a non-interactive run (a service, a scheduled task), this API deletes permanently without going through the Recycle Bin, so it refuses.
+  // On failure, it sends the reason text Windows gave as UTF-16 base64 and ends with 77. stderr comes out in the code page and Korean is garbled (#97).
+  // The HResult of the exception comes out as 0x800736B7 for both locked files and folders and cannot separate the reasons, so it is not used.
+  // Right before deleting, inside PowerShell, it looks at the volume's Recycle Bin setting and the size, and if it would be deleted permanently, it does not delete and ends with 78 (#81).
+  // The path is passed in an environment variable to avoid quoting problems.
   try {
     execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_SCRIPT], {
       env: { ...process.env, FC_TARGET: full },
@@ -666,15 +666,15 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
   } catch (err) {
-    // PowerShell의 stderr는 코드페이지로 나와 한글이 깨지므로 경우는 종료 코드로 나누고, 77이면 사유 문구를 stdout(UTF-16 base64)으로 받는다.
+    // PowerShell's stderr comes out in the code page and Korean is garbled, so the cases are separated by exit code, and for 77 the reason text is received on stdout (UTF-16 base64).
     if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
     if (err.status === 78) throw new FcError(permanentRefusal(full, refusalReason(decodeReason(err.stdout)), permanentHint));
-    // 폴더 안에 장치 이름 그대로인 항목이 있으면 휴지통 이동이 폴더째 실패한다(#135). 실패했을 때만 찾아 사유로 알린다.
+    // If a folder holds an item that is exactly a device name, the Recycle Bin move fails for the whole folder (#135). It is searched for only on failure and reported as the reason.
     const inside = bareDeviceInside(full);
     if (inside !== undefined) throw new FcError(`Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}): ${full}. Rename that item with fctl rename and delete again.`);
     const found = oddNameInside(full);
     if (found !== undefined) {
-      // 바꿀 것은 끝이 점·공백인 첫 성분이다(dot./a.txt면 dot.).
+      // What to change is the first component that ends in a dot or a space (for dot./a.txt, dot.).
       const parts = found.split(path.sep);
       const odd = parts.slice(0, parts.findIndex((part) => /[. ]$/.test(part)) + 1).join(path.sep);
       const inner = path.join(full, odd);
@@ -682,14 +682,14 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
       throw new FcError(`Could not send to the Recycle Bin. A name ending with a dot or space inside (${odd}) made the whole folder fail: ${full}. Give fctl rename the \\\\?\\ prefixed path (${long}), rename it, and delete again.`);
     }
     if (err.status === 77) throw new FcError(recycleFailureMessage(full, decodeReason(err.stdout)));
-    // 사유를 모르는 실패는 부른 쪽이 맥락을 붙이도록(풀었지만… 등) 원래 오류를 그대로 던진다.
-    // 다만 명령 전문과 깨진 stderr가 든 문구는 보여 주지 않도록 바꾼다(#97).
+    // For a failure whose reason is unknown, it throws the original error as it is, so that the caller can add context (extracted but... and so on).
+    // However, it is changed so that the full command and a message that contains garbled stderr are not shown (#97).
     err.message = `Could not send to the Recycle Bin: ${full} (PowerShell exit code ${err.status ?? err.code})`;
     throw err;
   }
 }
 
-// 휴지통 이동이 Windows의 사유(reason)와 함께 실패했을 때 알릴 문구. 사용 중인 파일이 있으면 그 이름을 붙인다(#97).
+// The message to report when the Recycle Bin move failed with a Windows reason. If a file in use exists, its name is attached (#97).
 function recycleFailureMessage(full, reason) {
   const busy = busyInside(full);
   const isDir = fs.lstatSync(full, { throwIfNoEntry: false })?.isDirectory();
@@ -698,22 +698,22 @@ function recycleFailureMessage(full, reason) {
   return `Could not send to the Recycle Bin: ${full}${reason ? ` (${reason})` : ''}.${note}`;
 }
 
-// PowerShell이 UTF-16 base64로 내보낸 사유 문구를 한 줄로 풀어 돌려준다. 없거나 깨졌으면 빈 문자열이다.
+// It decodes the reason text that PowerShell sent as UTF-16 base64 into one line and returns it. If it is missing or garbled, it is an empty string.
 function decodeReason(stdout) {
   const line = String(stdout ?? '').trim().split(/\r?\n/).at(-1) ?? '';
   if (!/^[A-Za-z0-9+/=]+$/.test(line)) return '';
   return Buffer.from(line, 'base64').toString('utf16le').replace(/\s+/g, ' ').trim().replace(/[.。]$/, '');
 }
 
-// 빈 폴더 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#67). 폴더마다 PowerShell을 띄우면 한 번에 1~2초씩 걸려 폴더가 많으면 몇 시간이 된다.
-// 부른 쪽이 지우기 전에 검사를 마쳤어도, 묶어 보내면 검사와 삭제 사이가 길어지므로 PowerShell이 폴더마다 지우기 직전에 다시 본다.
-// - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다.
-//   OneDrive 폴더처럼 ReparsePoint 속성이 있어도 링크가 아니면 실제 경로가 그대로라 지운다.
-// - 아직 폴더인지, 안에 allowedNames(폴더 설정 파일, 소문자) 말고 파일이 없는지, 하위 폴더가 링크로 바뀌지 않았는지
-// 경로는 Node가 realpath로 얻은 실제 경로를 넘긴다. 결과는 넘긴 순서대로 { path, status } 목록이다.
-// status: ok(휴지통으로 보냄), moved, notdir, filled, gone, error, timeout(시간 제한에 걸릴 때 처리 중이던 폴더), pending(그 뒤라 손대지 않은 폴더)
-// 시간 제한에 걸린 묶음의 뒤 폴더를 pending으로 따로 알려, 부른 쪽이 다시 보낼 수 있게 한다. 같은 폴더가 매번 묶음 전체를 막지 않는다(1차 리뷰).
-// script는 테스트에서 DeleteDirectory를 바꿔 실제 PowerShell로 검사 부분을 돌릴 때만 넘긴다.
+// It sends several empty folders to the Recycle Bin with one PowerShell run (#67). Starting PowerShell for each folder takes 1 to 2 seconds each, which becomes hours when there are many folders.
+// Even if the caller finished the check before deleting, sending in a batch makes the gap between the check and the deletion longer, so PowerShell checks again for each folder right before deleting.
+// - Whether the real path (GetFinalPathNameByHandle) is the same as the path passed in. If a folder above was replaced by a junction and points elsewhere, it does not delete.
+//   Even with the ReparsePoint attribute, as for the OneDrive folder, if it is not a link the real path stays the same, so it deletes.
+// - Whether it is still a folder, whether it holds no file other than allowedNames (folder settings files, lower case), and whether a subfolder was replaced by a link
+// For the path, it passes the real path that Node obtained with realpath. The result is a list of { path, status } in the order passed.
+// status: ok (sent to the Recycle Bin), moved, notdir, filled, gone, error, timeout (the folder being processed when the time limit hit), pending (a folder after it that was not touched)
+// It reports separately as pending the folders after the one in a batch that hit the time limit, so the caller can send them again. The same folder does not block a whole batch every time (first review).
+// script is passed only when a test replaces DeleteDirectory and runs the checking part with real PowerShell.
 const FOLDER_BATCH_STATUS = new Set(['ok', 'moved', 'notdir', 'filled', 'gone', 'error']);
 
 const RECYCLE_FOLDERS_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
@@ -783,9 +783,9 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
     });
   } catch (err) {
     if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
-    // 잠금 환경(Constrained Language Mode, AppLocker)에서는 C# 형식을 만들 수 없다(1차 리뷰).
+    // In a locked-down environment (Constrained Language Mode, AppLocker), a C# type cannot be created (first review).
     if (err.status === 76) throw new FcError('PowerShell could not create the type used to check paths (locked-down environment, etc.), so the empty folder was not sent to the Recycle Bin.');
-    // 시간 제한(오류 대화상자에서 멈춘 경우 등)이나 도중 실패여도 이미 보고한 폴더의 결과는 쓴다.
+    // Even on a time limit (such as when it stalls at an error dialog) or a mid-run failure, it uses the results of the folders already reported.
     timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM';
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
     if (!timedOut && output === '') throw err;
@@ -805,17 +805,17 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
   });
 }
 
-// 휴지통을 거칠 수 있는지 미리 본다. 실패하면 알 수 없음(null)으로 돌려주어 호출한 쪽이 지우지 않게 한다.
-// 돌려주는 값: { interactive, driveType }. driveType은 Fixed, Removable, Network 같은 .NET DriveType 이름이다.
-// 돌려주는 값에는 그 볼륨의 휴지통 설정도 들어 있다(#100). nukeOnDelete는 "파일을 휴지통으로 이동하지 않고 바로 제거"가 켜졌는지,
-// maxCapacity는 휴지통 최대 크기(바이트)다. 읽지 못하면 null이다.
-// 실측(빌드 26200, 대화형): 항목 하나(파일, 폴더면 안의 합계)가 maxCapacity를 넘거나 nukeOnDelete가 켜진 볼륨이면
-// 휴지통 이동이 묻지 않고 영구 삭제하면서 성공으로 끝났다(D: 용량 7164MB에서 7100MB는 휴지통, 7200MB는 영구 삭제).
-// 휴지통에 이미 든 양은 상관없었다(합계가 용량을 넘어도 기존 항목을 비우거나 새 항목을 지우지 않았다).
-// 볼륨은 GetVolumePathName으로 찾아 볼륨 마운트 폴더 아래도 그 볼륨의 설정을 본다. 설정은 사용자별(HKCU)
-// BitBucket\Volume\{GUID}의 NukeOnDelete·MaxCapacity(MB)다. 정책(NoRecycleFiles)이 켜져 있으면 바로 제거로 보고,
-// 정책으로 크기를 정했으면(RecycleBinSize) 크기를 모르는 것으로 본다.
-// $p의 볼륨 종류($type)와 휴지통 설정($nuke: '0'·'1'·'', $cap: MB 또는 '')를 정한다. RECYCLE_STATE_SCRIPT와 휴지통 이동 스크립트가 함께 쓴다(#81).
+// It looks in advance whether it can go through the Recycle Bin. If it fails, it returns unknown (null) so that the caller does not delete.
+// The returned value is { interactive, driveType }. driveType is a .NET DriveType name such as Fixed, Removable, or Network.
+// The returned value also includes that volume's Recycle Bin setting (#100). nukeOnDelete is whether "Don't move files to the Recycle Bin. Remove files immediately when deleted" is on,
+// and maxCapacity is the Recycle Bin maximum size (in bytes). If it cannot be read, it is null.
+// Measured (build 26200, interactive): on a volume where one item (a file, or the total inside for a folder) exceeds maxCapacity or nukeOnDelete is on,
+// the Recycle Bin move deleted permanently without asking and finished as a success (with a D: capacity of 7164MB, 7100MB went to the Recycle Bin and 7200MB was deleted permanently).
+// The amount already in the Recycle Bin did not matter (even when the total exceeded the capacity, it neither emptied existing items nor deleted the new one).
+// The volume is found with GetVolumePathName, so under a volume mount folder it also looks at that volume's setting. The setting is, per user (HKCU),
+// NukeOnDelete and MaxCapacity (MB) of BitBucket\Volume\{GUID}. If the policy (NoRecycleFiles) is on, it is seen as remove-immediately,
+// and if the size was set by policy (RecycleBinSize), the size is treated as unknown.
+// It decides the volume type ($type) and the Recycle Bin setting ($nuke: '0', '1', or '', $cap: MB or '') of $p. RECYCLE_STATE_SCRIPT and the Recycle Bin move script use it together (#81).
 const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
 $type = 'Unknown'; $nuke = ''; $cap = ''
 try {
@@ -849,20 +849,20 @@ public static bool IsLink(string p) {
   }
 } catch { $type = 'Unknown' }`;
 
-// 파일 여러 개를 PowerShell 한 번으로 휴지통에 보낸다(#194). 파일마다 PowerShell을 띄우면 파일당 0.5~0.6초가 걸리지만
-// 묶으면 50개에 1.6초였다(빌드 26200에서 실측). 묶어 보내면 Node의 검사와 실제 삭제 사이가 길어지므로 PowerShell이 파일마다 지우기 직전에 다시 본다.
-// - 실제 경로(GetFinalPathNameByHandle)가 넘긴 경로와 같은지. 위 폴더가 정션으로 바뀌어 다른 곳을 가리키면 지우지 않는다(moved).
-// - 아직 파일인지(폴더·링크가 아닌지, notfile)와 판별한 때의 fileStamp(파일 ID, 크기, 수정·변경 시각 ns)와 같은지(changed).
-//   링크는 Node처럼 재분석 태그가 심볼릭 링크·정션·앱 실행 링크일 때만 본다. OneDrive 폴더의 파일은 내려받은 것도 재분석 속성이
-//   붙어 있어(클라우드 파일 태그), 속성만 보면 모두 지우지 못한다(1차 리뷰).
-//   PowerShell이 만든 값은 C:(NTFS)·D:(ReFS)에서 Node의 fileStamp와 글자 그대로 같았다(실측).
-// 휴지통 이동을 도중에 끊으면 파일을 잃을 수 있어 시간 제한을 두지 않는다(#97). 파일마다 끝나는 대로 결과를 한 줄씩 내보낸다.
-// items는 { path, stamp, keep? } 목록이고 path는 recycleTarget을 거친 경로다. 결과는 넘긴 순서대로 { path, status, reason } 목록이다.
-// keep({ path, stamp })을 주면 그 파일(remove-duplicates의 남길 파일)도 지우기 직전에 실제 경로·파일 여부·fileStamp가 그대로인지 보고,
-// 다르면 지우지 않는다(keepchanged, #216). 묶음 도중 남길 파일이 바뀌어도 사본을 지우지 않게 한다.
-// status: ok(휴지통으로 보냄), moved, notfile, changed, gone, keepchanged, error(reason에 Windows의 사유), unknown(PowerShell이 도중에 끝나 결과를 모름)
-// permanent: 지우기 직전에 볼륨 휴지통 설정을 다시 보니 영구 삭제될 것이라 지우지 않음(#236). reason은 RECYCLE_SCRIPT와 같은 판정의 사유("…므로")다.
-// 계획 단계에서 판정한 뒤 실행 전에 "바로 제거"를 켜거나 최대 크기를 줄여도 지우지 않게 한다. 설정은 폴더마다 묶음에서 처음 만날 때 한 번 읽는다.
+// It sends several files to the Recycle Bin with one PowerShell run (#194). Starting PowerShell for each file takes 0.5 to 0.6 second per file, but
+// bundled it took 1.6 seconds for 50 (measured on build 26200). Sending in a batch makes the gap between Node's check and the real deletion longer, so PowerShell checks again for each file right before deleting.
+// - Whether the real path (GetFinalPathNameByHandle) is the same as the path passed in. If a folder above was replaced by a junction and points elsewhere, it does not delete (moved).
+// - Whether it is still a file (not a folder or link, notfile) and whether it equals the fileStamp from the judgment (file ID, size, modification and change times in ns) (changed).
+//   It looks at a link only when, as in Node, the reparse tag is a symbolic link, a junction, or an app execution link. Files in the OneDrive folder, even downloaded ones, carry a reparse attribute
+//   (a cloud file tag), so looking at the attribute alone would leave all of them undeleted (first review).
+//   The value PowerShell made was literally the same as Node's fileStamp on C: (NTFS) and D: (ReFS) (measured).
+// Interrupting the Recycle Bin move midway can lose files, so there is no time limit (#97). It sends the result one line at a time as each file finishes.
+// items is a list of { path, stamp, keep? } and path is a path that went through recycleTarget. The result is a list of { path, status, reason } in the order passed.
+// If keep({ path, stamp }) is given, right before deleting it also checks that the real path, the file-ness, and the fileStamp of that file (the file to keep of remove-duplicates) are unchanged,
+// and if different, it does not delete (keepchanged, #216). Even if the file to keep changes in the middle of a batch, the copies are not deleted.
+// status: ok (sent to the Recycle Bin), moved, notfile, changed, gone, keepchanged, error (the Windows reason is in reason), unknown (PowerShell ended midway and the result is not known)
+// permanent: it looked at the volume's Recycle Bin setting again right before deleting and it would be deleted permanently, so it did not delete (#236). reason is the reason sentence (starting with "because ...") of the same judgment as RECYCLE_SCRIPT.
+// Even if "remove immediately" is turned on or the maximum size is reduced after the judgment at the planning stage and before running, it does not delete. The setting is read once, the first time each volume is met in a batch.
 const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'keepchanged', 'permanent', 'error']);
 
 const RECYCLE_FILES_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
@@ -913,8 +913,8 @@ function Same([string]$k, [string]$stamp) {
   if (($f -eq $null) -or -not [string]::Equals((Plain $f), $k, [StringComparison]::OrdinalIgnoreCase)) { return $false }
   return ([FcFileCheck]::Stamp($kl) -eq $stamp)
 }
-# 볼륨의 휴지통 설정을 읽는다(#236). 같은 폴더의 파일은 같은 볼륨이므로 폴더마다 묶음에서 처음 한 번만 본다.
-# 레지스트리 읽기는 폴더 하나에 40ms쯤 걸려(1차 리뷰 실측), 볼륨 루트(GetVolumePathName)가 같으면 읽은 설정을 다시 쓴다.
+# It reads the volume's Recycle Bin setting (#236). Files in the same folder are on the same volume, so it looks only once per folder in a batch, the first time.
+# Reading the registry takes about 40ms per folder (measured in the first review), so if the volume root (GetVolumePathName) is the same, it reuses the setting it read.
 function VolumeState([string]$p) {
 ${VOLUME_STATE_PS}
   return @($type, $nuke, $cap, $root)
@@ -929,7 +929,7 @@ function VolumeOf([string]$dir) {
   if ($state[3] -and $state[0] -ne 'Unknown') { $roots[$state[3]] = $state }
   return $state
 }
-# 지우면 영구 삭제될 것이면 RECYCLE_SCRIPT와 같은 표시(type|종류, nuke, cap|MB, unknown)를, 아니면 $null을 돌려준다.
+# If deleting would be permanent, it returns the same marker as RECYCLE_SCRIPT (type|kind, nuke, cap|MB, unknown); otherwise $null.
 function PermanentMark([string]$p, [long]$size) {
   $dir = [IO.Path]::GetDirectoryName($p)
   if (-not $volumes.ContainsKey($dir)) { $volumes[$dir] = VolumeOf $dir }
@@ -945,7 +945,7 @@ foreach ($line in $input) {
   $parts = $line.Split(' ')
   $status = 'error'; $reason = ''
   try {
-    # 칸은 사본 경로·stamp 2개, 또는 남길 파일 경로·stamp까지 4개다. 그 밖이면 남길 파일 검사를 건너뛰지 않도록 지우지 않는다(1차 리뷰).
+    # The fields are the copy path and stamp (2), or also the path and stamp of the file to keep (4). Anything else is not deleted, so that the check of the file to keep is not skipped (first review).
     if ($parts.Length -ne 2 -and $parts.Length -ne 4) { throw 'bad input line' }
     $p = $u.GetString([Convert]::FromBase64String($parts[0]))
     $long = Long $p
@@ -982,7 +982,7 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
   } catch (err) {
     if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
     if (err.status === 76) throw new FcError('PowerShell could not create the type used to check files (locked-down environment, etc.), so they were not sent to the Recycle Bin.');
-    // 도중에 끝났어도 이미 보고한 파일의 결과는 쓴다. 보고하지 않은 파일은 결과를 모른다.
+    // Even if it ended midway, it uses the results of files already reported. For files not reported, the result is not known.
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
     failure = err.status == null && err.signal ? `PowerShell ended with ${err.signal}` : `PowerShell exit code ${err.status ?? err.code}`;
   }
@@ -1000,15 +1000,15 @@ function bareDeviceInside(dir) {
   return entryInside(dir, (part) => BARE_DEVICE_NAME.test(part));
 }
 
-// 폴더 안에서 끝이 점이나 공백인 이름이 든 항목을 찾는다(#190). 휴지통 이동(PowerShell 5.1)은 그런 이름을 열지 못해 폴더째
-// "지정한 파일을 찾을 수 없습니다"로 실패하고, 아무것도 옮기지 않는다(빌드 26200에서 확인). 실패했을 때만 찾아 사유로 알린다.
-// 안쪽의 259자를 넘는 경로는 실패 원인이 아니다. 274~377자 경로가 든 폴더도 그대로 휴지통으로 갔고 휴지통 안에 남았다(실측).
+// It finds an item inside a folder that holds a name ending in a dot or a space (#190). The Recycle Bin move (PowerShell 5.1) cannot open such a name, so for the whole folder
+// it fails with "지정한 파일을 찾을 수 없습니다" (Windows message: "The specified file cannot be found") and moves nothing (confirmed on build 26200). It is searched for only on failure and reported as the reason.
+// A path longer than 259 characters inside is not the cause of the failure. A folder that held 274 to 377 character paths also went to the Recycle Bin as is and stayed inside the Recycle Bin (measured).
 function oddNameInside(dir) {
   return entryInside(dir, (part) => /[. ]$/.test(part));
 }
 
-// 폴더 안의 항목 중 경로 성분 하나가 test를 만족하는 첫 항목의 상대 경로를 돌려준다. 폴더가 아니거나 읽지 못하면 undefined다.
-// 링크·정션은 따라가지 않는다(readdirSync recursive는 링크를 폴더로 보지 않는다).
+// Among the items in a folder, it returns the relative path of the first item where one path component satisfies test. If it is not a folder or cannot be read, it is undefined.
+// It does not follow links or junctions (readdirSync recursive does not see a link as a folder).
 function entryInside(dir, test) {
   try {
     if (!fs.lstatSync(dir).isDirectory()) return undefined;
@@ -1022,12 +1022,12 @@ const RECYCLE_STATE_SCRIPT = `$p = $env:FC_VOLUME
 ${VOLUME_STATE_PS}
 [Environment]::UserInteractive.ToString() + '|' + $type + '|' + $nuke + '|' + $cap`;
 
-// moveToRecycleBin의 PowerShell 스크립트. 비대화형 실행(서비스, 예약 작업)에서 이 API는 휴지통을 거치지 않고 영구 삭제하므로 75로 끝낸다.
-// 지우기 직전에 볼륨의 휴지통 설정과 크기(폴더면 안의 합계, 링크·정션은 따라가지 않음)를 보고, 영구 삭제될 것이면 지우지 않고
-// 사유 표시를 UTF-16 base64로 내보내고 78로 끝낸다(#81). 고정 디스크가 아니거나 종류를 모르면 type|종류, 바로 제거면 nuke,
-// 최대 크기를 넘으면 cap|MB, 최대 크기를 모르는데 1GB 이상이면 unknown, 크기를 읽지 못하면 size다.
-// 휴지통 이동이 실패하면 Windows가 준 사유 문구를 UTF-16 base64로 내보내고 77로 끝낸다. stderr는 코드페이지로 나와 한글이 깨진다(#97).
-// 예외의 HResult는 잠긴 파일과 폴더 모두 0x800736B7로 나와 사유를 가를 수 없어 쓰지 않는다.
+// The PowerShell script of moveToRecycleBin. In a non-interactive run (a service, a scheduled task), this API deletes permanently without going through the Recycle Bin, so it ends with 75.
+// Right before deleting, it looks at the volume's Recycle Bin setting and the size (for a folder, the total inside; links and junctions are not followed), and if it would be deleted permanently, it does not delete and
+// sends a reason marker as UTF-16 base64 and ends with 78 (#81). If it is not a fixed disk or the type is unknown, type|type; if remove-immediately, nuke;
+// if it exceeds the maximum size, cap|MB; if the maximum size is unknown and it is 1GB or more, unknown; if the size cannot be read, size.
+// If the Recycle Bin move fails, it sends the reason text Windows gave as UTF-16 base64 and ends with 77. stderr comes out in the code page and Korean is garbled (#97).
+// The HResult of the exception comes out as 0x800736B7 for both locked files and folders and cannot separate the reasons, so it is not used.
 const RECYCLE_SCRIPT = `if (-not [Environment]::UserInteractive) { exit 75 }
 $p = $env:FC_TARGET
 ${VOLUME_STATE_PS}
@@ -1056,7 +1056,7 @@ try { Add-Type -AssemblyName Microsoft.VisualBasic
   else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } }
 catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; [Convert]::ToBase64String($u.GetBytes([string]$e.Message)); exit 77 }`;
 
-// RECYCLE_SCRIPT가 78로 알린 표시를 사유("…므로")로 바꾼다.
+// It turns the marker that RECYCLE_SCRIPT reported with 78 into a reason (a sentence starting with "because ...").
 function refusalReason(mark) {
   const [kind, value] = mark.split('|');
   if (kind === 'type') return volumeTypeReason(value === 'Unknown' ? null : value);
@@ -1072,13 +1072,13 @@ function volumeTypeReason(driveType) {
     : `because the drive (${driveType}) may have no Recycle Bin and the file could be permanently deleted`;
 }
 
-// hint는 rm처럼 --permanent를 받는 명령에서만 켠다. extract-all·collapse는 --permanent를 받지 않는다(1차 리뷰).
+// hint is turned on only for commands that accept --permanent, like rm. extract-all and collapse do not accept --permanent (first review).
 function permanentRefusal(full, why, hint = false) {
   const tail = hint ? ' To delete without the Recycle Bin, use --permanent.' : '';
   return `Not sent to the Recycle Bin: ${full}. It was not deleted ${why}.${tail}`;
 }
 
-// 미리보기에서 RECYCLE_SCRIPT와 같은 판정을 한다(#81). 영구 삭제될 것이면 사유를, 아니면 null을 돌려준다.
+// In the preview, it makes the same judgment as RECYCLE_SCRIPT (#81). If it would be deleted permanently it returns the reason, otherwise null.
 function previewRefusal(full) {
   const state = recycleBinState(full);
   if (state.driveType !== 'Fixed') return volumeTypeReason(state.driveType);
@@ -1093,7 +1093,7 @@ function previewRefusal(full) {
   return permanentDeleteReason(state, size);
 }
 
-// 파일 크기, 폴더면 안의 파일 크기 합계. 링크·정션은 따라가지 않고, 합계가 limit를 넘으면 그만 센다.
+// The file size, or for a folder the total size of the files inside. It does not follow links or junctions, and stops counting if the total exceeds limit.
 function sizeUpTo(full, limit) {
   const stat = fs.lstatSync(full);
   if (!stat.isDirectory()) return stat.isFile() ? stat.size : 0;
@@ -1121,7 +1121,7 @@ function recycleBinState(target) {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 60 * 1000,
     });
-    // 설정 칸이 없는 꼴(True|Fixed)도 받는다. 그때 설정은 모르는 것으로 둔다.
+    // It also accepts the form without a setting field (True|Fixed). Then the setting is treated as unknown.
     const found = /^(True|False)\|(\w+)(?:\|(\d*)\|(\d*))?\s*$/.exec(output);
     if (!found) return unknown;
     const driveType = found[2] === 'Unknown' ? null : found[2];
@@ -1133,12 +1133,12 @@ function recycleBinState(target) {
   }
 }
 
-// 휴지통 용량을 확인하지 못했을 때 남기는 크기. 기본 휴지통 용량은 볼륨의 약 5%라 20GB 볼륨이면 1GB다.
+// The size to keep when the Recycle Bin capacity could not be confirmed. The default Recycle Bin capacity is about 5% of the volume, so it is 1GB for a 20GB volume.
 const UNKNOWN_RECYCLE_LIMIT = 1024 * 1024 * 1024;
 
-// 크기가 size바이트인 항목을 휴지통으로 보내면 영구 삭제되는지 볼륨 설정(recycleBinState)으로 본다(#100).
-// 영구 삭제되면 사유("…라 영구 삭제되므로")를, 아니면 null을 돌려준다. 용량을 모르면 UNKNOWN_RECYCLE_LIMIT부터 영구 삭제로 본다.
-// fallback은 용량을 모를 때의 한도로, 테스트에서만 바꾼다.
+// It looks, by the volume setting (recycleBinState), at whether sending an item of size bytes to the Recycle Bin would delete it permanently (#100).
+// If it would be deleted permanently, it returns the reason (a sentence starting with "because ..."), otherwise null. If the capacity is unknown, it is seen as permanent deletion from UNKNOWN_RECYCLE_LIMIT.
+// fallback is the limit for when the capacity is unknown, and is changed only in tests.
 function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
   if (state.nukeOnDelete === true) return 'because this volume is set to remove files immediately instead of using the Recycle Bin, so it would be permanently deleted';
   const mb = (bytes) => `${Math.floor(bytes / (1024 * 1024))}MB`;
@@ -1148,26 +1148,26 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
   return size >= fallback ? 'because it is 1GB or larger and the Recycle Bin maximum size could not be checked, so it could be permanently deleted' : null;
 }
 
-// checkVolume이 true면 지우기 전에(미리보기 포함) 모든 대상의 볼륨 휴지통 설정과 크기를 보고, 영구 삭제될 대상이 있으면
-// 아무것도 지우지 않고 거부한다(#81). 실제로 지울 때는 휴지통 이동 스크립트가 지우기 직전에 한 번 더 본다.
-// 이미 같은 판정을 한 쪽(remove-broken 등)은 PowerShell을 한 번 더 띄우지 않도록 false로 부른다.
-// permanentHint는 거부 사유에 --permanent 안내를 붙일지다(rm 명령만 켬).
+// If checkVolume is true, before deleting (including the preview) it looks at the volume's Recycle Bin setting and size for every target, and if any target would be deleted permanently,
+// it deletes nothing and refuses (#81). On a real delete, the Recycle Bin move script looks once more right before deleting.
+// Callers that already made the same judgment (remove-broken and so on) call it with false so that PowerShell is not started once more.
+// permanentHint is whether to attach the --permanent hint to the refusal reason (only the rm command turns it on).
 function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false } = {}) {
   if (!permanent && !isWindows) {
     throw new FcError('Deleting to the Recycle Bin works only on Windows. To delete permanently, use --permanent');
   }
   const planned = new Set();
-  // 아무것도 지우기 전에 모든 대상을 검사한다(#129). rm a b c에서 c만 보낼 수 없으면 a와 b도 지우지 않고 사유를 알린다.
-  // 미리보기도 같은 검사를 거쳐, 실제로는 실패할 대상을 "휴지통으로 이동"으로 보여 주지 않는다.
+  // It checks every target before deleting anything (#129). In rm a b c, if only c cannot be sent, a and b are not deleted either and the reason is reported.
+  // The preview goes through the same check, so it does not show a target that would really fail as "Move to the Recycle Bin".
   const checked = targets.map((target) => {
     ensureExists(target);
-    // 그대로 지우면 현재 폴더만 지우지 못해 실패하는데, 그 전에 다른 항목은 이미 지워진다.
-    // 링크를 지우면 링크만 사라지므로 링크 자체로 비교한다. 글자 비교는 링크를 거쳐 들어온 현재 폴더(rm lnk, 현재 폴더 lnk/s)를 잡는다.
+    // If deleted as is, only the current folder cannot be deleted and it fails, but before that the other items have already been deleted.
+    // Deleting a link removes only the link, so it compares by the link itself. Comparing by text catches the current folder reached through a link (rm lnk, current folder lnk/s).
     if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
       throw new FcError(`Cannot delete the current folder or its parents: ${target}`);
     }
     if (!permanent) rejectBareDeviceArgs([target], 'cannot be sent to the Recycle Bin');
-    // 영구 삭제는 Node(fs.rmSync)로 지우므로 휴지통 경로 검사를 하지 않는다.
+    // Permanent deletion deletes with Node (fs.rmSync), so it does not run the Recycle Bin path check.
     const recycleAs = permanent ? undefined : recycleTarget(target);
     if (!permanent && checkVolume) {
       const why = previewRefusal(recycleAs);
@@ -1177,15 +1177,15 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
     return { target, recycleAs };
   });
   return checked.map(({ target, recycleAs }) => {
-    // 앞 대상이 이 대상을 품고 있어 이미 지워졌으면(rm a a/b) 예전처럼 없다고 알린다.
+    // If an earlier target contained this target and it was already deleted (rm a a/b), it reports that it does not exist, as before.
     if (!dryRun) ensureExists(target);
     if (permanent) return perform(`Delete permanently: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`Move to the Recycle Bin: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });
 }
 
-// 시스템 OEM 코드페이지 번호. tar.exe는 UTF-8 표시가 없는 zip 항목 이름을 이 코드페이지로 읽고 쓴다(#173, #83).
-// 확인하지 못하면 null이다. 한 번 읽으면 기억해 둔다.
+// The system OEM code page number. tar.exe reads and writes the names of zip entries that have no UTF-8 marker in this code page (#173, #83).
+// If it cannot be confirmed, it is null. Once read, it is remembered.
 let oemCodePageCache;
 function oemCodePage() {
   if (oemCodePageCache !== undefined) return oemCodePageCache;
@@ -1199,23 +1199,23 @@ function oemCodePage() {
     const cp = Number(output.trim());
     if (Number.isSafeInteger(cp) && cp > 0) oemCodePageCache = cp;
   } catch {
-    // 확인하지 못하면 null로 둔다. 쓰는 쪽에서 이름을 믿지 않는다.
+    // If it cannot be confirmed, it is left null. The user of it does not trust the name.
   }
   return oemCodePageCache;
 }
 
-// tar.exe는 인자를 시스템 코드페이지로 받아서, 그 코드페이지에 없는 문자를 비슷한 글자로 바꾸거나(é -> e) 비정상 종료한다.
-// 그대로 넘기면 다른 파일을 묶거나 다른 폴더에 쓸 수 있으므로, 바뀌는 문자가 있으면 실행하기 전에 거부한다.
-// 인자는 ANSI 코드페이지로 받지만 zip·cpio 항목 이름은 OEM 코드페이지로 적는다. 영어 Windows(ANSI 1252, OEM 437)에서
-// COM¹.tar.gz를 zip으로 묶고 풀면 오류 없이 COM1.tar.gz가 됐다(#136). 그래서 그 항목 이름은 ANSI와 OEM 어느 쪽에서든 바뀌는 문자를 거부한다.
-// 경로 인자와 다른 형식(pax tar, 7z, jar, iso 등)의 항목 이름은 OEM을 거치지 않는다(#173, CI의 영어 Windows에서 확인).
-// withOem이 거짓이면 ANSI만 본다. codePages를 주면 시스템 코드페이지 대신 그것으로 본다(테스트용).
+// tar.exe takes arguments in the system code page, so it either changes a character not in that code page into a similar letter (é -> e) or ends abnormally.
+// If passed on as is, it could bundle another file or write to another folder, so if there is a character that would change, it refuses before running.
+// Arguments are taken in the ANSI code page but zip and cpio entry names are written in the OEM code page. On English Windows (ANSI 1252, OEM 437),
+// bundling COM¹.tar.gz into zip and extracting it became COM1.tar.gz without an error (#136). So for those entry names it refuses a character that would change in either ANSI or OEM.
+// The entry names of formats other than the path arguments (pax tar, 7z, jar, iso, and so on) do not go through OEM (#173, confirmed on the English Windows of CI).
+// If withOem is false, it looks only at ANSI. If codePages is given, it looks at that instead of the system code pages (for tests).
 function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
   if (!isWindows) return [];
   const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
   if (chars.length === 0) return [];
-  // 코드페이지를 하나라도 확인하지 못하면 검사가 약해진 채 통과하지 않도록 멈추고 실행을 거부한다.
-  // OEMCP가 비면 [int]가 0이 되어 GetEncoding(0)이 ANSI를 돌려주므로 따로 막는다.
+  // If even one code page cannot be confirmed, it stops and refuses to run, so that the check does not pass in a weakened state.
+  // If OEMCP is empty, [int] becomes 0 and GetEncoding(0) returns ANSI, so it is blocked separately.
   const script =
     "$ErrorActionPreference = 'Stop'; " +
     '$cps = if ($env:FC_CODEPAGES) { $env:FC_CODEPAGES -split "," } else { ' +
@@ -1236,17 +1236,17 @@ function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
   return output.split(/\s+/).filter(Boolean).map((code) => String.fromCodePoint(Number(code)));
 }
 
-// tar.exe는 이름 끝의 점과 공백을 지우지만 Node는 글자 그대로 다루므로, a.txt.를 넘기면 a.txt를 묶게 된다.
+// tar.exe removes the trailing dot and space of a name but Node handles them literally, so passing a.txt. would bundle a.txt.
 function trailingDotOrSpaceName(p) {
   return p.slice(path.parse(p).root.length).split(path.sep).find((part) => /[. ]$/.test(part));
 }
 
-// paths는 ANSI로만 보고, oemNames는 OEM으로도 본다.
+// paths are looked at only as ANSI, and oemNames are looked at as OEM too.
 function ensureTarCanUse(paths, oemNames = []) {
   if (!isWindows) return;
   const all = [...paths, ...oemNames];
   const trailing = all.find(trailingDotOrSpaceName);
-  // 끝 공백이 눈에 보이도록 이름을 따옴표로 감싼다.
+  // It wraps the name in quotes so that the trailing space can be seen.
   if (trailing !== undefined) throw new FcError(`tar.exe cannot handle a name ending with a dot or space: ${JSON.stringify(trailingDotOrSpaceName(trailing))} (${trailing})`);
   let bad = unsupportedChars(paths.join(''), null, { withOem: false });
   let checked = paths;
@@ -1255,40 +1255,40 @@ function ensureTarCanUse(paths, oemNames = []) {
     checked = oemNames;
   }
   if (bad.length === 0) return;
-  // 공백처럼 보이는 문자나 macOS에서 온 한글 자모도 있어서, 글자와 함께 코드와 경로를 보여 준다.
+  // There are also characters that look like spaces and Hangul jamo that came from macOS, so it shows the code and the path together with the letters.
   const codes = bad.map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}(${char})`);
   const where = checked.find((p) => bad.some((char) => p.includes(char)));
   throw new FcError(`The name contains characters tar.exe cannot handle: ${codes.join(' ')} (${where})`);
 }
 
-// args는 tar.exe에 인자로 넘기는 경로, entries는 압축 안에 적힐 이름(원본 이름과 묶을 폴더 안의 이름)이다.
-// 폴더 안의 장치 이름은 tar.exe가 파일로 다루므로 인자만 본다(#135). oemEntries는 항목 이름을 OEM으로 적는 형식(zip·cpio와 확인하지 않은 형식)인지다.
+// args are the paths passed to tar.exe as arguments, and entries are the names to be written inside the archive (the source names and the names inside the folder to bundle).
+// Device names inside a folder are handled as files by tar.exe, so it looks only at the arguments (#135). oemEntries is whether the format writes entry names in OEM (zip, cpio, and formats not checked).
 function ensureTarArgs(args, entries = [], { oemEntries = false } = {}) {
   if (oemEntries) ensureTarCanUse(args, entries);
   else ensureTarCanUse([...args, ...entries]);
   rejectBareDeviceArgs(args, 'would be opened as a device by tar.exe and cannot be handled');
 }
 
-// 묶을 폴더 안의 이름도 tar.exe가 읽어야 하므로 함께 확인한다. tar처럼 원본과 그 안의 정션을 따라간다.
+// The names inside the folder to bundle must also be readable by tar.exe, so they are checked together. Like tar, it follows the source and the junctions inside it.
 function namesInside(src) {
   if (!fs.statSync(src).isDirectory()) return [];
   return fs.readdirSync(src, { recursive: true });
 }
 
-// tar.exe는 TAR_READER_OPTIONS·TAR_WRITER_OPTIONS 환경 변수를 --options처럼 읽는다.
-// mtree:checkfs가 들어 있으면 mtree 글의 contents= 경로에 있는 로컬 파일을 풀린 폴더로 복사하므로 물려주지 않는다(#87).
-// Windows의 환경 변수 이름은 대소문자를 가리지 않는다.
+// tar.exe reads the TAR_READER_OPTIONS and TAR_WRITER_OPTIONS environment variables like --options.
+// If mtree:checkfs is in them, it copies the local file at the contents= path of the mtree text into the extraction folder, so they are not passed on (#87).
+// Windows environment variable names are case-insensitive.
 const TAR_OPTION_ENV = new Set(['TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS']);
 function tarEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => !TAR_OPTION_ENV.has(isWindows ? name.toUpperCase() : name)));
 }
 
-// tar.exe(libarchive)는 외부 압축 프로그램(lz4, lzop 등)을 SearchPath로 찾는데, 그 순서에서 현재 폴더가 PATH보다 앞이다.
-// 그래서 fctl을 실행한 폴더에 심어 둔 lz4.exe가 실행될 수 있었다(빌드 26200 실측: 현재 폴더의 가짜 lz4.exe가 실행됨, #242).
-// tar.exe를 늘 tar.exe가 있는 폴더(System32)에서 실행한다. 인자는 모두 절대 경로이거나 -C 기준이라 해석이 바뀌지 않는다.
+// tar.exe (libarchive) looks for external compression programs (lz4, lzop, and so on) with SearchPath, and in that order the current folder comes before the PATH.
+// So an lz4.exe planted in the folder where fctl was run could be executed (measured on build 26200: a fake lz4.exe in the current folder was executed, #242).
+// It always runs tar.exe from the folder where tar.exe lives (System32). Every argument is an absolute path or relative to -C, so the interpretation does not change.
 const TAR_CWD = isWindows ? path.dirname(TAR) : undefined;
 
-// 0xC0000005: tar.exe가 처리하지 못하는 이름을 만나면 오류 내용 없이 이렇게 끝난다.
+// 0xC0000005: when tar.exe meets a name it cannot handle, it ends like this without any error message.
 function runTar(args, options) {
   try {
     return execFileSync(TAR, args, { ...options, env: tarEnv(), cwd: TAR_CWD });
@@ -1302,11 +1302,11 @@ function runTar(args, options) {
   }
 }
 
-// tar.exe가 외부 압축 프로그램을 찾지 못했을 때의 stderr(빌드 26200 실측). 풀 때(목록 읽기 포함)는
-// `Can't initialize filter; unable to run program "lz4 -d -q"`, 묶을 때는 `Can't launch external program: lz4 -z …`다(#241).
-// 압축은 이름이 아니라 내용으로 판별되므로 확장자로 미리 알 수 없어, 실패한 뒤 이 문구로 알아본다. 프로그램 이름을 돌려준다.
-// 항목 오류 줄(`<항목 이름>: <사유>`)은 이름을 그대로 찍어 이 문구를 흉내 낼 수 있으므로, tar.exe 줄 전체가 맞고
-// 프로그램이 알려진 외부 압축 프로그램일 때만 받는다(1차 리뷰: `../unable to run program "lz4 x"` 같은 항목 이름이 다른 실패를 가렸다).
+// stderr when tar.exe could not find an external compression program (measured on build 26200). When extracting (including reading the list),
+// `Can't initialize filter; unable to run program "lz4 -d -q"`, and when bundling, `Can't launch external program: lz4 -z ...` (#241).
+// Compression is identified by content, not by name, so it cannot be known in advance from the extension; it is recognized from this message after a failure. It returns the program name.
+// An entry error line (`<entry name>: <reason>`) prints the name as is and can imitate this message, so it is accepted only when the whole tar.exe line matches and
+// the program is a known external compression program (first review: an entry name such as `../unable to run program "lz4 x"` hid another failure).
 const MISSING_PROGRAM = [
   /^[ \t]*\S*tar(?:\.exe)?: Error opening archive: Can't initialize filter; unable to run program "(lz4|lzop|lrzip|grzip)(?: [^"\r\n]*)?"\r?$/m,
   /^[ \t]*\S*tar(?:\.exe)?: Can't launch external program: (lz4|lzop|lrzip|grzip)(?: [^\r\n]*)?\r?$/m,
@@ -1320,46 +1320,46 @@ function missingProgram(stderr) {
   return null;
 }
 
-// 암호가 걸린 압축 파일에서 tar.exe가 콘솔에 암호를 물어 멈추지 않도록 아무 값이나 미리 준다. 틀린 암호로 실패한다.
+// It hands over any value in advance, so that tar.exe does not stall asking for a password on the console for a password-protected archive. It fails with the wrong password.
 const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
 
-// 압축 파일 안의 항목을 tar -tv 형식의 줄로 돌려준다. 첫 글자가 종류다(d 폴더, - 파일, h 하드링크, l 링크 등).
-// RAR는 폴더 이름에 /가 붙지 않으므로 이름으로 종류를 가리지 않는다. 읽기만 하므로 깨진 압축 파일은 실제 해제처럼 오류가 난다.
-// 이름은 코드페이지로 나와 한글이 깨질 수 있으니 개수와 첫 글자만 믿는다.
+// It returns the entries in an archive as lines in tar -tv format. The first character is the kind (d folder, - file, h hard link, l link, and so on).
+// RAR folder names do not get a trailing /, so the kind is not judged by name. It only reads, so a broken archive gives an error just like a real extraction.
+// Names come out in the code page and Korean can be garbled, so only the count and the first character are trusted.
 function archiveEntries(archive) {
   ensureTarArgs([path.resolve(archive)]);
   const listing = runTar(['-tvf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
-// 압축 파일 안의 항목 이름 목록. 코드페이지로 나오므로 ASCII가 아닌 이름은 믿을 수 없다.
+// The list of entry names in an archive. They come out in the code page, so non-ASCII names cannot be trusted.
 function archiveNames(archive) {
   ensureTarArgs([path.resolve(archive)]);
   const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
-// 압축 파일을 tar.exe로 끝까지 읽어 본다. 오류를 내지 않고 { error, status, stderr, entries }를 돌려준다.
-// 손상 문구는 종료 코드 0으로도 나오므로(Damaged tar archive) 판단은 stderr로 한다. error는 실행 실패나 한도 초과(ENOBUFS, ETIMEDOUT)다.
+// It reads an archive to the end with tar.exe. It does not raise an error and returns { error, status, stderr, entries }.
+// A damage message also comes out with exit code 0 (Damaged tar archive), so the judgment uses stderr. error is a run failure or a limit exceeded (ENOBUFS, ETIMEDOUT).
 function probeArchive(archive, { maxBuffer, timeout }) {
   ensureTarArgs([path.resolve(archive)]);
   const { error, status, stdout, stderr } = spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv(), cwd: TAR_CWD });
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
 
-// tar -tv 줄의 크기 칸. bsdtar는 종류와 권한, 링크 수, 소유자, 그룹, 크기 순으로 적는다.
-// ACL이나 확장 속성이 있는 항목은 권한 칸 끝에 +·@ 같은 글자가 하나 더 붙는다.
-// 소유자 이름에 공백이 있거나 장치 항목(주,부 번호)이면 읽지 못하므로 그때는 풀지 않는다.
+// The size column of a tar -tv line. bsdtar writes the kind and permissions, link count, owner, group, and size, in that order.
+// For an item with an ACL or extended attributes, one more character such as + or @ is attached at the end of the permission column.
+// If the owner name has a space or the item is a device entry (major, minor numbers), it cannot be read, so it does not extract in that case.
 const LISTED_SIZE = /^\S{10,11}\s+\d+\s+\S+\s+\S+\s+(\d+)\s/;
-// 파일은 클러스터 단위로 자리를 차지하므로 크기를 클러스터 크기(최소 4KB) 단위로 올려 더한다.
+// A file takes space in clusters, so it rounds the size up to the cluster size (at least 4KB) and adds.
 const DISK_BLOCK = 4096n;
-// 크기가 0인 파일과 폴더도 항목마다 파일 시스템 기록(NTFS MFT 레코드 1KB)을 쓴다.
+// Files and folders of size 0 also use a file system record (an NTFS MFT record of 1KB) for each entry.
 const ENTRY_OVERHEAD = 1024n;
-// 풀고 나서도 이만큼은 남아야 한다. 같은 디스크를 쓰는 다른 프로그램과 OneDrive 동기화가 쓸 자리다.
+// At least this much must remain even after extracting. It is room for other programs that use the same disk and for the OneDrive sync.
 const SPACE_RESERVE = 1024n ** 3n;
 
-// 목록에 적힌 크기의 합(block 단위로 올리고 항목마다 ENTRY_OVERHEAD를 더함). 압축 파일이 적은 값이라 실제와 다를 수 있다.
-// mtree 글처럼 size= 값만으로 큰 빈 파일을 만드는 경우도 목록에 그 크기로 나온다.
+// The sum of the sizes written in the list (rounded up by block and with ENTRY_OVERHEAD added per entry). It is a value the archive wrote, so it can differ from the real one.
+// Even a case that makes a large empty file only from a size= value, as in mtree text, shows up in the list with that size.
 function listedSize(entries, block) {
   let total = 0n;
   for (const line of entries) {
@@ -1370,7 +1370,7 @@ function listedSize(entries, block) {
   return total;
 }
 
-// dir이 들어갈 볼륨의 남은 공간과 클러스터 크기. 아직 없는 폴더면 있는 상위 폴더로 본다.
+// The free space and the cluster size of the volume that dir will go into. If it is a folder that does not exist yet, it looks at the parent folder that exists.
 function freeSpace(dir) {
   let current = path.resolve(dir);
   while (!exists(current) && path.dirname(current) !== current) current = path.dirname(current);
@@ -1378,8 +1378,8 @@ function freeSpace(dir) {
   return { free: stat.bavail * stat.bsize, block: stat.bsize > DISK_BLOCK ? stat.bsize : DISK_BLOCK };
 }
 
-// 풀린 크기가 남은 공간에서 SPACE_RESERVE를 뺀 것보다 크면 풀기 전에 거부한다(#77). 확인할 수 없어도 풀지 않는다.
-// 돌려주는 값은 목록 크기의 합(바이트, BigInt)이다.
+// If the extracted size is larger than the free space minus SPACE_RESERVE, it refuses before extracting (#77). It also does not extract if it cannot be confirmed.
+// The returned value is the sum of the list sizes (bytes, BigInt).
 function ensureRoomToExtract(dest, entries) {
   let space;
   try {
@@ -1395,7 +1395,7 @@ function ensureRoomToExtract(dest, entries) {
   return need;
 }
 
-// checkSpace를 끄는 것은 이미 같은 확인을 한 extract-all뿐이다.
+// Only extract-all, which already made the same check, turns checkSpace off.
 function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
@@ -1418,28 +1418,28 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
   });
 }
 
-// -a는 확장자로 형식을 정하므로 임시 파일에도 같은 확장자를 붙인다. (.tar.gz 같은 겹 확장자 포함)
-// 임시 이름은 --exclude의 패턴으로도 쓰이므로, 패턴 문자가 없는 영숫자 확장자만 받는다.
-// tar.exe는 확장자를 대소문자 구분해서 보아 X.ZIP·x.TAR.GZ를 압축 없는 tar로 만든다. 그래서 임시 파일에는 소문자 확장자를 붙인다.
-// 다만 compress 형식인 .Z, .taZ, .tZ는 대소문자로 갈리므로(.z는 압축 없는 tar, .taz는 gzip, .tz는 압축 없는 tar) 그대로 둔다.
+// -a decides the format by the extension, so the temporary file gets the same extension (including a layered extension such as .tar.gz).
+// The temporary name is also used as an --exclude pattern, so it accepts only alphanumeric extensions with no pattern characters.
+// tar.exe looks at extensions case-sensitively and makes X.ZIP and x.TAR.GZ an uncompressed tar. So the temporary file gets a lower-case extension.
+// However, the compress formats .Z, .taZ, and .tZ are told apart by case (.z is an uncompressed tar, .taz is gzip, .tz is an uncompressed tar), so they are left as they are.
 const KEEP_CASE_EXT = new Set(['Z', 'taZ', 'tZ']);
-// tar.exe가 항목 이름을 OEM 코드페이지를 거치지 않고(UTF-8이나 UTF-16으로) 적는다고 CI의 영어 Windows에서 확인한 확장자(#173).
-// archiveExt가 돌려주는 값으로 비교한다. .zip·.cpio(.tar.zip·.tar.cpio 포함)는 OEM으로 적고, 확인하지 않은 확장자도 OEM으로 적는다고 본다.
+// Extensions that were confirmed on the English Windows of CI to be written by tar.exe without going through the OEM code page (in UTF-8 or UTF-16) (#173).
+// It compares with the value archiveExt returns. .zip and .cpio (including .tar.zip and .tar.cpio) are written in OEM, and an extension that was not checked is also seen as written in OEM.
 const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.gz', '.taZ', '.7z', '.jar', '.iso', '.xar', '.mtree', '.warc']);
-// tar.exe가 압축 파일 이름에서 형식으로 읽는 확장자와, 그 뒤에 붙으면 압축으로 읽는 확장자(#164).
-// x.cpio.gz를 tar.exe에 그대로 주면 gzip 안에 cpio를 넣으므로, 임시 파일에도 두 확장자를 함께 붙여야 이름과 내용이 같다.
-// .jar처럼 형식으로 읽지 않는 것은 x.jar.gz도 gzip 안의 tar가 되어 .gz만 붙인 것과 같다.
+// The extensions that tar.exe reads as a format from an archive name, and the extensions that, when they follow, are read as compression (#164).
+// Giving x.cpio.gz to tar.exe as it is puts a cpio inside gzip, so the temporary file must also get both extensions for the name and the content to be the same.
+// An extension that is not read as a format, such as .jar, makes x.jar.gz also a tar inside gzip, the same as just adding .gz.
 const FORMAT_EXT = new Set(['cpio', 'iso', 'ar', 'shar', 'xar', 'warc', 'mtree', '7z', 'zip']);
 const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu)$/i;
-// tar.exe는 끝의 압축 확장자를 겹겹이 벗긴다(#193, 빌드 26200 실측: x.tar.gz.gz는 gzip 두 겹 안의 tar, x.cpio.gz.xz는 xz 안의 gzip 안의 cpio,
-// y.tgz.gz는 gzip 두 겹 안의 tar, y.Z.gz는 gzip 안의 compress). 그래서 끝에서부터 이어지는 압축 확장자(tar와 압축을 함께 뜻하는 .tgz 등 포함)를
-// 모두 임시 파일에 옮겨, tar.exe가 원래 이름(소문자로 바꾼 것)에서 정할 형식을 그대로 정하게 한다. 벗기는 규칙을 따로 흉내 내지 않는다.
-// 확장자는 영숫자만 받으므로 임시 이름에 --exclude 패턴 문자가 들어가지 않는다.
+// tar.exe peels off compression extensions at the end layer by layer (#193, measured on build 26200: x.tar.gz.gz is a tar inside two layers of gzip, x.cpio.gz.xz is a cpio inside gzip inside xz,
+// y.tgz.gz is a tar inside two layers of gzip, y.Z.gz is a compress inside gzip). So it moves
+// all the compression extensions continuing from the end (including .tgz and the like, which mean tar and compression together) to the temporary file, so tar.exe decides the format from the original name (lower-cased) the same way. It does not imitate the peeling rules separately.
+// Extensions accept only alphanumerics, so no --exclude pattern characters enter the temporary name.
 const LAYER_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu|tgz|tbz|tbz2|txz|tlz|tzst|taz|tz2|tzo)$/i;
 const isLayerExt = (part) => LAYER_EXT.test(part) || KEEP_CASE_EXT.has(part);
 function archiveExt(archive) {
   const parts = path.basename(path.resolve(archive)).split('.');
-  // parts[0]은 이름이라 확장자로 보지 않는다.
+  // parts[0] is the name, so it is not seen as an extension.
   const usable = (i) => i >= 1 && /^[a-z0-9]+$/i.test(parts[i]);
   const last = parts.length - 1;
   if (!usable(last)) return '';
@@ -1447,15 +1447,15 @@ function archiveExt(archive) {
   while (usable(start - 1) && isLayerExt(parts[start]) && isLayerExt(parts[start - 1])) start -= 1;
   if (usable(start - 1)) {
     const before = parts[start - 1].toLowerCase();
-    // 형식+압축(x.cpio.gz, #164)이나 tar 뒤의 확장자(x.tar.gz, x.tar.zip)는 앞의 확장자도 옮긴다.
+    // For format plus compression (x.cpio.gz, #164) and an extension after tar (x.tar.gz, x.tar.zip), the earlier extension is also moved.
     const compressed = COMPRESS_EXT.test(parts[start]) || parts[start] === 'Z';
     if ((compressed && (FORMAT_EXT.has(before) || before === 'tar')) || (start === last && before === 'tar')) start -= 1;
   }
   return parts.slice(start).map((part) => `.${KEEP_CASE_EXT.has(part) ? part : part.toLowerCase()}`).join('');
 }
 
-// 압축 파일이 묶을 폴더 안에 있으면 tar가 기존 압축 파일까지 묶으므로 미리 치워야 한다.
-// 폴더 안의 링크를 거쳐 닿을 수도 있어, 링크가 든 폴더도 안에 있는 것으로 본다. UNC 별칭은 파일 번호로 잡는다.
+// If the archive is inside the folder to bundle, tar also bundles the existing archive, so it must be set aside in advance.
+// It can also be reached through a link inside the folder, so a folder that holds a link is also seen as containing it. A UNC alias is caught by file ID.
 function archiveInsideSources(archive, sources) {
   const dir = realKey(path.dirname(path.resolve(archive)));
   return sources.some((src) => {
@@ -1465,7 +1465,7 @@ function archiveInsideSources(archive, sources) {
   });
 }
 
-// 치워 둔 기존 압축 파일을 원래 이름으로 되돌리고 원래 오류를 던진다. 되돌리지 못하면 치운 위치를 알려 준다.
+// It restores the archive set aside to its original name and throws the original error. If it cannot restore it, it tells where it was set aside.
 function restoreAside(archive, aside, err) {
   try {
     fs.renameSync(aside, archive);
@@ -1475,8 +1475,8 @@ function restoreAside(archive, aside, err) {
   throw err;
 }
 
-// 먼저 임시 이름으로 묶고, 성공한 뒤에 기존 압축 파일과 바꾼다. 실패하면 기존 압축 파일을 그대로 둔다.
-// 압축 파일이 묶을 폴더 안에 있을 때만 tar 실행 전에 기존 압축 파일을 치워 이름으로 뺀다. 그 밖에는 tar가 도는 동안 원래 이름으로 남는다.
+// It first bundles under a temporary name and, after success, swaps it with the existing archive. If it fails, the existing archive is left as it is.
+// Only when the archive is inside the folder to bundle, it sets the existing archive aside and takes it out of the name before running tar. Otherwise it stays under its original name while tar runs.
 function writeArchive(archive, sources) {
   const fresh = freshPath(archive, '.fctl-new', archiveExt(archive));
   const early = exists(archive) && archiveInsideSources(archive, sources);
@@ -1486,7 +1486,7 @@ function writeArchive(archive, sources) {
   for (const src of sources) {
     const full = path.resolve(src);
     const name = path.basename(full);
-    // ./를 붙이지 않으면 tar가 -나 @로 시작하는 이름을 옵션이나 지시로 해석한다.
+    // Without ./, tar interprets a name that starts with - or @ as an option or a directive.
     args.push('-C', path.dirname(full), /^[-@]/.test(name) ? `./${name}` : name);
   }
   if (aside) fs.renameSync(archive, aside);
@@ -1522,35 +1522,35 @@ function writeArchive(archive, sources) {
   }
 }
 
-// 8.3 짧은 이름처럼 생긴 이름(LONGNA~1.TXT). ~ 앞은 1~6자이고 ~가 들어갈 수 있다(~$LONG~1.DOC). 확장자는 0~3자다.
+// A name that looks like an 8.3 short name (LONGNA~1.TXT). Before ~ there are 1 to 6 characters, and ~ may appear in it (~$LONG~1.DOC). The extension is 0 to 3 characters.
 const SHORT_NAME = /^([^.]{1,6})~(\d{1,6})(?:\.([^.]{1,3}))?$/i;
 
-// name이 다른 이름 other의 8.3 짧은 이름이 될 수 있는지 넉넉하게 어림한다. Windows는 긴 이름을 대문자로 바꾸고(공백과 점은 빼고
-// +,;=[] 는 _로) 이름과 확장자를 OEM 코드페이지 바이트 단위로 자른다. 같은 이름이 많거나 이름이 짧으면 앞 1~2바이트 뒤에 해시를 붙이고,
-// OEM에 없는 글자는 빠지거나 _가 된다. 그래서 첫 글자와 확장자 앞부분만 비교하고, ASCII가 아닌 글자가 걸리면 겹칠 수 있다고 본다.
-// 실제로는 겹치지 않는 이름도 거부할 수 있다. ~N이 든 이름은 드물어서 그쪽이 안전하다(#159).
-// 원래 8.3 형식인 ASCII 이름(이름 1~8자, 확장자 0~3자, 점 하나 이하, 8.3에서 그대로 쓰는 글자만). Windows는 이런 이름에
-// 대소문자와 상관없이 따로 짧은 이름을 만들지 않으므로(빌드 26200 dir /x 실측: photo.jpg, PHOTO2.JPG, Photo3.Jpg, noext, ab~1.txt)
-// ~N 이름과 겹치지 않는다(#205). 공백, +,;=[], 점 두 개, 앞이나 끝의 점, 9자 이상, 4자 확장자에는 짧은 이름이 생긴다.
-// ASCII가 아닌 이름(é.txt, 한글한글.txt)도 OEM 바이트로 8.3에 들면 짧은 이름이 생기지 않았지만, 코드페이지마다 다르므로 넉넉하게 겹칠 수 있다고 둔다.
+// It estimates generously whether name could be the 8.3 short name of another name other. Windows upper-cases the long name (removing spaces and dots, and turning
+// +,;=[] into _) and cuts the name and extension by OEM code page bytes. If there are many of the same name or the name is short, it appends a hash after the first 1 to 2 bytes,
+// and a letter not in OEM is dropped or becomes _. So it compares only the first letter and the front part of the extension, and if a non-ASCII letter is involved, it assumes they can overlap.
+// It can also refuse names that do not really overlap. A name that contains ~N is rare, so that side is safe (#159).
+// An ASCII name that is originally in 8.3 form (name of 1 to 8 characters, extension of 0 to 3 characters, at most one dot, and only characters that 8.3 uses as they are). For such names Windows
+// does not make a separate short name regardless of case (measured with dir /x on build 26200: photo.jpg, PHOTO2.JPG, Photo3.Jpg, noext, ab~1.txt),
+// so they do not overlap with ~N names (#205). A short name is made for a space, +,;=[], two dots, a leading or trailing dot, 9 or more characters, and a 4-character extension.
+// A non-ASCII name (é.txt, a Hangul name) also made no short name when it fit 8.3 in OEM bytes, but it differs by code page, so it is generously assumed that they can overlap.
 const PLAIN_8DOT3 = /^[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,8}(?:\.[A-Za-z0-9!#$%&'()\-@^_`{}~]{1,3})?$/;
 
 function couldBeShortNameOf(name, other) {
   const short = SHORT_NAME.exec(name);
   if (!short || name.toUpperCase() === other.toUpperCase()) return false;
   if (PLAIN_8DOT3.test(other)) return false;
-  // 앞쪽 점과 공백은 떼고 확장자를 나눈다(..foo는 FOO~1, .gitignore는 GITIGN~1).
+  // It strips the leading dots and spaces and splits off the extension (..foo is FOO~1, .gitignore is GITIGN~1).
   const trimmed = other.replace(/^[ .]+/, '');
   const dot = trimmed.lastIndexOf('.');
   const rawBase = dot >= 0 ? trimmed.slice(0, dot) : trimmed;
   const rawExt = dot >= 0 ? trimmed.slice(dot + 1) : '';
   const clean = (text) => text.toUpperCase().replace(/[ .]/g, '').replace(/[+,;=[\]]/g, '_');
-  // 대문자로 바꾸면 ASCII가 되는 글자(ﬁ -> FI)도 있어 ASCII인지는 바꾸기 전 글자로 본다.
+  // Some letters become ASCII when upper-cased (ﬁ -> FI), so whether it is ASCII is judged by the letters before changing.
   const nonAscii = (text) => /[^\x00-\x7f]/.test(text);
-  // OEM에 없는 글자는 빠져 뒤 글자가 앞으로 오므로 이름 어디에든 있으면 겹칠 수 있다고 본다.
+  // A letter not in OEM is dropped and the later letters move forward, so if one is anywhere in the name, it is assumed they can overlap.
   const base = nonAscii(rawBase) ? '\u0080' : clean(rawBase);
   const ext = nonAscii(rawExt) ? '\u0080' : clean(rawExt);
-  // 짧은 쪽 확장자는 긴 이름 확장자의 앞부분이다. 확장자가 없으면 긴 이름에도 없다.
+  // The short side's extension is the front part of the long name's extension. If there is no extension, the long name has none either.
   const shortExt = (short[3] ?? '').toUpperCase();
   const extMatches = nonAscii(ext) || nonAscii(shortExt) || (shortExt === '' ? ext === '' : [...shortExt].every((char, i) => char === '_' || ext[i] === char));
   if (!extMatches) return false;
@@ -1558,12 +1558,12 @@ function couldBeShortNameOf(name, other) {
   return head === '_' || nonAscii(head) || nonAscii(base.slice(0, 6)) || base[0] === head;
 }
 
-// 풀 볼륨이 짧은 이름을 만들면, 한 폴더 안의 LONGNA~1.TXT와 longname.txt는 푸는 순서에 따라 같은 파일이 되어 한쪽이 덮어써진다(#159).
-// 원본을 짧은 이름으로 주면 tar.exe는 그 짧은 이름을 그대로 항목 이름으로 적으므로 맨 위 이름도 함께 본다. 압축 안의 폴더마다 확인한다.
-// inside는 원본마다 namesInside의 결과다.
+// If the extraction volume makes short names, LONGNA~1.TXT and longname.txt in one folder become the same file depending on the extraction order, and one is overwritten (#159).
+// If a source is given as a short name, tar.exe writes that short name as is as the entry name, so the top-level name is also looked at. It checks for each folder in the archive.
+// inside is the result of namesInside for each source.
 function rejectShortNameClash(sources, inside) {
   const top = sources.map((src) => path.basename(path.resolve(src)));
-  // 맨 위에서 겹치면 어느 원본인지 보이도록 원본 경로로 알린다.
+  // When they overlap at the top, it reports by the source path so you can see which source it is.
   const levels = new Map([['', top.map((name, i) => ({ name, shown: sources[i] }))]]);
   sources.forEach((src, i) => {
     for (const rel of inside[i]) {
@@ -1582,17 +1582,17 @@ function rejectShortNameClash(sources, inside) {
   }
 }
 
-// 풀 때 압축 안의 ~N 이름이 짧은 이름을 거쳐 다른 파일이 되는 것을 막는다(#188). names는 archiveNames의 결과, dest는 풀 폴더다.
-// 1) 같은 폴더의 다른 항목과 짧은 이름으로 겹칠 수 있으면 푸는 순서에 따라 한쪽이 덮어써지므로 거부한다(rejectShortNameClash와 같은 어림).
-//    Windows는 대소문자를 가리지 않으므로 a/와 A/는 같은 폴더로 본다.
-// 2) 풀 폴더에 이미 있는 항목에 ~N 이름이 짧은 이름으로 닿으면 기존 파일을 덮어쓰거나 기존 폴더에 섞이므로 거부한다.
-//    ASCII 이름은 볼륨에 실제로 있는 짧은 이름으로 본다(이름은 목록에 없는데 그 경로가 있으면 거부). 짧은 이름을 만들지 않는 볼륨에서는 걸리지 않는다.
-// 목록의 이름은 코드페이지로 나와 ASCII가 아닌 글자가 ?나 깨진 글자, 다른 글자가 될 수 있다. 그런 글자는 무엇이든 될 수 있는 글자로 보고,
-// 그런 ~N 이름은 경로로 확인할 수 없으므로 기존 이름과 어림으로 비교한다. 그런 폴더 이름은 같은 자리의 ASCII가 아닌 기존 폴더 모두로 본다.
+// When extracting, it prevents a ~N name in the archive from becoming another file through a short name (#188). names is the result of archiveNames, and dest is the extraction folder.
+// 1) If it could overlap with another item in the same folder by short name, one is overwritten depending on the extraction order, so it refuses (the same estimate as rejectShortNameClash).
+//    Windows is case-insensitive, so a/ and A/ are seen as the same folder.
+// 2) If a ~N name reaches an item that already exists in the extraction folder as a short name, it would overwrite an existing file or mix into an existing folder, so it refuses.
+//    ASCII names are judged by the short names that actually exist on the volume (if the name is not in the list but that path exists, it refuses). On a volume that does not make short names, it does not trigger.
+// Names in the list come out in the code page, so a non-ASCII letter can become ?, a garbled letter, or another letter. Such letters are seen as a letter that can be anything,
+// and such ~N names cannot be checked by path, so they are compared with existing names by estimate. Such a folder name counts as every existing non-ASCII folder at the same position.
 const UNRELIABLE_NAME = /[^\x00-\x7f]|\?/;
 function rejectExtractShortNameClash(names, dest) {
   const unknown = (name) => name.replace(/[^\x00-\x7f]|\?/g, '\u0080');
-  // ASCII가 아닌 글자가 든 짧은 이름은 그런 글자가 든 긴 이름에서만 생긴다(ASCII 긴 이름의 짧은 이름은 ASCII다).
+  // A short name that contains non-ASCII letters is made only from a long name that contains such letters (the short name of an ASCII long name is ASCII).
   const mayBe = (name, other) => (!UNRELIABLE_NAME.test(name) || UNRELIABLE_NAME.test(other)) && couldBeShortNameOf(unknown(name), unknown(other));
   const levels = new Map();
   for (const raw of names) {
@@ -1604,7 +1604,7 @@ function rejectExtractShortNameClash(names, dest) {
     });
   }
   const shown = (parts, name) => [...parts, name].join('/');
-  // 목록의 ASCII가 아닌 이름은 깨져 보이므로 그렇다고 알린다(2차 리뷰).
+  // Non-ASCII names in the list look garbled, so it reports that they do (second review).
   const garbled = (...texts) => (texts.some((text) => UNRELIABLE_NAME.test(text)) ? ' (non-ASCII names in the archive listing may look garbled because of the code page)' : '');
   for (const { parts, items } of levels.values()) {
     const all = [...items.values()];
@@ -1625,7 +1625,7 @@ function rejectExtractShortNameClash(names, dest) {
         if (UNRELIABLE_NAME.test(name)) {
           real = existing.find((candidate) => mayBe(name, candidate));
           if (real === undefined) continue;
-          // 이름을 확인할 수 없으므로 같은 압축을 다시 풀 때처럼 이름이 그대로 같은 항목도 여기서 걸린다.
+          // The name cannot be confirmed, so an item whose name is exactly the same, as when extracting the same archive again, is also caught here.
           note = ` It might be an item with exactly the same name, but that cannot be confirmed.${garbled(name)}`;
         } else {
           if (keys.has(name.toUpperCase()) || !exists(path.join(place, name))) continue;
@@ -1638,7 +1638,7 @@ function rejectExtractShortNameClash(names, dest) {
   }
 }
 
-// 압축 안의 폴더 경로 parts가 풀 폴더 dest에서 닿을 수 있는 기존 폴더들. 믿을 수 없는 이름은 그 자리의 ASCII가 아닌 기존 폴더 모두로 본다.
+// The existing folders that the archive's folder path parts can reach from the extraction folder dest. A name that cannot be trusted counts as every existing non-ASCII folder at that position.
 function existingPlaces(dest, parts) {
   const isDir = (p) => fs.statSync(p, { throwIfNoEntry: false })?.isDirectory() === true;
   let places = isDir(dest) ? [dest] : [];
@@ -1658,9 +1658,9 @@ function existingPlaces(dest, parts) {
   return places;
 }
 
-// 항목 이름을 어떤 인코딩으로 적는지는 가장 안쪽 형식이 정하고 바깥 압축 겹은 바꾸지 않는다(#212). 그래서 archiveExt의 겹에서
-// 가장 안쪽 판정(첫 확장자, 형식·tar이면 그 뒤의 압축 하나까지)만 남겨 ANSI_ENTRY_EXT와 비교한다.
-// .tar.gz.gz -> .tar.gz, .gz.xz -> .gz, .tgz.gz -> .tgz, .cpio.gz.xz -> .cpio.gz(목록에 없어 OEM으로 본다).
+// Which encoding entry names are written in is decided by the innermost format, and outer compression layers do not change it (#212). So from the layers of archiveExt
+// it keeps only the innermost judgment (the first extension, and for a format or tar, up to one compression after it) and compares it with ANSI_ENTRY_EXT.
+// .tar.gz.gz -> .tar.gz, .gz.xz -> .gz, .tgz.gz -> .tgz, .cpio.gz.xz -> .cpio.gz (not in the list, so it is seen as OEM).
 function innerEntryExt(ext) {
   const parts = ext.split('.').filter(Boolean);
   if (parts.length === 0) return ext;
@@ -1669,13 +1669,13 @@ function innerEntryExt(ext) {
   return parts.slice(0, keep).map((part) => `.${part}`).join('');
 }
 
-// tar.exe(bsdtar 3.8.9)에 내장되지 않아 외부 프로그램을 실행하는 압축(빌드 26200 실측: "Can't launch external program: lz4 -z …").
-// 그 프로그램이 PATH에 없으면 날것의 실패로 끝나므로 미리 거부한다(#230). 있으면 tar.exe에 맡긴다.
-// .tzo는 .tar.lzo의 별칭이다(1차 리뷰).
+// Compressions not built into tar.exe (bsdtar 3.8.9) that run an external program (measured on build 26200: "Can't launch external program: lz4 -z ...").
+// If that program is not on the PATH, it ends in a raw failure, so it refuses in advance (#230). If it exists, it leaves the work to tar.exe.
+// .tzo is an alias of .tar.lzo (first review).
 const EXTERNAL_COMPRESSORS = { lz4: 'lz4', lzo: 'lzop', tzo: 'lzop', lrz: 'lrzip', grz: 'grzip' };
-// tar.exe(libarchive filter_fork_windows.c)는 SearchPath(NULL, 이름, ".exe")로 찾으므로 .exe만 실행한다. PATHEXT의 .cmd·.bat은 보지 않는다(1차 리뷰).
-// SearchPath는 tar.exe 폴더·시스템 폴더·현재 폴더(fctl은 System32로 고정, #242)도 찾지만, PATH만 보아 그곳에만 있는 프로그램이면 넉넉하게 거부한다.
-// PATH의 상대 경로 항목(., bin 등)은 tar.exe가 System32 기준으로 풀어 fctl의 현재 폴더와 다르므로 보지 않는다(#242 1차 리뷰).
+// tar.exe (libarchive filter_fork_windows.c) looks with SearchPath(NULL, name, ".exe"), so it runs only .exe. It does not look at .cmd and .bat of PATHEXT (first review).
+// SearchPath also looks in the tar.exe folder, the system folder, and the current folder (fctl pins it to System32, #242), but it looks only at the PATH, so a program that is only there is generously refused.
+// Relative PATH entries (., bin, and so on) are resolved by tar.exe relative to System32 and differ from fctl's current folder, so they are not looked at (#242 first review).
 function findOnPath(program) {
   for (const raw of (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)) {
     const dir = raw.replace(/^"|"$/g, '');
@@ -1684,7 +1684,7 @@ function findOnPath(program) {
     try {
       if (fs.statSync(candidate).isFile()) return candidate;
     } catch {
-      // 없거나 읽을 수 없는 자리는 건너뛴다.
+      // It skips places that do not exist or cannot be read.
     }
   }
   return null;
@@ -1698,10 +1698,10 @@ function rejectMissingCompressor(archive) {
   }
 }
 
-// 파일 이름 한 칸의 한도(NTFS, UTF-16 글자 수)
+// The limit of one segment of a file name (NTFS, in UTF-16 characters)
 const MAX_NAME_LENGTH = 255;
-// 경로의 한 칸이라도 한도를 넘으면 만들 수 없다. zip은 짧은 임시 이름으로 묶은 뒤 마지막 이름 바꾸기에서, unzip은 풀 폴더를 만들 때
-// 날것의 ENOENT로 실패하고 미리보기는 성공으로 보였으므로, 미리보기를 포함해 먼저 거부한다(#228).
+// If even one segment of a path exceeds the limit, it cannot be created. zip failed at the final rename after bundling under a short temporary name, and unzip failed with a raw ENOENT when creating the extraction folder,
+// and the preview looked like a success, so it refuses first, including in the preview (#228).
 function rejectLongName(target, what) {
   const full = path.resolve(target);
   const long = full.split(/[\\/]/).slice(1).find((part) => part.length > MAX_NAME_LENGTH);
@@ -1710,9 +1710,9 @@ function rejectLongName(target, what) {
   }
 }
 
-// tar.exe는 -C로 받은 폴더로 옮겨 가는데, 그 경로가 이보다 길면 "could not chdir"로 날것의 실패를 낸다(UTF-16 258자까지 됨).
-// 이 PC(LongPathsEnabled=0)와 긴 경로가 켜진 CI(GitHub windows-latest) 모두에서 실측했다. tar.exe 매니페스트는 longPathAware지만
-// 작업 폴더 옮기기에는 적용되지 않는다(2차 리뷰). unzip의 풀 폴더와 zip 원본의 상위 폴더가 -C로 넘어가므로 미리 거부한다(#228).
+// tar.exe moves into the folder given with -C, and if that path is longer than this, it fails raw with "could not chdir" (up to 258 UTF-16 characters works).
+// It was measured both on this PC (LongPathsEnabled=0) and on CI with long paths turned on (GitHub windows-latest). The tar.exe manifest is longPathAware, but
+// it does not apply to changing the working folder (second review). The extraction folder of unzip and the parent folder of the zip source are passed with -C, so it refuses in advance (#228).
 const MAX_TAR_DIR = 258;
 function rejectLongTarDir(dir, what) {
   const full = path.resolve(dir);
@@ -1721,11 +1721,11 @@ function rejectLongTarDir(dir, what) {
   }
 }
 
-// zip은 같은 폴더의 임시 파일(.fctl-new-<pid>-<시각>-<번호><확장자 겹>)에 묶은 뒤 이름을 바꾼다. 확장자 겹이 아주 길면(#193 이후 겹을 모두 옮김)
-// 임시 이름이 한도를 넘어 tar.exe가 날것의 오류로 실패하므로 미리 거부한다(#213). 번호가 늘어날 자리로 몇 글자를 남긴다.
+// zip bundles into a temporary file in the same folder (.fctl-new-<pid>-<time>-<number><extension layers>) and then renames it. If the extension layers are very long (all layers are moved since #193),
+// the temporary name exceeds the limit and tar.exe fails with a raw error, so it refuses in advance (#213). It leaves a few characters as room for the number to grow.
 const TEMP_SERIAL_RESERVE = 4;
-// tar.exe는 압축 겹을 이만큼까지만 풀 수 있다. 25겹부터는 묶기는 하지만 읽을 때 "Input requires too many filters for decoding"으로
-// 실패한다(빌드 26200 실측, gzip·xz 모두). 다시 풀 수 없는 압축 파일을 만들지 않도록 함께 거부한다(#213).
+// tar.exe can extract only up to this many compression layers. From 25 layers it bundles, but when reading it fails with "Input requires too many filters for decoding"
+// (measured on build 26200, both gzip and xz). It is refused too, so as not to make an archive that cannot be extracted again (#213).
 const MAX_TAR_LAYERS = 24;
 function rejectLongTempName(archive) {
   const ext = archiveExt(archive);
@@ -1741,7 +1741,7 @@ function rejectLongTempName(archive) {
 
 function zip(archive, sources, { force = false, dryRun = false } = {}) {
   ensureFree(archive, force);
-  // 7z를 압축으로 한 겹 더 싸면 tar.exe가 앞뒤로 옮겨 읽지 못해(Seek error) 풀 수 없다(#164).
+  // Wrapping 7z in one more compression layer makes tar.exe unable to seek back and forth (Seek error), so it cannot be extracted (#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`A 7z archive cannot be wrapped in another archive. tar.exe cannot extract it: ${archive}`);
   rejectLongName(archive, 'archive file');
   rejectLongTempName(archive);
@@ -1750,17 +1750,17 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   sources.forEach(ensureExists);
   for (const src of sources) rejectLongTarDir(path.dirname(path.resolve(src)), "source's parent folder");
   [archive, ...sources].forEach(rejectStreamPath);
-  // tar에 넘길 이름이 없고, 그 전에 드라이브 전체를 훑게 되므로 먼저 거부한다.
+  // There is no name to pass to tar, and before that it would scan the whole drive, so it refuses first.
   const root = sources.find((src) => path.basename(path.resolve(src)) === '');
   if (root !== undefined) throw new FcError(`Cannot bundle a drive root: ${root}`);
-  // 압축 파일 자신을 묶으면, 치워 둔 기존 압축 파일을 찾지 못하거나 원래 내용 대신 자기 자신이 들어간다.
+  // If the archive itself is bundled, the archive set aside cannot be found, or the archive itself goes in instead of the original content.
   const self = sources.find((src) => realKey(src) === realKey(archive) || isSameFile(src, archive));
   if (self !== undefined) throw new FcError(`Cannot bundle the archive into itself: ${self}`);
-  // 원본은 맨 위 이름으로 묶이므로, 이름이 같은 원본은 압축 안에서 겹쳐 풀 때 하나만 남는다. Windows는 대소문자를 가리지 않는다.
+  // Sources are bundled under their top-level name, so for sources with the same name, only one remains when extracted over each other from the archive. Windows is case-insensitive.
   const seen = new Map();
   for (const src of sources) {
     const name = path.basename(path.resolve(src));
-    // toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만들므로 대문자로 비교한다(flatten.js와 같다).
+    // toLowerCase makes ΑΣ and ασ, which are the same name on NTFS, different, so it compares in upper case (the same as flatten.js).
     const key = isWindows ? name.toUpperCase() : name;
     if (seen.has(key)) throw new FcError(`Sources with the same name cannot be bundled together. Only one would remain when extracting: ${seen.get(key)}, ${src}`);
     seen.set(key, src);

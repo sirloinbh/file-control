@@ -8,7 +8,7 @@ const { extractProductNumbers } = require('./product');
 const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
 const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository } = require('./flatten');
 
-// 폴더마다 바로 아래 항목을 모은다. 타겟 자신은 키가 ''이다.
+// It collects the items directly under each folder. The key of the target itself is ''.
 function childrenOf(entries) {
   const children = new Map();
   for (const entry of entries) {
@@ -20,7 +20,7 @@ function childrenOf(entries) {
   return children;
 }
 
-// 폴더 하나만 든 폴더면 그 폴더 항목을 돌려준다.
+// If a folder holds only one folder, it returns that folder item.
 function soleFolder(children, relative) {
   const inside = children.get(relative) ?? [];
   return inside.length === 1 && inside[0].type === 'dir' ? inside[0] : null;
@@ -29,21 +29,21 @@ function soleFolder(children, relative) {
 const under = (entry, folder) => entry.relative.startsWith(folder.relative + path.sep);
 const hasPart = (entry, pattern) => entry.relative.split(path.sep).some((part) => pattern.test(part));
 
-// .ts와 .mts는 내용을 보기 전에는 영상인지 모르므로 영상으로 쳐서 안전한 쪽으로 간다.
+// .ts and .mts cannot be known to be video before looking at the content, so they are treated as video to stay on the safe side.
 function isVideoName(name) {
   const extension = path.extname(name).toLowerCase();
   return VIDEO_EXTENSIONS.has(extension) || TRANSPORT_EXTENSIONS.has(extension);
 }
 
-// 접을 수 없는 사유. 접어도 되면 null이다.
+// The reason it cannot be collapsed. If it may be collapsed, it is null.
 function skipReason(chain, entries) {
   const leaf = chain.at(-1);
   const inside = entries.filter((entry) => under(entry, leaf));
-  // 맨 아래 폴더를 통째로 옮기므로 그 안의 잔여물과 시스템 폴더도 따라간다. 메시지가 알려 준 위치에 있어야 복구할 수 있다.
+  // The bottom folder is moved as a whole, so the leftovers and system folders inside it go along. They must be at the location the message told in order to be recovered.
   if (inside.some((entry) => hasPart(entry, LEFTOVER))) return 'Not collapsed because there is a leftover from an earlier job inside.';
   if (inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Not collapsed because a Windows system folder is involved.';
-  // 접으면 가운데 폴더 이름이 사라진다. product-number는 그 이름에서 번호를 찾으므로, 파일 이름에 이미 들어간 번호만 사라져도 되는 것으로 본다.
-  // 영상이 있으면 영상 전부에, 없으면 파일 전부에 있어야 한다. 표지 하나에만 있으면 나머지 영상이 번호를 잃는다.
+  // Collapsing removes the middle folder names. product-number looks for the number in those names, so it counts as fine if only a number that is already in the file names disappears.
+  // It must be in all the videos if there are videos, and in all the files if there are none. If it is in only one cover file, the other videos lose the number.
   const kept = new Set(extractProductNumbers(path.basename(chain[0].path)));
   const files = inside.filter((entry) => entry.type !== 'dir').map((entry) => path.basename(entry.path));
   const videos = files.filter((name) => isVideoName(name));
@@ -53,40 +53,40 @@ function skipReason(chain, entries) {
   return null;
 }
 
-// 접으면 맨 아래 폴더가 맨 위 이름으로 옮겨 가 폴더 속성(숨김 등)과 ACL이 맨 아래 폴더의 것이 된다(#85).
-// Node에는 속성을 쓰는 API가 없고, 옮긴 뒤 attrib로 고쳐 쓰면 실패할 때 반쯤 바뀐 상태가 남으며 ACL은 옮길 수 없다.
-// 그래서 속성을 맞추지 않고, 구간의 폴더 중 하나라도 숨김이면 접지 않는다. 맨 위가 숨김이면 숨김이 풀리고,
-// 맨 아래가 숨김이면 맨 위 이름이 숨겨져 탐색기에서 사라진 것처럼 보이며, 가운데가 숨김이면 그 안이 드러난다.
-// 시스템 속성은 폴더 아이콘(desktop.ini)과 함께 쓰이는데, desktop.ini가 든 폴더는 맨 아래 폴더뿐이라 함께 옮겨 가므로 막지 않는다.
-// attributes는 hiddenOrSystemEntries가 돌려준 { 상대경로 -> 속성 비트(숨김 2, 시스템 4) }다.
+// When collapsing, the bottom folder is moved to the top name, so the folder attributes (hidden and so on) and the ACL become those of the bottom folder (#85).
+// Node has no API that writes attributes, rewriting with attrib after the move leaves a half-changed state when it fails, and the ACL cannot be moved.
+// So it does not match the attributes, and it does not collapse if any folder in the stretch is hidden. If the top is hidden the hiding is lifted,
+// if the bottom is hidden the top name becomes hidden and looks gone in Explorer, and if a middle one is hidden its inside is exposed.
+// The system attribute is used with the folder icon (desktop.ini), and the only folder that holds desktop.ini is the bottom folder, which moves along, so it is not blocked.
+// attributes is the { relative path -> attribute bits (hidden 2, system 4) } returned by hiddenOrSystemEntries.
 function hiddenReason(chain, attributes) {
   const hidden = chain.filter((entry) => (attributes.get(entry.relative) ?? 0) & 2);
   if (hidden.length === 0) return null;
   return `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${hidden.map((entry) => entry.relative).join(', ')}`;
 }
 
-// 타겟 아래에서 폴더 하나만 이어지는 구간을 찾는다. 맨 위 폴더 이름을 남기고 맨 아래 폴더의 내용을 그 자리로 올린다.
-// 타겟 자신은 접지 않는다. 한 단계에 항목이 여럿이면 그 아래부터 따로 본다. 끝이 빈 폴더인 구간은 사용자가 만든 구조일 수 있어 건드리지 않는다.
-// - collapses: 접을 구간 ({ top, leaf, folders }). folders는 맨 위부터 맨 아래까지의 경로다. 깊은 것부터 놓아 앞의 작업이 뒤의 경로를 바꾸지 않게 한다.
-// - skipped: 접지 않는 구간 ({ path, reason })
+// Finds stretches under the target where each folder holds only one folder. It keeps the top folder name and lifts the content of the bottom folder to that place.
+// It does not collapse the target itself. If a level has several items, it looks separately from below it. A stretch that ends in an empty folder may be a structure the user made, so it is not touched.
+// - collapses: the stretches to collapse ({ top, leaf, folders }). folders is the path from the top to the bottom. They are placed deepest first so that an earlier operation does not change a later path.
+// - skipped: stretches not collapsed ({ path, reason })
 function planCollapse(dir) {
   const access = grant(dir, ['read', 'write', 'delete']);
   const entries = walk(access.target);
   rejectRepository(access.target, entries);
   const children = childrenOf(entries);
   const plan = { target: access.target, collapses: [], skipped: [] };
-  // 속성을 볼 구간. 건너뜀 순서를 지키도록 그 자리에 빈 사유를 두고 나중에 채운다.
+  // The stretches whose attributes are to be looked at. To keep the order of skipping, an empty reason is placed at that position and filled in later.
   const pending = [];
   for (const entry of entries) {
     if (entry.type !== 'dir') continue;
-    // 잔여물은 맨 위 하나만 알리고 안쪽은 보지 않는다. 되돌리지 못한 파일이 여기에 있을 수 있다.
+    // For leftovers, it reports only the topmost one and does not look inside. A file that could not be restored may be here.
     if (hasPart(entry, LEFTOVER)) {
       if (LEFTOVER.test(path.basename(entry.path)) && !hasPart({ relative: path.dirname(entry.relative) }, LEFTOVER)) plan.skipped.push({ path: entry.path, reason: 'Not collapsed because it is a leftover from an earlier job.' });
       continue;
     }
     if (!soleFolder(children, entry.relative)) continue;
     const parent = path.dirname(entry.relative);
-    // 위 폴더가 이 폴더 하나만 품고 있으면 위 폴더 쪽 구간에 들어간다.
+    // If the folder above holds only this one folder, it goes into the stretch on the folder-above side.
     if (parent !== '.' && soleFolder(children, parent)) continue;
     const chain = [entry];
     for (let next = soleFolder(children, entry.relative); next; next = soleFolder(children, next.relative)) chain.push(next);
@@ -100,8 +100,8 @@ function planCollapse(dir) {
     plan.skipped.push(slot);
     pending.push({ chain, slot });
   }
-  // 속성은 접을 구간이 있을 때만 PowerShell 한 번으로 읽는다. 구간 폴더의 속성을 알려면 그 부모를 열거하면 되므로
-  // 맨 위 폴더의 부모와 맨 아래를 뺀 구간 폴더만 넘긴다. 구간과 상관없는 폴더가 많아도 느려지지 않는다(1차 리뷰).
+  // The attributes are read with one PowerShell run only when there is a stretch to collapse. To know the attributes of the stretch folders it is enough to enumerate their parents, so
+  // it passes only the parent of the top folder and the stretch folders without the bottom one. Many folders unrelated to the stretch do not slow it down (first review).
   const listed = new Set();
   for (const { chain } of pending) {
     const parent = path.dirname(chain[0].relative);
@@ -114,7 +114,7 @@ function planCollapse(dir) {
     if (slot.reason !== null) continue;
     try {
       const folders = chain.map((item) => item.path);
-      // 링크가 든 폴더나 끝이 점인 이름처럼 다룰 수 없는 구간은 계획에서 알린다. 실행과 미리보기의 결과가 같아진다.
+      // Stretches that cannot be handled, such as a folder that holds a link or a name ending in a dot, are reported in the plan. The results of a real run and a preview become the same.
       for (const folder of folders) {
         if (access.delete(folder) !== folder) throw new FcError(`The path goes through a link: ${folder}`);
       }
@@ -130,7 +130,7 @@ function planCollapse(dir) {
   return plan;
 }
 
-// 계획 뒤에 구간에 다른 항목이 생겼으면 그 항목까지 빈 폴더와 함께 치우게 되므로 멈춘다.
+// If another item appeared in the stretch after the plan, it would be cleared together with the empty folders, so it stops.
 function checkChain(item, access) {
   for (const [index, folder] of item.folders.entries()) {
     const real = access.delete(folder);
@@ -142,8 +142,8 @@ function checkChain(item, access) {
   }
 }
 
-// 앞서 한 이름 변경을 되돌린다. 되돌리지 못한 항목은 모두 어디에 있는지 알린다.
-// renameSync는 대상이 파일이면 덮어쓰므로 덮어쓰지 않는 이동을 쓴다.
+// It rolls back the renames done earlier. For items that could not be rolled back, it tells where all of them are.
+// renameSync overwrites if the target is a file, so it uses a move that does not overwrite.
 function restore(steps, cause) {
   const left = [];
   for (const [from, to] of steps) {
@@ -156,8 +156,8 @@ function restore(steps, cause) {
   if (left.length > 0) throw new FcError(`Could not collapse and could not undo it either. (${cause.code ?? cause.message}) ${left.join(', ')}`);
 }
 
-// 폴더 통째로 이름을 바꾸므로 안쪽 항목의 이름이 가운데 폴더 이름과 같아도 충돌하지 않는다.
-// 맨 아래 폴더를 빼낸 뒤 비게 된 맨 위 폴더를 치우고, 그 이름으로 맨 아래 폴더를 옮긴다.
+// The whole folder is renamed, so even if the name of an inner item is the same as a middle folder name, they do not collide.
+// After pulling out the bottom folder, it clears the top folder that became empty and moves the bottom folder under that name.
 function collapseOne(item, access) {
   checkChain(item, access);
   const lifted = freshPath(item.top, '.fctl-new');
@@ -170,7 +170,7 @@ function collapseOne(item, access) {
     throw err;
   }
   try {
-    // 그사이 다른 프로그램이 맨 위 이름을 차지했을 수 있다.
+    // In the meantime another program may have taken the top name.
     if (!moveWithoutOverwrite(lifted, item.top)) throw Object.assign(new Error('taken'), { code: 'EEXIST' });
   } catch (err) {
     restore([[emptied, item.top], [lifted, item.leaf]], err);
@@ -179,7 +179,7 @@ function collapseOne(item, access) {
   return emptied;
 }
 
-// 빈 폴더만 휴지통으로 보낸다. 파일이 있으면 지우지 않는다.
+// It sends only empty folders to the Recycle Bin. If there are files, it does not delete.
 function removeEmptied(emptied) {
   const filled = fs.readdirSync(emptied, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
   if (filled) throw new FcError(`Collapsed, but not deleted because the emptied folder contains files: ${emptied}`);
@@ -191,13 +191,13 @@ function emptiedFailure(emptied, err) {
   return `Collapsed, but could not send the empty folder to the Recycle Bin: ${emptied} (${err instanceof FcError ? err.message : err.code ?? err.status})`;
 }
 
-// 폴더 하나만 이어지는 구간을 접는다. 덮어쓰지 않고, 한 구간이 실패해도 나머지는 계속한다.
-// 돌려주는 값: { target, dryRun, collapsed, skipped, failed }. collapsed는 계획의 구간에 최종 위치 dest를 더한 것, failed는 { path, reason } 목록이다.
+// It collapses stretches where each folder holds only one folder. It does not overwrite, and even if one stretch fails, it continues with the rest.
+// The returned value is { target, dryRun, collapsed, skipped, failed }. collapsed is the planned stretch plus the final location dest, and failed is a list of { path, reason }.
 function collapse(dir, options = {}) {
   return applyCollapse(planCollapse(dir), options);
 }
 
-// 접힌 구간이 경로를 품으면 그 경로도 옮겨 간다. 구간은 접힌 순서로 받는다.
+// If a collapsed stretch contains a path, that path also moves along. The stretches are taken in the order they were collapsed.
 function finalPath(p, collapsed) {
   let dest = p;
   for (const item of collapsed) {
@@ -206,7 +206,7 @@ function finalPath(p, collapsed) {
   return dest;
 }
 
-// 보고에는 뒤에 접힌 위 구간까지 반영한 최종 위치를 적는다.
+// The report writes the final location that reflects the upper stretches collapsed later.
 function withFinalPaths(result, collapsed) {
   return {
     ...result,
@@ -220,7 +220,7 @@ function applyCollapse(plan, { dryRun = false } = {}) {
   if (dryRun) return withFinalPaths(result, plan.collapses);
   const access = grant(plan.target, ['read', 'write', 'delete']);
   for (const item of plan.collapses) {
-    // 안쪽 구간이 실패했으면 메시지가 알려 준 위치가 그대로 있어야 복구할 수 있으므로 품고 있는 구간을 옮기지 않는다.
+    // If an inner stretch failed, the location the message told must stay as it is in order to be recovered, so it does not move the stretch that contains it.
     if (result.failed.some((failure) => failure.path === item.leaf || failure.path.startsWith(item.leaf + path.sep))) {
       result.failed.push({ path: item.top, reason: 'Not collapsed because an inner section failed.' });
       continue;

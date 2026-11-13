@@ -4,14 +4,14 @@ const fs = require('node:fs');
 const { FcError } = require('./commands');
 const { fileSizeInside } = require('./target');
 
-// 한 번에 읽을 수 있는 최대 길이. readRange와 같다.
+// The maximum length that can be read at once. The same as readRange.
 const MAX_READ = 2 ** 31 - 1;
 
-// 타겟 안의 파일을 한 번만 열고 그 핸들로 여러 번 읽는다(#90). 요소마다 경로를 확인하고 다시 열면 작은 요소가 많은 파일에서
-// 읽기 한도에 닿기까지 수십 초가 걸린다. real은 grant의 read로 확인한 실제 경로다.
-// 경로의 파일 번호(dev, ino)를 먼저 적어 두고, 경로를 확인한 뒤(타겟 안, 링크가 아닌 파일) 연다. 연 핸들의 파일 번호가 적어 둔 것과
-// 다르면 확인과 열기 사이에 파일이 바뀌었거나 링크·정션으로 바뀐 것이라 읽지 않는다(1차 리뷰).
-// 연 뒤에 경로가 바뀌어도 핸들은 처음 확인한 파일을 계속 읽는다. fn이 끝나면 닫는다.
+// It opens a file inside the target only once and reads several times with that handle (#90). If it checked the path and reopened for each element, a file with many small elements
+// would take tens of seconds to reach the read limit. real is the real path confirmed with the read of grant.
+// It first writes down the path's file ID (dev, ino) and opens after checking the path (inside the target, a file that is not a link). If the opened handle's file ID is
+// different from the written one, the file changed or was replaced by a link or junction between the check and the open, so it does not read (first review).
+// Even if the path changes after opening, the handle keeps reading the file first confirmed. It closes when fn ends.
 function withOpenFile(target, real, fn) {
   const named = fs.statSync(real, { bigint: true });
   fileSizeInside(target, real);
@@ -26,7 +26,7 @@ function withOpenFile(target, real, fn) {
   }
 }
 
-// offset부터 length바이트를 읽는다. 파일 끝을 넘는 부분은 읽지 않으므로 돌려준 길이가 더 짧을 수 있다.
+// It reads length bytes from offset. It does not read the part past the end of the file, so the returned length can be shorter.
 function readAt(fd, size, offset, length) {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`Invalid offset: ${offset}`);
   if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`Invalid length: ${length}`);

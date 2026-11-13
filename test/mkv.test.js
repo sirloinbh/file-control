@@ -9,7 +9,7 @@ const { FcError } = require('../src/commands');
 const { readMkvMetadata } = require('../src/mkv');
 const { addProductNumbers } = require('../src/productName');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -339,7 +339,7 @@ test('product-number가 MKV의 제목과 코멘트에서 번호를 찾는다', (
 
 test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한다 (#106)', () => {
   const dir = tempDir();
-  // 화소 크기, DisplayWidth, DisplayHeight, DisplayUnit(없으면 생략)
+  // Pixel size, DisplayWidth, DisplayHeight, DisplayUnit (omitted if absent)
   const shownTrack = (width, height, shownWidth, shownHeight, unit) =>
     el(
       0xae,
@@ -351,21 +351,21 @@ test('보이는 크기: DisplayWidth/DisplayHeight를 단위에 맞춰 반영한
     return [result.width, result.height, result.displayWidth, result.displayHeight];
   };
   assert.deepStrictEqual(size(videoTrack(1920, 1080)), [1920, 1080, 1920, 1080]);
-  // DVD 16:9: 화소 단위, 화면 비율 단위(16:9)
+  // DVD 16:9: pixel unit, aspect ratio unit (16:9)
   assert.deepStrictEqual(size(shownTrack(720, 480, 853, 480)), [720, 480, 853, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, 16, 9, 3)), [720, 480, 853, 480]);
-  // 세로로 보이는 영상
+  // A video that shows portrait
   assert.deepStrictEqual(size(shownTrack(1920, 1080, 1080, 1920, 0)), [1920, 1080, 1080, 1920]);
-  // 한쪽만 있으면 다른 쪽은 화소 크기를 쓴다. 단위를 모르면(4) 화소 크기를 쓴다.
+  // If only one side exists, the other side uses the pixel size. If the unit is unknown (4), it uses the pixel size.
   assert.deepStrictEqual(size(shownTrack(720, 480, 853)), [720, 480, 853, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, 16, 9, 4)), [720, 480, 720, 480]);
-  // 화소가 아닌 단위는 기본값이 없어 한쪽만 있으면 비율을 알 수 없다.
+  // Non-pixel units have no default, so if only one side exists, the ratio cannot be known.
   assert.deepStrictEqual(size(shownTrack(720, 480, 16, undefined, 3)), [720, 480, 720, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, undefined, 9, 3)), [720, 480, 720, 480]);
   assert.deepStrictEqual(size(shownTrack(720, 480, 30, undefined, 1)), [720, 480, 720, 480]);
 });
 
-// 화소 크기와 Video 요소 안에 넣을 다른 요소들로 트랙을 만든다(#113).
+// It builds a track from the pixel size and other elements to put inside the Video element (#113).
 const videoWith = (width, height, ...parts) => el(0xae, el(0x83, Buffer.from([1])), el(0xe0, el(0xb0, uint(width)), el(0xba, uint(height)), ...parts));
 const crop = ({ top, bottom, left, right }) =>
   [
@@ -394,17 +394,17 @@ function shownMkv(dir, track) {
 test('보이는 크기: 잘라 낼 화소(PixelCrop)를 빼고 DisplayWidth/Height는 자른 뒤의 크기로 본다 (#113)', () => {
   const dir = tempDir();
   const size = (...parts) => shownMkv(dir, videoWith(...parts));
-  // 1920x1088로 부호화하고 아래 8줄을 잘라 1920x1080으로 보여 준다.
+  // Encoded as 1920x1088 with the bottom 8 lines cropped, shown as 1920x1080.
   assert.deepStrictEqual(size(1920, 1088, ...crop({ bottom: 8 })), [1920, 1088, 1920, 1080]);
-  // 4:3 테두리를 잘라 낸 16:9 영상
+  // A 16:9 video with the 4:3 border cropped out
   assert.deepStrictEqual(size(1440, 1080, ...crop({ left: 0, right: 0, top: 135, bottom: 135 })), [1440, 1080, 1440, 810]);
-  // DisplayWidth/Height(화소 단위)가 있으면 그 값이 자른 뒤의 보이는 크기다. 한쪽만 있으면 다른 쪽은 자른 크기다.
+  // If DisplayWidth/Height (in pixels) exist, that value is the visible size after cropping. If only one side exists, the other side is the cropped size.
   assert.deepStrictEqual(size(720, 480, ...crop({ left: 8, right: 8 }), el(0x54b0, uint(853)), el(0x54ba, uint(480))), [720, 480, 853, 480]);
   assert.deepStrictEqual(size(720, 480, ...crop({ top: 4, bottom: 4 }), el(0x54b0, uint(853))), [720, 480, 853, 472]);
-  // 화면 비율 단위(16:9)면 자른 높이에 맞춘다.
+  // For the aspect ratio unit (16:9), it fits the cropped height.
   assert.deepStrictEqual(size(720, 576, ...crop({ left: 8, right: 8, top: 0, bottom: 0 }), el(0x54b0, uint(16)), el(0x54ba, uint(9)), el(0x54b2, Buffer.from([3]))), [720, 576, 1024, 576]);
   assert.deepStrictEqual(size(720, 576, ...crop({ top: 72, bottom: 72 }), el(0x54b0, uint(16)), el(0x54ba, uint(9)), el(0x54b2, Buffer.from([3]))), [720, 576, 768, 432]);
-  // 남는 화소가 없는 틀린 값은 자르지 않는다. 빈 요소는 기본값 0이다.
+  // A wrong value that leaves no pixels is not cropped. An empty element is the default 0.
   assert.deepStrictEqual(size(720, 480, ...crop({ left: 400, right: 400 })), [720, 480, 720, 480]);
   assert.deepStrictEqual(size(720, 480, ...crop({ top: 480 })), [720, 480, 720, 480]);
   assert.deepStrictEqual(size(720, 480, el(0x54bb, Buffer.alloc(0))), [720, 480, 720, 480]);
@@ -417,18 +417,18 @@ test('보이는 크기: 평면 투영의 90·270도 회전(ProjectionPoseRoll)�
   assert.deepStrictEqual(size({ roll: 90, double: true }), [1920, 1080, 1080, 1920]);
   assert.deepStrictEqual(size({ type: 0, roll: -90, yaw: 180 }), [1920, 1080, 1080, 1920]);
   for (const roll of [0, 180, -180, 45, 88, '']) assert.deepStrictEqual(size({ roll }), [1920, 1080, 1920, 1080], `roll ${roll}`);
-  // 360도 영상(평면이 아닌 투영)과 위아래로 기울이거나 좌우로 돌린 투영은 화면 회전이 아니다.
+  // 360-degree video (not a flat projection) and projections tilted up and down or turned left and right are not screen rotation.
   assert.deepStrictEqual(size({ type: 1, roll: 90 }), [1920, 1080, 1920, 1080]);
   assert.deepStrictEqual(size({ type: 0, pitch: 10, roll: 90 }), [1920, 1080, 1920, 1080]);
   assert.deepStrictEqual(size({ type: 0, yaw: 30, roll: 90 }), [1920, 1080, 1920, 1080]);
-  // 회전은 자르기와 DisplayWidth/Height를 반영한 뒤에 건다.
+  // Rotation is applied after cropping and DisplayWidth/Height are reflected.
   assert.deepStrictEqual(size({ roll: 90 }, ...crop({ bottom: 0 }), el(0x54b0, uint(2560))), [1920, 1080, 1080, 2560]);
   assert.deepStrictEqual(shownMkv(dir, videoWith(1920, 1088, ...crop({ bottom: 8 }), projection({ roll: 270 }))), [1920, 1088, 1080, 1920]);
 });
 
 test('읽기 한도에 닿는 MKV도 파일을 한 번만 열고 빨리 끝낸다 (#90)', (t) => {
   const dir = tempDir();
-  // 크기 0인 Void(EC 80)를 40KB 채운 Segment. 요소마다 다시 열면 한도에 닿기까지 수십 초가 걸렸다.
+  // A Segment filled with 40KB of size-0 Voids (EC 80). Reopening for each element took tens of seconds to reach the limit.
   const voids = Buffer.alloc(40 * 1024);
   for (let at = 0; at < voids.length; at += 2) voids.set([0xec, 0x80], at);
   const file = write(dir, 'void.mkv', header(), segment(voids));
@@ -468,13 +468,13 @@ test('폴더 번호를 찾아도 메타데이터를 읽지 못한 사유를 보�
   assert.match(report, /Numbers disagree: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, could not read metadata: Not an MKV\/WebM format/);
 });
 
-// #179: 탐색 표(Cues). points는 [시각(ms), Cluster 위치] 목록이다.
+// #179: the seek table (Cues). points is a list of [time (ms), Cluster position].
 const cues = (...points) => el(0x1c53bb6b, ...points.map(([time, position = 0]) => el(0xbb, el(0xb3, uint(time)), el(0xb7, el(0xf7, uint(1)), el(0xf1, uint(position))))));
 const cuesHead = (position) => el(0x114d9b74, el(0x4dbb, el(0x53ab, Buffer.from('1C53BB6B', 'hex')), el(0x53ac, uint(position))));
 
 test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트레이트를 null로 둔다 (#207)', (t) => {
   const dir = tempDir();
-  // Cluster 뒤에 항목 5만 개짜리 탐색 표가 있고 SeekHead가 가리키는 파일. 길이는 60000초로 깨져 있다.
+  // A file with a 50,000-entry seek table after the Cluster, pointed to by SeekHead. The length is broken at 60000 seconds.
   const head = cuesHead(0);
   const body = [info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cluster()];
   const position = head.length + Buffer.concat(body).length;
@@ -496,12 +496,12 @@ test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트
     assert.strictEqual(result.bitrate, null);
     assert.strictEqual(result.bitrateNote, null);
     assert.ok(bytes < 64 * 1024, `${bytes}바이트를 읽음`);
-    // 탐색 표의 머리글도 읽지 않는다.
+    // It does not even read the seek table's header.
     assert.ok(positions.every((at) => at < cuesAt), '탐색 표 위치를 읽음');
   }
   const on = readBytes({ verifyBitrate: true });
   assert.match(on.result.bitrateNote, /last time in the seek table/);
-  // 첫 Cluster 앞에 있어 순서대로 만나는 탐색 표도 끄면 본문을 읽지 않는다(1차 리뷰).
+  // A seek table that sits before the first Cluster and is met in order also does not read the body when turned off (first review).
   const before = write(dir, 'b.mkv', header(), segment(info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cues(...points), cluster()));
   const sizeOf = (options) => {
     const readSync = t.mock.method(fs, 'readSync');
@@ -523,7 +523,7 @@ test('verifyBitrate를 켜지 않으면 탐색 표(Cues)를 읽지 않고 비트
 
 test('길이 값이 탐색 표의 마지막 시각보다 훨씬 길면 비트레이트를 믿지 않는다 (#179)', () => {
   const dir = tempDir();
-  // 60초짜리 영상의 길이가 60000초로 적힌 파일. 탐색 표는 Cluster 뒤에 있어 SeekHead로 찾는다.
+  // A file where a 60-second video's length is written as 60000 seconds. The seek table is after the Cluster and is found through SeekHead.
   const head = cuesHead(0);
   const body = [info({ ticks: 60000 * 1000 }), tracks(videoTrack(1920, 1080)), cluster()];
   const position = head.length + Buffer.concat(body).length;
@@ -551,24 +551,24 @@ test('Segment나 탐색 표가 파일 끝 너머를 가리키는 받다 만 파�
   const cut = readMkvMetadata(dir, 'cut.mkv', { verifyBitrate: true });
   assert.strictEqual(cut.bitrate, null);
   assert.match(cut.bitrateNote, /may be a partial download/);
-  // 크기를 모르는 Segment(실시간 녹화)라도 탐색 표의 Cluster 위치가 파일 끝을 넘으면 받다 만 파일이다.
+  // Even for a Segment of unknown size (a live recording), if the seek table's Cluster position goes past the end of the file, it is a partly downloaded file.
   const open = Buffer.concat([header(), Buffer.from('18538067', 'hex'), Buffer.from('01FFFFFFFFFFFFFF', 'hex')]);
   const live = write(dir, 'live.mkv', open, info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cues([0, 10], [55000, 90_000_000]), cluster());
   assert.match(readMkvMetadata(dir, live, { verifyBitrate: true }).bitrateNote, /may be a partial download/);
-  // SeekHead가 파일 끝 너머의 탐색 표를 가리키는 경우
+  // The case where SeekHead points to a seek table past the end of the file
   const far = readMkvMetadata(dir, write(dir, 'far.mkv', header(), segment(cuesHead(90_000_000), info({ ticks: 60000 }), tracks(videoTrack(1920, 1080)), cluster())), { verifyBitrate: true });
   assert.match(far.bitrateNote, /may be a partial download/);
 });
 
 test('탐색 항목이 하나뿐이거나 마지막 시각이 0이면 길이를 맞춰 보지 않는다 (#179, 1차 리뷰)', () => {
   const dir = tempDir();
-  // 정지 그림 한 장을 영상 트랙으로 넣은 1시간짜리 음악 파일: 탐색 항목이 시각 0 하나다.
+  // A 1-hour music file with a single still picture as a video track: the seek entry is a single time 0.
   const still = readMkvMetadata(dir, write(dir, 'a.mkv', header(), segment(info({ ticks: 3600 * 1000 }), tracks(videoTrack(1920, 1080)), cues([0]), cluster(100000))), { verifyBitrate: true });
   assert.ok(still.bitrate > 0);
   assert.strictEqual(still.bitrateNote, null);
   const zero = readMkvMetadata(dir, write(dir, 'b.mkv', header(), segment(info({ ticks: 600 * 1000 }), tracks(videoTrack(1920, 1080)), cues([0], [0]), cluster(100000))), { verifyBitrate: true });
   assert.strictEqual(zero.bitrateNote, null);
-  // 항목이 하나면 시각이 0이 아니어도 맞춰 보지 않는다.
+  // If there is one entry, it is not cross-checked even if the time is not 0.
   const one = readMkvMetadata(dir, write(dir, 'c.mkv', header(), segment(info({ ticks: 6000 * 1000 }), tracks(videoTrack(1920, 1080)), cues([10]), cluster(100000))), { verifyBitrate: true });
   assert.strictEqual(one.bitrateNote, null);
 });

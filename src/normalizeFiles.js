@@ -9,7 +9,7 @@ const { normalizeName } = require('./normalize');
 const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor } = require('./flatten');
 const { DOWNLOAD_MARKER, markerFinder } = require('./downloadMarker');
 
-// NTFS는 대소문자를 구분하지 않으므로 이름을 대문자로 비교한다. toLowerCase는 NTFS에서 같은 이름인 ΑΣ와 ασ를 다르게 만든다.
+// NTFS is case-insensitive, so names are compared in upper case. toLowerCase makes ΑΣ and ασ, which are the same name on NTFS, different.
 const nameKey = (p) => p.toUpperCase();
 
 function skipReason(entry) {
@@ -19,11 +19,11 @@ function skipReason(entry) {
   return null;
 }
 
-// 저장한 웹 페이지(페이지.html)와 그 그림·스크립트를 담은 폴더(페이지_files). 페이지가 폴더 이름으로 안의 파일을 찾는다.
+// A saved web page (page.html) and the folder that holds its pictures and scripts (page_files). The page finds the files inside by the folder name.
 const WEB_PAGE = /^(.+)\.(?:html?|xhtml|shtml)$/i;
 
-// 받는 중인 파일인지 본다(#94). 받기 도구의 꼬리가 붙은 이름(x.mp4.crdownload)과, 그런 표시 파일이 옆에 있거나
-// Safari 표시 폴더(x.mp4.download) 안에 있는 파일이다. 이름이 바뀌면 받기 도구가 파일을 찾지 못한다.
+// It checks whether the file is being downloaded (#94). It is a name with a download tool's tail (x.mp4.crdownload), or a file that has such a marker file beside it or
+// is inside a Safari marker folder (x.mp4.download). If the name changes, the download tool cannot find the file.
 function downloadReason(entry, findMarker) {
   const name = path.basename(entry.path);
   const own = DOWNLOAD_MARKER.exec(name);
@@ -35,16 +35,16 @@ function downloadReason(entry, findMarker) {
   return `Not renamed because the download tool's marker file (${found.marker}) is next to it and it may still be downloading.`;
 }
 
-// 안의 파일 이름을 바꾸지 않을 폴더를 { guarded: { 상대경로 -> 사유 }, pages: { 웹 페이지 상대경로 -> 자료 폴더 이름 }, dirs }로 돌려준다(#94). flatten의 #65 정책과 같게 프로그램 폴더(node_modules 등),
-// 프로젝트 표시 파일(package.json 등)이 든 폴더, 실행 파일과 DLL이 함께 든 폴더, 숨김 속성 폴더를 남긴다. 프로그램이 이름으로 파일을 찾기 때문이다.
-// 저장한 웹 페이지의 _files 폴더도 남긴다. 타겟 자신이나 위 폴더가 이런 폴더면 모든 파일이 그 일부라 거부한다(#167).
-// 숨김 속성 폴더는 PowerShell을 불러야 알 수 있어 바뀔 파일이 있을 때 addHiddenFolders로 따로 더한다(1차 리뷰).
+// It returns the folders whose inner file names are not to be changed as { guarded: { relative path -> reason }, pages: { web page relative path -> resource folder name }, dirs } (#94). Like the #65 policy of flatten, it keeps program folders (node_modules and so on),
+// folders that hold a project marker file (package.json and so on), folders that hold an executable and a DLL together, and folders with the hidden attribute. This is because a program finds files by name.
+// It also keeps the _files folder of a saved web page. If the target itself or a folder above it is such a folder, every file is part of it, so it refuses (#167).
+// A folder with the hidden attribute can be known only by calling PowerShell, so it is added separately with addHiddenFolders when there is a file to change (first review).
 function guardedFolders(target, entries) {
   for (let dir = target; ; dir = path.dirname(dir)) {
     if (PROGRAM_FOLDER.test(path.basename(dir))) throw new FcError(`Not handled because it is inside a program folder: ${dir}`);
     if (dir === path.dirname(dir)) break;
   }
-  // 위 폴더가 프로젝트·프로그램 폴더면 타겟 안의 이름도 프로그램이 찾는 이름일 수 있다. flatten과 같은 기준으로 거부한다(#167).
+  // If a folder above is a project or program folder, a name inside the target may also be a name the program looks for. It refuses by the same criterion as flatten (#167).
   rejectProjectAncestor(target);
   const guarded = new Map();
   const add = (relative, reason) => {
@@ -82,18 +82,18 @@ function guardedFolders(target, entries) {
   return { guarded, pages, dirs };
 }
 
-// 숨김 속성 폴더를 guarded에 더한다. 남길 폴더 안은 어차피 바꾸지 않으므로 보지 않는다.
+// It adds folders with the hidden attribute to guarded. The inside of a folder to keep is not changed anyway, so it is not looked at.
 function addHiddenFolders(target, { guarded, dirs }) {
   const inside = (relative) => [...guarded.keys()].some((dir) => relative === dir || relative.startsWith(dir + path.sep));
   const folders = [''].concat([...dirs.values()].filter((relative) => !inside(relative)));
-  // 시험에서 바꿔 끼울 수 있게 모듈을 거쳐 부른다.
+  // It is called through the module so that tests can swap it in.
   for (const [relative, bits] of commands.hiddenOrSystemEntries(target, folders)) {
     const folder = dirs.get(nameKey(relative));
     if (bits & 2 && folder !== undefined && !guarded.has(folder)) guarded.set(folder, 'folder with the hidden attribute');
   }
 }
 
-// 상대경로가 남길 폴더 안이면 가장 바깥의 그 폴더를 돌려준다.
+// If the relative path is inside a folder to keep, it returns the outermost such folder.
 function guardOf(relative, guarded) {
   const parts = relative.split(path.sep);
   for (let i = 1; i < parts.length; i++) {
@@ -103,16 +103,16 @@ function guardOf(relative, guarded) {
   return null;
 }
 
-// 타겟 아래 파일 이름을 정규화하는 계획을 만든다. 파일은 건드리지 않는다.
-// - renames: 바꿀 파일 ({ from, to, name, number })
-// - inferred: 소문자 말에서 번호를 추정해 바꾸지 않은 파일 ({ path, name }). includeLowercase를 주면 renames로 간다.
-// - conflicts: 결과 이름이 기존 항목이나 다른 결과와 겹쳐 바꾸지 않은 파일 ({ path, name, reason })
-// - skipped: 다루지 않는 항목 ({ path, reason })
+// It makes a plan to normalize the file names under the target. It does not touch files.
+// - renames: files to rename ({ from, to, name, number })
+// - inferred: files whose number was guessed from a lowercase word and that were not changed ({ path, name }). If includeLowercase is given, they go to renames.
+// - conflicts: files not changed because the result name overlaps an existing item or another result ({ path, name, reason })
+// - skipped: items that are not handled ({ path, reason })
 function planNormalize(dir, { includeLowercase = false } = {}) {
   const access = grant(dir, ['read', 'write']);
   const plan = { target: access.target, renames: [], inferred: [], conflicts: [], skipped: [] };
   const entries = walk(access.target);
-  // ref와 객체 이름이 곧 내용이라 이름을 바꾸면 저장소가 깨진다. 이름이 .git이 아닌 베어 저장소도 같다.
+  // The ref and object names are the content, so renaming breaks the repository. A bare repository whose name is not .git is the same.
   rejectRepository(access.target, entries);
   const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
   if (bare) throw new FcError(`Not handled because it contains a repository: ${bare.path}`);
@@ -120,7 +120,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   const guards = guardedFolders(access.target, entries);
   const { guarded, pages } = guards;
   let hiddenChecked = false;
-  // 남길 폴더는 안에 이름이 바뀔 파일이 있을 때만 한 번 알린다. node_modules의 파일마다 알리면 목록이 묻힌다.
+  // A folder to keep is reported once, only when it has a file whose name would change. Reporting for each file of node_modules would bury the list.
   const reportedGuards = new Set();
   const findMarker = markerFinder();
   const wanted = [];
@@ -137,7 +137,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     const result = normalizeName(path.basename(entry.path));
     const changes = result.reason === null && result.name !== path.basename(entry.path);
-    // 바뀌거나 보고할 파일(번호가 여럿 등)이 처음 나오면 숨김 속성 폴더를 확인한다. 순서에 따라 보고가 달라지지 않게 한다(2차 리뷰).
+    // When a file to change or report (several numbers and so on) first appears, it checks the hidden-attribute folders. So that the report does not differ with the order (second review).
     const reported = result.reason !== null && (result.number !== null || /Several numbers/.test(result.reason));
     let guard = guardOf(entry.relative, guarded);
     if (guard === null && (changes || reported) && !hiddenChecked) {
@@ -163,7 +163,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
       continue;
     }
     if (result.reason !== null) {
-      // 숨김, 임시, 끝이 점이나 공백인 이름까지 보고하면 목록이 묻힌다. 번호가 여럿이거나 이름이 너무 길어지는 경우만 알린다.
+      // Reporting even hidden and temporary files and names ending in a dot or a space would bury the list. It reports only cases with several numbers or where the name gets too long.
       if (reported) plan.skipped.push({ path: entry.path, reason: result.reason });
       continue;
     }
@@ -175,7 +175,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     wanted.push({ entry, result });
   }
 
-  // 결과가 겹치면 어느 쪽을 남길지 정할 수 없으므로 모두 바꾸지 않는다.
+  // If the results overlap, it cannot decide which one to keep, so it changes none of them.
   const targets = new Map();
   for (const item of wanted) {
     const key = nameKey(path.join(path.dirname(item.entry.path), item.result.name));
@@ -188,14 +188,14 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     if (targets.get(key) > 1) {
       conflict('Another file would get the same name.');
     } else if (key !== nameKey(entry.path) && existing.has(key)) {
-      // 이전 실행이 중간에 멈춘 흔적(같은 파일의 다른 이름, 빈 파일)이면 그 사실을 덧붙인다(#73).
+      // If it is a trace of an earlier run that stopped midway (another name of the same file, an empty file), it adds that fact (#73).
       conflict(`The name already exists.${leftoverNote(entry.path, to)}`);
     } else {
       try {
         const from = access.read(entry.path);
-        // 대소문자만 바뀌면 access.write가 지금 파일의 실제 표기를 돌려주므로, 원본 폴더에 새 이름을 붙여 쓴다.
+        // If only the case changes, access.write returns the real spelling of the current file, so it writes the new name onto the source folder.
         const dest = key === nameKey(entry.path) ? path.join(path.dirname(from), result.name) : access.write(to);
-        // 다른 파일의 8.3 짧은 이름과 겹치면 access.write가 그 파일의 긴 경로를 돌려준다.
+        // If it overlaps with the 8.3 short name of another file, access.write returns the long path of that file.
         if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('The name already exists.');
         else plan.renames.push({ from, to: dest, name: result.name, number: result.number });
       } catch (err) {
@@ -207,14 +207,14 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
   return plan;
 }
 
-// 대소문자만 바뀌는 이름은 대상이 자기 자신으로 잡혀 덮어쓰지 않는 이동이 실패한다. 임시 이름을 거친다.
-// 임시 이름으로 옮긴 사이 그 이름에 다른 프로그램이 파일을 만들 수 있다. 그 파일을 덮어쓰지 않도록 되돌릴 때도 덮어쓰지 않는 이동을 쓴다.
+// For a name that changes only in case, the target is caught as the file itself and the move that does not overwrite fails. It goes through a temporary name.
+// While it was moved to the temporary name, another program may create a file under that name. So that it does not overwrite that file, the move back also does not overwrite.
 function renameCaseOnly(from, to, name) {
   const middle = freshPath(from, '.fctl-new');
   fs.renameSync(from, middle);
   let cause;
   try {
-    // 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생기므로 먼저 본다.
+    // Opening a broken junction with wx would create a folder outside the target that the junction points to, so it looks first.
     if (!fs.lstatSync(to, { throwIfNoEntry: false }) && moveWithoutOverwrite(middle, to)) return;
     cause = new FcError(`Not renamed because the name already exists: ${name}`);
   } catch (err) {
@@ -235,7 +235,7 @@ function restoreCaseOnly(middle, from, cause) {
   if (!restored) throw new FcError(`Could not rename and could not restore it either. The file is at ${middle}. (${cause.code ?? cause.message}, ${reason})`);
 }
 
-// 계획과 실행 사이에 원본이 링크로 바뀌었거나 이름이 찼으면 바꾸지 않는다. 덮어쓰지 않는다.
+// If the source was replaced by a link or the name got filled between the plan and the run, it does not change it. It does not overwrite.
 function applyRename(rename, access) {
   const from = access.delete(rename.from);
   if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
@@ -245,15 +245,15 @@ function applyRename(rename, access) {
     return;
   }
   const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
-  // 이미 있는 항목에는 손대지 않는다. 끊어진 정션에 wx로 열면 정션이 가리키는 타겟 밖에 폴더가 생긴다.
+  // It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to.
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
   const to = access.write(rename.to);
   if (to !== rename.to) throw new FcError(`The path changed after planning: ${rename.to} -> ${to}`);
   if (!moveWithoutOverwrite(from, to)) throw taken();
 }
 
-// 타겟 아래 파일 이름을 정규화한다. 덮어쓰지 않고, 한 파일이 실패해도 나머지는 계속한다.
-// 돌려주는 값: { target, dryRun, renamed, inferred, conflicts, skipped, failed }. failed는 { from, reason } 목록이다.
+// It normalizes the file names under the target. It does not overwrite, and even if one file fails, it continues with the rest.
+// The returned value is { target, dryRun, renamed, inferred, conflicts, skipped, failed }. failed is a list of { from, reason }.
 function normalizeFiles(dir, { dryRun = false, includeLowercase = false } = {}) {
   return applyNormalize(planNormalize(dir, { includeLowercase }), { dryRun });
 }

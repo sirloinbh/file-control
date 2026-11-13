@@ -10,7 +10,7 @@ const { planProductNames, applyProductNames, addProductNumbers, formatProductNum
 const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -46,7 +46,7 @@ function box(type, ...parts) {
   return Buffer.concat([u32(body.length + 8), Buffer.from(type, 'latin1'), body]);
 }
 
-// 제목과 코멘트만 든 최소 MP4
+// A minimal MP4 that holds only a title and a comment
 function mp4({ title, comment }) {
   const item = (type, text) => box(type, box('data', u32(1), u32(0), Buffer.from(text, 'utf8')));
   const items = [title !== undefined && item('©nam', title), comment !== undefined && item('©cmt', comment)].filter(Boolean);
@@ -140,7 +140,7 @@ test('번호의 일부만 겹치는 이름에는 번호를 넣고, 글자가 붙
   make(dir, ['ABC-123/ABC-1234x.mp4', 'ABC-123/QWERTYABC-123.mp4']);
   const result = addProductNumbers(dir);
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 QWERTYABC-123.mp4', 'ABC-123/ABC-1234x.mp4']);
-  // ABC-1234x는 글자가 붙은 다른 번호 ABC-1234로 본다(#75).
+  // ABC-1234x is seen as another number with letters attached, ABC-1234 (#75).
   assert.deepStrictEqual(result.conflicts.map((item) => item.numbers), [['ABC-1234', 'ABC-123']]);
 });
 
@@ -239,7 +239,7 @@ test('계획 뒤에 부모가 타겟 안의 정션으로 바뀌면 다른 파일
 test('이름 변경이 실패했을 때 자리표시에 다른 내용이 생겼으면 지우지 않는다', (t) => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4']);
-  // 하드링크를 못 만드는 드라이브(FAT32·exFAT 등)에서는 빈 자리표시를 먼저 만드는 방식으로 옮긴다.
+  // On a drive that cannot make hard links (FAT32, exFAT, and so on), it moves with the method that first creates an empty placeholder.
   t.mock.method(fs, 'linkSync', () => {
     throw Object.assign(new Error('not supported'), { code: 'EPERM' });
   });
@@ -346,7 +346,7 @@ test('같은 이름이 있으면 덮어쓰지 않고 건너뛴다', () => {
 test('계획 뒤에 이름이 차면 덮어쓰지 않고 실패로 보고한다', (t) => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
-  // 덮어쓰지 않는 이동(하드링크, #73) 직전에 다른 프로그램이 같은 이름을 만든다.
+  // Right before the non-overwriting move (hard link, #73), another program creates the same name.
   const linkSync = fs.linkSync;
   t.mock.method(fs, 'linkSync', (from, to) => {
     if (String(to).endsWith('ABC-123 a.mp4')) fs.writeFileSync(to, '새 내용');
@@ -360,7 +360,7 @@ test('계획 뒤에 이름이 차면 덮어쓰지 않고 실패로 보고한다'
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123', 'a.mp4'), 'utf8'), 'ABC-123/a.mp4');
 });
 
-// 잠긴 파일처럼 원래 이름을 지우지 못하게 한다. 잠긴 파일도 하드링크는 만들어지고 지우기만 EBUSY로 실패한다.
+// It makes the original name undeletable like a locked file. Even a locked file gets a hard link, and only deleting the original name fails with EBUSY.
 function lockSource(t, locked) {
   const unlinkSync = fs.unlinkSync;
   return t.mock.method(fs, 'unlinkSync', (p) => {
@@ -481,9 +481,9 @@ test('product-number 명령은 잘못된 인자를 거부한다', () => {
 test('product-number는 이전 실행이 중간에 멈춰 남긴 빈 파일과 같은 파일의 다른 이름을 사유를 구분해 알린다 (#73)', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/a.mp4', 'ABC-123/b.mp4']);
-  // 예전 방식(빈 자리표시)으로 옮기다 멈춘 흔적
+  // A trace of stopping while moving by the old method (an empty placeholder)
   fs.writeFileSync(path.join(dir, 'ABC-123', 'ABC-123 a.mp4'), '');
-  // 지금 방식(하드링크)으로 옮기다 멈춘 흔적
+  // A trace of stopping while moving by the current method (a hard link)
   fs.linkSync(path.join(dir, 'ABC-123', 'b.mp4'), path.join(dir, 'ABC-123', 'ABC-123 b.mp4'));
   const result = addProductNumbers(dir);
   assert.deepStrictEqual(result.renamed, []);
@@ -491,12 +491,12 @@ test('product-number는 이전 실행이 중간에 멈춰 남긴 빈 파일과 �
   assert.match(reason('ABC-123 a.mp4'), /file is empty/);
   assert.match(reason('a.mp4'), /Not renamed because the name already exists: ABC-123 a\.mp4 \(that name is an empty file/);
   assert.match(reason('b.mp4'), /Not renamed because the name already exists: ABC-123 b\.mp4 \(another name of the same file/);
-  // 하드링크로 남은 이름은 내용이 온전한 영상이라 이미 번호가 있는 것으로 센다.
+  // A name left by a hard link is a video with intact content, so it is counted as already having a number.
   assert.deepStrictEqual(result.already.map((item) => path.basename(item.path)), ['ABC-123 b.mp4']);
   assert.deepStrictEqual(tree(dir), ['ABC-123/ABC-123 a.mp4', 'ABC-123/ABC-123 b.mp4', 'ABC-123/a.mp4', 'ABC-123/b.mp4']);
 });
 
-// 하위 폴더 하나를 읽기 거부(EPERM)로 만든다. 실제 ACL 대신 readdirSync만 실패시킨다.
+// It makes one subfolder refuse reading (EPERM). It fails only readdirSync instead of a real ACL.
 function denyFolder(t, denied) {
   const readdirSync = fs.readdirSync;
   t.mock.method(fs, 'readdirSync', (p, ...rest) => {
@@ -538,7 +538,7 @@ test('fctl product-number는 읽을 수 없는 폴더만 건너뛰었으면 0으
     if (path.basename(p).endsWith('-locked')) throw Object.assign(new Error('read failed'), { code });
     return readdirSync(p, ...rest);
   });
-  // 여러 폴더는 이름 순으로 보고한다.
+  // Several folders are reported in name order.
   assert.match(run(['product-number', dir, '--dry-run']), /Skipped: b-locked \(.*EPERM\)\n\[Preview\] Skipped: z-locked \(.*EPERM\)/);
   code = 'EIO';
   assert.throws(() => run(['product-number', dir]), (err) => err instanceof FcError && /Cannot read the folder: .*-locked \(EIO\)/.test(err.message));

@@ -1,8 +1,8 @@
 'use strict';
 
-// 작업 상태 페이지와 결과 페이지(#253). 명령은 jobs.js가 자식 프로세스로 실행하고, 화면은 여기서 만든다.
-// 클라이언트 JS를 쓰지 않으므로 진행 표시는 <meta http-equiv=refresh>로 같은 주소를 다시 연다.
-// 작업이 끝난 뒤 상태 페이지를 열면 결과 페이지로 넘긴다(303).
+// The job status page and the result page (#253). jobs.js runs the command in a child process, and the screen is built here.
+// No client JS is used, so the progress display reopens the same address with <meta http-equiv=refresh>.
+// If the status page is opened after the job ended, it redirects to the result page (303).
 
 const { html } = require('./html');
 const { page, alertBox } = require('./layout');
@@ -10,9 +10,9 @@ const { BusyError, formatElapsed, KEPT_HEAD_LINES: KEPT_HEAD } = require('./jobs
 
 const STATUS_PATH = '/job';
 const RESULT_PATH = '/job/result';
-// 상태 페이지를 다시 여는 간격(초).
+// The interval (in seconds) at which the status page reopens.
 const REFRESH_SECONDS = 1;
-// 상태 페이지에 보일 최근 진행 줄 수. 결과 페이지는 모은 줄을 모두 보인다.
+// The number of recent progress lines shown on the status page. The result page shows all the collected lines.
 const RECENT_LINES = 200;
 
 const statusUrl = (job) => `${STATUS_PATH}?id=${encodeURIComponent(job.id)}`;
@@ -22,13 +22,13 @@ function commandLine(job) {
   return html`<p>Command: <code>fctl ${job.argv.join(' ')}</code></p>`;
 }
 
-// 상태 페이지: 최근 줄만 보이므로 앞에서 생략한 줄 수를 알린다.
+// Status page: only the recent lines are shown, so it reports the number of lines omitted at the front.
 function linesBlock(lines, skipped) {
   if (lines.length === 0) return html`<p class="muted">No progress lines yet.</p>`;
   return html`${skipped > 0 ? html`<p class="muted">Skipped the first ${skipped} progress lines.</p>` : ''}<pre class="report">${lines.join('\n')}</pre>`;
 }
 
-// 결과 페이지: jobs.js는 줄이 많으면 처음 KEPT_HEAD_LINES줄 뒤의 중간 줄을 버린다. 그 자리에 생략 표시를 넣는다.
+// Result page: if there are many lines, jobs.js drops the middle lines after the first KEPT_HEAD_LINES lines. It puts an omission mark in that place.
 function allLinesBlock(lines, dropped) {
   if (dropped === 0) return html`<pre class="report">${lines.join('\n')}</pre>`;
   return html`<pre class="report">${lines.slice(0, KEPT_HEAD).join('\n')}</pre>
@@ -58,7 +58,7 @@ function notFound(available) {
   };
 }
 
-// 실행 중인 작업의 상태 페이지. 진행 줄과 경과 시간을 보이고 REFRESH_SECONDS마다 다시 연다.
+// The status page of a running job. It shows the progress lines and the elapsed time and reopens every REFRESH_SECONDS.
 function statusPage(jobs, job, { available } = {}) {
   const recent = job.lines.slice(-RECENT_LINES);
   const skipped = job.droppedLines + job.lines.length - recent.length;
@@ -73,7 +73,7 @@ ${linesBlock(recent, skipped)}`,
   });
 }
 
-// 실패 알림 문구. 일부 실패(failure)는 보고 전체가 메시지일 때가 있어, 그때는 보고와 겹치지 않게 짧게 쓴다.
+// The failure notice text. For a partial failure (failure), the whole report is sometimes the message, so then it is written short so as not to overlap the report.
 function outcomeAlert(job) {
   if (job.status === 'error') {
     const detail = job.error && job.error.stderr ? `\n${String(job.error.stderr).trim()}` : '';
@@ -87,7 +87,7 @@ function outcomeAlert(job) {
   return { kind: 'success', message: 'Done.' };
 }
 
-// 끝난 작업의 결과 페이지. views[command](outcome, job)가 있으면 그 화면(표 등)을, 없으면 CLI와 같은 보고 글을 보인다.
+// The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.
 function resultPage(jobs, job, { available, views = {} } = {}) {
   const alert = outcomeAlert(job);
   let content = '';
@@ -113,28 +113,28 @@ ${lines}`,
   });
 }
 
-// 작업 페이지 주소들. views는 명령별 결과 화면(#256~#259)이다.
+// The job page addresses. views are the per-command result screens (#256 to #259).
 function jobRoutes(jobs, { views = {} } = {}) {
   return new Map([
     [STATUS_PATH, (req, { available }) => {
       const job = jobFromRequest(jobs, req);
       if (!job) return notFound(available);
-      // 끝났으면 결과 페이지로 넘긴다. 다시 열어도 같은 결과를 본다.
+      // If finished, it redirects to the result page. Opening it again shows the same result.
       if (job.status !== 'running') return { status: 303, headers: { Location: resultUrl(job) }, body: '' };
       return { body: statusPage(jobs, job, { available }) };
     }],
     [RESULT_PATH, (req, { available }) => {
       const job = jobFromRequest(jobs, req);
       if (!job) return notFound(available);
-      // 아직 실행 중이면 상태 페이지로 돌려보낸다.
+      // If it is still running, it sends back to the status page.
       if (job.status === 'running') return { status: 303, headers: { Location: statusUrl(job) }, body: '' };
       return { body: resultPage(jobs, job, { available, views }) };
     }],
   ]);
 }
 
-// 실행 요청(POST 처리기, #255~)이 부르는 응답. 작업을 시작하고 상태 페이지로 넘긴다.
-// 이미 실행 중인 작업이 있으면 시작하지 않고 409와 함께 그 작업으로 가는 링크를 보인다.
+// The response that run requests (POST handlers, #255 onward) call. It starts the job and redirects to the status page.
+// If a job is already running, it does not start and shows 409 with a link to that job.
 function startJobResponse(jobs, argv, { available } = {}) {
   try {
     const job = jobs.start(argv);
@@ -153,7 +153,7 @@ function startJobResponse(jobs, argv, { available } = {}) {
   }
 }
 
-// 폼의 실행 버튼. 실행 중인 작업이 있으면 버튼을 막고 그 작업으로 가는 링크를 보인다.
+// The run button of a form. If a job is running, it disables the button and shows a link to that job.
 function runButton(jobs, label = 'Run') {
   const active = jobs.running();
   if (!active) return html`<button type="submit">${label}</button>`;

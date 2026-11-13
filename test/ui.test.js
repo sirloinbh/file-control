@@ -1,6 +1,6 @@
 'use strict';
 
-// fctl ui 서버 뼈대와 공통 화면(#251).
+// The fctl ui server skeleton and the common screen (#251).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -26,7 +26,7 @@ function request(url, { method = 'GET', headers = {}, body } = {}) {
   });
 }
 
-// node bin/fctl.js ui를 자식 프로세스로 띄우고 출력한 주소를 기다린다.
+// It starts node bin/fctl.js ui as a child process and waits for the address it prints.
 function launch(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [FCTL, 'ui', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -69,7 +69,7 @@ test('html``은 끼워 넣는 값을 이스케이프하고 html``·raw()와 그 
   assert.strictEqual(html`<a title="${name}">${name}</a>`.text, '<a title="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</a>');
   assert.strictEqual(html`<ul>${['<a>', '&'].map((x) => html`<li>${x}</li>`)}</ul>`.text, '<ul><li>&lt;a&gt;</li><li>&amp;</li></ul>');
   assert.strictEqual(html`${raw('<b>')}${null}${undefined}${false}${0}`.text, '<b>0');
-  // 배열 안의 일반 문자열도 이스케이프한다.
+  // Even a plain string in an array is escaped.
   assert.strictEqual(html`${['<', '>']}`.text, '&lt;&gt;');
 });
 
@@ -99,7 +99,7 @@ test('page는 제목·알림을 이스케이프하고, 어두운 화면 CSS와 �
   assert.ok(out.includes('@media (prefers-color-scheme: dark)') && out.includes(':root {'));
   assert.ok(out.includes('<a href="/files" aria-current="page">Basic file tasks</a>'));
   for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="Coming soon">${category.label}</span>`), category.label);
-  // 클라이언트 JS는 쓰지 않는다(#250).
+  // No client JS is used (#250).
   assert.ok(!/<script/i.test(out));
 });
 
@@ -140,7 +140,7 @@ test('fctl ui는 포트를 이미 쓰고 있으면 다른 포트로 넘어가지
   t.after(() => busy.close());
   const { port } = busy.address();
   await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`Port ${port} is already used by another program`) && err.message.includes('netstat'));
-  // 명령으로 띄워도 종료 코드 1과 같은 안내로 끝난다.
+  // Even when started by the command, it ends with the same guidance as exit code 1.
   await assert.rejects(launch(['--no-open', `--port=${port}`]), (err) => err.code === 1 && err.stderr.includes(`Port ${port} is already used by another program`));
 });
 
@@ -155,7 +155,7 @@ test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 �
   assert.ok(failed.body.includes('Could not build the page: &lt;boom&gt;'));
   const home = await request(`${base}/`);
   assert.strictEqual(home.status, 200);
-  // 등록된 분류는 메뉴와 첫 화면에서 링크가 된다.
+  // The registered categories become links in the menu and the first screen.
   assert.ok(home.body.includes('<a href="/files">Basic file tasks</a>'));
 });
 
@@ -177,7 +177,7 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
-  // POST는 폼 형식과 토큰이 있어야 처리기까지 간다(#252).
+  // A POST reaches the handler only with the form type and the token (#252).
   const post = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'token=tok' };
   const files = await request(`${base}/files`);
   assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);

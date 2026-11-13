@@ -15,7 +15,7 @@ function tempDir() {
   return dir;
 }
 
-// 폴더 아래 모든 항목과 파일 내용을 모은다. 미리보기 전후가 같은지 비교하는 데 쓴다.
+// It collects all items and file contents under a folder. It is used to compare whether before and after a preview are the same.
 function snapshot(dir) {
   return fs
     .readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -26,7 +26,7 @@ function snapshot(dir) {
     .sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
-// 미리보기로 argv를 실행한 뒤 아무것도 바뀌지 않았는지 확인하고 출력을 돌려준다.
+// After running argv as a preview, it checks that nothing changed and returns the output.
 function preview(dir, argv) {
   const before = snapshot(dir);
   const output = run([...argv, '--dry-run']);
@@ -72,7 +72,7 @@ test('--dry-run은 여러 항목을 각각 한 줄씩 보여 준다', () => {
   assert.ok(lines.every((line) => line.startsWith('[Preview] Move to the Recycle Bin')));
 });
 
-// 미리보기와 실제 실행이 모두 실패해야 하는 명령들. 실제 실행이 휴지통에 닿지 않게 rm은 --permanent로 쓴다.
+// Commands where both the preview and a real run must fail. So that a real run does not reach the Recycle Bin, rm is used with --permanent.
 function failureFixture() {
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
@@ -243,7 +243,7 @@ test('mv는 현재 폴더 기준 경로로도 현재 폴더와 그 상위를 옮
       assert.throws(() => run([...argv, '--force']), fc.FcError, argv.join(' '));
       assert.deepStrictEqual(snapshot(dir), before, argv.join(' '));
     }
-    // 현재 폴더 안으로 옮기는 것은 막지 않는다.
+    // Moving into the current folder is not blocked.
     assert.match(run(['mv', '../../a.txt', '.']), /Move/);
   } finally {
     process.chdir(cwd);
@@ -284,7 +284,7 @@ test('--dry-run은 압축 해제 항목 수와 이미 있는 대상 폴더의 �
   const p = (...parts) => path.join(dir, ...parts);
   fc.zip(p('bundle.zip'), [p('a.txt'), p('b.txt')]);
   const fresh = preview(dir, ['unzip', p('bundle.zip')]);
-  // 작은 파일 2개는 4KB 단위로 올리고 항목마다 1KB를 더해 10KB로 센다.
+  // Two small files are rounded up in 4KB units and counted as 10KB with 1KB added per entry.
   assert.match(fresh, /2 items, extracted size about 10\.0KB\)$/);
   assert.match(preview(dir, ['unzip', p('bundle.zip'), p('dest')]), /2 items, extracted size about 10\.0KB, the destination folder already exists, so files with the same name are overwritten\)$/);
 });
@@ -356,7 +356,7 @@ test('-- 뒤의 인자는 옵션이 아닌 이름·내용으로 본다', () => {
     assert.match(run(['mv', '--', '-z.txt', './y.txt']), /Move/);
     run(['write', 'c.txt', '--', '--- 제목']);
     assert.strictEqual(fs.readFileSync('c.txt', 'utf8'), '--- 제목');
-    // -- 뒤의 --permanent는 옵션이 아니라 이름이므로 없는 경로 오류가 나고, -- 앞의 --dry-run은 그대로 옵션이다.
+    // --permanent after -- is a name, not an option, so a nonexistent-path error comes, and --dry-run before -- is still an option.
     assert.throws(() => run(['rm', '--dry-run', '--', 'y.txt', '--permanent']), /Path does not exist/);
     assert.ok(fs.existsSync('y.txt'));
     assert.match(run(['rm', '--dry-run', '--', 'y.txt']), /^\[Preview\]/);
@@ -369,7 +369,7 @@ test('-- 뒤의 인자는 옵션이 아닌 이름·내용으로 본다', () => {
 test('zip은 -나 @로 시작하는 이름을 옵션이 아닌 파일로 묶는다', () => {
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
-  // 옵션으로 해석되면 @evil.tar의 내용이나 list.txt에 적힌 파일이 대신 묶인다.
+  // If interpreted as an option, the content of @evil.tar or the files listed in list.txt would be bundled instead.
   fs.writeFileSync(p('list.txt'), p('a.txt'));
   fs.writeFileSync(p('-Tlist.txt'), 'dash');
   fs.writeFileSync(p('-x'), 'x');

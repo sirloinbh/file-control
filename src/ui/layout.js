@@ -1,12 +1,12 @@
 'use strict';
 
-// 공통 화면 틀과 부품(#251). 서버가 HTML을 만들어 보내고, 클라이언트 JS는 쓰지 않는다(#250).
-// CSS는 문서 안에 넣는다. 색은 :root 변수로 정하고 어두운 화면(prefers-color-scheme: dark)에서 바꾼다.
-// 좁은 창에서도 가로 스크롤이 생기지 않도록 표는 폭을 고정하고 긴 경로를 아무 데서나 줄바꿈한다.
+// The common screen frame and parts (#251). The server builds the HTML and sends it, and client JS is not used (#250).
+// The CSS is put inside the document. Colors are set with :root variables and changed in the dark screen (prefers-color-scheme: dark).
+// So that no horizontal scroll appears even in a narrow window, tables have a fixed width and long paths wrap anywhere.
 
 const { html, raw } = require('./html');
 
-// 머리글 메뉴의 명령 분류. 각 화면은 뒤 이슈(#256~#259)가 만든다. 서버에 그 주소가 없으면 메뉴에 "준비 중"으로 보인다.
+// The command categories of the header menu. Each screen is built by later issues (#256 to #259). If the server has no such address, the menu shows "Coming soon".
 const CATEGORIES = [
   { path: '/files', label: 'Basic file tasks', detail: 'View, create, rename, move, copy, send to the Recycle Bin' },
   { path: '/organize', label: 'Organize folders', detail: 'Flatten, collapse single-folder chains, add product numbers, normalize names' },
@@ -74,7 +74,7 @@ code { font-family: Consolas, "Cascadia Mono", monospace; }
 pre.report { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
 `;
 
-// 알림 상자. kind: success(성공), warning(경고), error(오류), info(안내)
+// An alert box. kind: success, warning, error, info
 const ALERT_KINDS = new Set(['success', 'warning', 'error', 'info']);
 function alertBox(kind, message) {
   if (!ALERT_KINDS.has(kind)) throw new Error(`Unknown alert kind: ${kind}`);
@@ -82,12 +82,12 @@ function alertBox(kind, message) {
   return html`<div class="alert alert-${kind}" role="${role}">${message}</div>`;
 }
 
-// 요약 숫자 카드. items: [{ label, value, tone? }], tone은 ok·warning·error 중 하나.
+// Summary number cards. items: [{ label, value, tone? }], tone is one of ok, warning, error.
 function summaryCards(items) {
   return html`<div class="cards">${items.map(({ label, value, tone }) => html`<div class="card${tone ? ` card-${tone}` : ''}"><div class="value">${value}</div><div class="label">${label}</div></div>`)}</div>`;
 }
 
-// 상태 배지. 명령 결과의 상태를 색으로 나눈다.
+// A status badge. It separates the status of a command result by color.
 const BADGES = {
   moved: ['ok', 'Moved'],
   done: ['ok', 'Done'],
@@ -101,8 +101,8 @@ function badge(status, text) {
   return html`<span class="badge badge-${tone}">${text ?? label}</span>`;
 }
 
-// 표. columns: [{ label, width? }], rows: 칸 값 배열의 배열(문자열은 이스케이프, html``·badge()는 그대로).
-// width는 '40%'처럼 CSS 폭이다. 긴 경로는 칸 안에서 줄바꿈한다.
+// A table. columns: [{ label, width? }], rows: an array of arrays of cell values (strings are escaped, html`` and badge() are left as they are).
+// width is a CSS width such as '40%'. Long paths wrap inside the cell.
 function table(columns, rows, { empty = 'No items.' } = {}) {
   const head = html`<colgroup>${columns.map((column) => (column.width ? html`<col style="width: ${column.width}">` : html`<col>`))}</colgroup><thead><tr>${columns.map((column) => html`<th scope="col">${column.label}</th>`)}</tr></thead>`;
   const body = rows.length === 0
@@ -111,8 +111,8 @@ function table(columns, rows, { empty = 'No items.' } = {}) {
   return html`<table>${head}<tbody>${body}</tbody></table>`;
 }
 
-// 문서 전체. current는 지금 화면의 분류 경로, available은 서버에 있는 경로 목록(없는 분류는 "준비 중").
-// refresh: { seconds, url? }를 주면 <meta http-equiv=refresh>로 그 시간 뒤에 url(없으면 같은 주소)을 다시 연다(#253 진행 표시).
+// The whole document. current is the category path of the current screen, and available is the list of paths the server has (a category not there is "Coming soon").
+// If refresh: { seconds, url? } is given, <meta http-equiv=refresh> reopens url (or the same address if none) after that time (#253 progress display).
 function page({ title, current = null, alerts = [], body = '', available = new Set(), refresh = null }) {
   const nav = CATEGORIES.map((category) => {
     if (!available.has(category.path)) return html`<li><span title="Coming soon">${category.label}</span></li>`;

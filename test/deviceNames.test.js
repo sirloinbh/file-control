@@ -1,6 +1,6 @@
 'use strict';
 
-// 기본 명령의 장치 이름 처리(#135). 측정은 Windows 11 빌드 26200에서 했다.
+// Device name handling of the basic commands (#135). The measurements were taken on Windows 11 build 26200.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -12,7 +12,7 @@ const fc = require('../src/commands');
 const { BARE_DEVICE_NAME, deviceNamePart } = require('../src/windowsNames');
 
 const isWindows = process.platform === 'win32';
-// 장치 이름 파일은 \\?\ 경로로만 만들 수 있다. Node의 일반 경로도 글자 그대로 쓰지만 만드는 쪽은 확실하게 한다.
+// A device-name file can be created only with a \\?\ path. Node's ordinary path also uses it literally, but the side that creates it makes sure.
 const literal = (p) => (isWindows ? `\\\\?\\${p}` : p);
 
 function tempDir() {
@@ -46,7 +46,7 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
   fs.mkdirSync(path.join(dir, 'box'));
   fc.zip(path.join(dir, 'ok.zip'), [src]);
   const before = listing(dir);
-  // 어느 빌드의 규칙에서나 장치 이름이다. 끝의 점·공백은 Windows가 지우므로 같은 장치다.
+  // It is a device name under the rules of any build. A trailing dot and space are removed by Windows, so it is the same device.
   for (const name of ['Nul.mp4', 'con.txt', 'nul', 'AUX/a.txt', 'Com1.zip', 'com1 ', 'nul ', 'Nul.mp4.', 'con.txt .', 'CON .', 'lpt¹/a.txt']) {
     const p = path.join(dir, name);
     const attempts = {
@@ -54,7 +54,7 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
       writeDry: () => fc.writeFile(p, 'x', { dryRun: true }),
       append: () => fc.writeFile(p, 'x', { append: true }),
       mkdir: () => fc.makeDir(p),
-      // rename은 같은 폴더 안의 이름만 받으므로 폴더가 든 경우는 mv로 본다.
+      // rename accepts only names within the same folder, so the folder-contained case is looked at with mv.
       rename: () => (name.includes('/') ? fc.move([src], p) : fc.rename(src, name)),
       mv: () => fc.move([src], p),
       cp: () => fc.copy([src], p),
@@ -66,9 +66,9 @@ test('write·mkdir·rename·mv·cp·zip·unzip은 장치로 열리는 이름을 
       assert.throws(attempt, /Not created because Windows opens this name as a device/, `${kind} ${name}`);
     }
   }
-  // 폴더 안으로 옮기거나 복사해도 새 이름이 장치 이름이면 거부한다.
+  // Even when moving or copying into a folder, if the new name is a device name, it refuses.
   fs.writeFileSync(literal(path.join(dir, 'Nul.mp4')), 'N');
-  // 스트림을 붙이면 : 앞의 이름으로 파일이 생긴다. mv는 스트림 경로 검사가 먼저 거부한다.
+  // If a stream is attached, a file is created with the name before :. mv refuses first by the stream path check.
   for (const name of ['nul:x', 'CON:s', 'aux.txt:x']) {
     const p = path.join(dir, name);
     for (const attempt of [() => fc.writeFile(p, 'x'), () => fc.makeDir(p), () => fc.rename(src, name), () => fc.copy([src], p), () => fc.move([src], p), () => fc.zip(p, [src])]) {
@@ -93,7 +93,7 @@ test('이미 있는 장치 이름 폴더 안에는 평범한 이름을 만들 �
   fc.copy([path.join(dir, 'src.txt')], path.join(folder, 'copy.txt'));
   fc.unzip(path.join(dir, 'ok.zip'), path.join(folder, 'out'));
   assert.strictEqual(fc.readFile(path.join(folder, 'out', 'src.txt')), 'S');
-  // 그 안에 새로 만드는 이름이 장치 이름이면 거부한다.
+  // If a name newly created inside it is a device name, it refuses.
   assert.throws(() => fc.writeFile(path.join(folder, 'nul.txt'), 'x'), /Not created because Windows opens this name as a device: "nul.txt"/);
   assert.throws(() => fc.makeDir(path.join(folder, 'new', 'CON', 'x')), /Not created because Windows opens this name as a device: "CON"/);
 });
@@ -152,7 +152,7 @@ test('rm은 장치 이름 그대로인 경로를 PowerShell을 부르기 전에 
   const dir = tempDir();
   fs.writeFileSync(literal(path.join(dir, 'nul')), 'x');
   fs.mkdirSync(literal(path.join(dir, 'CON')));
-  // CON·nul·Com1 폴더 안의 파일도 휴지통 이동이 실패한다(빌드 26200). Nul.mp4 폴더 안은 성공했다.
+  // A file inside a CON, nul, or Com1 folder also fails the Recycle Bin move (build 26200). Inside a Nul.mp4 folder it succeeded.
   fs.writeFileSync(path.join(dir, 'CON', 'a.txt'), 'A');
   const calls = t.mock.method(childProcess, 'execFileSync', () => {
     throw new Error('PowerShell을 부르면 안 된다');
@@ -173,7 +173,7 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
   fs.writeFileSync(literal(path.join(dir, 'box', 'sub', 'nul')), 'x');
   fs.writeFileSync(path.join(dir, 'plain.txt'), 'p');
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
-    // 지우기 전 볼륨 설정 확인(#81)은 고정 디스크로 답한다.
+    // The volume setting check before deleting (#81) answers as a fixed disk.
     if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed||\r\n';
     const err = new Error('DeleteDirectory failed');
     err.status = 1;
@@ -181,11 +181,11 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
   });
   const fresh = reload();
   assert.throws(() => fresh.remove([path.join(dir, 'box')]), (err) => err instanceof fresh.FcError && err.message.includes(`It may have failed because of an item with a device name inside (${path.join('sub', 'nul')})`));
-  // 장치 이름이 없으면 원래 오류를 그대로 낸다.
+  // If there is no device name, it raises the original error as it is.
   assert.throws(() => fresh.remove([path.join(dir, 'plain.txt')]), (err) => !(err instanceof fresh.FcError) && err.status === 1);
 });
 
-// execFileSync를 바꾼 뒤 그것을 쓰는 commands.js를 새로 읽는다. 다른 테스트가 쓰는 모듈은 그대로 둔다.
+// After swapping execFileSync, it reads commands.js, which uses it, anew. Modules other tests use are left as they are.
 function reload() {
   const id = require.resolve('../src/commands');
   const saved = require.cache[id];

@@ -20,7 +20,7 @@ function tempDir() {
   return dir;
 }
 
-// 작업이 끝날 때까지(running()이 비고 상태가 바뀔 때까지) 기다린다.
+// It waits until the job ends (until running() is empty and the state changes).
 async function settled(jobs, job, timeoutMs = 20000) {
   const until = Date.now() + timeoutMs;
   while (job.status === 'running' || jobs.running() === job) {
@@ -74,7 +74,7 @@ test('execute는 도움말·결과·부분 실패를 던지지 않고 돌려주�
 });
 
 test('execute는 지우기 명령의 확인값이 다르면 결과와 함께 failure를 돌려주고, CLI는 같은 실패로 끝난다', (t) => {
-  // 임시 폴더는 사용자 설정 폴더(AppData) 아래라 보호 경로다. 다른 테스트처럼 사용자 폴더를 없는 곳으로 둔다.
+  // The temporary folder is under the user settings folder (AppData), so it is a protected path. Like other tests, the user folder is put in a place that does not exist.
   t.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'bad.zip'), 'not a zip');
@@ -126,7 +126,7 @@ test('createJobs는 실제 작업 프로세스로 명령을 실행하고 결과�
   assert.strictEqual(jobs.running(), null);
   assert.ok(jobs.elapsed(job) >= 0);
 
-  // 인자 오류는 error 상태로 사유를 남긴다.
+  // An argument error leaves the reason in the error state.
   const bad = jobs.start(['flatten']);
   await settled(jobs, bad);
   assert.strictEqual(bad.status, 'error');
@@ -136,7 +136,7 @@ test('createJobs는 실제 작업 프로세스로 명령을 실행하고 결과�
 test('createJobs는 결과 객체를 JSON으로 옮겨 받고, env를 작업 프로세스에 넘긴다', async () => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'bad.zip'), 'not a zip');
-  // 임시 폴더는 AppData 아래라 보호 경로다. 작업 프로세스의 사용자 폴더를 없는 곳으로 둔다.
+  // The temporary folder is under AppData, so it is a protected path. The user folder of the job process is put in a place that does not exist.
   const home = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
   const jobs = createJobs({ env: { ...process.env, USERPROFILE: home, HOME: home } });
   const job = jobs.start(['find-broken', dir]);
@@ -235,7 +235,7 @@ test('worker의 runOnce는 실제 명령(flatten)의 진행 줄을 결과보다 
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'sub'));
   fs.writeFileSync(path.join(dir, 'sub', 'a.txt'), 'A');
-  // 숨김 파일이 남아 sub 폴더는 휴지통으로 가지 않는다.
+  // A hidden file remains, so the sub folder does not go to the Recycle Bin.
   fs.writeFileSync(path.join(dir, 'sub', 'h.txt'), 'H');
   require('node:child_process').execFileSync('attrib', ['+h', path.join(dir, 'sub', 'h.txt')]);
   const sent = [];
@@ -247,7 +247,7 @@ test('worker의 runOnce는 실제 명령(flatten)의 진행 줄을 결과보다 
   assert.ok(fs.existsSync(path.join(dir, 'sub', 'h.txt')));
 });
 
-// child_process.fork 대신 쓰는 가짜 자식. pid가 없으면 띄우기에 실패한 것이다.
+// A fake child used instead of child_process.fork. If there is no pid, the launch failed.
 function fakeChild(pid) {
   const { EventEmitter } = require('node:events');
   const child = new EventEmitter();

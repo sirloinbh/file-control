@@ -1,7 +1,7 @@
 'use strict';
 
-// fctl ui의 폴더 고르기 화면(#254)에 쓸 데이터. 화면(HTML)과 떼어 둔 함수라 서버 없이 시험할 수 있다.
-// 드라이브 목록, 자주 쓰는 위치(다운로드·바탕화면·문서), 폴더 안 목록과 요약, 위로 가기, 보호 폴더 표시를 만든다.
+// Data for the folder picker screen of fctl ui (#254). It is a function kept apart from the screen (HTML), so it can be tested without a server.
+// It builds the drive list, the frequently used places (Downloads, Desktop, Documents), the list and summary inside a folder, going up, and the protected folder marks.
 
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
@@ -10,7 +10,7 @@ const path = require('node:path');
 const { FcError, list } = require('../commands');
 const { protectedReason } = require('../target');
 
-// 폴더면 true. 없거나 읽을 수 없으면 false.
+// True if it is a folder. False if it does not exist or cannot be read.
 function isDirectory(p) {
   try {
     return fs.statSync(p).isDirectory();
@@ -19,7 +19,7 @@ function isDirectory(p) {
   }
 }
 
-// 드라이브 루트 목록(C:\, D:\ …). Windows가 아니면 루트(/) 하나다. exists는 시험에서 바꿔 끼운다.
+// The drive root list (C:\, D:\ ...). If it is not Windows, it is the single root (/). exists is swapped in tests.
 function listDrives({ platform = process.platform, exists = isDirectory } = {}) {
   if (platform !== 'win32') return [path.parse(process.cwd()).root];
   const drives = [];
@@ -30,7 +30,7 @@ function listDrives({ platform = process.platform, exists = isDirectory } = {}) 
   return drives;
 }
 
-// OneDrive 폴더 후보. 환경 변수(개인·회사)와 사용자 폴더 아래의 OneDrive, OneDrive - 회사 폴더다.
+// OneDrive folder candidates. The environment variables (personal and company) and the OneDrive and "OneDrive - Company" folders under the user folder.
 function oneDriveFolders(home, env, readDir) {
   const found = [env.OneDrive, env.OneDriveConsumer, env.OneDriveCommercial].filter((p) => typeof p === 'string' && path.isAbsolute(p));
   let names = [];
@@ -40,7 +40,7 @@ function oneDriveFolders(home, env, readDir) {
     names = [];
   }
   for (const name of names) if (/^OneDrive(?:$| - )/i.test(name)) found.push(path.join(home, name));
-  // 같은 폴더를 두 번 넣지 않는다(대소문자 무시).
+  // It does not put the same folder in twice (case-insensitive).
   const seen = new Set();
   return found.filter((p) => {
     const key = path.resolve(p).toLowerCase();
@@ -52,15 +52,15 @@ function oneDriveFolders(home, env, readDir) {
 
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
-// Windows가 쓰는 다운로드·바탕화면·문서의 실제 위치(레지스트리 User Shell Folders, 환경 변수를 풀어 쓴 값)(1차 리뷰).
-// OneDrive로 옮겼으면 이 값이 OneDrive 쪽을 가리킨다. reg.exe는 한글 경로를 코드 페이지로 깨뜨려 내므로 PowerShell에서 UTF-8 JSON으로 받는다.
+// The real locations of Downloads, Desktop, and Documents that Windows uses (the registry User Shell Folders, with environment variables expanded) (first review).
+// If moved to OneDrive, this value points to the OneDrive side. reg.exe garbles Korean paths with the code page, so it is received from PowerShell as UTF-8 JSON.
 const SHELL_SCRIPT = [
   '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
   "$k = Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders'",
   "@{ downloads = $k.'{374DE290-123F-4565-9164-39C4925E467B}'; desktop = $k.Desktop; documents = $k.Personal } | ConvertTo-Json -Compress",
 ].join('; ');
 
-// 등록된 위치({ downloads?, desktop?, documents? }). 읽지 못하면 빈 객체다. 서버가 도는 동안 한 번만 읽는다.
+// The registered locations ({ downloads?, desktop?, documents? }). If it cannot read them, it is an empty object. It is read only once while the server runs.
 let shellCache = null;
 function shellFolders() {
   if (shellCache) return shellCache;
@@ -71,14 +71,14 @@ function shellFolders() {
     const parsed = JSON.parse(output);
     for (const key of ['downloads', 'desktop', 'documents']) if (typeof parsed[key] === 'string' && path.isAbsolute(parsed[key])) shellCache[key] = parsed[key];
   } catch {
-    // 읽지 못하면 아래 후보 경로로 찾는다.
+    // If it cannot be read, it looks for the candidate paths below.
   }
   return shellCache;
 }
 
-// 자주 쓰는 위치의 실제 경로({ label, path }). Windows에 등록된 위치(shell)를 먼저 쓰고, 없거나 그 폴더가 없으면 후보를 차례로 본다.
-// 후보: 바탕화면·문서는 OneDrive로 옮겨진 쪽을 먼저 본다. OneDrive 쪽 폴더 이름은 표시 언어로 만들어지므로(바탕 화면, 문서) 영어 이름과 함께 찾는다.
-// 있는 폴더만 돌려준다.
+// The real paths of the frequently used places ({ label, path }). It uses the locations registered in Windows (shell) first, and if absent or that folder does not exist, it looks at the candidates in order.
+// Candidates: for Desktop and Documents, it looks at the one moved to OneDrive first. The OneDrive-side folder names are made in the display language ("바탕 화면", "문서", Korean for Desktop and Documents), so it looks together with the English names.
+// It returns only folders that exist.
 function commonPlaces({ home = os.homedir(), env = process.env, exists = isDirectory, readDir = (dir) => fs.readdirSync(dir), shell = shellFolders } = {}) {
   if (!home || !path.isAbsolute(home)) return [];
   const oneDrive = oneDriveFolders(home, env, readDir);
@@ -97,8 +97,8 @@ function commonPlaces({ home = os.homedir(), env = process.env, exists = isDirec
   return places;
 }
 
-// 보호 폴더면 그 사유, 아니면 null. 사유를 알 수 없으면(사용자 폴더를 모름 등) 고르지 못하게 사유를 돌려준다.
-// 끝이 점이나 공백인 이름도 고르지 못하게 사유를 돌려준다. PowerShell·.NET은 그 글자를 지워 다른 폴더(AppData. → AppData)로 읽는다(1차 리뷰).
+// If it is a protected folder, that reason; otherwise null. If the reason cannot be known (the user folder is unknown and so on), it returns a reason so that it cannot be picked.
+// A name ending in a dot or a space also returns a reason so that it cannot be picked. PowerShell and .NET remove those characters and read it as another folder (AppData. -> AppData) (first review).
 function protection(dir) {
   if (process.platform === 'win32') {
     const name = dir.slice(path.parse(dir).root.length).split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part));
@@ -112,16 +112,16 @@ function protection(dir) {
   }
 }
 
-// 끝이 점이나 공백인 이름(target.js와 같은 기준)
+// A name ending in a dot or a space (the same criterion as target.js)
 const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
 
-// 네트워크·장치 경로(\\서버\공유, \\?\, \\.\)면 true. 열면 그 서버에 접속을 시도해 인증 정보가 나갈 수 있으므로 열지 않는다(1차 리뷰).
+// True if it is a network or device path (\\server\share, \\?\, \\.\). Opening it would try to connect to that server and could leak credentials, so it is not opened (first review).
 function isNetworkOrDevicePath(p) {
   return process.platform === 'win32' && /^[\\/]{2}/.test(p);
 }
 
-// 입력 경로를 실제 폴더 경로로 바꾼다(1차 리뷰). 8.3 짧은 이름(C:\PROGRA~1), 대소문자, 정션·심볼릭 링크를 풀어
-// 보호 판정과 고른 값이 실제 폴더를 가리키게 한다. 네트워크·장치 경로와 그리로 이어지는 링크는 거부한다.
+// It turns the input path into a real folder path (first review). It resolves 8.3 short names (C:\PROGRA~1), case, and junctions and symbolic links
+// so that the protection judgment and the picked value point to the real folder. It refuses network and device paths and links that lead there.
 function realFolder(dir) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir) || dir.includes('\0')) throw new FcError(`Not an absolute path: ${dir}`);
   if (isNetworkOrDevicePath(dir)) throw new FcError(`Network and device paths are not opened: ${dir}`);
@@ -137,23 +137,23 @@ function realFolder(dir) {
   return real;
 }
 
-// 부모의 보호 사유를 자식이 물려받으면 그 사유를 돌려준다(1차 리뷰, 큰 폴더에서 자식마다 판정하지 않게).
-// 부모가 보호 폴더 "안"이면(시스템 폴더, 설정 폴더 등) 자식도 같다. 부모가 보호 폴더를 "포함"해 막혔거나(드라이브 루트, 사용자 폴더 자체)
-// 사유를 알 수 없었으면 자식마다 다르므로 null이다.
+// If a child inherits the parent's protection reason, it returns that reason (first review, so as not to judge each child in a large folder).
+// If the parent is "inside" a protected folder (a system folder, a settings folder, and so on), the child is the same. If the parent is blocked because it "contains" a protected folder (a drive root, the user folder itself) or
+// the reason could not be known, it differs for each child, so it is null.
 function inheritedProtection(parentReason) {
   if (parentReason === null || parentReason.startsWith('contains ')) return null;
   return /^(?:system folder|user settings folder|another user's settings folder|default user profile|name ending with a dot or space)/.test(parentReason) ? parentReason : null;
 }
 
-// 화면에 보여 줄 하위 폴더 수 한도. 큰 폴더(C:\Windows\WinSxS 등)에서 화면이 지나치게 커지고 서버가 오래 멈추지 않게 한다(1차 리뷰).
+// The limit on the number of subfolders shown on the screen. It keeps the screen from getting too large and the server from stalling long on a large folder (C:\Windows\WinSxS and so on) (first review).
 const MAX_FOLDERS = 1000;
 
-// 폴더 하나를 열어 고르기 화면에 쓸 내용을 돌려준다.
-// - path: 실제 경로(링크·짧은 이름을 푼 값), parent: 위 폴더(드라이브 루트면 null)
-// - protected: 이 폴더를 고를 수 없는 사유(시스템 폴더, 사용자 폴더 자체, AppData·.ssh 등, 끝이 점·공백인 이름) 또는 null
-// - folders: 안의 폴더({ name, path, protected }) 이름순, 많으면 앞의 MAX_FOLDERS개. hiddenFolders: 한도로 뺀 폴더 수
-// - files: 안의 파일 수, size: 파일 크기 합(하위 폴더 제외)
-// 보호 폴더도 들어가 볼 수는 있다(읽기만 한다). 고르는 것만 막는다.
+// It opens one folder and returns the content for the picker screen.
+// - path: the real path (with links and short names resolved), parent: the folder above (null for a drive root)
+// - protected: the reason this folder cannot be picked (a system folder, the user folder itself, AppData, .ssh, and so on, a name ending in a dot or space) or null
+// - folders: the folders inside ({ name, path, protected }) in name order, and if there are many, the first MAX_FOLDERS. hiddenFolders: the number of folders dropped by the limit
+// - files: the number of files inside, size: the total file size (excluding subfolders)
+// A protected folder can also be looked into (it only reads). Only picking is blocked.
 function browseFolder(dir) {
   const resolved = realFolder(dir);
   let entries;

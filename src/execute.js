@@ -1,6 +1,6 @@
 'use strict';
 
-// 명령별 "인자 → 함수 호출 → 결과 객체" 부분. CLI(bin/fctl.js)와 UI 작업 프로세스(src/ui/worker.js)가 함께 쓴다(#253).
+// The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
 const fc = require('./commands');
 const { flatten, formatFlatten } = require('./flatten');
 const { addProductNumbers, formatProductNumbers } = require('./productName');
@@ -15,7 +15,7 @@ const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 
 const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate']);
-// 값을 받는 옵션(--이름=값). 값은 values에 둔다.
+// Options that take a value (--name=value). The value goes in values.
 const VALUE_FLAGS = new Set(['min-height', 'min-bitrate']);
 
 function parse(argv) {
@@ -40,19 +40,19 @@ function parse(argv) {
     else if (arg.startsWith('--')) flags.add(arg.slice(2));
     else args.push(arg);
   }
-  // 오타 검사는 -- 앞의 인자만 본다. 명령 이름은 빼고 넘긴다.
+  // The typo check looks only at the arguments before --. It is passed without the command name.
   const unchecked = args.slice(1);
   if (end !== -1) args.push(...argv.slice(end + 1));
   return { command: args.shift(), args, flags, unchecked, confirm, values };
 }
 
-// --dry-run을 잘못 치면 무시되어 실제로 실행되므로, 모르는 옵션은 아무것도 하기 전에 거부한다.
-// write·append의 내용은 '- 항목'처럼 -로 시작할 수 있으니 파일 경로만 본다.
+// If --dry-run is mistyped, it is ignored and the command really runs, so an unknown option is refused before doing anything.
+// The content of write and append may start with -, as in '- item', so only the file path is looked at.
 function rejectUnknownOptions(command, args, flags) {
   const unknownFlag = [...flags].find((flag) => !KNOWN_FLAGS.has(flag));
   if (unknownFlag !== undefined) throw new fc.FcError(`Unknown option: --${unknownFlag}`);
   const names = command === 'write' || command === 'append' ? args.slice(0, 1) : args;
-  // –(en 대시)와 —(em 대시)는 --가 자동 변환된 오타일 때가 많아 함께 거부한다.
+  // The en dash and the em dash are often a typo where -- was auto-converted, so they are refused too.
   const dashed = names.find((arg) => /^[-–—]/.test(arg));
   if (dashed !== undefined) throw new fc.FcError(`Unknown option: ${dashed} (write names that start with - as ./${dashed} or after --)`);
 }
@@ -61,12 +61,12 @@ function need(args, count, usage) {
   if (args.length < count) throw new fc.FcError(`Usage: fctl ${usage}`);
 }
 
-// 타겟 전체를 바꾸는 명령의 공통 검사.
+// The common check of commands that change a whole target.
 function checkWholeTarget(command, args, flags) {
   need(args, 1, `${command} <target>`);
-  // 되돌릴 수 없는 명령이다. 따옴표 없는 공백 경로의 앞부분만 받아 더 넓은 폴더를 다루지 않게 남는 인자를 거부한다.
+  // It is a command that cannot be undone. It refuses leftover arguments, so that only the front part of a path with unquoted spaces is taken and a wider folder is not handled.
   if (args.length > 1) throw new fc.FcError(`Only one target is accepted. Wrap paths that contain spaces in quotes: ${args.join(' ')}`);
-  // C:는 드라이브 루트가 아니라 그 드라이브의 현재 폴더를 뜻해서, 뜻과 다른 폴더를 다룰 수 있다.
+  // C: means not the drive root but the current folder of that drive, so a folder different from the intended one could be handled.
   if (/^[A-Za-z]:(?![\\/])/.test(args[0])) throw new fc.FcError(`Write a path after the drive letter: ${args[0]}`);
   if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command} never overwrites or permanently deletes, so --force and --permanent cannot be used.`);
 }
@@ -81,13 +81,13 @@ function formatList(entries) {
     .join('\n');
 }
 
-// argv를 실행해 결과를 돌려준다.
-// - 도움말을 원하면 { help: true }.
-// - 아니면 { command, result, report, failure }. result는 함수가 돌려준 값 그대로, report는 CLI가 출력할 글자,
-//   failure는 일부가 실패해 CLI가 실패(종료 코드 1)로 끝내야 할 때의 FcError다(err.output이 있으면 표준 출력으로 낼 보고).
-// 인자 오류나 실행 중 예외는 그대로 던진다. 모르는 명령은 err.unknownCommand가 true인 FcError다.
-// progress(line)를 주면 오래 걸리는 명령(flatten, remove-broken)이 끝나기 전에도 한 일을 한 줄씩 넘긴다(#67, #99).
-// readStdin()은 write·append에 내용이 없을 때 부른다.
+// It runs argv and returns the result.
+// - If help is wanted, { help: true }.
+// - Otherwise { command, result, report, failure }. result is the value the function returned as is, report is the text the CLI prints,
+//   and failure is the FcError for when part failed and the CLI must end as a failure (exit code 1) (if err.output exists, the report to print on standard output).
+// An argument error or an exception during the run is thrown as is. An unknown command is an FcError whose err.unknownCommand is true.
+// If progress(line) is given, long-running commands (flatten, remove-broken) pass on what they did, one line at a time, even before they finish (#67, #99).
+// readStdin() is called when write and append have no content.
 function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
@@ -95,7 +95,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
 
   rejectUnknownOptions(command, unchecked, flags);
   if (!command || flags.has('help')) return { help: true };
-  // 원본을 지우는 옵션이므로 다른 명령에서 말없이 무시하지 않는다.
+  // It is an option that deletes the originals, so other commands do not silently ignore it.
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives can be used only with extract-all.');
   const removing = command === 'remove-broken' || command === 'remove-duplicates' || command === 'remove-low-quality';
   if (flags.has('yes') && !removing) throw new fc.FcError('--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality.');
@@ -105,7 +105,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
   }
 
   const done = (result, report = result, failure = undefined) => ({ command, result, report, failure });
-  // 일부가 실패하면 한 일까지 보여 주고 실패로 끝낸다.
+  // If part fails, it shows what was done and ends as a failure.
   const failIf = (failed, result, report) => done(result, report, failed ? new fc.FcError(report) : undefined);
 
   switch (command) {
@@ -119,7 +119,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     case 'write':
     case 'append':
       need(args, 1, `${command} <file> [content]`);
-      // 미리보기는 내용을 쓰지 않으므로 표준 입력을 기다리지 않는다.
+      // In a preview, no content is written, so it does not wait for standard input.
       return done(fc.writeFile(args[0], args.length > 1 ? args.slice(1).join(' ') : dryRun ? '' : readStdin(), {
         append: command === 'append',
         force,
@@ -160,30 +160,30 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     case 'product-number': {
       checkWholeTarget(command, args, flags);
       const result = addProductNumbers(args[0], { dryRun });
-      // 못 찾은 파일은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
+      // Files not found are enough as a report. It ends as a failure only when there is a failed file.
       return failIf(result.failed.length > 0, result, formatProductNumbers(result));
     }
     case 'normalize': {
       checkWholeTarget(command, args, flags);
       const result = normalizeFiles(args[0], { dryRun, includeLowercase: flags.has('include-lowercase') });
-      // 겹치거나 건너뛴 것은 보고로 충분하다. 실패한 파일이 있을 때만 실패로 끝낸다.
+      // Overlapping or skipped items are enough as a report. It ends as a failure only when there is a failed file.
       return failIf(result.failed.length > 0, result, formatNormalize(result));
     }
     case 'collapse': {
       checkWholeTarget(command, args, flags);
       const result = collapse(args[0], { dryRun });
-      // 건너뛴 것은 보고로 충분하다. 실패한 구간이 있을 때만 실패로 끝낸다.
+      // Skipped items are enough as a report. It ends as a failure only when there is a failed stretch.
       return failIf(result.failed.length > 0, result, formatCollapse(result));
     }
     case 'extract-all': {
       checkWholeTarget(command, args, flags);
       const result = extractArchives(args[0], { dryRun, removeArchives: flags.has('remove-archives') });
-      // 건너뛴 것은 보고로 충분하다. 풀지 못한 압축 파일이 있을 때만 실패로 끝낸다.
+      // Skipped items are enough as a report. It ends as a failure only when there is an archive that could not be extracted.
       return failIf(result.failed.length > 0, result, formatExtractions(result));
     }
     case 'find-broken': {
       checkWholeTarget(command, args, flags);
-      // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      // Found files are enough as a report. It does not touch files, so --dry-run gives the same result.
       const result = findBroken(args[0]);
       return done(result, formatBroken(result));
     }
@@ -196,11 +196,11 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
         'remove-duplicates': [removeDuplicates, formatRemoveDuplicates],
         'remove-low-quality': [removeLowQuality, formatRemoveLowQuality],
       }[command];
-      // 저화질 기준 값은 find-low-quality와 같게 글자 그대로 넘긴다. 다른 명령에서는 위에서 거부했다.
-      // 진행 표시는 remove-broken만 낸다(#99). 다른 두 명령은 받지 않는다.
+      // The low-quality standard values are passed on literally, the same as find-low-quality. Other commands were refused above.
+      // Only remove-broken prints progress (#99). The other two commands do not accept it.
       const result = remover(args[0], { dryRun, confirm, minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate'), onProgress: progress });
       const report = format(result);
-      // 실패해도 옮긴 파일의 보고는 표준 출력으로 낸다. 남기거나 건너뛴 것은 보고로 충분하다.
+      // Even on failure, the report of the files that were moved goes to standard output. Kept or skipped items are enough as a report.
       const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
       if (result.failed.length > 0) return fail(`${result.failed.length} files could not be sent to the Recycle Bin.`);
       if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted. Check the new list.');
@@ -209,14 +209,14 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'find-duplicates': {
       checkWholeTarget(command, args, flags);
-      // 찾은 묶음은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      // Found groups are enough as a report. It does not touch files, so --dry-run gives the same result.
       const result = findDuplicateNames(args[0]);
       return done(result, formatDuplicateNames(result));
     }
     case 'find-low-quality': {
       checkWholeTarget(command, args, flags);
-      // 값은 글자 그대로 넘겨 lowQualityCriteria가 검사한다. 정수가 아니면(abc, 1.5, 빈 값) 받은 값을 밝혀 거부한다.
-      // 찾은 파일은 보고로 충분하다. 파일을 건드리지 않으므로 --dry-run은 결과가 같다.
+      // The value is passed literally and lowQualityCriteria checks it. If it is not an integer (abc, 1.5, an empty value), it refuses and states the value it received.
+      // Found files are enough as a report. It does not touch files, so --dry-run gives the same result.
       const result = findLowQuality(args[0], { minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate') });
       return done(result, formatLowQuality(result));
     }

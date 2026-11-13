@@ -1,8 +1,8 @@
 'use strict';
 
-// 결과 객체를 JSON으로 옮길 수 있는 값으로 바꾼다(#253).
-// Error → { name, message, code, ... }, Set → 배열, Map → [키, 값] 배열, BigInt → 글자, Buffer → 글자(utf8),
-// Date → ISO 글자, undefined·함수·심볼은 객체 안에서는 빼고 배열 안에서는 null로 둔다. 같은 객체를 다시 만나면 '[순환]'으로 둔다.
+// It turns a result object into a value that can be carried as JSON (#253).
+// Error -> { name, message, code, ... }, Set -> array, Map -> [key, value] array, BigInt -> string, Buffer -> string (utf8),
+// Date -> ISO string, undefined, functions, and symbols are dropped inside an object and left as null inside an array. If it meets the same object again, it leaves '[circular]'.
 function toPlain(value, seen = new Set()) {
   if (value === null) return null;
   switch (typeof value) {
@@ -26,7 +26,7 @@ function toPlain(value, seen = new Set()) {
     if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
     if (Buffer.isBuffer(value)) return value.toString('utf8');
     if (value instanceof Error) {
-      // FcError처럼 name을 바꾸지 않은 하위 클래스도 화면에서 구분할 수 있게 클래스 이름을 쓴다.
+      // It uses the class name so that subclasses that did not change name, like FcError, can also be told apart on the screen.
       const name = value.name === 'Error' && value.constructor && value.constructor.name ? value.constructor.name : value.name;
       const plain = { name, message: value.message };
       for (const key of Object.keys(value)) {
@@ -45,7 +45,7 @@ function toPlain(value, seen = new Set()) {
     }
     return plain;
   } finally {
-    // 같은 객체가 여러 곳에 나오는 것(순환이 아닌 공유)은 그대로 옮긴다.
+    // An object that appears in several places (sharing, not a cycle) is carried as it is.
     seen.delete(value);
   }
 }

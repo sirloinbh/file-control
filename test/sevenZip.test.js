@@ -1,6 +1,6 @@
 'use strict';
 
-// .7z 헤더 읽기(#198)의 단위 테스트.
+// Unit test of the .7z header reading (#198).
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -27,7 +27,7 @@ test('tar.exe가 만든 7z(LZMA로 압축된 헤더)의 이름·크기·폴더�
   fs.writeFileSync(path.join(source, 'a.txt'), 'hello');
   fs.writeFileSync(path.join(source, 'empty.txt'), '');
   fs.writeFileSync(path.join(source, 'sub', 'b.txt'), 'bb');
-  // 이름이 많으면 LZMA의 반복 일치를 많이 거친다.
+  // With many names, it goes through many LZMA repeat matches.
   for (let i = 0; i < 200; i += 1) fs.writeFileSync(path.join(source, 'sub', `many-${i}.txt`), String(i));
   for (const options of [[], ['--options', '7zip:compression=store'], ['--options', '7zip:compression=bzip2'], ['--options', '7zip:compression=lzma2']]) {
     const file = path.join(dir, `a${options.length}.7z`);
@@ -41,7 +41,7 @@ test('tar.exe가 만든 7z(LZMA로 압축된 헤더)의 이름·크기·폴더�
     assert.deepStrictEqual(byName['empty.txt'], { name: 'empty.txt', size: 0, folder: false });
     assert.deepStrictEqual(byName.sub, { name: 'sub', size: 0, folder: true });
     assert.deepStrictEqual(byName['sub/many-150.txt'], { name: 'sub/many-150.txt', size: 3, folder: false });
-    // 시작 헤더나 헤더 바이트가 하나라도 바뀌면 CRC로 걸린다. (압축된 헤더 끝의 LZMA 마무리 바이트는 풀린 결과에 영향이 없어 넣지 않는다.)
+    // If even one byte of the start header or the header changes, it is caught by the CRC. (The LZMA finishing byte at the end of the compressed header does not affect the decoded result, so it is not included.)
     const headerAt = 32 + Number(data.readBigUInt64LE(12));
     for (const at of [headerAt + 3, headerAt + 1, 10, 30]) {
       const bad = Buffer.from(data);
@@ -57,9 +57,9 @@ test('직접 만든 7z: UTF-16 이름을 읽고, CRC가 없거나 목록에 없�
     { name: '한글.txt', size: 3, folder: false }, { name: 'dir', size: 0, folder: true }, { name: 'dir/x.txt', size: 2, folder: false }, { name: 'e.txt', size: 0, folder: false },
   ]);
   assert.match(scan(sevenZipBuffer(files, { crc: false })).reason, /has no CRC/);
-  // 항목 CRC 없이 폴더 CRC만 있으면 libarchive가 검사하지 않으므로 CRC 없음으로 본다(1차 리뷰).
+  // If there is only a folder CRC and no entry CRC, libarchive does not check, so it is seen as no CRC (first review).
   assert.match(scan(sevenZipBuffer([{ name: 'x.txt', data: 'hello' }], { folderCrcOnly: true })).reason, /has no CRC/);
-  // 항목 수가 남은 헤더 길이로 가능한 수를 넘으면 큰 배열을 만들기 전에 거부한다.
+  // If the entry count exceeds what the remaining header length allows, it refuses before building a large array.
   assert.match(scan(sevenZipBuffer(files, { mutateHeader: (header) => {
     const at = header.lastIndexOf(Buffer.from([0x05, files.length]));
     return Buffer.concat([header.subarray(0, at + 1), Buffer.from([0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]), header.subarray(at + 2)]);
@@ -68,15 +68,15 @@ test('직접 만든 7z: UTF-16 이름을 읽고, CRC가 없거나 목록에 없�
   assert.match(scan(Buffer.concat([sevenZipBuffer(files), Buffer.from('z')])).reason, /after the end of the 7z/);
   assert.match(scan(sevenZipBuffer(files).subarray(0, 40)).reason, /after the end of the 7z|ends prematurely/);
   assert.match(scan(Buffer.from('not 7z at all, just text that is long enough')).reason, /does not start as a 7z/);
-  // 헤더 CRC는 맞지만 내용이 틀린 헤더(다음 헤더 CRC를 다시 계산)
+  // A header whose CRC is right but whose content is wrong (the next-header CRC is recomputed)
   const broken = sevenZipBuffer(files, { mutateHeader: (header) => header.subarray(0, header.length - 3) });
   assert.ok(scan(broken).reason);
-  // CRC는 있지만 지우기 표시(anti) 항목
+  // It has a CRC but has an erase marker (anti) entry
   assert.match(scan(sevenZipBuffer(files, { anti: true })).reason, /marked as deleted/);
-  // 같은 데이터를 헤더 압축 없이(COPY) EncodedHeader로 감싼 것도 읽는다.
+  // It also reads the same data wrapped in an EncodedHeader without header compression (COPY).
   assert.strictEqual(scan(sevenZipBuffer(files, { encoded: true })).entries.length, 4);
   assert.match(scan(sevenZipBuffer(files, { encoded: true, encodedCrc: false })).reason, /header has no CRC/);
-  // 헤더 크기 0 등 시작 헤더 값이 맞지 않는 파일
+  // A file whose start header values do not fit, such as a header size of 0
   assert.ok(scan(Buffer.alloc(32)).reason);
 });
 
@@ -85,13 +85,13 @@ test('헤더가 LZMA2로 압축된 큰 7z(압축된 헤더가 64KB를 넘어 여
   const dir = tempDir();
   const source = path.join(dir, 'many');
   fs.mkdirSync(source);
-  // 이름을 무작위로 해 압축이 덜 되게 한다. 압축된 헤더가 LZMA2 청크 한도(64KB)를 넘는다.
+  // Names are randomized so that they compress less. The compressed header exceeds the LZMA2 chunk limit (64KB).
   const names = Array.from({ length: 3000 }, () => `${crypto.randomBytes(21).toString('hex')}.t`);
   for (const name of names) fs.writeFileSync(path.join(source, name), '');
   const file = path.join(dir, 'many.7z');
   execFileSync(SYSTEM_TAR, ['-a', '-cf', file, '--options', '7zip:compression=lzma2', '-C', dir, 'many']);
   const data = fs.readFileSync(file);
-  // 파일 내용이 비어 있으므로 파일 크기가 거의 압축된 헤더 크기다. 64KB를 넘어야 청크가 여러 개다.
+  // The file content is empty, so the file size is almost the compressed header size. It must exceed 64KB for there to be several chunks.
   assert.ok(data.length > 70000, String(data.length));
   const result = scan(data);
   assert.strictEqual(result.reason, undefined, String(result.reason));
@@ -113,27 +113,27 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
       return err.message;
     }
   };
-  // 끝 표시(0x00)가 없다.
+  // There is no end marker (0x00).
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok.subarray(0, ok.length - 1), 11)), /ends prematurely/);
-  // 첫 청크가 사전을 재설정하지 않는다.
+  // The first chunk does not reset the dictionary.
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x02, a), Buffer.from([0x00])]), 6)), /is damaged/);
-  // 속성을 정하지 않은 LZMA 청크
+  // An LZMA chunk that does not set the properties
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([plain(0x01, a), Buffer.from([0x80, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0x00])]), 7)), /is damaged/);
-  // 풀린 크기가 헤더 크기를 넘는 청크와 잘못된 제어 바이트
+  // A chunk whose decoded size exceeds the header size, and a wrong control byte
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 5)), /is damaged/);
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0x03, 0, 0, 0x41, 0x00]), 1)), /is damaged/);
   assert.match(reason(() => lzma2Decode(Buffer.from([41]), ok, 11)), /LZMA2 settings/);
-  // 풀린 크기보다 일찍 끝난다.
+  // It ends earlier than the decoded size.
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), ok, 12)), /ends prematurely/);
-  // lc+lp가 4를 넘는 LZMA2 속성(lc=8, lp=4)은 받지 않는다(1차 리뷰: 상태 재설정마다 큰 표를 채워 매우 느려짐).
+  // LZMA2 properties with lc+lp over 4 (lc=8, lp=4) are not accepted (first review: every state reset fills a large table, making it very slow).
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.from([0xe0, 0, 0, 0, 4, 44, 0, 0, 0, 0, 0, 0x00]), 1)), /LZMA2 settings/);
-  // xz --format=raw --lzma2=lc=4,lp=0,pb=0로 만든 'hello hello hello world'. 앞에 0xFF로 끝나는 압축하지 않은 청크를 두고
-  // LZMA 청크가 사전을 재설정하면 첫 리터럴의 앞 바이트는 0으로 본다(1차 리뷰).
+  // 'hello hello hello world' made with xz --format=raw --lzma2=lc=4,lp=0,pb=0. With an uncompressed chunk ending in 0xFF in front
+  // and an LZMA chunk that resets the dictionary, the byte before the first literal is seen as 0 (first review).
   const raw = Buffer.from('e0001600100400341a154118b89b3e4fc54dd75df64d0000', 'hex');
   assert.strictEqual(lzma2Decode(Buffer.from([0x10]), raw, 23).toString(), 'hello hello hello world');
   const after = lzma2Decode(Buffer.from([0x10]), Buffer.concat([Buffer.from([0x01, 0x00, 0x01, 0x41, 0xff]), raw]), 25);
   assert.strictEqual(after.subarray(2).toString(), 'hello hello hello world');
-  // 압축된 크기보다 덜 읽고 끝나는 청크(압축된 크기를 1 늘림)
+  // A chunk that ends after reading less than its compressed size (compressed size increased by 1)
   const loose = Buffer.from(raw);
   loose.writeUInt16BE(loose.readUInt16BE(3) + 1, 3);
   assert.match(reason(() => lzma2Decode(Buffer.from([0x10]), Buffer.concat([loose.subarray(0, loose.length - 1), Buffer.from([0x00, 0x00])]), 23)), /is damaged/);
@@ -141,11 +141,11 @@ test('lzma2Decode는 압축하지 않은 청크를 잇고, 구조가 어긋난 �
 
 test('lzma2Decode는 압축하지 않은 청크(0x02) 뒤의 상태 재설정 없는 LZMA 청크(0x80)를 xz처럼 이어서 푼다 (#222 2차 리뷰)', () => {
   const crypto = require('node:crypto');
-  // xz --format=raw --lzma2=preset=6로 'abcdefghij'를 22만 번 반복한 것을 묶은 스트림(청크 0xFF, 0x81).
+  // A stream that bundles 'abcdefghij' repeated 220,000 times with xz --format=raw --lzma2=preset=6 (chunks 0xFF, 0x81).
   const stream = Buffer.from('ffff1a01775d00309888983ecbe26f34b352b73046111cd3e4d363f4dd2d4092a4a96357b6033b217e06eae7679f95f1bb53cc6ea748c86626a30487599a0984bab3f27bdb2537bda25944808b1e8fa29bc79a57cc3a3bcfd151c7a9430b18918856ac997b0cb323cf4c047dd57af33e14536276ac59e4e55b0508f9c7daadfcfb522b74cd1e5b2042f9dd533df82964093b80cb2a6cdfb53bf0c4bd2e5faa0f3e4b664290130eff1093f8717859f80bcdff9528460fa9fc7cdefb9a302e56c08f85f38381c065c42553f8f591363105a5b0ee6fc1704d470cd19111aaad601dbaceb127185c5986e9665258bee976ac59e4e55b0508f9c7daadfcfb522b74cd1e5b2042f9dd533df82964093b80cb2a6cdfb53bf0c4bd2e5faa0f3e4b664290130eff1093f8717859f80bcdff9528460fa9fc7cdefb9a302e56c08f85f38381c065c42553f8f591363105a5b0ee6fc1704d470cd19111aaad601dbaceb127185c5986e9665258bee976ac59e4e55b0508f9c7daadfcfb522b74b325ff628192a4001400ec7353a7fdbeae7c311a9fb78d31625b83bf000000', 'hex');
   const text = Buffer.from('abcdefghij'.repeat(220000));
   assert.ok(lzma2Decode(Buffer.from([0x16]), stream, text.length).equals(text));
-  // 두 청크 사이에 0x02 청크('XYZ')를 끼운다. xz -dc의 결과(2,200,003바이트)와 SHA-256이 같아야 한다.
+  // It inserts a 0x02 chunk ('XYZ') between the two chunks. The result must match the xz -dc result (2,200,003 bytes) and the SHA-256.
   const mid = Buffer.concat([stream.subarray(0, 382), Buffer.from([0x02, 0x00, 0x02, 0x58, 0x59, 0x5a]), stream.subarray(382)]);
   const out = lzma2Decode(Buffer.from([0x16]), mid, text.length + 3);
   assert.strictEqual(crypto.createHash('sha256').update(out).digest('hex'), '7a8d8bbc9771088f46bc641dc93e56c8b299435bc99910ee92919d44f8c0543d');

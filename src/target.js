@@ -7,14 +7,14 @@ const path = require('node:path');
 const { FcError, rejectHardLinkedWrite } = require('./commands');
 const { WINDOWS_DEVICE_NAME, deviceNamePattern } = require('./windowsNames');
 
-// 타겟 디렉토리를 실제 절대경로로 정규화한다. 없거나 폴더가 아니면 오류를 낸다.
-// 보호 경로 안이거나 보호 경로를 품은 폴더(C:\, 사용자 폴더 등)도 거부한다.
+// It normalizes the target directory to a real absolute path. If it does not exist or is not a folder, it raises an error.
+// It also refuses a folder that is inside a protected path or contains a protected path (C:\, the user folder, and so on).
 function resolveTarget(dir) {
   if (typeof dir !== 'string' || dir.trim() === '') throw new FcError('Specify a target folder.');
   if (dir.includes('\0')) throw new FcError('The target path contains a NUL character.');
   const abs = path.resolve(dir);
   rejectNetworkPath(abs);
-  // System Volume Information·Recovery·다른 사용자의 AppData처럼 볼 권한이 없는 폴더는 확인할 수 없어 받지 않는다.
+  // A folder you have no permission to see, such as System Volume Information, Recovery, and another user's AppData, cannot be checked, so it is not accepted.
   const unreadable = (err) => new FcError(`Cannot use the target folder because it cannot be checked: ${abs} (${err.code ?? err.message})`);
   let stat;
   try {
@@ -24,7 +24,7 @@ function resolveTarget(dir) {
   }
   if (!stat) throw new FcError(`Target folder does not exist: ${abs}`);
   if (!stat.isDirectory()) throw new FcError(`Target is not a folder: ${abs}`);
-  // 대소문자·8.3 짧은 이름·드라이브 문자 표기를 실제 경로 하나로 맞춘다.
+  // It matches case, 8.3 short names, and drive letter spelling to one real path.
   let target;
   try {
     target = fs.realpathSync.native(abs);
@@ -38,8 +38,8 @@ function resolveTarget(dir) {
   return target;
 }
 
-// UNC·네트워크 경로(\\server\share, \\localhost\C$ 등)는 보호 경로를 우회할 수 있어 타겟으로 받지 않는다.
-// \\?\C:\처럼 로컬 드라이브를 가리키는 긴 경로 접두어만 허용한다.
+// UNC and network paths (\\server\share, \\localhost\C$, and so on) can bypass protected paths, so they are not accepted as a target.
+// It allows only long path prefixes that point to a local drive, such as \\?\C:\.
 function rejectNetworkPath(p) {
   if (process.platform !== 'win32') return;
   if (p.startsWith('\\\\') && !/^\\\\\?\\[A-Za-z]:/.test(p)) {
@@ -47,8 +47,8 @@ function rejectNetworkPath(p) {
   }
 }
 
-// Node는 끝의 점·공백을 글자 그대로 보지만 PowerShell·tar.exe·.NET은 지운다.
-// AppData. 같은 폴더를 타겟으로 받으면 그 도구들에서는 AppData가 되어 보호 경로를 우회한다.
+// Node sees a trailing dot or space literally, but PowerShell, tar.exe, and .NET remove it.
+// AppData. If the same folder is accepted as the target, it becomes AppData in those tools and bypasses the protected path.
 const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
 
 function rejectTrailingDotOrSpace(target) {
@@ -57,7 +57,7 @@ function rejectTrailingDotOrSpace(target) {
   if (name !== undefined) throw new FcError(`Cannot use a folder whose name ends with a dot or space as the target: ${target}`);
 }
 
-// 보호 기준 경로를 타겟과 같은 방식(실제 경로)으로 맞춘다. 없는 경로면 그대로 쓴다.
+// It aligns the protected reference paths the same way as the target (real path). If the path does not exist, it uses it as is.
 function realOrResolved(p) {
   try {
     return fs.realpathSync.native(p);
@@ -66,9 +66,9 @@ function realOrResolved(p) {
   }
 }
 
-// Windows 시스템 폴더. 환경 변수가 없거나 절대경로가 아니면 기본 위치를 쓴다.
-// 32비트 Node에서는 ProgramFiles가 x86 폴더를 가리키므로 64비트 폴더는 ProgramW6432로 따로 본다.
-// C:\Users\All Users는 ProgramData를 가리키는 링크라 실제 경로로 맞추면 ProgramData에 걸린다(#50).
+// Windows system folders. If the environment variable is missing or not an absolute path, it uses the default location.
+// In 32-bit Node, ProgramFiles points to the x86 folder, so the 64-bit folder is looked at separately with ProgramW6432.
+// C:\Users\All Users is a link that points to ProgramData, so aligning to the real path lands on ProgramData (#50).
 function systemRoots() {
   if (process.platform !== 'win32') return [];
   const env = process.env;
@@ -84,11 +84,11 @@ function systemRoots() {
   ].map(realOrResolved);
 }
 
-// 드라이브마다 루트에 있는 시스템 숨김 폴더(휴지통, 복원 지점). 이름은 대소문자가 섞여 나온다(C:\$Recycle.Bin, D:\$RECYCLE.BIN).
+// The system hidden folders at the root of each drive (the Recycle Bin, restore points). The names come out in mixed case (C:\$Recycle.Bin, D:\$RECYCLE.BIN).
 const DRIVE_SYSTEM_FOLDERS = ['$recycle.bin', 'system volume information'];
 
-// 드라이브 루트는 언제든 휴지통이 생길 수 있어(처음 rm할 때) 있는지와 상관없이 막는다.
-// 폴더에 연결한 볼륨(C:\mnt\vol)의 루트는 알아보지 못한다.
+// A drive root can get a Recycle Bin at any time (on the first rm), so it is blocked regardless of whether it exists.
+// It does not recognize the root of a volume mounted on a folder (C:\mnt\vol).
 function driveSystemReason(target) {
   if (process.platform !== 'win32') return null;
   const { root } = path.parse(target);
@@ -98,10 +98,10 @@ function driveSystemReason(target) {
   return null;
 }
 
-// 프로필 폴더(C:\Users) 아래의 다른 프로필. Public은 일반 공유 폴더라 허용하고,
-// Default는 새 사용자의 원본 프로필이라 통째로 막는다. 다른 사용자는 현재 사용자처럼 프로필 자신과 숨김 설정 폴더를 막는다.
-// 프로필 폴더는 PUBLIC(C:\Users\Public)의 상위로 알아낸다. 사용자 폴더가 그 바로 아래에 있을 때만 이 규칙을 쓴다.
-// 사용자 폴더를 다른 곳으로 옮긴 경우에는 그 형제 폴더를 다른 사용자로 잘못 보지 않기 위해서다.
+// Other profiles under the profile folder (C:\Users). Public is an ordinary shared folder, so it is allowed, and
+// Default is the original profile of new users, so it is blocked as a whole. For other users, like the current user, the profile itself and the hidden settings folders are blocked.
+// The profile folder is found as the parent of PUBLIC (C:\Users\Public). This rule is used only when the user folder is directly under it.
+// This is so that, when the user folder was moved elsewhere, its sibling folders are not wrongly seen as other users.
 function profilesDir() {
   const env = process.env;
   const systemDrive = /^[A-Za-z]:$/.test(env.SystemDrive ?? '') ? env.SystemDrive : 'C:';
@@ -112,7 +112,7 @@ function profilesDir() {
 function otherProfileReason(target, home) {
   if (process.platform !== 'win32') return null;
   const profiles = profilesDir();
-  // path.relative는 Windows에서 대소문자를 구분하지 않는다.
+  // path.relative is case-insensitive on Windows.
   if (profiles === path.parse(profiles).root || path.relative(profiles, path.dirname(home)) !== '' || !isInside(profiles, target)) return null;
   const rel = path.relative(profiles, target);
   if (rel === '') return null;
@@ -137,12 +137,12 @@ function homeDir() {
   return realOrResolved(home);
 }
 
-// 사용자 폴더 바로 아래의 숨김 설정 폴더(.ssh, .config 등 점으로 시작하는 폴더와 AppData)인지 본다.
+// It checks whether it is a hidden settings folder directly under the user folder (a folder starting with a dot such as .ssh and .config, and AppData).
 function isHiddenSettings(name) {
   return name.startsWith('.') || name.toLowerCase() === 'appdata';
 }
 
-// 타겟이 보호 경로와 겹치면 이유를, 아니면 null을 돌려준다.
+// If the target overlaps a protected path, it returns the reason; otherwise null.
 function protectedReason(target) {
   for (const root of systemRoots()) {
     if (isInside(root, target)) return `system folder ${root}`;
@@ -160,8 +160,8 @@ function protectedReason(target) {
   return otherProfileReason(target, home);
 }
 
-// p(타겟 기준 상대경로 또는 절대경로)가 타겟 자신이거나 그 안이면 true.
-// Windows에서는 대소문자를 구분하지 않고, 다른 드라이브는 밖으로 본다. 링크는 따지지 않는다.
+// True if p (a path relative to the target or an absolute path) is the target itself or inside it.
+// On Windows it is case-insensitive, and another drive is seen as outside. Links are not considered.
 function isInside(target, p) {
   const rel = path.relative(target, path.resolve(target, p));
   if (rel === '') return true;
@@ -169,14 +169,14 @@ function isInside(target, p) {
   return rel !== '..' && !rel.startsWith(`..${path.sep}`);
 }
 
-// p를 타겟 기준 절대경로로 바꾼다. 타겟 밖이면 오류를 낸다.
+// It turns p into an absolute path relative to the target. If it is outside the target, it raises an error.
 function resolveInside(target, p) {
   const abs = path.resolve(target, p);
   if (!isInside(target, abs)) throw new FcError(`Path is outside the target folder: ${abs} (target: ${target})`);
   return abs;
 }
 
-// 있는 경로의 링크·정션을 풀어낸 실제 경로를 돌려준다. 실제 경로가 타겟 밖이면 오류를 낸다.
+// It returns the real path of an existing path with links and junctions resolved. If the real path is outside the target, it raises an error.
 function realInside(target, abs) {
   let real;
   try {
@@ -185,14 +185,14 @@ function realInside(target, abs) {
     if (err.code === 'ENOENT') throw new FcError(`Path does not exist or is a broken link: ${abs}`);
     throw err;
   }
-  // 둘 다 실제 경로이므로 글자 그대로 비교한다. isInside의 대소문자 무시는 NTFS보다 넓어서(K와 U+212A) 형제 폴더를 안으로 본다.
+  // Both are real paths, so they are compared literally. The case-insensitivity of isInside is wider than NTFS (K and U+212A), so it would see a sibling folder as inside.
   const prefix = target.endsWith(path.sep) ? target : target + path.sep;
   if (real !== target && !real.startsWith(prefix)) throw new FcError(`Path points outside the target folder through a link: ${abs} -> ${real}`);
   return real;
 }
 
-// 타겟 안의 파일을 찾아 실제 경로를 돌려준다. target은 resolveTarget이 돌려준 경로여야 한다.
-// 경로 문자열뿐 아니라 링크·정션을 풀어낸 실제 경로도 타겟 안이어야 한다.
+// It finds a file inside the target and returns its real path. target must be the path that resolveTarget returned.
+// Not only the path string but also the real path with links and junctions resolved must be inside the target.
 function resolveFileInside(target, p) {
   const abs = resolveInside(target, p);
   const real = realInside(target, abs);
@@ -200,10 +200,10 @@ function resolveFileInside(target, p) {
   return real;
 }
 
-// Node는 이름을 글자 그대로 쓰지만 PowerShell·tar.exe·.NET은 끝의 점과 공백을 지우고 스트림(:)과 장치 이름을 따로 해석한다.
-// 검사한 경로와 실제 작업 경로가 달라지지 않게 이런 이름과 Windows에서 쓸 수 없는 문자가 든 이름은 거부한다.
+// Node uses names literally, but PowerShell, tar.exe, and .NET remove a trailing dot and space and interpret streams (:) and device names separately.
+// So that the checked path and the real work path do not diverge, it refuses such names and names that contain characters unusable on Windows.
 const WINDOWS_BAD_CHARS = /[:<>"|?*\x00-\x1f]/;
-// 장치 이름 규칙은 기본 명령(src/commands.js)과 함께 쓰려고 windowsNames.js에 둔다(#53, #135).
+// The device name rule is placed in windowsNames.js to be shared with the basic commands (src/commands.js) (#53, #135).
 
 function rejectAmbiguousNames(rel, p) {
   if (process.platform !== 'win32') return;
@@ -211,24 +211,24 @@ function rejectAmbiguousNames(rel, p) {
   if (name !== undefined) throw new FcError(`Name may be interpreted differently on Windows: ${JSON.stringify(name)} (${p})`);
 }
 
-// 타겟 기준으로 정리한 절대경로를 돌려준다. 타겟 밖이거나 Windows에서 해석이 갈리는 이름이면 오류를 낸다.
+// It returns an absolute path normalized against the target. If it is outside the target or a name that Windows interprets in different ways, it raises an error.
 function resolveAccessPath(target, p) {
   const abs = resolveInside(target, p);
-  // path.relative는 K와 U+212A를 같게 보므로, 그런 형제 폴더의 경로가 타겟 안 다른 파일로 바뀌지 않게 한다.
+  // path.relative sees K and U+212A as the same, so it keeps the path of such a sibling folder from turning into another file inside the target.
   if (abs.slice(0, target.length).toUpperCase() !== target.toUpperCase()) throw new FcError(`Path is outside the target folder: ${abs} (target: ${target})`);
   const rel = path.relative(target, abs);
   rejectAmbiguousNames(rel, p);
   return path.join(target, rel);
 }
 
-// 링크를 풀어낸 실제 경로에도 같은 이름 검사를 한다. 입력은 평범해도 정션을 거쳐 그런 이름이 나올 수 있다.
+// It runs the same name check on the real path with links resolved. Even if the input is ordinary, such a name can come out through a junction.
 function realForAccess(target, abs) {
   const real = realInside(target, abs);
   rejectAmbiguousNames(path.relative(target, real), real);
   return real;
 }
 
-// tar·cpSync·압축 해제는 폴더 안의 정션을 따라가므로, 링크가 든 폴더는 어떤 작업에도 내주지 않는다.
+// tar, cpSync, and extraction follow junctions inside a folder, so a folder that holds a link is not handed to any work.
 function rejectLinksInside(real, abs) {
   if (!fs.statSync(real).isDirectory()) return;
   const link = listEntries(real).find((entry) => entry.type === 'link');
@@ -242,8 +242,8 @@ function checkRead(target, p) {
   return real;
 }
 
-// 아직 없는 경로도 쓸 수 있으므로, 가장 가까운 있는 경로까지 올라가 그 실제 경로를 확인한다.
-// 끊어진 링크는 있는 경로로 잡혀 거부된다. 그대로 쓰면 링크가 가리키는 타겟 밖에 파일이 생기기 때문이다.
+// A path that does not exist yet can also be used, so it goes up to the nearest path that exists and checks that real path.
+// A broken link is caught as an existing path and refused. If used as is, a file would be created outside the target that the link points to.
 function checkWrite(target, p) {
   const abs = resolveAccessPath(target, p);
   let existing = abs;
@@ -252,7 +252,7 @@ function checkWrite(target, p) {
   if (existing === abs) {
     if (real === target) throw new FcError(`Cannot write to the target folder itself: ${abs}`);
     rejectLinksInside(real, abs);
-    // 하드링크는 경로로 타겟 밖 파일과 구분할 수 없다. 읽기·삭제는 그대로 두고, 내용을 바꾸는 쓰기만 거부한다(#48).
+    // A hard link cannot be told by path from a file outside the target. Reading and deleting are left as they are, and only writes that change the content are refused (#48).
     rejectHardLinkedWrite(real);
     return real;
   }
@@ -260,7 +260,7 @@ function checkWrite(target, p) {
   return path.join(real, path.relative(existing, abs));
 }
 
-// 링크 자체는 지우지 않는다. 휴지통 등 삭제 방식에 따라 링크를 따라갈 위험을 피한다.
+// The link itself is not deleted. This avoids the risk of following the link, depending on the deletion method such as the Recycle Bin.
 function checkDelete(target, p) {
   const abs = resolveAccessPath(target, p);
   const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
@@ -277,10 +277,10 @@ const ACCESS = {
   delete: { name: 'Delete', check: checkDelete },
 };
 
-// 타겟 하나에 작업 종류('read', 'write', 'delete')별 권한을 부여한다. 보호 경로는 resolveTarget이 거부하고,
-// 타겟 안의 실제 경로는 보호 경로와 겹칠 수 없으므로 각 검사는 타겟 안인지만 본다.
-// access.read(p)·write(p)·delete(p)는 경로를 검사해 실제 작업에 쓸 경로를 돌려주고, 아무것도 바꾸지 않는다.
-// 검사와 작업 사이에 폴더가 바뀔 수 있으니 작업 직전에 호출하고, 돌려받은 경로를 그대로 쓴다.
+// It grants a target permissions per kind of work ('read', 'write', 'delete'). Protected paths are refused by resolveTarget, and
+// a real path inside the target cannot overlap a protected path, so each check looks only at whether it is inside the target.
+// access.read(p), write(p), and delete(p) check the path and return the path to use for the real work, and change nothing.
+// The folder can change between the check and the work, so call it right before the work and use the returned path as it is.
 function grant(dir, kinds) {
   if (!Array.isArray(kinds) || kinds.length === 0) throw new FcError('Specify the permissions to grant. (read, write, delete)');
   if (kinds.findIndex((kind) => typeof kind !== 'string' || !Object.hasOwn(ACCESS, kind)) !== -1) {
@@ -304,10 +304,10 @@ function grant(dir, kinds) {
   return Object.freeze(access);
 }
 
-// 한 번에 Buffer로 읽을 수 있는 최대 바이트 수 (Node 파일 읽기 한도)
+// The maximum number of bytes that can be read into a Buffer at once (Node's file read limit)
 const MAX_READ = 2 ** 31 - 1;
 
-// 타겟 안 파일의 내용 전체를 Buffer로 읽는다. MAX_READ보다 큰 파일은 readRange로 나눠 읽는다.
+// It reads the whole content of a file inside the target into a Buffer. A file larger than MAX_READ is read in parts with readRange.
 function readInside(target, p) {
   const real = resolveFileInside(target, p);
   const { size } = fs.statSync(real);
@@ -315,9 +315,9 @@ function readInside(target, p) {
   return fs.readFileSync(real);
 }
 
-// 타겟 안 파일의 offset부터 length바이트를 읽는다. 파일 끝을 넘으면 있는 만큼만 돌려준다.
-// 헤더(매직 넘버)는 offset 0으로, 컨테이너 박스처럼 중간에 있는 구조는 그 위치로 읽는다.
-// 손상된 헤더의 큰 length를 그대로 받아도 실제 파일에 있는 만큼만 메모리를 잡는다.
+// It reads length bytes from offset of a file inside the target. If it goes past the end of the file, it returns only what exists.
+// A header (magic number) is read at offset 0, and a structure in the middle, such as a container box, is read at that position.
+// Even if it receives the large length of a damaged header as is, it allocates memory only for what the real file has.
 function readRange(target, p, { offset = 0, length } = {}) {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new FcError(`Invalid offset: ${offset}`);
   if (!Number.isSafeInteger(length) || length < 0) throw new FcError(`Invalid length: ${length}`);
@@ -339,28 +339,28 @@ function readRange(target, p, { offset = 0, length } = {}) {
   }
 }
 
-// 타겟 안 파일의 크기를 바이트로 돌려준다.
+// It returns the size of a file inside the target in bytes.
 function fileSizeInside(target, p) {
   return fs.statSync(resolveFileInside(target, p)).size;
 }
 
-// 파일이 그대로인지 비교하는 값. bigint로 받은 lstat 결과를 넘긴다. 수정 시각을 되돌려도 변경 시각(ctime)이 달라진다.
+// A value for comparing whether the file is unchanged. It takes the lstat result received as bigint. Even if the modification time is set back, the change time (ctime) differs.
 function fileStamp(stat) {
   return [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
 }
 
-// 변경 시각(ctime)을 적지 않는 파일 시스템. exFAT에서는 모든 파일의 변경 시각이 같은 값으로 나와(#120)
-// 같은 크기로 다시 쓰고 수정 시각을 되돌린 파일을 fileStamp와 5분 보호로 알아보지 못한다(#184).
+// File systems that do not record the change time (ctime). On exFAT the change time of every file comes out as the same value (#120),
+// so a file rewritten with the same size and with the modification time set back cannot be recognized by fileStamp and the 5-minute protection (#184).
 const NO_CHANGE_TIME = new Set(['FAT', 'FAT12', 'FAT16', 'FAT32', 'EXFAT']);
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
-// 타겟이 있는 볼륨의 파일 시스템 이름(NTFS, ReFS, exFAT 등). 확인하지 못하면 null이다.
-// 드라이브 문자의 볼륨을 본다. 볼륨 마운트 폴더 아래는 그 폴더가 있는 드라이브의 값이 나온다.
+// The file system name (NTFS, ReFS, exFAT, and so on) of the volume where the target is. If it cannot be confirmed, it is null.
+// It looks at the volume of the drive letter. Under a volume mount folder, the value of the drive where that folder lives comes out.
 function volumeFormat(target) {
   if (process.platform !== 'win32') return null;
   const script = '[IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:FC_FORMAT_VOLUME)).DriveFormat';
   try {
-    // 테스트가 가로챌 수 있게 부를 때마다 모듈에서 찾는다.
+    // It is looked up in the module on every call so that tests can intercept it.
     const output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_FORMAT_VOLUME: path.resolve(target) },
       encoding: 'utf8',
@@ -374,8 +374,8 @@ function volumeFormat(target) {
   }
 }
 
-// fileStamp로 바꿔치기를 알아볼 수 없는 볼륨이면 지우지 않는 사유를, 알아볼 수 있으면 null을 돌려준다.
-// 파일 시스템을 확인하지 못해도 지우지 않는다.
+// If it is a volume where a swap cannot be recognized by fileStamp, it returns the reason for not deleting; if it can be recognized, null.
+// Even if the file system cannot be confirmed, it does not delete.
 function stampVolumeReason(target) {
   const format = volumeFormat(target);
   if (format === null) return 'Kept because the file system could not be checked, so a file changed after the check could not be detected.';
@@ -383,27 +383,27 @@ function stampVolumeReason(target) {
   return null;
 }
 
-// 타겟 아래를 재귀로 읽어 파일·폴더·링크 목록을 돌려준다. 타겟 자신은 넣지 않는다.
-// 심볼릭 링크와 정션은 type 'link'로만 넣고 따라 들어가지 않는다.
-// 결과는 상대경로 순으로 정렬하며, 폴더가 그 안의 항목보다 먼저 온다.
-// 하위 폴더 하나라도 읽지 못하면 전체를 실패시킨다. 일부만 읽은 목록으로 이동·삭제하지 않게 하려는 것이다.
-// 파일마다 따로 하는 작업(product-number)은 unreadable 배열을 넘기면, 읽지 못한 하위 폴더를 { path, relative, reason }으로
-// 담고 나머지를 계속 읽는다(#74). 타겟 자신을 읽지 못하거나 읽는 도중 폴더가 링크로 바뀌면 여전히 전체를 실패시킨다.
+// It reads under the target recursively and returns a list of files, folders, and links. It does not include the target itself.
+// Symbolic links and junctions are included only as type 'link' and are not followed into.
+// The result is sorted by relative path, and a folder comes before the items inside it.
+// If even one subfolder cannot be read, the whole thing fails. This is so that nothing is moved or deleted from a partly read list.
+// For work done file by file (product-number), if an unreadable array is passed, it puts the subfolders that could not be read as { path, relative, reason }
+// and keeps reading the rest (#74). If the target itself cannot be read or a folder is replaced by a link while reading, the whole thing still fails.
 function walk(dir, { unreadable } = {}) {
   const entries = listEntries(resolveTarget(dir), unreadable).sort((a, b) => compareRelative(a.relative, b.relative));
   unreadable?.sort((a, b) => compareRelative(a.relative, b.relative));
   return entries;
 }
 
-// 건너뛰고 계속해도 되는 폴더 읽기 오류. 권한 거부와, 목록을 만든 뒤 폴더가 사라졌거나 파일로 바뀐 경우다.
-// 그 밖의 오류(EMFILE, EIO 등)는 일시적이거나 원인을 알 수 없어 지금처럼 전체를 실패시킨다(1차 리뷰).
+// Folder read errors that it is fine to skip and continue past. Permission denied, and the case where a folder disappeared or became a file after the list was made.
+// Other errors (EMFILE, EIO, and so on) are temporary or of unknown cause, so the whole thing fails as before (first review).
 const SKIPPABLE_READ_ERRORS = new Set(['EPERM', 'EACCES', 'ENOENT', 'ENOTDIR']);
 
-// 하위 폴더는 목록에 올린 뒤 나중에 읽으므로, 그 사이에 폴더가 링크·정션으로 바뀌면 다른 곳을 읽게 된다(#46).
-// 읽은 뒤에 실제 경로가 그 자리 그대로인지 보고, 달라졌으면 목록을 내지 않고 오류를 낸다. 읽기 전에 바뀌어 그대로 있거나
-// 읽는 동안 바뀌면 모두 잡힌다. 읽기 전에 바꿨다가 읽은 뒤 확인 전에 되돌리는 경우는 동기 API로 막을 수 없다.
-// root는 resolveTarget이나 realInside가 돌려준 실제 경로라서, 바뀌지 않은 폴더의 실제 경로는 root와 그 아래 이름 그대로다.
-// root 자신도 확인한다. rejectLinksInside는 realInside가 막 돌려준 폴더를 root로 넘긴다.
+// Subfolders are put in the list and read later, so if a folder is replaced by a link or junction in between, a different place would be read (#46).
+// After reading, it checks whether the real path is still at that position, and if it changed, it raises an error without giving the list. Whether it changed before reading and stayed,
+// or changed while reading, both are caught. Changing it before reading and restoring it after reading and before the check cannot be blocked with a synchronous API.
+// root is a real path that resolveTarget or realInside returned, so the real path of an unchanged folder is root and the names below it as they are.
+// It also checks root itself. rejectLinksInside passes the folder that realInside just returned as root.
 function ensureUnmoved(dir) {
   let real;
   try {
@@ -441,8 +441,8 @@ function listEntries(root, unreadable) {
   return entries;
 }
 
-// 경로 조각 단위로 비교해서 'a/b'가 'a b'나 'a.txt'보다 'a' 바로 뒤에 오게 한다.
-// Windows 탐색기처럼 대소문자를 무시하고, 대소문자만 다르면 원래 문자열로 순서를 고정한다.
+// It compares by path segment so that 'a/b' comes right after 'a' rather than after 'a b' or 'a.txt'.
+// Like Windows Explorer, it ignores case, and if only the case differs, it fixes the order by the original string.
 function compareRelative(a, b) {
   const pa = a.split(path.sep);
   const pb = b.split(path.sep);

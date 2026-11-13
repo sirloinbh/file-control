@@ -7,19 +7,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-// 시험 파일이 실제 휴지통으로 가지 않도록 휴지통 호출을 가로챈다. commands.js가 불러올 때 함수를 받아 두므로 require보다 먼저 바꿔 둔다.
+// It intercepts the Recycle Bin call so that test files do not go to the real Recycle Bin. commands.js takes the function when it is imported, so it is swapped before the require.
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
-// 묶음마다 보낸 파일 수와, 묶음 결과를 직접 정하는 함수.
+// The number of files sent per batch, and a function that decides the batch result directly.
 const batches = [];
 let batchHook = null;
 let volume = () => 'True|Fixed\r\n';
 let probes = 0;
-// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+// File system check (#184). By default it answers NTFS, and each test swaps it to imitate exFAT and so on.
 let format = () => 'NTFS\r\n';
 let formatProbes = 0;
 const REAL = Symbol('실제 PowerShell 호출');
@@ -34,8 +34,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     if (volume === REAL) return realExecFileSync(file, args, options);
     return volume();
   }
-  // 묶음 휴지통 이동(#194): 줄마다 경로(UTF-16 base64)와 fileStamp를 받아 한 줄씩 결과를 낸다.
-  // onRecycle이 던지면 그 파일만 Windows의 사유(error)로 실패한 것처럼 한다. batchHook이 있으면 그것이 결과를 정한다.
+  // Batch Recycle Bin move (#194): for each line it receives the path (UTF-16 base64) and the fileStamp and emits the result one line at a time.
+  // If onRecycle throws, only that file fails as if with a Windows reason (error). If batchHook exists, it decides the result.
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     if (batchHook) return batchHook(options);
     batches.push(0);
@@ -62,7 +62,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   return Buffer.alloc(0);
 });
 
-// 생성과 변경 시각은 시험에서 되돌릴 수 없으므로, 파일을 오래전에 만든 것처럼 시계를 1시간 뒤로 옮겨 둔다.
+// The creation and change times cannot be set back in tests, so the clock is moved forward 1 hour as if the file had been made long ago.
 const HOUR = 60 * 60 * 1000;
 const realNow = Date.now;
 let skew = HOUR;
@@ -97,9 +97,9 @@ function make(dir, files) {
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const stampOf = (file) => fileStamp(fs.lstatSync(file, { bigint: true }));
 
-// 같은 크기의 다른 내용으로 다시 쓰고 시각을 되돌린다. Windows는 변경 시각을 시계 단위로 적어서
-// 같은 단위 안에 다시 쓰면 식별값이 같다(#116). 실제로는 그런 파일을 변경 시각이 방금이라 5분 보호가 남기지만,
-// 시험은 시계를 1시간 뒤로 옮겨 그 보호를 피하므로 식별값이 달라질 때까지 잠깐씩 기다리며 다시 쓴다.
+// It rewrites with different content of the same size and sets the time back. Windows writes the change time in clock ticks, so
+// a rewrite within the same tick gives the same identification value (#116). In reality such a file has a change time of just now, so the 5-minute protection keeps it,
+// but the test moves the clock forward 1 hour to avoid that protection, so it rewrites, waiting a moment each time, until the identification value differs.
 function replaceSameSize(file, content) {
   const before = stampOf(file);
   for (let tries = 0; tries < 100; tries += 1) {
@@ -112,7 +112,7 @@ function replaceSameSize(file, content) {
 }
 
 const logs = (dir) => fs.readdirSync(dir).filter((name) => REMOVAL_LOG.test(name));
-// 사람이 목록을 본 뒤 확인값을 붙여 실행하는 순서.
+// The order in which a person looks at the list and then runs with the confirmation value attached.
 const confirmed = (dir, options = {}) => removeBroken(dir, { ...options, confirm: removeBroken(dir, options).code });
 const codeIn = (report) => /--yes=([0-9a-f]+)/.exec(report)[1];
 
@@ -215,7 +215,7 @@ test('5분 기준은 가장 늦은 시각에서 잰다', () => {
 
 test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남기고 표시 파일 이름을 보고한다', () => {
   const dir = tempDir();
-  // 크기를 미리 잡고 받는 도구는 받는 중인 파일을 제 이름으로 두고 뒤를 0으로 채운다.
+  // A tool that reserves the size in advance leaves the file being downloaded under its own name and fills the back with 0.
   const ZEROS = Buffer.alloc(64);
   make(dir, {
     'x.mp4': BROKEN,
@@ -234,7 +234,7 @@ test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남
     'sub/deep.zip.ytdl': '',
     'gone.mp4': BROKEN,
   });
-  // Safari는 받는 중인 파일을 표시 폴더 안에 둔다.
+  // Safari keeps a file being downloaded inside a marker folder.
   make(dir, { 'safari.mp4.download/safari.mp4': BROKEN, 'Old.mp4.Download/old.mp4': BROKEN });
   const result = confirmed(dir);
   assert.deepStrictEqual(recycled, [path.join(dir, 'gone.mp4')]);
@@ -287,7 +287,7 @@ test('표시 파일을 보려고 폴더를 읽지 못하면 그 폴더의 깨진
   const sub = path.join(dir, 'sub');
   const realReaddir = fs.readdirSync;
   let reads = 0;
-  // 판별(walk)은 폴더를 { withFileTypes: true }로 읽으므로, 표시 파일을 보려고 이름 목록만 읽는 것을 막는다.
+  // The judgment (walk) reads folders with { withFileTypes: true }, so it blocks reading only the name list to look at marker files.
   t.mock.method(fs, 'readdirSync', function readdir(target, ...rest) {
     if (target === sub && rest.length === 0) {
       reads += 1;
@@ -461,7 +461,7 @@ test('휴지통 설정상 영구 삭제될 파일(바로 제거, 최대 크기 �
     const nuke = removeBroken(dir);
     assert.deepStrictEqual(nuke.removals, []);
     assert.ok(nuke.kept.length === 3 && nuke.kept.every((item) => /^Kept because this volume is set to remove files immediately.*permanently deleted\.$/.test(item.reason)), JSON.stringify(nuke.kept));
-    // 최대 크기 1MB: big.mp4(약 2.6MB)와 그 하드링크는 남기고 a.mp4는 지울 목록에 둔다.
+    // Maximum size 1MB: big.mp4 (about 2.6MB) and its hard link are kept and a.mp4 is put in the list to delete.
     volume = () => 'True|Fixed|0|1\r\n';
     const plan = removeBroken(dir);
     assert.deepStrictEqual(plan.removals.map((item) => path.basename(item.path)), ['a.mp4']);
@@ -514,7 +514,7 @@ for (const [name, answer, pattern] of [
     assert.strictEqual(plan.removals.length, 0);
     assert.strictEqual(plan.kept.length, 2);
     assert.ok(plan.kept.every((item) => pattern.test(item.reason)), JSON.stringify(plan.kept));
-    // 남길 파일만 남으면 확인값으로 지울 것이 없다.
+    // If only kept files remain, there is nothing to delete with the confirmation value.
     const result = removeBroken(dir, { confirm: plan.code });
     assert.deepStrictEqual(result.removed, []);
     assert.deepStrictEqual(recycled, []);
@@ -637,7 +637,7 @@ test('remove-broken은 묶음 안에서 PowerShell이 다시 본 결과(경로·
   make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN, 'c.mp4': BROKEN, 'd.mp4': BROKEN, 'e.mp4': BROKEN, 'f.mp4': BROKEN });
   const listed = removeBroken(dir);
   const status = { 'a.mp4': 'ok', 'b.mp4': 'moved', 'c.mp4': 'changed', 'd.mp4': 'notfile', 'e.mp4': 'gone' };
-  // f.mp4는 보고하기 전에 PowerShell이 끝난 것처럼 한다.
+  // It makes f.mp4 look as if PowerShell ended before reporting.
   batchHook = (options) => {
     const lines = [];
     for (const line of options.input.split('\n').filter(Boolean)) {
@@ -703,7 +703,7 @@ test('remove-broken은 묶음을 시작하지 못하면(비대화형) 그 묶음
   }
 });
 
-// 전체 경로가 length자인 파일 경로. 파일 이름이 20자 남짓 남도록 폴더 두 단계로 길이를 맞춘다.
+// A file path whose full path is length characters. It matches the length with two levels of folders so that the file name has about 20 characters left.
 function pathOfLength(dir, length, ext = '.mp4') {
   const rest = length - dir.length - 2 - 20 - ext.length;
   if (rest < 2) throw new Error('임시 폴더 경로가 너무 길어 시험할 수 없습니다: ' + dir);
@@ -753,7 +753,7 @@ test('같은 파일의 하드링크 두 이름은 하나만 지우고 다른 이
   assert.deepStrictEqual(recycled, [first.path]);
   assert.deepStrictEqual(result.failed, []);
   assert.ok(fs.existsSync(other.path));
-  // 다시 실행하면 남은 이름은 5분 동안 방금 바뀐 파일로 남고, 그 뒤에는 지운다. 시계를 1분만 옮겨 미래 시각으로 보지 않게 한다.
+  // When run again, the remaining name stays for 5 minutes as a recently changed file and is deleted after that. It moves the clock only 1 minute so it is not seen as a future time.
   skew = 60 * 1000;
   assert.deepStrictEqual(removeBroken(dir).kept, [{ path: other.path, reason: 'Kept because it changed just now and may still be downloading.' }]);
   skew = HOUR;
@@ -823,7 +823,7 @@ test('다시 실행해도 제거 기록을 깨진 파일로 보지 않는다', (
   assert.strictEqual(logs(dir).length, 1);
 });
 
-// 폴더를 옮기고 그 자리에 정션을 둔다. 파일 자체는 그대로라 식별값으로는 잡히지 않는다.
+// It moves the folder and puts a junction in its place. The file itself is unchanged, so the identification value does not catch it.
 function swapWithJunction(dir) {
   fs.renameSync(path.join(dir, 'sub'), path.join(dir, 'moved'));
   fs.symlinkSync(path.join(dir, 'moved'), path.join(dir, 'sub'), 'junction');

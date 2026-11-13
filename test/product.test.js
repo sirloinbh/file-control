@@ -199,7 +199,7 @@ test('findAttachedProductNumbers는 글자·숫자가 붙은 대문자 번호의
     ['1ABC-123.mp4', ['ABC-123']],
     ['ＡＢＣ－１２３Ａ.mp4', ['ABC-123']],
     ['ABC-123.mp4', ['ABC-123']],
-    // 날짜 꼴, 제품번호가 아닌 말, 단어 중간, 소문자, 하이픈 없는 말은 보지 않는다.
+    // Date forms, words that are not product numbers, the middle of a word, lowercase, and words without a hyphen are not looked at.
     ['ZZZ-2024-05-01.mp4', []],
     ['PIC-2024-05-01.mp4', []],
     ['CVE-2024-1234', []],

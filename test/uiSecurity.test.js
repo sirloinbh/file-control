@@ -9,12 +9,12 @@ const { MAX_BODY, SECURITY_HEADERS, RequestError, createToken, isAllowedHost, is
 
 const PORT = 8109;
 
-// 이 서버로 보낸 정상 POST 헤더. 테스트마다 일부를 바꿔 쓴다.
+// A normal POST header sent to this server. Each test changes part of it.
 function postHeaders(extra = {}) {
   return { host: `127.0.0.1:${PORT}`, origin: `http://127.0.0.1:${PORT}`, 'content-type': 'application/x-www-form-urlencoded', ...extra };
 }
 
-// 본문을 담은 가짜 요청(읽기 스트림 + method·headers).
+// A fake request that holds a body (a read stream + method and headers).
 function fakeRequest(body, { method = 'POST', headers = postHeaders() } = {}) {
   const req = Readable.from(body === '' ? [] : [Buffer.from(body)]);
   req.method = method;
@@ -22,7 +22,7 @@ function fakeRequest(body, { method = 'POST', headers = postHeaders() } = {}) {
   return req;
 }
 
-// fn이 RequestError(status)를 던지는지 본다.
+// It checks whether fn throws RequestError (status).
 function assertRejects(fn, status) {
   assert.throws(fn, (err) => err instanceof RequestError && err.status === status && typeof err.message === 'string' && err.message !== '');
 }
@@ -36,11 +36,11 @@ test('createToken은 매번 다른 256비트 base64url 토큰을 만든다 (#252
 
 test('isAllowedHost는 127.0.0.1·localhost와 서버 포트만 받는다 (#252)', () => {
   for (const host of [`127.0.0.1:${PORT}`, `localhost:${PORT}`, `LOCALHOST:${PORT}`, ` localhost:${PORT} `]) assert.strictEqual(isAllowedHost(host, PORT), true, host);
-  // DNS 재바인딩(다른 이름), 포트 없음·다른 포트, IPv6·0.0.0.0, 빈 값은 거부한다.
+  // DNS rebinding (another name), no port or another port, IPv6 and 0.0.0.0, and an empty value are refused.
   for (const host of [`evil.example:${PORT}`, `127.0.0.1.evil.example:${PORT}`, '127.0.0.1', 'localhost', `127.0.0.1:${PORT + 1}`, `[::1]:${PORT}`, `0.0.0.0:${PORT}`, `127.0.0.2:${PORT}`, '', undefined, ['127.0.0.1:8109']]) {
     assert.strictEqual(isAllowedHost(host, PORT), false, String(host));
   }
-  // 아직 포트를 모르면(0) 아무것도 받지 않는다.
+  // If the port is not known yet (0), it accepts nothing.
   assert.strictEqual(isAllowedHost('127.0.0.1:0', 0), false);
 });
 
@@ -53,22 +53,22 @@ test('isAllowedOrigin은 없거나 같은 주소일 때만 받는다 (#252)', ()
 });
 
 test('checkRequest는 화면 요청은 Host만 보고, 바꾸는 요청은 POST·Origin·형식·크기까지 본다 (#252)', () => {
-  // 화면(GET)은 Host만 맞으면 된다.
+  // A screen (GET) needs only a matching Host.
   checkRequest({ method: 'GET', headers: { host: `localhost:${PORT}` } }, { port: PORT });
   assertRejects(() => checkRequest({ method: 'GET', headers: { host: `evil.example:${PORT}` } }, { port: PORT }), 403);
-  // 바꾸는 요청: 정상 POST는 통과하고, Origin이 없는 POST도 받는다.
+  // A changing request: a normal POST passes, and a POST with no Origin is also accepted.
   checkRequest({ method: 'POST', headers: postHeaders() }, { port: PORT, mutating: true });
   checkRequest({ method: 'POST', headers: postHeaders({ origin: undefined }) }, { port: PORT, mutating: true });
   checkRequest({ method: 'POST', headers: postHeaders({ 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' }) }, { port: PORT, mutating: true });
-  // GET 등으로 바꾸기 시도는 405
+  // An attempt to change with GET and so on is 405
   for (const method of ['GET', 'HEAD', 'PUT', 'DELETE']) assertRejects(() => checkRequest({ method, headers: postHeaders() }, { port: PORT, mutating: true }), 405);
-  // 잘못된 Host는 메서드보다 먼저 거부한다.
+  // A wrong Host is refused before the method.
   assertRejects(() => checkRequest({ method: 'GET', headers: { host: `evil.example:${PORT}` } }, { port: PORT, mutating: true }), 403);
-  // 다른 Origin, 다른 사이트에서 왔다는 Sec-Fetch-Site
+  // Another Origin, and a Sec-Fetch-Site saying it came from another site
   assertRejects(() => checkRequest({ method: 'POST', headers: postHeaders({ origin: 'https://evil.example' }) }, { port: PORT, mutating: true }), 403);
   assertRejects(() => checkRequest({ method: 'POST', headers: postHeaders({ origin: 'null' }) }, { port: PORT, mutating: true }), 403);
   for (const site of ['cross-site', 'same-site']) assertRejects(() => checkRequest({ method: 'POST', headers: postHeaders({ origin: undefined, 'sec-fetch-site': site }) }, { port: PORT, mutating: true }), 403);
-  // 폼 형식이 아니면 415, 선언한 길이가 한도를 넘으면 413
+  // If it is not a form type, 415; if the declared length exceeds the limit, 413
   for (const type of [undefined, 'text/plain', 'multipart/form-data; boundary=x', 'application/json']) {
     assertRejects(() => checkRequest({ method: 'POST', headers: postHeaders({ 'content-type': type }) }, { port: PORT, mutating: true }), 415);
   }
@@ -81,12 +81,12 @@ test('isValidToken과 checkToken은 정확히 같은 토큰 하나만 받는다 
   for (const given of [undefined, '', token.slice(1), `${token}x`, token.toUpperCase() === token ? `${token.slice(0, -1)}a` : token.toUpperCase()]) {
     assert.strictEqual(isValidToken(given, token), false, String(given));
   }
-  // 서버 토큰이 비어 있으면 아무것도 받지 않는다.
+  // If the server token is empty, it accepts nothing.
   assert.strictEqual(isValidToken('', ''), false);
   checkToken(new URLSearchParams({ token }), token);
   assertRejects(() => checkToken(new URLSearchParams(), token), 403);
   assertRejects(() => checkToken(new URLSearchParams({ token: 'wrong' }), token), 403);
-  // 같은 이름이 둘이면(하나는 맞아도) 거부한다.
+  // If there are two with the same name (even if one is right), it refuses.
   assertRejects(() => checkToken(new URLSearchParams([['token', token], ['token', 'x']]), token), 403);
 });
 
@@ -95,7 +95,7 @@ test('readBody는 한도까지만 읽고 넘으면 413으로 거부한다 (#252)
   assert.strictEqual(await readBody(fakeRequest('')), '');
   assert.strictEqual(await readBody(fakeRequest('x'.repeat(10)), 10), 'x'.repeat(10));
   await assert.rejects(readBody(fakeRequest('x'.repeat(11)), 10), (err) => err instanceof RequestError && err.status === 413);
-  // 여러 조각으로 와도 합계로 본다. Content-Length 없이 보내도 막힌다.
+  // Even if it arrives in several pieces, it looks at the total. Even if sent without Content-Length, it is blocked.
   const chunks = Readable.from([Buffer.alloc(MAX_BODY), Buffer.from('y')]);
   await assert.rejects(readBody(chunks), (err) => err instanceof RequestError && err.status === 413);
 });

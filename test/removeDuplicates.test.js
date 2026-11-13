@@ -7,18 +7,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-// 시험 파일이 실제 휴지통으로 가지 않도록 휴지통 호출을 가로챈다. commands.js가 불러올 때 함수를 받아 두므로 require보다 먼저 바꿔 둔다.
+// It intercepts the Recycle Bin call so that test files do not go to the real Recycle Bin. commands.js takes the function when it is imported, so it is swapped before the require.
 const realExecFileSync = childProcess.execFileSync;
 const { fakeRecycleFiles } = require('./fakeRecycleFiles');
 const recycled = [];
-// 묶음 휴지통 이동에 넘긴 입력(줄마다 사본 경로·stamp·남길 파일 경로·stamp).
+// The input passed to the batch Recycle Bin move (for each line, the copy path, stamp, file-to-keep path, and stamp).
 const batchInputs = [];
 let onRecycle = () => {};
 let volume = () => 'True|Fixed\r\n';
-// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+// File system check (#184). By default it answers NTFS, and each test swaps it to imitate exFAT and so on.
 let format = () => 'NTFS\r\n';
 let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
@@ -27,7 +27,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     return format();
   }
   if (options?.env?.FC_VOLUME !== undefined) return volume();
-  // 묶음 휴지통 이동(#216)도 사용자 휴지통을 건드리지 않게 흉내 낸다.
+  // It also imitates the batch Recycle Bin move (#216) so as not to touch the user's Recycle Bin.
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     batchInputs.push(options.input);
     return fakeRecycleFiles(options, (target) => {
@@ -42,7 +42,7 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   return Buffer.alloc(0);
 });
 
-// 생성과 변경 시각은 시험에서 되돌릴 수 없으므로, 파일을 오래전에 만든 것처럼 시계를 1시간 뒤로 옮겨 둔다.
+// The creation and change times cannot be set back in tests, so the clock is moved forward 1 hour as if the file had been made long ago.
 const HOUR = 60 * 60 * 1000;
 const realNow = Date.now;
 let skew = HOUR;
@@ -54,7 +54,7 @@ const { run } = require('../bin/fctl');
 
 const OLD = new Date(realNow() - HOUR);
 
-// 길이와 해상도를 읽을 수 있는 최소 MP4. padding으로 크기를 바꾼다.
+// A minimal MP4 whose length and resolution can be read. It changes the size with padding.
 const latin = (text) => Buffer.from(text, 'latin1');
 const u32 = (value) => {
   const b = Buffer.alloc(4);
@@ -65,7 +65,7 @@ function box(type, ...parts) {
   const body = Buffer.concat(parts);
   return Buffer.concat([u32(body.length + 8), latin(type), body]);
 }
-// rotate가 90이면 tkhd 변환 행렬에 90도 회전을 넣는다(휴대폰 세로 영상).
+// If rotate is 90, it puts a 90 degree rotation in the tkhd transform matrix (a phone portrait video).
 function mp4({ seconds, width = 1920, height = 1080, padding = 0, rotate = 0 }) {
   const duration = Math.round(seconds * 1000);
   const mvhd = box('mvhd', u32(0), u32(0), u32(0), u32(1000), u32(duration), Buffer.alloc(80));
@@ -137,9 +137,9 @@ test('확인값이 맞으면 기록을 먼저 남기고 남길 파일과 길이�
     'ABC-123.mp4': mp4({ seconds: 3600 }),
     'a/ABC-123 720p.mp4': mp4({ seconds: 3600.4, width: 1280, height: 720 }),
     'b/ABC-123 - 복사본.mp4': mp4({ seconds: 3600 }),
-    // 같은 번호의 예고편: 길이가 달라 남긴다.
+    // A trailer with the same number: the length differs, so it is kept.
     'c/ABC-123 trailer.mp4': mp4({ seconds: 90 }),
-    // 이름이 달라 길이만 같은 묶음: 지우지 않는다.
+    // A group matching only by length because the names differ: it is not deleted.
     'x.mp4': mp4({ seconds: 900 }),
     'y.mp4': mp4({ seconds: 900 }),
   });
@@ -166,15 +166,15 @@ test('확인값이 맞으면 기록을 먼저 남기고 남길 파일과 길이�
   assert.match(report.split('\n').at(-1), /^Groups 1, Recycle Bin 2, failed 0, kept 1, same-duration-only groups 1/);
 });
 
-// #127: 휴지통으로 보내다 실패할 것이 확실한 사본은 계획 단계에서 남긴다.
+// #127: copies that are certain to fail when sent to the Recycle Bin are kept at the planning stage.
 test('남길 파일의 하드링크인 사본은 같은 파일의 다른 이름이라 지우지 않고, 사본끼리 하드링크면 이번에 하나만 지운다 (#127)', () => {
   const dir = tempDir();
   const f = make(dir, { 'ABC-123.mp4': mp4({ seconds: 3600 }), 'x/ABC-123 copy.mp4': mp4({ seconds: 3600 }) });
-  // 남길 파일의 다른 이름. 지워도 공간이 줄지 않고, 지우면 남길 파일의 변경 시각이 바뀐다.
+  // Another name of the file to keep. Deleting it does not reduce space, and it changes the change time of the file to keep.
   const keeperLink = path.join(dir, 'a', 'ABC-123 - 복사본.mp4');
   fs.mkdirSync(path.dirname(keeperLink));
   fs.linkSync(f['ABC-123.mp4'], keeperLink);
-  // 사본끼리 같은 파일. 한 이름을 지우면 다른 이름의 변경 시각이 바뀐다.
+  // The same file between copies. Deleting one name changes the change time of the other name.
   const copyLink = path.join(dir, 'y', 'ABC-123 (2).mp4');
   fs.mkdirSync(path.dirname(copyLink));
   fs.linkSync(f['x/ABC-123 copy.mp4'], copyLink);
@@ -183,16 +183,16 @@ test('남길 파일의 하드링크인 사본은 같은 파일의 다른 이름�
   const keeperName = path.relative(dir, keeper);
   const removed = plan.removals.map((item) => path.relative(dir, item.path));
   const kept = Object.fromEntries(plan.kept.map((item) => [path.relative(dir, item.path), item.reason]));
-  // 남길 파일과 같은 파일의 이름은 어느 쪽이 남길 파일이 되든 지우지 않는다.
+  // A name of the same file as the file to keep is not deleted whichever side becomes the file to keep.
   const keeperTwins = [path.relative(dir, f['ABC-123.mp4']), path.relative(dir, keeperLink)].filter((name) => name !== keeperName);
   for (const name of keeperTwins) assert.match(kept[name] ?? '', /^Kept because it is another name of the same file \(hard link\) as the file to keep, so deleting it would not free space\./, name);
-  // 사본끼리 같은 파일이면 하나만 지우고 하나는 다음 실행으로 미룬다.
+  // If copies are the same file, it deletes only one and defers one to the next run.
   const copyTwins = [path.relative(dir, f['x/ABC-123 copy.mp4']), path.relative(dir, copyLink)];
   assert.strictEqual(copyTwins.filter((name) => removed.includes(name)).length, 1);
   const later = copyTwins.find((name) => !removed.includes(name));
   assert.match(kept[later], /^Kept because another name of the same file \(hard link: .+\) is deleted first in this run/);
   assert.ok(!removed.some((name) => keeperTwins.includes(name)));
-  // 실제로 지워도 남길 파일이 바뀌었다는 실패가 나지 않는다.
+  // Even if really deleted, the failure that the file to keep changed does not occur.
   const result = confirmed(dir);
   assert.deepStrictEqual(result.failed, []);
   assert.strictEqual(result.removed.length, 1);
@@ -202,7 +202,7 @@ test('남길 파일의 하드링크인 사본은 같은 파일의 다른 이름�
 test('다른 묶음의 남길 파일과 하드링크인 사본은 지우지 않아, 그 묶음의 사본이 실행 중에 실패하지 않는다 (#127 1차 리뷰)', () => {
   const dir = tempDir();
   const f = make(dir, { 'AAA-100.mp4': mp4({ seconds: 3600 }), 'DEF-456.mp4': mp4({ seconds: 1800 }), 'z/DEF-456 copy.mp4': mp4({ seconds: 1800 }) });
-  // AAA-100 묶음의 사본이 DEF-456 묶음의 남길 파일과 같은 파일이다. 길이는 AAA-100과 같게 보이도록 한 파일을 두 이름으로 둔다.
+  // A copy of the AAA-100 group is the same file as the file to keep of the DEF-456 group. One file is given two names so that the length looks the same as AAA-100.
   const cross = path.join(dir, 'x', 'AAA-100 copy.mp4');
   fs.mkdirSync(path.dirname(cross));
   fs.writeFileSync(f['DEF-456.mp4'], mp4({ seconds: 3600 }));
@@ -312,10 +312,10 @@ test('이름만 같은 다른 영상(제품번호처럼 보이는 말, 같은 �
 test('화면 비율은 회전을 반영한 보이는 크기로 비교한다 (#106)', () => {
   const dir = tempDir();
   const made = make(dir, {
-    // 회전 정보로 세로를 표시하는 원본과 세로로 다시 저장한 사본은 같은 영상이다.
+    // An original that shows portrait through rotation information and a copy saved again as portrait are the same video.
     'Trip.mp4': mp4({ seconds: 600, rotate: 90, padding: 10 }),
     'old/trip.mp4': mp4({ seconds: 600, width: 1080, height: 1920 }),
-    // 회전 정보가 없는 가로 영상은 이름과 길이가 같아도 화면 비율이 달라 남긴다.
+    // A landscape video with no rotation information has a different aspect ratio even with the same name and length, so it is kept.
     'b/trip.mp4': mp4({ seconds: 600 }),
   });
   const result = removeDuplicates(dir);
@@ -328,10 +328,10 @@ test('화면 비율이 3% 이내인 사본은 지우고, 16:9와 1.85:1처럼 �
   const dir = tempDir();
   const made = make(dir, {
     'Movie.mp4': mp4({ seconds: 600, width: 1920, height: 818 }),
-    // 반올림하면 2.4와 2.3으로 갈리던 같은 영상
+    // The same video that split into 2.4 and 2.3 when rounded
     'old/movie.mp4': mp4({ seconds: 600, width: 1920, height: 816 }),
     'Film.mp4': mp4({ seconds: 900, width: 1920, height: 1080, padding: 10 }),
-    // 1.85:1은 16:9보다 4% 가까이 넓다.
+    // 1.85:1 is nearly 4% wider than 16:9.
     'old/film.mp4': mp4({ seconds: 900, width: 1920, height: 1038 }),
   });
   const result = removeDuplicates(dir);
@@ -342,33 +342,33 @@ test('화면 비율이 3% 이내인 사본은 지우고, 16:9와 1.85:1처럼 �
 test('번호는 같은데 남길 파일과 제목이 겹치지 않는 파일은 길이와 화면 비율이 같아도 지우지 않는다 (#103)', () => {
   const dir = tempDir();
   const made = make(dir, {
-    // 길이가 정해진 방송 녹화는 길이까지 같을 수 있다.
+    // Broadcast recordings of a fixed length can even have the same length.
     'WWE-2023 Raw.mp4': mp4({ seconds: 10800, padding: 10 }),
     'old/WWE-2023 SmackDown.mp4': mp4({ seconds: 10800 }),
     'IPHONE-15 review.mp4': mp4({ seconds: 600, padding: 10 }),
     'b/IPHONE-15 unboxing.mp4': mp4({ seconds: 600 }),
-    // 되풀이한 낱말(WWE)만 겹치면 다른 제목이다.
+    // Overlapping only in a repeated word (WWE) makes a different title.
     'WWE-2024 WWE Raw.mp4': mp4({ seconds: 10800, padding: 10 }),
     'b/WWE-2024 WWE SmackDown.mp4': mp4({ seconds: 10800 }),
-    // 한 묶음 안에서도 파일마다 본다. 제목이 다른 파일이 섞인 묶음에서는 제목 낱말이 똑같은 파일만 지운다.
+    // It looks for each file even within one group. In a group where files with a different title are mixed, it deletes only files with exactly the same title words.
     'XYZ-999 좋은 영화.mp4': mp4({ seconds: 300, padding: 10 }),
     'old/XYZ-999 영화 좋은 1080p.mp4': mp4({ seconds: 300 }),
     'old/XYZ-999 좋은 영화 감독판.mp4': mp4({ seconds: 300 }),
     'old/XYZ-999 다른 영상.mp4': mp4({ seconds: 300 }),
-    // 남길 파일 제목이 서로 다른 두 제목에 모두 들어 있어도 둘 다 지우지 않는다(WWE는 WWE Raw에도 WWE SmackDown에도 든다).
+    // Even if the title of the file to keep is in both of two different titles, it deletes neither (WWE is in both WWE Raw and WWE SmackDown).
     'WWE-2026 WWE.mp4': mp4({ seconds: 10800, padding: 10 }),
     'a/WWE-2026 WWE Raw.mp4': mp4({ seconds: 10800 }),
     'b/WWE-2026 WWE SmackDown.mp4': mp4({ seconds: 10800 }),
-    // 제목이 다른 파일이 없는 묶음에서는 낱말을 모두 담은 제목도 같은 제목이라 지운다.
+    // In a group with no files of a different title, a title containing all the words is also the same title, so it is deleted.
     'LMN-200 좋은 영화.mp4': mp4({ seconds: 300, padding: 10 }),
     'old/LMN-200 좋은 영화 감독판.mp4': mp4({ seconds: 300 }),
-    // 제목이 다른 파일이 섞인 묶음에서 제목 없는 파일은 어느 영상의 사본인지 몰라 남긴다.
+    // In a group where files with a different title are mixed, a file with no title is kept because it is not known which video it is a copy of.
     'old/XYZ-999.mp4': mp4({ seconds: 300 }),
-    // 남길 파일에 제목이 없어도 제목이 다른 파일들을 지우지 않는다. Raw의 사본이면 SmackDown은 하나뿐인 원본일 수 있다.
+    // Even if the file to keep has no title, it does not delete files with different titles. If it is a copy of Raw, SmackDown may be the only original.
     'WWE-2025.mp4': mp4({ seconds: 10800, padding: 10 }),
     'a/WWE-2025 Raw.mp4': mp4({ seconds: 10800 }),
     'b/WWE-2025 SmackDown.mp4': mp4({ seconds: 10800 }),
-    // 제목이 한쪽에만 있고 제목이 다른 파일이 없으면 지운다.
+    // If the title is on only one side and there are no files of a different title, it deletes.
     'QRS-100 제목.mp4': mp4({ seconds: 300, padding: 10 }),
     'old/QRS-100.mp4': mp4({ seconds: 300 }),
   });
@@ -408,19 +408,19 @@ test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율
     'y/1.mp4': mp4({ seconds: 600.5 }),
     'VID_20230101_123456.mp4': mp4({ seconds: 300 }),
     'old/VID_20230101_123456.mp4': mp4({ seconds: 300 }),
-    // 숫자 사이나 뒤에 짧은 영문이 붙은 이름: 아이폰 편집본, 블랙박스 앞뒤 카메라, 새 DJI 이름
+    // Names with short English attached between or after digits: iPhone edits, dashcam front and rear cameras, new DJI names
     'a/IMG_E0001.MOV': mp4({ seconds: 90 }),
     'b/IMG_E0001.MOV': mp4({ seconds: 90 }),
     'a/20230101_123456_F.mp4': mp4({ seconds: 60 }),
     'b/20230101_123456_F.mp4': mp4({ seconds: 60 }),
     'a/DJI_20230101123456_0001_D.MP4': mp4({ seconds: 120 }),
     'b/DJI_20230101123456_0001_D.MP4': mp4({ seconds: 120 }),
-    // 제품번호로 보이는 대문자 블랙박스 카운터 (#110)
+    // An upper-case dashcam counter that looks like a product number (#110)
     'car1/REC-0001.mp4': mp4({ seconds: 60 }),
     'car2/REC-0001.mp4': mp4({ seconds: 60 }),
     'car1/FRONT-0001.mp4': mp4({ seconds: 180 }),
     'car2/FRONT-0001.mp4': mp4({ seconds: 180 }),
-    // 흔한 이름이 아닌 이름과 제품번호는 그대로 지운다.
+    // Names that are not common names, and product numbers, are deleted as they are.
     'ABC-123.mp4': mp4({ seconds: 300, padding: 10 }),
     'old/ABC-123.mp4': mp4({ seconds: 300 }),
     'Holiday.mp4': mp4({ seconds: 300, padding: 10 }),
@@ -435,7 +435,7 @@ test('카메라·순번처럼 흔한 이름의 묶음은 길이와 화면 비율
   assert.ok(result.kept.every((item) => item.reason === 'Kept because it is a common name such as a camera or sequence name, so videos with the same duration may be different videos.'));
 });
 
-// 영상 데이터(mdat)를 무작위 바이트로 채운 MP4. 0 구간 표본에 걸리지 않는다.
+// An MP4 whose video data (mdat) is filled with random bytes. It does not get caught by the zero-stretch samples.
 function filled(options) {
   const file = mp4(options);
   const data = 64 + (options.padding ?? 0);
@@ -448,13 +448,13 @@ test('남길 파일이 잘렸거나 0으로 채워진 덜 받은 파일이면 �
   const MB = 1024 * 1024;
   const cut = filled({ seconds: 600, width: 3840, height: 2160, padding: 5000 });
   make(dir, {
-    // 해상도가 높아 남길 파일로 골리지만 끝이 잘렸다.
+    // It is chosen as the file to keep because of its high resolution, but its end is truncated.
     'ABC-123 4K.mp4': cut.subarray(0, cut.length - 3000),
     'ABC-123.mp4': filled({ seconds: 600 }),
-    // 머리는 정상이고 크기도 다 잡혀 있지만 데이터가 0이다.
+    // The head is normal and the size is fully reserved, but the data is 0.
     'XYZ-999 4K.mp4': mp4({ seconds: 600, width: 3840, height: 2160, padding: 2 * MB }),
     'XYZ-999.mp4': filled({ seconds: 600 }),
-    // 데이터가 찬 큰 파일은 남길 파일로 쓰고 사본을 지운다.
+    // A large file filled with data is used as the file to keep, and the copies are deleted.
     'QRS-555 4K.mp4': filled({ seconds: 600, width: 3840, height: 2160, padding: 2 * MB }),
     'QRS-555.mp4': filled({ seconds: 600 }),
   });
@@ -471,11 +471,11 @@ const reasonsOf = (dir, result) => Object.fromEntries(result.kept.map((item) => 
 test('남길 파일 옆에 받기 도구의 표시 파일이 있으면 그 묶음은 지우지 않고 사유를 보고한다 (#115)', () => {
   const dir = tempDir();
   make(dir, {
-    // aria2는 크기를 미리 잡은 파일 옆에 상태 파일을 둔다. 머리 구조는 이미 받아져 온전해 보인다.
+    // aria2 keeps a status file beside the file with the reserved size. The head structure is already downloaded and looks intact.
     'ABC-123 4K.mp4': mp4(UHD),
     'ABC-123 4K.mp4.aria2': '받기 상태',
     'ABC-123.mp4': mp4({ seconds: 600 }),
-    // Safari는 받는 중인 파일을 표시 폴더 안에 둔다.
+    // Safari keeps a file being downloaded inside a marker folder.
     'XYZ-999 4K.mp4.download/XYZ-999 4K.mp4': mp4(UHD),
     'XYZ-999.mp4': mp4({ seconds: 600 }),
     'QRS-555 4K.mp4': mp4(UHD),
@@ -535,7 +535,7 @@ test('표시 파일을 보려고 폴더를 읽지 못하면 남길 파일의 폴
   });
   const blocked = [path.join(dir, 'new'), path.join(dir, 'busy')];
   const realReaddir = fs.readdirSync;
-  // 찾기(walk)는 폴더를 { withFileTypes: true }로 읽으므로, 표시 파일을 보려고 이름 목록만 읽는 것을 막는다.
+  // The search (walk) reads folders with { withFileTypes: true }, so it blocks reading only the name list to look at marker files.
   t.mock.method(fs, 'readdirSync', function readdir(target, ...rest) {
     if (blocked.includes(target) && rest.length === 0) throw Object.assign(new Error('막힘'), { code: 'EPERM' });
     return realReaddir.call(this, target, ...rest);
@@ -569,7 +569,7 @@ test('지우는 중에 남길 파일이나 다음 사본이 바뀌면 그 사본
     'XYZ-999 (1).mp4': mp4({ seconds: 600 }),
     'XYZ-999 (2).mp4': mp4({ seconds: 600 }),
   });
-  // ABC-123의 첫 사본을 지우면 남길 파일을 고치고, XYZ-999의 첫 사본을 지우면 다음 사본을 고친다.
+  // If the first copy of ABC-123 is deleted, it fixes the file to keep, and if the first copy of XYZ-999 is deleted, it fixes the next copy.
   onRecycle = (target) => {
     if (target === f['ABC-123 (1).mp4']) fs.appendFileSync(f['ABC-123.mp4'], 'x');
     if (target === f['XYZ-999 (1).mp4']) fs.appendFileSync(f['XYZ-999 (2).mp4'], 'x');
@@ -585,7 +585,7 @@ test('지우는 중에 남길 파일이나 다음 사본이 바뀌면 그 사본
 
 test('길이를 모르거나 60초 미만인 묶음은 지우지 않는다', () => {
   const dir = tempDir();
-  // 머리글만 있는 AVI. 깨지지는 않았지만 길이를 읽지 않는 형식이다.
+  // An AVI with only a header. It is not broken, but it is a format whose length is not read.
   const avi = Buffer.concat([latin('RIFF'), Buffer.from([4, 0, 0, 0]), latin('AVI ')]);
   make(dir, {
     'Trip.avi': avi,
@@ -626,7 +626,7 @@ test('휴지통 설정상 영구 삭제될 사본(바로 제거, 최대 크기 �
     const full = removeDuplicates(dir);
     assert.deepStrictEqual(full.removals, []);
     assert.match(full.kept[0].reason, /^Kept because it is larger than the Recycle Bin maximum size \(0MB\), so Windows would permanently delete it without asking\.$/);
-    // 최대 크기를 알면 용량을 모를 때의 한도(maxSize)는 쓰지 않는다.
+    // If the maximum size is known, the limit for when the capacity is unknown (maxSize) is not used.
     volume = () => 'True|Fixed|0|7164\r\n';
     assert.strictEqual(removeDuplicates(dir, { maxSize: 10 }).removals.length, 1);
   } finally {
@@ -671,7 +671,7 @@ test('지우는 중에 남길 파일이 없어지면 남은 사본은 지우지 
   const result = confirmed(dir);
   assert.strictEqual(result.removed.length, 1);
   assert.strictEqual(result.failed.length, 1);
-  // 묶어 보내므로(#216) 같은 묶음 안에서는 PowerShell이 사본을 지우기 직전에 남길 파일을 다시 보고 멈춘다.
+  // It sends in batches (#216), so within the same group PowerShell looks at the file to keep again right before deleting a copy and stops.
   assert.strictEqual(result.failed[0].reason, `Not deleted because the file to keep changed or disappeared: ${f['ABC-123.mp4']}`);
   assert.ok(fs.existsSync(result.failed[0].path));
 });

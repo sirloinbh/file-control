@@ -1,6 +1,6 @@
 'use strict';
 
-// 폴더 고르기 화면(#254): 폴더 탐색, 위로 가기, 보호 폴더 표시, 고른 경로를 원래 화면으로 넘기기.
+// The folder picker screen (#254): folder browsing, go up, protected folder marks, and passing the picked path to the original screen.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래라 보호 폴더로 보이므로, 사용자 폴더를 임시 폴더 안의 가짜 폴더로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and looks like a protected folder, so the user folder is swapped with a fake folder inside the temporary folder.
 const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fc-ui-pick-')));
 test.after(() => fs.rmSync(base, { recursive: true, force: true }));
 const home = path.join(base, 'home');
@@ -20,7 +20,7 @@ const { pickRoutes, pathInput, pickUrl, readPickQuery } = require('../src/ui/pic
 const { browseFolder } = require('../src/ui/folders');
 const { escapeHtml } = require('../src/ui/html');
 
-// 드라이브와 자주 쓰는 위치는 정해 두고, 폴더 읽기는 실제 함수를 쓴다.
+// The drives and the frequently used places are fixed, and the folder reading uses the real function.
 const SOURCES = {
   listDrives: () => ['C:\\', 'D:\\'],
   commonPlaces: () => [{ label: 'Downloads', path: path.join(home, 'Downloads') }],
@@ -40,7 +40,7 @@ async function serve(t) {
   return { get };
 }
 
-// 주소를 화면 속 href 값(이스케이프된 꼴)으로 바꾼다.
+// It turns an address into the href value in the screen (the escaped form).
 const href = (url) => `href="${escapeHtml(url)}"`;
 const back = (dir) => `/organize?${new URLSearchParams({ target: dir })}`;
 const returning = (dir) => pickUrl({ dir, returnTo: '/organize', field: 'target' });
@@ -51,7 +51,7 @@ test('처음 화면은 자주 쓰는 위치와 드라이브를 고르기 링크�
   assert.strictEqual(res.status, 200);
   for (const dir of ['C:\\', 'D:\\', path.join(home, 'Downloads')]) assert.ok(res.body.includes(href(returning(dir))), dir);
   assert.ok(res.body.includes('Downloads'));
-  // 고르기 화면에서 연 것이 아니면 둘러보기 안내를 띄운다.
+  // If it was not opened from the picker screen, it shows a browsing guide.
   assert.doesNotMatch(res.body, /Browsing only/);
   assert.match((await get('')).body, /Browsing only/);
 });
@@ -64,14 +64,14 @@ test('폴더를 열면 하위 폴더를 이름순 링크로, 요약과 위로 �
   fs.writeFileSync(path.join(dir, 'f.txt'), '12345');
   const res = await get(`?${new URLSearchParams({ dir, return: '/organize', field: 'target' })}`);
   assert.strictEqual(res.status, 200);
-  // 하위 폴더: 들어가기 링크와 고르기 링크. 이름은 이스케이프한다.
+  // Subfolders: an enter link and a pick link. Names are escaped.
   const first = res.body.indexOf(href(returning(path.join(dir, "A&'x'"))));
   const second = res.body.indexOf(href(returning(path.join(dir, 'b 폴더'))));
   assert.ok(first > 0 && second > first, '폴더 먼저 이름순');
   assert.ok(res.body.includes('A&amp;&#39;x&#39;'));
   assert.ok(!res.body.includes("A&'x'"));
   assert.ok(res.body.includes(href(back(path.join(dir, 'b 폴더')))));
-  // Choose this folder, 위로 가기, 요약
+  // "Choose this folder" (the English text of the pick link label), go up, summary
   assert.ok(res.body.includes(`${href(back(dir))}><strong>Choose this folder</strong>`));
   assert.ok(res.body.includes(`${href(returning(path.dirname(dir)))}>Up</a>`));
   assert.match(res.body, /<div class="value">2<\/div><div class="label">Folders<\/div>/);
@@ -94,11 +94,11 @@ test('보호 폴더는 들어가 볼 수 있지만 고를 수 없고 사유를 �
   const { get } = await serve(t);
   for (const name of ['AppData', '.ssh', 'Downloads']) fs.mkdirSync(path.join(home, name), { recursive: true });
   const res = await get(`?${new URLSearchParams({ dir: home, return: '/organize', field: 'target' })}`);
-  // 사용자 폴더 자체는 고를 수 없다.
+  // The user folder itself cannot be picked.
   assert.match(res.body, /Cannot choose/);
   assert.ok(!res.body.includes(`${href(back(home))}>`));
   assert.match(res.body, /This folder cannot be chosen \(reason: contains user folder .*\)/);
-  // AppData·.ssh는 들어가기 링크만 있고 고르기 링크가 없다. Downloads는 고를 수 있다.
+  // AppData and .ssh have only an enter link and no pick link. Downloads can be picked.
   for (const name of ['AppData', '.ssh']) {
     assert.ok(res.body.includes(href(returning(path.join(home, name)))), name);
     assert.ok(!res.body.includes(href(back(path.join(home, name)))), name);
@@ -177,7 +177,7 @@ test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워
     assert.ok(!body.includes('>inner</a>'), site);
     assert.match(body, /<h2>Drives<\/h2>/, site);
   }
-  // 이 화면에서 누른 링크(same-origin)는 연다.
+  // A link pressed on this screen (same-origin) is opened.
   const same = await (await fetch(new URL(query, url), { headers: { 'sec-fetch-site': 'same-origin' } })).text();
   assert.ok(same.includes('>inner</a>'));
   if (process.platform === 'win32') {
