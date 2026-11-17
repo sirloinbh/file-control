@@ -20,19 +20,27 @@ const MAX_STDERR = 4000;
 const STOP_WAIT_MS = 5000;
 
 // It ends the child and, on Windows, the whole process tree it started (PowerShell, tar.exe and so on), which child.kill() alone would leave running.
+// It does nothing once the child has exited: the pid may already belong to an unrelated process, and taskkill /T would end that tree.
+// taskkill runs asynchronously so the server is not blocked. The returned promise resolves when it ends (or fails).
 function killTree(child) {
-  if (process.platform === 'win32' && child.pid !== undefined) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  const killed = new Promise((resolve) => {
+    if (process.platform !== 'win32' || child.pid === undefined) return resolve();
     try {
-      childProcess.spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 });
+      const killer = childProcess.spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.once('error', resolve);
+      killer.once('close', resolve);
     } catch {
-      // Fall through to child.kill() below.
+      resolve();
     }
-  }
-  try {
-    child.kill();
-  } catch {
-    // Already gone.
-  }
+  });
+  return killed.then(() => {
+    try {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+    } catch {
+      // Already gone.
+    }
+  });
 }
 
 class BusyError extends fc.FcError {
@@ -146,9 +154,10 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     const entry = children.get(job.id);
     if (!entry || job.status !== 'running') return job;
     job.stopRequested = true;
-    killTree(entry.child);
     let timer;
-    await Promise.race([entry.done, new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]);
+    // A grandchild (tar.exe, PowerShell) can keep the piped stderr open after the worker died, so it is destroyed to let close fire.
+    const killing = killTree(entry.child).then(() => { if (entry.child.stderr) entry.child.stderr.destroy(); });
+    await Promise.race([Promise.all([killing, entry.done]),new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]);
     clearTimeout(timer);
     return job;
   }

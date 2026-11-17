@@ -6,6 +6,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { startUi } = require('./uiClient');
 const { createJobs } = require('../src/ui/jobs');
 const { jobRoutes, statusPage } = require('../src/ui/jobPages');
@@ -71,7 +72,7 @@ test('a stop request without a token is rejected and the job keeps running', asy
     body: new URLSearchParams({ id: job.id }).toString(),
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
   });
-  assert.ok(res.status >= 400);
+  assert.strictEqual(res.status, 403);
   assert.strictEqual(job.status, 'running');
   fs.writeFileSync(flag, '');
   await settled(jobs, job);
@@ -88,6 +89,52 @@ test('stopping a finished or unknown job is handled', async (t) => {
   assert.strictEqual(job.status, 'done');
   assert.strictEqual((await post('/job/stop', { id: 'nope' })).status, 404);
   assert.strictEqual((await post('/job/stop')).status, 404);
+});
+
+test('a double stop is harmless', async (t) => {
+  const dir = tempDir();
+  const jobs = createJobs({ workerPath: FAKE_WORKER });
+  const { post } = await serve(t, jobs);
+  const job = jobs.start(['wait', path.join(dir, 'never')]);
+  const [first, second] = await Promise.all([post('/job/stop', { id: job.id }), post('/job/stop', { id: job.id })]);
+  assert.strictEqual(first.status, 303);
+  assert.strictEqual(second.status, 303);
+  assert.strictEqual(job.status, 'stopped');
+  assert.ok(!jobs.running());
+  assert.strictEqual((await post('/job/stop', { id: job.id })).status, 303);
+});
+
+test('stop does not kill a child that already exited (its pid may be reused), but still lets close fire', async () => {
+  const child = new EventEmitter();
+  Object.assign(child, { pid: 4242, exitCode: 0, signalCode: null, send() {}, killed: 0, kill() { this.killed += 1; } });
+  child.stderr = Object.assign(new EventEmitter(), { setEncoding() {}, destroy() { this.destroyed = true; setImmediate(() => child.emit('close', 0, null)); } });
+  const jobs = createJobs({ fork: () => child });
+  const job = jobs.start(['wait', 'x']);
+  await jobs.stop(job);
+  assert.strictEqual(child.killed, 0);
+  assert.strictEqual(child.stderr.destroyed, true);
+  assert.strictEqual(job.status, 'stopped');
+  assert.ok(!jobs.running());
+});
+
+test('the status page shows Still stopping while a stop request is waiting for close', () => {
+  const job = { id: 'a', argv: ['wait'], lines: [], droppedLines: 0, stopRequested: true };
+  assert.match(statusPage({ elapsed: () => 1_000, idle: () => 0 }, job).toString(), /Still stopping/);
+});
+
+test('jobs.idle counts from the last progress line, or from the start, with an injected clock', () => {
+  let time = 1000;
+  const child = new EventEmitter();
+  Object.assign(child, { pid: 1, exitCode: null, signalCode: null, send() {}, kill() {} });
+  child.stderr = Object.assign(new EventEmitter(), { setEncoding() {}, destroy() {} });
+  const jobs = createJobs({ fork: () => child, now: () => time });
+  const job = jobs.start(['wait', 'x']);
+  time = 1000 + 90_000;
+  assert.strictEqual(jobs.idle(job), 90_000);
+  assert.match(statusPage(jobs, job).toString(), /No progress for 1m 30s/);
+  child.emit('message', { type: 'progress', line: 'x' });
+  assert.strictEqual(jobs.idle(job), 0);
+  assert.doesNotMatch(statusPage(jobs, job).toString(), /No progress for/);
 });
 
 test('the status page warns when there has been no progress for a long time', () => {

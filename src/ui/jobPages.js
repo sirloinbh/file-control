@@ -74,6 +74,7 @@ function statusPage(jobs, job, { available, tokenField = '' } = {}) {
     refresh: { seconds: REFRESH_SECONDS },
     alerts: [
       { kind: 'info', message: `Running. Elapsed time ${formatElapsed(jobs.elapsed(job))}. This page refreshes every ${REFRESH_SECONDS} seconds.` },
+      ...(job.stopRequested ? [{ kind: 'warning', message: 'Still stopping. The job process has not ended yet. This page keeps refreshing.' }] : []),
       ...(idle >= STALL_MS ? [{ kind: 'warning', message: `No progress for ${formatElapsed(idle)}. The job may be stuck. You can stop it below.` }] : []),
     ],
     body: html`${commandLine(job)}
