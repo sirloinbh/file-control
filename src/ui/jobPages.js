@@ -5,7 +5,8 @@
 // If the status page is opened after the job ended, it redirects to the result page (303).
 
 const { html } = require('./html');
-const { page, alertBox } = require('./layout');
+const { page, alertBox, table } = require('./layout');
+const { formatSize } = require('../commands');
 const { BusyError, formatElapsed, KEPT_HEAD_LINES: KEPT_HEAD } = require('./jobs');
 const { dangerConfirmations, dangerOptionsOf, resultSection, isOn } = require('./flow');
 
@@ -120,6 +121,25 @@ function outcomeAlert(job) {
   return { kind: 'success', message: 'Done.' };
 }
 
+// What the sources of a mv, cp or rm preview hold (#280): the run happens only if this still matches, so the person sees what is confirmed.
+function sourcesTable(outcome) {
+  if (!Array.isArray(outcome.sources) || outcome.sources.length === 0) return '';
+  const follows = outcome.command === 'cp';
+  const rows = outcome.sources.map((source) => {
+    const isLink = source.type === 'link';
+    // A link's contents are counted only when the command reads through it (cp).
+    const counted = source.type === 'dir' || (isLink && follows);
+    const note = !isLink ? '' : html`<br><span class="muted">Link to ${source.target ?? ''}. ${follows ? 'The contents it leads to are included.' : 'The contents it leads to are not touched.'}</span>`;
+    return [
+      html`${source.path}${note}`,
+      source.type === 'dir' ? 'Folder' : source.type === 'missing' ? 'Missing' : isLink ? 'Link' : 'File',
+      counted ? `${source.count} item${source.count === 1 ? '' : 's'}` : '',
+      source.type === 'missing' || (isLink && !follows) ? '' : formatSize(source.size),
+    ];
+  });
+  return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: '7em' }, { label: 'Items inside', width: '9em' }, { label: 'Total size', width: '8em' }], rows)}`;
+}
+
 // The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.
 function resultPage(jobs, job, { available, views = {}, specs = [], tokenField = '' } = {}) {
   const alert = job.status === 'stopped'
@@ -157,7 +177,7 @@ function resultPage(jobs, job, { available, views = {}, specs = [], tokenField =
     body: html`${commandLine(job)}
 <p class="muted">Elapsed ${formatElapsed(jobs.elapsed(job))}</p>
 ${before}${content}
-${after}
+${after ? sourcesTable(job.outcome) : ''}${after}
 ${lines}`,
   });
 }
