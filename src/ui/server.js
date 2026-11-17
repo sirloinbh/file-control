@@ -211,6 +211,7 @@ function openBrowser(url) {
 // The screens of each command category (#256 to #259). Each module exports { specs, views, routes(jobs) } (see src/ui/screens/).
 const SCREENS = [
   require('./screens/archive'),
+  require('./screens/cleanup'),
   require('./screens/files'),
 ];
 
