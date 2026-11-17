@@ -135,7 +135,7 @@ test('the preview result page carries the run form with escaped values, the fing
   assert.ok(body.includes(`name="token" value="${token}"`));
   assert.ok(body.includes(`name="fingerprint" value="${FP}"`));
   assert.ok(body.includes('name="target" value="D:\\a&quot;&gt;&lt;script&gt;"'));
-  assert.doesNotMatch(body, /<script>/);
+  assert.doesNotMatch(body, /<script/i);
   assert.match(body, /name="permanent" value="on"/);
   assert.match(body, /name="confirm-permanent" value="yes" required/);
   assert.doesNotMatch(body, /name="force"/);
