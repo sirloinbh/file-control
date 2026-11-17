@@ -29,8 +29,8 @@ function fieldValues(spec, source) {
 
 function fieldRow(spec, field, value) {
   if (field.kind === 'path') return pathInput({ name: field.name, label: field.label, value, returnTo: spec.path });
-  if (field.kind === 'checkbox') return html`<p><label><input type="checkbox" name="${field.name}" value="on"${isOn(value) ? ' checked' : ''}> ${field.label}</label></p>`;
   if (field.kind === 'lines') return html`<p><label>${field.label}<br><textarea name="${field.name}" rows="5" cols="60" spellcheck="false">${value}</textarea></label></p>`;
+  if (field.kind === 'checkbox') return html`<p><label><input type="checkbox" name="${field.name}" value="on"${isOn(value) ? ' checked' : ''}> ${field.label}</label></p>`;
   if (field.kind === 'textarea') return html`<p><label>${field.label}<br><textarea name="${field.name}" rows="${field.rows ?? 5}" cols="60" spellcheck="false">
 ${value}</textarea></label></p>`;
   return html`<p><label>${field.label}<br><input type="text" name="${field.name}" value="${value}" size="60" spellcheck="false"></label></p>`;
