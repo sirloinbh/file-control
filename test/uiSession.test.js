@@ -9,9 +9,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { html } = require('../src/ui/html');
-const { startServer } = require('../src/ui/server');
-const { hasSession, sessionCookie } = require('../src/ui/security');
-const { LAUNCH, TOKEN, connect } = require('./uiClient');
+const { hasSession, sessionCookie, createToken } = require('../src/ui/security');
+const { LAUNCH, TOKEN, connect, startProbed, startUi } = require('./uiClient');
 
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 
@@ -27,7 +26,7 @@ async function serve(t) {
       return { body: 'ok' };
     } }],
   ]);
-  const started = await startServer({ port: 0, routes, token: TOKEN, launch: LAUNCH });
+  const started = await startProbed({ routes });
   t.after(() => {
     started.server.close();
     started.server.closeAllConnections();
@@ -68,6 +67,15 @@ test('a wrong or malformed cookie is refused', async (t) => {
     assert.strictEqual((await fetch(new URL('write', url), { method: 'POST', headers: { ...FORM, cookie: bad }, body: `token=${TOKEN}` })).status, 403, bad);
   }
   assert.strictEqual(fs.existsSync(target), false);
+});
+
+test('HEAD without a cookie on a non-launch path is 403 with an empty body', async (t) => {
+  const { url } = await serve(t);
+  for (const p of ['', 'form', 'nope']) {
+    const res = await fetch(new URL(p, url), { method: 'HEAD', redirect: 'manual' });
+    assert.strictEqual(res.status, 403, p);
+    assert.strictEqual(await res.text(), '');
+  }
 });
 
 test('a wrong launch value gets no cookie and does not use up the real one', async (t) => {
@@ -130,8 +138,8 @@ test('with the cookie but no token, a POST is still refused and nothing changes'
 });
 
 test('every restart makes a new launch value and session', async (t) => {
-  const a = await startServer({ port: 0, routes: new Map() });
-  const b = await startServer({ port: 0, routes: new Map() });
+  const a = await startUi({ routes: new Map(), token: createToken(), launch: createToken() });
+  const b = await startUi({ routes: new Map(), token: createToken(), launch: createToken() });
   t.after(() => {
     for (const s of [a, b]) {
       s.server.close();
@@ -141,8 +149,8 @@ test('every restart makes a new launch value and session', async (t) => {
   assert.notStrictEqual(new URL(a.launchUrl).searchParams.get('launch'), new URL(b.launchUrl).searchParams.get('launch'));
   assert.match(a.launchUrl, /^http:\/\/127\.0\.0\.1:\d+\/\?launch=[A-Za-z0-9_-]{43}$/);
   // An old address from a stopped server does not work on a new one.
-  const { cookie } = await connect(a.launchUrl);
-  assert.strictEqual((await fetch(b.url, { headers: { cookie } })).status, 403);
+  assert.strictEqual((await fetch(b.url, { headers: { cookie: a.cookie } })).status, 403);
+  assert.strictEqual((await b.get('/')).status, 200);
 });
 
 test('hasSession compares the cookie value exactly and ignores other cookies', () => {
