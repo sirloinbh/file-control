@@ -384,3 +384,86 @@ test('sourcePaths picks the sources of mv, cp and rm only', () => {
   assert.deepStrictEqual(sourcePaths('rm', ['rm', '--permanent', 'a', 'b']), ['a', 'b']);
   assert.deepStrictEqual(sourcePaths('flatten', ['flatten', 'a']), []);
 });
+
+// ---- links, unreadable entries, several sources (#280 review) ----
+
+function junction(target, link) {
+  try {
+    fs.symlinkSync(target, link, 'junction');
+    return true;
+  } catch {
+    return false; // links cannot be made here
+  }
+}
+
+test('cp reads through a junction inside the source, so a file added behind it gives a new preview and nothing is copied', () => {
+  const dir = tempDir();
+  make(dir, { 'src/a.txt': '1', 'outside/big.txt': 'xxxxxxxx', 'dest/keep.txt': 'k' });
+  if (!junction(path.join(dir, 'outside'), path.join(dir, 'src', 'lnk'))) return;
+  const argv = ['cp', path.join(dir, 'src'), path.join(dir, 'dest')];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.strictEqual(preview.sources[0].count, 3);
+  assert.strictEqual(preview.sources[0].size, 9, 'what the junction holds is counted');
+  make(dir, { 'outside/NEW.txt': 'n' });
+  const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(outcome.repreview, true);
+  assert.ok(!fs.existsSync(path.join(dir, 'dest', 'src')), 'nothing was copied');
+});
+
+test('a junction that loops back into the source does not make the snapshot walk forever', () => {
+  const dir = tempDir();
+  make(dir, { 'src/a.txt': '1' });
+  if (!junction(path.join(dir, 'src'), path.join(dir, 'src', 'loop'))) return;
+  const snap = snapshotSource(path.join(dir, 'src'), { followLinks: true });
+  assert.strictEqual(snap.count, 2);
+});
+
+test('a source that is itself a junction: rm records the link, cp reads through it', () => {
+  const dir = tempDir();
+  make(dir, { 'real/a.txt': '123', 'dest/keep.txt': 'k' });
+  const link = path.join(dir, 'lnk');
+  if (!junction(path.join(dir, 'real'), link)) return;
+  const asLink = snapshotSource(link);
+  assert.deepStrictEqual([asLink.type, asLink.count, asLink.size], ['link', 0, 0]);
+  assert.strictEqual(typeof asLink.target, 'string');
+  const through = snapshotSource(link, { followLinks: true });
+  assert.deepStrictEqual([through.type, through.count, through.size], ['link', 1, 3]);
+  const rmPreview = runChecked(['rm', link], { mode: 'preview' }, { execute });
+  make(dir, { 'real/new.txt': 'n' });
+  assert.strictEqual(runChecked(['rm', link], { mode: 'preview' }, { execute }).fingerprint, rmPreview.fingerprint, 'rm removes only the link');
+  const cpArgv = ['cp', link, path.join(dir, 'dest')];
+  const cpPreview = runChecked(cpArgv, { mode: 'preview' }, { execute });
+  make(dir, { 'real/newer.txt': 'n' });
+  assert.strictEqual(runChecked(cpArgv, { mode: 'run', expect: cpPreview.fingerprint }, { execute }).repreview, true);
+});
+
+test('an unreadable or vanished entry becomes an FcError naming the path', (t) => {
+  const dir = tempDir();
+  make(dir, { 'src/sub/a.txt': '1' });
+  const realReaddir = fs.readdirSync;
+  const readdir = t.mock.method(fs, 'readdirSync', (target, ...rest) => {
+    if (String(target).endsWith('sub')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+    return realReaddir(target, ...rest);
+  });
+  assert.throws(() => snapshotSource(path.join(dir, 'src')), (err) => err instanceof fc.FcError && /sub could not be read \(EPERM\).*command line/.test(err.message));
+  readdir.mock.restore();
+  const realLstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', (target, ...rest) => {
+    if (String(target).endsWith('a.txt')) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    return realLstat(target, ...rest);
+  });
+  assert.throws(() => snapshotSource(path.join(dir, 'src')), (err) => err instanceof fc.FcError && /a\.txt could not be read \(ENOENT\)/.test(err.message));
+});
+
+test('rm with several sources: a change inside any of them gives a new preview and deletes nothing', () => {
+  const dir = tempDir();
+  make(dir, { 'one/a.txt': '1', 'two/b.txt': '2', 'three.txt': '3' });
+  const argv = ['rm', path.join(dir, 'one'), path.join(dir, 'two'), path.join(dir, 'three.txt')];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.deepStrictEqual(preview.sources.map((s) => s.type), ['dir', 'dir', 'file']);
+  make(dir, { 'two/new.txt': 'n' });
+  const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(outcome.repreview, true);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(path.join(dir, 'one', 'a.txt')) && fs.existsSync(path.join(dir, 'two', 'b.txt')) && fs.existsSync(path.join(dir, 'three.txt')));
+});

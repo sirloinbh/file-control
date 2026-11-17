@@ -217,3 +217,27 @@ test('a toItems that throws falls back to the report with a warning', () => {
   assert.match(body, /Could not build the result table: no items/);
   assert.ok(body.includes('Recycled D:/x'));
 });
+
+test('the preview page shows what each source holds, escaped, with link notes', () => {
+  const jobs = fakeJobs();
+  const sources = [
+    { path: 'D:\\a<b>', type: 'dir', count: 1, size: 2048, digest: 'x' },
+    { path: 'D:\\empty', type: 'dir', count: 2, size: 0, digest: 'x' },
+    { path: 'D:\\f.txt', type: 'file', count: 0, size: 5, digest: 'x' },
+    { path: 'D:\\lnk', type: 'link', count: 3, size: 10, digest: 'x', target: 'D:\\t<arget>' },
+    { path: 'D:\\gone', type: 'missing', count: 0, size: 0, digest: '' },
+  ];
+  const render = (command) => String(resultPage(jobs, {
+    id: 'p', argv: [command, 'D:\\a'], mode: 'preview', status: 'done', startedAt: 0, endedAt: 1, lines: [], droppedLines: 0, error: null,
+    outcome: { command, report: 'r', result: {}, fingerprint: FP, sources },
+  }, { specs: [{ ...spec, command }], tokenField: '' }));
+  const rm = render('rm');
+  for (const label of ['Source', 'Type', 'Items inside', 'Total size', 'Folder', 'File', 'Link', 'Missing']) assert.ok(rm.includes(label), label);
+  assert.ok(rm.includes('D:\\a&lt;b&gt;'));
+  assert.ok(!rm.includes('<b>'));
+  assert.ok(rm.includes('1 item<') && rm.includes('2 items<'));
+  assert.ok(rm.includes('D:\\t&lt;arget&gt;') && rm.includes('are not touched'));
+  assert.ok(!rm.includes('3 items'), 'rm does not count what a link leads to');
+  const cp = render('cp');
+  assert.ok(cp.includes('3 items') && cp.includes('are included'));
+});

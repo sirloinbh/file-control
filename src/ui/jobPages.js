@@ -112,12 +112,19 @@ function outcomeAlert(job) {
 // What the sources of a mv, cp or rm preview hold (#280): the run happens only if this still matches, so the person sees what is confirmed.
 function sourcesTable(outcome) {
   if (!Array.isArray(outcome.sources) || outcome.sources.length === 0) return '';
-  const rows = outcome.sources.map((source) => [
-    source.path,
-    source.type === 'dir' ? 'Folder' : source.type === 'missing' ? 'Missing' : source.type === 'link' ? 'Link' : 'File',
-    source.type === 'dir' ? `${source.count} item${source.count === 1 ? '' : 's'}` : '',
-    source.type === 'missing' || source.type === 'link' ? '' : formatSize(source.size),
-  ]);
+  const follows = outcome.command === 'cp';
+  const rows = outcome.sources.map((source) => {
+    const isLink = source.type === 'link';
+    // A link's contents are counted only when the command reads through it (cp).
+    const counted = source.type === 'dir' || (isLink && follows);
+    const note = !isLink ? '' : html`<br><span class="muted">Link to ${source.target ?? ''}. ${follows ? 'The contents it leads to are included.' : 'The contents it leads to are not touched.'}</span>`;
+    return [
+      html`${source.path}${note}`,
+      source.type === 'dir' ? 'Folder' : source.type === 'missing' ? 'Missing' : isLink ? 'Link' : 'File',
+      counted ? `${source.count} item${source.count === 1 ? '' : 's'}` : '',
+      source.type === 'missing' || (isLink && !follows) ? '' : formatSize(source.size),
+    ];
+  });
   return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: '7em' }, { label: 'Items inside', width: '9em' }, { label: 'Total size', width: '8em' }], rows)}`;
 }
 
