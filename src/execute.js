@@ -77,7 +77,11 @@ function defaultReadStdin() {
 
 function formatList(entries) {
   return entries
-    .map((e) => `${e.type === 'dir' ? '[dir]' : '     '}  ${(e.size === null ? '' : fc.formatSize(e.size)).padStart(8)}  ${e.name}`)
+    .map((e) => {
+      // A link keeps the 5-character tag column: [lnk], then the target. A link to a folder says (folder), a link to a file says (file), and a missing target says (broken) (#267).
+      if (e.type === 'link') return `[lnk]  ${''.padStart(8)}  ${e.name} -> ${e.target ?? '?'} (${e.linkTo === 'dir' ? 'folder' : e.linkTo})`;
+      return `${e.type === 'dir' ? '[dir]' : '     '}  ${(e.size === null ? '' : fc.formatSize(e.size)).padStart(8)}  ${e.name}`;
+    })
     .join('\n');
 }
 

@@ -182,6 +182,16 @@ function list(dir = '.') {
       } catch {
         stat = undefined;
       }
+      // Junctions and symbolic links are links, not files or folders (#267). linkTo says what the target is: 'dir', 'file', or 'broken' (missing or unreadable).
+      if (entry.isSymbolicLink()) {
+        let target = null;
+        try {
+          target = fs.readlinkSync(full).replace(/^\\\\\?\\(?=[A-Za-z]:)/, '');
+        } catch {
+          // The link text cannot be read. The target stays unknown.
+        }
+        return { name: entry.name, type: 'link', linkTo: stat ? (stat.isDirectory() ? 'dir' : 'file') : 'broken', target, size: null, modified: stat ? stat.mtime : null };
+      }
       return {
         name: entry.name,
         type: entry.isDirectory() ? 'dir' : 'file',
@@ -189,7 +199,11 @@ function list(dir = '.') {
         modified: stat ? stat.mtime : null,
       };
     })
-    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+    // Folders and links to folders come first, then files and the other links.
+    .sort((a, b) => {
+      const rank = (e) => (e.type === 'dir' || e.linkTo === 'dir' ? 0 : 1);
+      return rank(a) === rank(b) ? a.name.localeCompare(b.name) : rank(a) - rank(b);
+    });
 }
 
 function makeDir(dir, { dryRun = false } = {}) {

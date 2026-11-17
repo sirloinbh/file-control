@@ -71,14 +71,17 @@ function folderBody(query, folder) {
       ? html`<p><a href="${chosenUrl({ ...query, dir: folder.path })}"><strong>Choose this folder</strong></a></p>`
       : '';
   const rows = folder.folders.map((child) => [
-    link(child.path, child.name),
-    child.protected === null ? (canReturn ? html`<a href="${chosenUrl({ ...query, dir: child.path })}">Choose</a>` : '') : html`${badge('warning', 'Cannot choose')} <span class="muted">${child.protected}</span>`,
+    child.link ? html`${link(child.path, child.name)} <span class="muted">link -> ${child.target ?? '?'}</span>` : link(child.path, child.name),
+    child.protected === null ? (canReturn ? html`<a href="${chosenUrl({ ...query, dir: child.choosePath ?? child.path })}">Choose</a>` : '') : html`${badge('warning', 'Cannot choose')} <span class="muted">${child.protected}</span>`,
   ]);
+  const otherLinks = (folder.links ?? []).length === 0 ? '' : html`<h2>Links that cannot be entered</h2>
+${table([{ label: 'Link', width: '40%' }, { label: 'Target' }, { label: '' }], folder.links.map((l) => [l.name, l.target ?? '?', badge(l.linkTo === 'broken' ? 'warning' : 'skipped', l.linkTo === 'broken' ? 'Broken link' : 'Link to a file')]), { empty: '' })}`;
   return html`<p><code>${folder.path}</code></p>
 <p>${up}</p>
 ${choose}
 ${summaryCards([{ label: 'Folders', value: folder.folders.length + (folder.hiddenFolders ?? 0) }, { label: 'Files', value: folder.files }, { label: 'File size', value: formatSize(folder.size) }])}
 ${table([{ label: 'Folder', width: '60%' }, { label: '' }], rows, { empty: 'No subfolders.' })}
+${otherLinks}
 ${folder.hiddenFolders > 0 ? html`<p class="muted">Too many folders, so only the first ${folder.folders.length} are shown (${folder.hiddenFolders} more).</p>` : ''}`;
 }
 
