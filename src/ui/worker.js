@@ -10,16 +10,18 @@
 const fc = require('../commands');
 const { execute } = require('../execute');
 const { toPlain } = require('./serialize');
+const { runChecked } = require('./checkedRun');
 
-function runOnce(argv, send) {
+// mode is 'preview' or 'run' for the checked flow (#255, see checkedRun.js); without it the command runs as is.
+function runOnce(argv, send, { mode, expect, executeFn = execute } = {}) {
   try {
-    const outcome = execute(argv, {
-      progress: (line) => send({ type: 'progress', line: String(line) }),
-      // The screen has no standard input. Waiting would never end the job, so it refuses right away.
-      readStdin: () => {
-        throw new fc.FcError('In the UI, also enter the file contents.');
-      },
-    });
+    const progress = (line) => send({ type: 'progress', line: String(line) });
+    // The screen has no standard input. Waiting would never end the job, so it refuses right away.
+    const readStdin = () => {
+      throw new fc.FcError('In the UI, also enter the file contents.');
+    };
+    const run = (args, options) => executeFn(args, { readStdin, ...options });
+    const outcome = mode === undefined ? run(argv, { progress }) : runChecked(argv, { mode, expect }, { execute: run, progress });
     send({ type: 'done', outcome: toPlain(outcome) });
   } catch (err) {
     send({ type: 'error', error: toPlain(err instanceof Error ? err : new Error(String(err))) });
@@ -35,10 +37,12 @@ if (require.main === module) {
       return;
     }
     let last;
+    const mode = typeof message.mode === 'string' ? message.mode : undefined;
+    const expect = typeof message.expect === 'string' ? message.expect : undefined;
     runOnce(argv, (msg) => {
       last = msg;
       if (msg.type === 'progress') process.send(msg);
-    });
+    }, { mode, expect });
     process.send(last, finish);
   });
 }

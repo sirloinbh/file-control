@@ -7,6 +7,7 @@
 const { html } = require('./html');
 const { page, alertBox } = require('./layout');
 const { BusyError, formatElapsed, KEPT_HEAD_LINES: KEPT_HEAD } = require('./jobs');
+const { dangerConfirmations, resultSection, isOn } = require('./flow');
 
 const STATUS_PATH = '/job';
 const RESULT_PATH = '/job/result';
@@ -73,6 +74,25 @@ ${linesBlock(recent, skipped)}`,
   });
 }
 
+// The form values each job was started from (#255). The run form of a preview result carries them as hidden fields.
+// It is kept beside the job (not on it), so jobs.js does not need to know about forms.
+const jobForms = new WeakMap();
+
+// The hidden fields and the Run form of a preview result. Only the fields named by the spec are carried, so no other value can ride along.
+function runForm(spec, job, outcome, { tokenField, jobs }) {
+  const form = jobForms.get(job) ?? {};
+  const hidden = spec.fields
+    .filter((field) => (field.kind === 'checkbox' ? isOn(form[field.name]) : form[field.name] !== undefined))
+    .map((field) => html`<input type="hidden" name="${field.name}" value="${field.kind === 'checkbox' ? 'on' : form[field.name]}">`);
+  const options = Object.fromEntries(spec.fields.filter((field) => field.kind === 'checkbox').map((field) => [field.name, form[field.name]]));
+  return html`<h2>Run</h2>
+<form method="post" action="${spec.path}/run">
+${tokenField}${hidden}<input type="hidden" name="fingerprint" value="${outcome.fingerprint}">
+${dangerConfirmations(options)}
+${runButton(jobs, spec.runLabel ?? 'Run')}
+</form>`;
+}
+
 // The failure notice text. For a partial failure (failure), the whole report is sometimes the message, so then it is written short so as not to overlap the report.
 function outcomeAlert(job) {
   if (job.status === 'error') {
@@ -88,16 +108,22 @@ function outcomeAlert(job) {
 }
 
 // The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.
-function resultPage(jobs, job, { available, views = {} } = {}) {
+function resultPage(jobs, job, { available, views = {}, specs = [], tokenField = '' } = {}) {
   const alert = outcomeAlert(job);
   let content = '';
+  let before = '';
+  let after = '';
+  const spec = job.status === 'done' ? specs.find((candidate) => candidate.command === (job.outcome.command || job.argv[0])) : undefined;
   if (job.status === 'done') {
     const { outcome } = job;
+    if (spec && outcome.repreview) before = alertBox('warning', 'The folder changed after the preview, so nothing was changed. Check the new preview below, then run again.');
+    if (spec && (job.mode === 'preview' || outcome.repreview) && typeof outcome.fingerprint === 'string') after = runForm(spec, job, outcome, { tokenField, jobs });
     const view = outcome.command ? views[outcome.command] : undefined;
     if (view) content = view(outcome, job);
     else if (outcome.help) content = html`<p class="muted">See the help in a terminal with fctl --help.</p>`;
     else if (outcome.report) content = html`<pre class="report">${outcome.report}</pre>`;
     else content = html`<p class="muted">Nothing to report.</p>`;
+    if (spec && job.mode === 'run' && !outcome.repreview && typeof spec.toItems === 'function') content = resultSection(spec.toItems(outcome), { doneLabel: spec.doneLabel });
   }
   const lines = job.lines.length > 0 || job.droppedLines > 0
     ? html`<details><summary>${job.lines.length + job.droppedLines} progress lines</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`
@@ -108,13 +134,14 @@ function resultPage(jobs, job, { available, views = {} } = {}) {
     alerts: [alert],
     body: html`${commandLine(job)}
 <p class="muted">Elapsed ${formatElapsed(jobs.elapsed(job))}</p>
-${content}
+${before}${content}
+${after}
 ${lines}`,
   });
 }
 
 // The job page addresses. views are the per-command result screens (#256 to #259).
-function jobRoutes(jobs, { views = {} } = {}) {
+function jobRoutes(jobs, { views = {}, specs = [] } = {}) {
   return new Map([
     [STATUS_PATH, (req, { available }) => {
       const job = jobFromRequest(jobs, req);
@@ -123,21 +150,23 @@ function jobRoutes(jobs, { views = {} } = {}) {
       if (job.status !== 'running') return { status: 303, headers: { Location: resultUrl(job) }, body: '' };
       return { body: statusPage(jobs, job, { available }) };
     }],
-    [RESULT_PATH, (req, { available }) => {
+    [RESULT_PATH, (req, { available, tokenField }) => {
       const job = jobFromRequest(jobs, req);
       if (!job) return notFound(available);
       // If it is still running, it sends back to the status page.
       if (job.status === 'running') return { status: 303, headers: { Location: statusUrl(job) }, body: '' };
-      return { body: resultPage(jobs, job, { available, views }) };
+      return { body: resultPage(jobs, job, { available, views, specs, tokenField }) };
     }],
   ]);
 }
 
 // The response that run requests (POST handlers, #255 onward) call. It starts the job and redirects to the status page.
 // If a job is already running, it does not start and shows 409 with a link to that job.
-function startJobResponse(jobs, argv, { available } = {}) {
+// start is passed to jobs.start as its second argument ({ mode, expect }), and form is remembered for the result page's run form.
+function startJobResponse(jobs, argv, { available, start, form } = {}) {
   try {
-    const job = jobs.start(argv);
+    const job = start ? jobs.start(argv, start) : jobs.start(argv);
+    if (form) jobForms.set(job, form);
     return { status: 303, headers: { Location: statusUrl(job) }, body: '' };
   } catch (err) {
     if (!(err instanceof BusyError)) throw err;
