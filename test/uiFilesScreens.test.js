@@ -71,7 +71,8 @@ async function serve(t) {
   return { jobs, get, post, finish, previewAndRun };
 }
 
-const decode = (body) => body.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+// &amp; is decoded last so that an escaped entity such as &amp;lt; does not turn into <.
+const decode = (body) => body.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 
 // ---------- Checking the input (no server) ----------
 
