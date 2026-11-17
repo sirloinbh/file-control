@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { startServer } = require('../src/ui/server');
+const { startUi } = require('./uiClient');
 const { createJobs } = require('../src/ui/jobs');
 const { jobRoutes } = require('../src/ui/jobPages');
 const { flowRoutes } = require('../src/ui/flowPages');
@@ -82,12 +82,8 @@ async function serve(t) {
   const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME } });
   const specs = [mvSpec, normalizeSpec, rmSpec];
   const routes = new Map([...jobRoutes(jobs, { specs }), ...flowRoutes(jobs, specs)]);
-  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
-  const { server, url } = await startServer({ port: 0, routes });
+  const { server, url, token, get, post } = await startUi({ routes });
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
-  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
-  const post = (p, fields) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token, ...fields }).toString() });
   // Follows a 303 to the job, waits for it to end and returns the result page.
   const finish = async (res) => {
     assert.strictEqual(res.status, 303, await res.clone().text());

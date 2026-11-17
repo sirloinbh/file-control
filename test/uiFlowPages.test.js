@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { startServer } = require('../src/ui/server');
+const { startUi } = require('./uiClient');
 const { BusyError } = require('../src/ui/jobs');
 const { jobRoutes, resultPage } = require('../src/ui/jobPages');
 const { flowRoutes } = require('../src/ui/flowPages');
@@ -53,12 +53,8 @@ function fakeJobs() {
 
 async function serve(t, jobs) {
   const routes = new Map([...jobRoutes(jobs, { specs: [spec] }), ...flowRoutes(jobs, [spec])]);
-  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
-  const { server, url } = await startServer({ port: 0, routes });
+  const { server, url, token, get, post } = await startUi({ routes });
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
-  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
-  const post = (p, fields) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token, ...fields }).toString() });
   return { get, post, token };
 }
 
@@ -182,12 +178,8 @@ const alwaysPermanent = {
 test('the confirmation follows the argv that will run, not the form field names', async (t) => {
   const jobs = fakeJobs();
   const routes = new Map([...jobRoutes(jobs, { specs: [alwaysPermanent] }), ...flowRoutes(jobs, [alwaysPermanent])]);
-  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
-  const { server, url } = await startServer({ port: 0, routes });
+  const { server, url, token, get, post } = await startUi({ routes });
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
-  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
-  const post = (p, fields) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token, ...fields }).toString() });
 
   for (const extra of [{}, { wipe: 'on' }, { permanent: '' }]) {
     const res = await post('/files/purge/run', { target: 'D:/x', fingerprint: FP, ...extra });
