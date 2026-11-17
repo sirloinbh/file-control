@@ -6,7 +6,7 @@
 // - Run is checked first (checkRunRequest), then started with mode 'run' and expect = the fingerprint. The child process re-checks the folder.
 // - The server never trusts an argv from the form: spec.toArgv rebuilds it from the named fields only.
 //
-// spec: { command, path, title, fields: [{ name, label, kind: 'text' | 'path' | 'checkbox' }], toArgv(values) -> string[], doneLabel?, toItems?(outcome), runLabel? }
+// spec: { command, path, title, fields: [{ name, label, kind: 'text' | 'path' | 'textarea' | 'checkbox', rows? }], toArgv(values) -> string[], doneLabel?, toItems?(outcome), runLabel? }
 // A checkbox field that is a dangerous option must be named 'force' or 'permanent' (its confirmation field is confirm-<name>).
 
 const { FcError } = require('../commands');
@@ -30,6 +30,8 @@ function fieldValues(spec, source) {
 function fieldRow(spec, field, value) {
   if (field.kind === 'path') return pathInput({ name: field.name, label: field.label, value, returnTo: spec.path });
   if (field.kind === 'checkbox') return html`<p><label><input type="checkbox" name="${field.name}" value="on"${isOn(value) ? ' checked' : ''}> ${field.label}</label></p>`;
+  if (field.kind === 'textarea') return html`<p><label>${field.label}<br><textarea name="${field.name}" rows="${field.rows ?? 5}" cols="60" spellcheck="false">
+${value}</textarea></label></p>`;
   return html`<p><label>${field.label}<br><input type="text" name="${field.name}" value="${value}" size="60" spellcheck="false"></label></p>`;
 }
 
