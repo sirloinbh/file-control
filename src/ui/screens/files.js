@@ -156,7 +156,7 @@ const specs = [
     path: `${BASE}/mv`,
     title: 'Move',
     fields: [
-      { name: 'sources', label: 'Items to move (full paths, one per line)', kind: 'textarea', rows: 5 },
+      { name: 'sources', label: 'Items to move (full paths, one per line)', kind: 'lines' },
       { name: 'dest', label: 'Destination (full path; a folder to move into)', kind: 'path' },
       FORCE('Overwrite items that already exist in the destination'),
     ],
@@ -168,7 +168,7 @@ const specs = [
     path: `${BASE}/cp`,
     title: 'Copy',
     fields: [
-      { name: 'sources', label: 'Items to copy (full paths, one per line)', kind: 'textarea', rows: 5 },
+      { name: 'sources', label: 'Items to copy (full paths, one per line)', kind: 'lines' },
       { name: 'dest', label: 'Destination (full path; a folder to copy into)', kind: 'path' },
       FORCE('Overwrite items that already exist in the destination'),
     ],
@@ -180,7 +180,7 @@ const specs = [
     path: `${BASE}/rm`,
     title: 'Delete',
     fields: [
-      { name: 'targets', label: 'Items to delete (full paths, one per line)', kind: 'textarea', rows: 5 },
+      { name: 'targets', label: 'Items to delete (full paths, one per line)', kind: 'lines' },
       { name: 'permanent', label: 'Delete permanently instead of using the Recycle Bin', kind: 'checkbox' },
     ],
     toArgv: (values) => ['rm', ...(values.permanent ? ['--permanent'] : []), ...pathLines(values.targets, 'The items to delete')],
