@@ -208,8 +208,9 @@ function openBrowser(url) {
   }
 }
 
-// The screen areas (#256 to #259). Each module exports { specs, views, routes(jobs) } (see src/ui/screens/).
+// The screens of each command category (#256 to #259). Each module exports { specs, views, routes(jobs) } (see src/ui/screens/).
 const SCREENS = [
+  require('./screens/archive'),
   require('./screens/cleanup'),
 ];
 
