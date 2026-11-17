@@ -8,7 +8,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { FcError } = require('../commands');
 const { html, raw } = require('./html');
-const { SECURITY_HEADERS, RequestError, createToken, checkRequest, readForm, tokenField } = require('./security');
+const { SECURITY_HEADERS, RequestError, createToken, checkRequest, readForm, tokenField, sessionCookie, hasSession, isValidToken } = require('./security');
 const { CATEGORIES, page, table } = require('./layout');
 
 const HOST = '127.0.0.1';
@@ -21,8 +21,15 @@ const UI_HELP = `Usage: fctl ui [--port=NUMBER] [--no-open]
 
 Options:
   --port=NUMBER  port to listen on (default: ${DEFAULT_PORT}, 0 picks a free port)
-  --no-open      do not open the default browser
+  --no-open      do not open the default browser (open the printed address yourself)
   -h, --help     show help`;
+
+// The page for a request without the session (#265). It carries no token, no file data, and no folder listing.
+const NO_SESSION_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Open fctl from the terminal - fctl</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}</style></head>
+<body><h1>This page is not open to you</h1>
+<p>Open the address printed in the terminal where <code>fctl ui</code> is running. It works once for the first browser that uses it.</p>
+<p>If you restarted <code>fctl ui</code>, use the newly printed address.</p></body></html>`;
 
 function homePage(available) {
   const rows = CATEGORIES.map((category) => [
@@ -44,7 +51,11 @@ ${table([{ label: 'Category', width: '30%' }, { label: 'What it does' }], rows)}
 // Request check (#252): every request must have a Host that is this server's address (DNS rebinding prevention). For requests other than GET and HEAD, it checks Origin, the form type, the body size, and the token
 // and calls the handler only after all of them, and passes the form values it read as context.form (URLSearchParams). A handler that changes files is placed only on POST.
 // token is a random value made at server start. Tests can set it.
-function createHandler(routes = new Map(), { token = createToken() } = {}) {
+// Session (#265): launch is a one-time value made at server start. The first GET with ?launch=<value> gets the fctl_session cookie and a 303 to the same address without the query,
+// and the value is used up. Every other request without that cookie gets 403 and the NO_SESSION_PAGE (checked after Host, before any route, so /job and /pick are covered too).
+function createHandler(routes = new Map(), { token = createToken(), launch = createToken() } = {}) {
+  let launchValue = launch;
+  const session = createToken();
   const all = new Map([['/', () => ({ body: homePage(available) })], ...routes]);
   const available = new Set(all.keys());
   const send = (res, status, body, headers = {}) => {
@@ -72,11 +83,24 @@ function createHandler(routes = new Map(), { token = createToken() } = {}) {
         send(res, err.status, page({ title: 'Request not accepted', available, alerts: [{ kind: 'error', message: err.message }] }));
         return;
       }
-      let pathname;
+      let parsed = null;
       try {
-        pathname = new URL(req.url, `http://${HOST}`).pathname;
+        parsed = new URL(req.url, `http://${HOST}`);
       } catch {
-        pathname = null;
+        parsed = null;
+      }
+      const pathname = parsed === null ? null : parsed.pathname;
+      const given = parsed === null ? [] : parsed.searchParams.getAll('launch');
+      if (req.method === 'GET' && launchValue !== null && given.length === 1 && isValidToken(given[0], launchValue)) {
+        launchValue = null;
+        parsed.searchParams.delete('launch');
+        // Leading slashes are collapsed so the Location can never become a protocol-relative address.
+        send(res, 303, '', { Location: `/${parsed.pathname.replace(/^\/+/, '')}${parsed.search}`, 'Set-Cookie': sessionCookie(session) });
+        return;
+      }
+      if (!hasSession(req.headers.cookie, session)) {
+        send(res, 403, NO_SESSION_PAGE);
+        return;
       }
       const route = pathname === null ? undefined : all.get(pathname);
       if (route === undefined) {
@@ -150,8 +174,8 @@ function parseUiArgs(argv) {
   return options;
 }
 
-// It starts the server and returns { server, url }. If the port is already in use, it does not move to another port and fails.
-function startServer({ port = DEFAULT_PORT, routes } = {}) {
+// It starts the server and returns { server, url, launchUrl }. If the port is already in use, it does not move to another port and fails.
+function startServer({ port = DEFAULT_PORT, routes, token, launch = createToken() } = {}) {
   const portError = (err) => {
     if (err.code === 'EADDRINUSE') return new FcError(`Port ${port} is already used by another program. Check what uses it (netstat -ano | findstr :${port}). To start on another port, use --port=NUMBER.`);
     if (err.code === 'EACCES') return new FcError(`No permission to open port ${port}. Choose another port with --port=NUMBER.`);
@@ -160,12 +184,14 @@ function startServer({ port = DEFAULT_PORT, routes } = {}) {
   // A free port (0) is chosen by the operating system, so there is no need to check in advance.
   const checked = port === 0 ? Promise.resolve() : checkPortFree(port);
   return checked.catch((err) => Promise.reject(portError(err))).then(() => new Promise((resolve, reject) => {
-    const server = http.createServer(createHandler(routes));
+    const server = http.createServer(createHandler(routes, { token, launch }));
     server.once('error', (err) => reject(portError(err)));
     server.listen({ port, host: HOST, exclusive: true }, () => {
       // A server error after it started is only reported and does not end the process.
       server.on('error', (err) => console.error(`UI server error: ${err.message}`));
-      resolve({ server, url: `http://${HOST}:${server.address().port}/` });
+      const url = `http://${HOST}:${server.address().port}/`;
+      // launchUrl is the only way in (#265). url is the plain address that the browser is sent to after the launch step.
+      resolve({ server, url, launchUrl: `${url}?launch=${encodeURIComponent(launch)}` });
     });
   }));
 }
@@ -197,10 +223,11 @@ async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
     return null;
   }
   // If per-screen addresses are not given separately, it attaches the job status and result pages (#253). The command runs in a child process.
-  const { server, url } = await startServer({ port: options.port, routes: routes ?? defaultRoutes() });
-  out(`fctl UI: ${url}`);
+  const { server, launchUrl } = await startServer({ port: options.port, routes: routes ?? defaultRoutes() });
+  out(`fctl UI: ${launchUrl}`);
+  out('Open this address in your browser. It works only once, for the first browser that uses it. After a restart, use the newly printed address.');
   out('Press Ctrl+C to stop.');
-  if (options.open) openBrowser(url);
+  if (options.open) openBrowser(launchUrl);
   process.once('SIGINT', () => {
     server.close();
     server.closeAllConnections();

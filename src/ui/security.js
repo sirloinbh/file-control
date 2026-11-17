@@ -134,7 +134,31 @@ function tokenField(token) {
   return `<input type="hidden" name="${TOKEN_FIELD}" value="${token}">`;
 }
 
+// The browser session (#265). Another process or another Windows user on this PC can reach 127.0.0.1:port, so the Host and token checks alone
+// would let it read the token from GET / and then POST. Every request therefore needs a session cookie that only the browser opened
+// with the one-time launch address printed in the terminal gets. The cookie is HttpOnly and SameSite=Strict.
+const SESSION_COOKIE = 'fctl_session';
+
+function sessionCookie(value) {
+  return `${SESSION_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/`;
+}
+
+// True if the Cookie header carries the session value. Compared with timingSafeEqual. A cookie with the same name twice is accepted if any one matches.
+function hasSession(cookieHeader, session) {
+  if (typeof cookieHeader !== 'string') return false;
+  let found = false;
+  for (const part of cookieHeader.split(';')) {
+    const at = part.indexOf('=');
+    if (at < 0 || part.slice(0, at).trim() !== SESSION_COOKIE) continue;
+    if (isValidToken(part.slice(at + 1).trim(), session)) found = true;
+  }
+  return found;
+}
+
 module.exports = {
+  SESSION_COOKIE,
+  sessionCookie,
+  hasSession,
   MAX_BODY,
   TOKEN_FIELD,
   SECURITY_HEADERS,
