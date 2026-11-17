@@ -11,6 +11,7 @@ const { escapeHtml, html, raw } = require('../src/ui/html');
 const { page, alertBox, summaryCards, badge, table, CATEGORIES } = require('../src/ui/layout');
 const { parseUiArgs, startServer, createHandler, DEFAULT_PORT } = require('../src/ui/server');
 const { FcError } = require('../src/commands');
+const { startHandler, withUsablePort, probe, connect } = require('./uiClient');
 
 const FCTL = path.join(__dirname, '..', 'bin', 'fctl.js');
 
@@ -38,10 +39,10 @@ function launch(args) {
     }, 20000);
     child.stdout.on('data', (chunk) => {
       out += chunk;
-      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
+      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)\?launch=(\S+)/.exec(out);
       if (found) {
         clearTimeout(timer);
-        resolve({ child, url: found[1], output: () => out });
+        resolve({ child, url: found[1], launchUrl: found[0].slice('fctl UI: '.length), output: () => out });
       }
     });
     child.stderr.on('data', (chunk) => {
@@ -114,22 +115,33 @@ test('parseUiArgs: 기본 포트 8109, --port=0, --no-open, 잘못된 포트·�
 });
 
 test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 404, POST 405 (#251)', async (t) => {
-  const { child, url } = await launch(['--no-open', '--port=0']);
+  // If the OS picked a port that fetch refuses, it starts the child process once more.
+  const { child, url, cookie } = await withUsablePort(async () => {
+    const started = await launch(['--no-open', '--port=0']);
+    try {
+      await probe(started.url);
+      return { ...started, ...(await connect(started.launchUrl)) };
+    } catch (err) {
+      started.child.kill();
+      throw err;
+    }
+  }, 2);
   t.after(() => child.kill());
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
-  const home = await request(url);
+  const headers = { cookie };
+  const home = await request(url, { headers });
   assert.strictEqual(home.status, 200);
   assert.strictEqual(home.headers['content-type'], 'text/html; charset=utf-8');
   assert.ok(home.body.includes('<h1>File Control</h1>'));
   for (const category of CATEGORIES) assert.ok(home.body.includes(category.label));
-  const missing = await request(new URL('/nope?<x>', url));
+  const missing = await request(new URL('/nope?<x>', url), { headers });
   assert.strictEqual(missing.status, 404);
   assert.ok(missing.body.includes('No such address: /nope?%3Cx%3E') || missing.body.includes('No such address: /nope?&lt;x&gt;'));
   assert.ok(!missing.body.includes('<x>'));
-  const head = await request(url, { method: 'HEAD' });
+  const head = await request(url, { method: 'HEAD', headers });
   assert.strictEqual(head.status, 200);
   assert.strictEqual(head.body, '');
-  const post = await request(url, { method: 'POST' });
+  const post = await request(url, { method: 'POST', headers });
   assert.strictEqual(post.status, 405);
   assert.strictEqual(post.headers.allow, 'GET, HEAD');
 });
@@ -146,17 +158,15 @@ test('fctl ui는 포트를 이미 쓰고 있으면 다른 포트로 넘어가지
 
 test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 계속 돈다 (#251)', async (t) => {
   const routes = new Map([['/files', () => { throw new Error('<boom>'); }]]);
-  const server = http.createServer(createHandler(routes));
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { server, get } = await startHandler(routes);
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const failed = await request(`${base}/files`);
+  const failed = await get('/files');
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('Could not build the page: &lt;boom&gt;'));
-  const home = await request(`${base}/`);
+  assert.ok((await failed.text()).includes('Could not build the page: &lt;boom&gt;'));
+  const home = await get('/');
   assert.strictEqual(home.status, 200);
   // The registered categories become links in the menu and the first screen.
-  assert.ok(home.body.includes('<a href="/files">Basic file tasks</a>'));
+  assert.ok((await home.text()).includes('<a href="/files">Basic file tasks</a>'));
 });
 
 test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)로 듣고 있어도 실패한다 (#251 1차 리뷰)', async (t) => {
@@ -173,19 +183,16 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
     ['/organize', { GET: () => ({ body: 'get' }), POST: async () => ({ status: 201, body: 'posted' }) }],
     ['/archive', async () => { throw new Error('<later>'); }],
   ]);
-  const server = http.createServer(createHandler(routes, { token: 'tok' }));
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  // A POST reaches the handler only with the form type and the token (#252); the helper's post sends token=tok.
+  const { server, get, post } = await startHandler(routes, { token: 'tok' });
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.address().port}`;
-  // A POST reaches the handler only with the form type and the token (#252).
-  const post = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'token=tok' };
-  const files = await request(`${base}/files`);
-  assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);
-  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, post)).status], ['get', 201]);
-  const put = await request(`${base}/organize`, { method: 'PUT' });
-  assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
-  const failed = await request(`${base}/archive`);
+  const files = await get('/files');
+  assert.deepStrictEqual([files.status, await files.text()], [200, '<p>&lt;a&gt;</p>']);
+  assert.deepStrictEqual([await (await get('/organize')).text(), (await post('/organize')).status], ['get', 201]);
+  const put = await get('/organize', { method: 'PUT' });
+  assert.deepStrictEqual([put.status, put.headers.get('allow')], [405, 'GET, HEAD, POST']);
+  const failed = await get('/archive');
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('Could not build the page: &lt;later&gt;'));
-  assert.strictEqual((await request(`${base}/`)).status, 200);
+  assert.ok((await failed.text()).includes('Could not build the page: &lt;later&gt;'));
+  assert.strictEqual((await get('/')).status, 200);
 });

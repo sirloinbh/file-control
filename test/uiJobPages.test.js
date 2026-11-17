@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { startServer } = require('../src/ui/server');
+const { startUi } = require('./uiClient');
 const { createJobs } = require('../src/ui/jobs');
 const { jobRoutes, startJobResponse, runButton, resultPage, statusPage } = require('../src/ui/jobPages');
 const { page } = require('../src/ui/layout');
@@ -32,12 +32,8 @@ async function settled(jobs, job, timeoutMs = 20000) {
 async function serve(t, jobs, argvForStart) {
   const routes = jobRoutes(jobs);
   routes.set('/start', { POST: (req, { available }) => startJobResponse(jobs, argvForStart(), { available }) });
-  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
-  const { server, url } = await startServer({ port: 0, routes });
+  const { server, get, post } = await startUi({ routes });
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
-  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
-  const post = (p) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: `token=${token}` });
   return { get, post };
 }
 

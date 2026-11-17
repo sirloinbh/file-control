@@ -9,12 +9,15 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { html } = require('../src/ui/html');
-const { startServer } = require('../src/ui/server');
-const { MAX_BODY } = require('../src/ui/security');
+const { startUi } = require('./uiClient');
+const { MAX_BODY, createToken } = require('../src/ui/security');
+
+// The session cookie of the server started last (#265). Tests in a file run one after another, and every request carries it unless it passes its own cookie.
+let sessionCookie;
 
 function request(url, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request(url, { method, headers }, (res) => {
+    const req = http.request(url, { method, headers: { cookie: sessionCookie, ...headers } }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
@@ -28,7 +31,7 @@ function request(url, { method = 'GET', headers = {}, body } = {}) {
 // It sends the body in several pieces without Content-Length (Transfer-Encoding: chunked).
 function chunked(url, parts) {
   return new Promise((resolve, reject) => {
-    const req = http.request(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' } }, (res) => {
+    const req = http.request(url, { method: 'POST', headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' } }, (res) => {
       res.resume();
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers }));
     });
@@ -50,15 +53,15 @@ async function serve(t) {
       return { body: 'ok' };
     } }],
   ]);
-  const { server, url } = await startServer({ port: 0, routes });
+  const { server, url, cookie, token } = await startUi({ routes, token: createToken() });
+  sessionCookie = cookie;
   t.after(() => {
     server.close();
     server.closeAllConnections();
   });
   const port = server.address().port;
   const form = await request(`${url}form`);
-  const token = /name="token" value="([^"]+)"/.exec(form.body)?.[1];
-  assert.ok(token, '폼에 토큰이 들어 있다');
+  assert.ok(form.body.includes(`name="token" value="${token}"`), 'the form holds the server token');
   return { url, port, token, target, form };
 }
 
