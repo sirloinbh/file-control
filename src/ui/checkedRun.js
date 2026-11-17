@@ -5,6 +5,7 @@
 const fc = require('../commands');
 const { fingerprint } = require('./flow');
 const { toPlain } = require('./serialize');
+const { snapshotSources } = require('./sourceSnapshot');
 
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 const REMOVING = new Set(['remove-broken', 'remove-duplicates', 'remove-low-quality']);
@@ -22,11 +23,11 @@ function stripFlow(argv) {
   return [...head.filter((arg) => arg !== '--dry-run' && arg !== '--yes' && !arg.startsWith('--yes=')), ...tail];
 }
 
-// The fingerprint of a preview. The same command, arguments, and preview result give the same value.
+// The fingerprint of a preview. The same command, arguments, preview result, and (for mv, cp and rm) source snapshot give the same value (#280).
 function previewFingerprint(argv, outcome) {
   const args = stripFlow(argv.map(String));
   return fingerprint(
-    { command: outcome.command, args, options: {}, preview: toPlain(outcome.result) },
+    { command: outcome.command, args, options: {}, preview: { result: toPlain(outcome.result), sources: outcome.sources ?? null } },
     { volatile: VOLATILE[outcome.command] || [] },
   );
 }
@@ -38,8 +39,12 @@ function withOption(argv, option) {
 }
 
 function preview(argv, execute, progress) {
-  const outcome = execute(withOption(argv, '--dry-run'), { progress });
+  let outcome = execute(withOption(argv, '--dry-run'), { progress });
   if (outcome.help) return { outcome, fingerprint: null };
+  // mv, cp and rm name only the given paths in their preview, so what a source folder holds is snapshotted too (sourceSnapshot.js).
+  // Taken after the dry run, so a missing source is the command's own error. Too large a folder throws rather than being fingerprinted in part.
+  const sources = snapshotSources(outcome.command, argv);
+  if (sources) outcome = { ...outcome, sources };
   return { outcome, fingerprint: previewFingerprint(argv, outcome) };
 }
 

@@ -208,11 +208,21 @@ function openBrowser(url) {
   }
 }
 
+// The screens of each command category (#256 to #259). Each module exports { specs, views, routes(jobs) } (see src/ui/screens/).
+const SCREENS = [
+  require('./screens/archive'),
+  require('./screens/cleanup'),
+];
+
 function defaultRoutes() {
   const { createJobs } = require('./jobs');
   const { jobRoutes } = require('./jobPages');
+  const { flowRoutes } = require('./flowPages');
   const { pickRoutes } = require('./pickPage');
-  return new Map([...jobRoutes(createJobs()), ...pickRoutes()]);
+  const jobs = createJobs();
+  const specs = SCREENS.flatMap((screen) => screen.specs);
+  const views = Object.assign({}, ...SCREENS.map((screen) => screen.views));
+  return new Map([...jobRoutes(jobs, { specs, views }), ...flowRoutes(jobs, specs), ...SCREENS.flatMap((screen) => [...screen.routes(jobs)]), ...pickRoutes()]);
 }
 
 // The fctl ui command. out is a function that writes the guide lines.
