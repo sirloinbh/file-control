@@ -1814,6 +1814,8 @@ module.exports = {
   couldBeShortNameOf,
   rejectExtractShortNameClash,
   ensureRoomToExtract,
+  freeSpace,
+  SPACE_RESERVE,
   freshPath,
   MAX_TAR_DIR,
   TEMP_SERIAL_RESERVE,
