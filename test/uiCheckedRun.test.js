@@ -42,6 +42,7 @@ const { execute } = require('../src/execute');
 const fc = require('../src/commands');
 const { previewFingerprint, runChecked, stripFlow } = require('../src/ui/checkedRun');
 const { runOnce } = require('../src/ui/worker');
+const { snapshotSource, sourcePaths } = require('../src/ui/sourceSnapshot');
 
 const OLD = new Date(realNow() - HOUR);
 const BROKEN = '<html>not found</html>';
@@ -66,7 +67,7 @@ test.beforeEach(() => {
   recycled.length = 0;
 });
 
-const fp = (argv) => previewFingerprint(argv, execute([...argv, '--dry-run']));
+const fp = (argv) => runChecked(argv, { mode: 'preview' }, { execute }).fingerprint;
 
 // ---- unit tests with a fake execute ----
 
@@ -222,9 +223,9 @@ test('flatten and remove-broken fingerprints change when the folder changes; mv 
   // flatten and remove-broken scan their folders.
   make(dir, { 'dup/new.txt': 'n', 'a/b/deep/three.txt': '3', 'more/bad2.mp4': BROKEN + ' too' });
   for (const name of ['flatten', 'remove-broken']) assert.notStrictEqual(fp(cases[name]), before[name], name);
-  // mv and rm name their sources only (rm treats a folder as one item), so an unrelated change leaves them alone and a missing source is an error.
+  // mv names a file source, so an unrelated change leaves it alone; rm names a folder, and its snapshot (#280) follows what the folder holds. A missing source is an error.
   assert.strictEqual(fp(cases.mv), before.mv);
-  assert.strictEqual(fp(cases.rm), before.rm);
+  assert.notStrictEqual(fp(cases.rm), before.rm);
   fs.rmSync(p('dup'), { recursive: true });
   assert.throws(() => fp(cases.mv), fc.FcError);
   assert.throws(() => fp(cases.rm), fc.FcError);
@@ -289,4 +290,97 @@ test('real run (remove-broken): files go to the Recycle Bin only with a matching
   assert.strictEqual(ran.ran, true);
   assert.deepStrictEqual(recycled.sort(), [path.join(dir, 'bad.mp4'), path.join(dir, 'bad2.mp4')].sort());
   assert.ok(fs.existsSync(path.join(dir, 'good.txt')));
+});
+
+// ---- changes inside a source folder (#280) ----
+
+test('the fingerprint of an unchanged source folder is stable and the preview carries a count and size per source', () => {
+  const dir = tempDir();
+  make(dir, { 'src/a.txt': '12345', 'src/sub/b.txt': '123', 'dest/keep.txt': 'k', 'single.txt': 'xy' });
+  const src = path.join(dir, 'src');
+  for (const argv of [['mv', src, path.join(dir, 'dest')], ['cp', src, path.join(dir, 'dest')], ['rm', src], ['rm', '--permanent', src]]) {
+    const one = runChecked(argv, { mode: 'preview' }, { execute });
+    const two = runChecked(argv, { mode: 'preview' }, { execute });
+    assert.strictEqual(one.fingerprint, two.fingerprint, argv.join(' '));
+    assert.deepStrictEqual(one.sources.map(({ path: p, type, count, size }) => ({ p, type, count, size })), [{ p: src, type: 'dir', count: 3, size: 8 }]);
+  }
+  const file = runChecked(['rm', path.join(dir, 'single.txt')], { mode: 'preview' }, { execute });
+  assert.deepStrictEqual([file.sources[0].type, file.sources[0].count, file.sources[0].size], ['file', 0, 2]);
+  assert.deepStrictEqual(recycled, []);
+});
+
+const CHANGES = {
+  'a file is added': (dir) => make(dir, { 'src/sub/new.txt': 'n' }),
+  'a file is removed': (dir) => fs.rmSync(path.join(dir, 'src', 'a.txt')),
+  'a file changes size': (dir) => make(dir, { 'src/a.txt': '1234567890' }),
+  'a file changes only its modified time': (dir) => fs.utimesSync(path.join(dir, 'src', 'a.txt'), new Date(realNow() - 2 * HOUR), new Date(realNow() - 2 * HOUR)),
+  'an empty folder is added': (dir) => fs.mkdirSync(path.join(dir, 'src', 'empty')),
+};
+
+for (const [label, args] of Object.entries({ mv: ['mv'], cp: ['cp'], rm: ['rm'], 'rm --permanent': ['rm', '--permanent'] })) {
+  for (const [change, mutate] of Object.entries(CHANGES)) {
+    test(`${label}: if ${change} inside the source folder after the preview, the run shows a new preview and changes nothing`, () => {
+      const dir = tempDir();
+      make(dir, { 'src/a.txt': '12345', 'src/sub/b.txt': '123', 'dest/keep.txt': 'k' });
+      const src = path.join(dir, 'src');
+      const argv = args[0] === 'rm' ? [...args, src] : [...args, src, path.join(dir, 'dest')];
+      const preview = runChecked(argv, { mode: 'preview' }, { execute });
+      mutate(dir);
+      const listing = () => fs.readdirSync(dir, { recursive: true }).sort().join('|');
+      const before = listing();
+      const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+      assert.strictEqual(outcome.repreview, true);
+      assert.strictEqual(outcome.ran, undefined);
+      assert.notStrictEqual(outcome.fingerprint, preview.fingerprint);
+      assert.strictEqual(listing(), before, 'nothing moved, copied, or deleted');
+      assert.deepStrictEqual(recycled, []);
+    });
+  }
+}
+
+test('mv and cp of a folder run when it is unchanged since the preview', () => {
+  const dir = tempDir();
+  make(dir, { 'src/a.txt': '12345', 'cpsrc/c.txt': 'c', 'dest/keep.txt': 'k' });
+  const moveArgv = ['mv', path.join(dir, 'src'), path.join(dir, 'dest')];
+  const moved = runChecked(moveArgv, { mode: 'run', expect: runChecked(moveArgv, { mode: 'preview' }, { execute }).fingerprint }, { execute });
+  assert.strictEqual(moved.ran, true);
+  assert.ok(fs.existsSync(path.join(dir, 'dest', 'src', 'a.txt')));
+  assert.ok(!fs.existsSync(path.join(dir, 'src')));
+  const copyArgv = ['cp', path.join(dir, 'cpsrc'), path.join(dir, 'dest')];
+  const copied = runChecked(copyArgv, { mode: 'run', expect: runChecked(copyArgv, { mode: 'preview' }, { execute }).fingerprint }, { execute });
+  assert.strictEqual(copied.ran, true);
+  assert.ok(fs.existsSync(path.join(dir, 'dest', 'cpsrc', 'c.txt')));
+  assert.ok(fs.existsSync(path.join(dir, 'cpsrc', 'c.txt')));
+});
+
+test('a link inside a source folder is recorded as a link and is not followed', () => {
+  const dir = tempDir();
+  make(dir, { 'src/a.txt': '1', 'outside/big.txt': 'xxxxxxxx' });
+  try {
+    fs.symlinkSync(path.join(dir, 'outside'), path.join(dir, 'src', 'lnk'), 'junction');
+  } catch {
+    return; // links cannot be made here
+  }
+  const argv = ['rm', path.join(dir, 'src')];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.strictEqual(preview.sources[0].count, 2);
+  assert.strictEqual(preview.sources[0].size, 1, 'the linked folder is not counted');
+  make(dir, { 'outside/more.txt': 'm' });
+  assert.strictEqual(runChecked(argv, { mode: 'preview' }, { execute }).fingerprint, preview.fingerprint);
+  fs.rmSync(path.join(dir, 'src', 'lnk'));
+  assert.notStrictEqual(runChecked(argv, { mode: 'preview' }, { execute }).fingerprint, preview.fingerprint);
+});
+
+test('a source folder with more entries than the cap fails the preview instead of fingerprinting a part', () => {
+  const dir = tempDir();
+  make(dir, { 'src/1.txt': '1', 'src/2.txt': '2', 'src/3.txt': '3' });
+  assert.throws(() => snapshotSource(path.join(dir, 'src'), { maxEntries: 2 }), (err) => err instanceof fc.FcError && /too many/.test(err.message));
+  assert.strictEqual(snapshotSource(path.join(dir, 'src'), { maxEntries: 3 }).count, 3);
+});
+
+test('sourcePaths picks the sources of mv, cp and rm only', () => {
+  assert.deepStrictEqual(sourcePaths('mv', ['mv', 'a', 'b', '--force', 'dest']), ['a', 'b']);
+  assert.deepStrictEqual(sourcePaths('cp', ['cp', 'a', '--', '--odd', 'dest']), ['a', '--odd']);
+  assert.deepStrictEqual(sourcePaths('rm', ['rm', '--permanent', 'a', 'b']), ['a', 'b']);
+  assert.deepStrictEqual(sourcePaths('flatten', ['flatten', 'a']), []);
 });
