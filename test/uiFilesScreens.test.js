@@ -13,7 +13,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const FAKE_HOME = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
-test.mock.method(os, 'homedir', () => FAKE_HOME);
+let currentHome = FAKE_HOME;
+test.mock.method(os, 'homedir', () => currentHome);
 
 const { FcError } = require('../src/commands');
 const { startUi } = require('./uiClient');
@@ -401,4 +402,93 @@ test('a changing request with a bad path shows the reason (400) and starts no jo
     assert.match(await res.text(), message);
     assert.strictEqual(jobs.running(), null);
   }
+});
+
+// ---------- Links, short names and hidden settings folders ----------
+
+// A real home folder with .ssh and AppData inside, so a link to them can be made. The server (this process) sees it as the user folder.
+function makeHome(t) {
+  const base = tempDir();
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.ssh', 'secret.txt'), 'PRIVATE-KEY');
+  currentHome = home;
+  t.after(() => { currentHome = FAKE_HOME; });
+  return { base, home };
+}
+
+test('a path inside a hidden settings folder is refused by every changing command', (t) => {
+  const { home } = makeHome(t);
+  const inside = path.join(home, '.ssh', 'x');
+  assert.throws(() => argvOf('mkdir', { folder: inside }), /protected/);
+  assert.throws(() => argvOf('write', { file: inside, content: 'x' }), /protected/);
+  assert.throws(() => argvOf('append', { file: inside, content: 'x' }), /protected/);
+  assert.throws(() => argvOf('rename', { target: inside, name: 'y' }), /protected/);
+  assert.throws(() => argvOf('rm', { targets: path.join(home, 'AppData', 'Roaming') }), /protected/);
+  assert.throws(() => argvOf('mv', { sources: inside, dest: home }), /protected/);
+  assert.doesNotThrow(() => argvOf('mkdir', { folder: path.join(home, 'Downloads', 'x') }));
+});
+
+test('a junction into a protected place is refused for cat, rm, mv (source and destination), cp, mkdir, write and rename', async (t) => {
+  const { base, home } = makeHome(t);
+  const link = path.join(base, 'link');
+  fs.symlinkSync(path.join(home, '.ssh'), link, 'junction');
+  const ok = path.join(base, 'plain.txt');
+  fs.writeFileSync(ok, 'plain');
+  const through = path.join(link, 'secret.txt');
+
+  assert.throws(() => argvOf('rm', { targets: through }), /protected/);
+  assert.throws(() => argvOf('rm', { targets: link }), /protected/);
+  assert.throws(() => argvOf('mv', { sources: through, dest: base }), /protected/);
+  assert.throws(() => argvOf('mv', { sources: ok, dest: link }), /protected/);
+  assert.throws(() => argvOf('cp', { sources: through, dest: base }), /protected/);
+  assert.throws(() => argvOf('cp', { sources: ok, dest: link }), /protected/);
+  assert.throws(() => argvOf('mkdir', { folder: path.join(link, 'new', 'deeper') }), /protected/);
+  assert.throws(() => argvOf('write', { file: path.join(link, 'new.txt'), content: 'x' }), /protected/);
+  assert.throws(() => argvOf('rename', { target: through, name: 'y' }), /protected/);
+
+  const { get } = await serve(t);
+  const body = await (await get(`/files/cat?${new URLSearchParams({ file: through })}`)).text();
+  assert.match(body, /protected place/);
+  assert.doesNotMatch(body, /PRIVATE-KEY/);
+  // ls only looks (like the folder picker), so it is not refused.
+  assert.match(await (await get(`/files/ls?${new URLSearchParams({ dir: link })}`)).text(), /secret\.txt/);
+});
+
+test('an 8.3 short name of a protected folder is refused', { skip: !fs.existsSync('C:\\PROGRA~1') }, () => {
+  assert.throws(() => argvOf('mkdir', { folder: 'C:\\PROGRA~1\\x' }), /protected/);
+  assert.throws(() => argvOf('rm', { targets: 'C:\\PROGRA~1' }), /protected/);
+});
+
+test('accepted paths are normalized with path.resolve (D:/x becomes D:\\x)', () => {
+  const dir = tempDir();
+  const slashed = dir.replaceAll('\\', '/');
+  assert.deepStrictEqual(argvOf('mkdir', { folder: `${slashed}/a/../new` }), ['mkdir', path.join(dir, 'new')]);
+  assert.deepStrictEqual(argvOf('rm', { targets: `${slashed}/x.txt` }), ['rm', path.join(dir, 'x.txt')]);
+});
+
+test('cp and rename with overwrite on are refused without confirm-force and change nothing', async (t) => {
+  const dir = tempDir();
+  const dest = path.join(dir, 'to');
+  fs.mkdirSync(dest);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'NEW');
+  fs.writeFileSync(path.join(dest, 'a.txt'), 'OLD');
+  fs.writeFileSync(path.join(dir, 'b.txt'), 'B');
+  const { jobs, post } = await serve(t);
+  const cases = [
+    ['cp', { sources: path.join(dir, 'a.txt'), dest, force: 'on' }],
+    ['rename', { target: path.join(dir, 'b.txt'), name: 'a.txt', force: 'on' }],
+  ];
+  for (const [command, fields] of cases) {
+    for (const confirm of [{}, { 'confirm-force': 'no' }]) {
+      const res = await post(`/files/${command}/run`, { ...fields, fingerprint: 'e'.repeat(64), ...confirm });
+      assert.strictEqual(res.status, 400, command);
+      assert.match(await res.text(), /not confirmed again/);
+      assert.strictEqual(jobs.running(), null);
+    }
+  }
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'OLD');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'NEW');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'b.txt'), 'utf8'), 'B');
 });

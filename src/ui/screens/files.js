@@ -54,7 +54,31 @@ function readablePath(value, label) {
   if (process.platform === 'win32' && /^[\\/]{2}/.test(text) && !/^\\\\\?\\[A-Za-z]:/.test(text)) {
     throw new FcError(`Network and device paths are not used: ${text}`);
   }
-  return text;
+  // Slashes and . or .. parts are normalized (D:/x -> D:\x) so the preview, the fingerprint and the command all see one spelling.
+  return path.resolve(text);
+}
+
+// The real path of p with links, junctions and 8.3 short names resolved. A path that does not exist yet (a folder to create, a destination)
+// is resolved through its nearest existing parent, and the rest is added back.
+function realPathOf(p) {
+  const rest = [];
+  let current = p;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...rest.reverse());
+    } catch (err) {
+      const parent = path.dirname(current);
+      if (parent === current || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) return p;
+      rest.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+// The reason a path is protected, or null. It looks at the typed path and at its real path, so a junction, a symbolic link or a short name
+// (C:\PROGRA~1) cannot lead into a protected place.
+function protectedOf(p) {
+  return protectedReason(p) ?? protectedReason(realPathOf(p));
 }
 
 // A path a command will change. It also refuses protected places and names that Windows tools read as another name.
@@ -64,7 +88,7 @@ function changeablePath(value, label) {
     const bad = text.slice(path.parse(text).root.length).split(/[\\/]/).find((part) => TRAILING_DOT_OR_SPACE.test(part));
     if (bad !== undefined) throw new FcError(`${label} has a name that ends with a dot or space (${bad}): ${text}`);
   }
-  const reason = protectedReason(text);
+  const reason = protectedOf(text);
   if (reason) throw new FcError(`${label} is a protected place (${reason}): ${text}`);
   return text;
 }
@@ -208,7 +232,8 @@ const views = Object.fromEntries(specs.map((spec) => [spec.command, previewView]
 
 // ---------- Read-only screens: landing page, ls, cat ----------
 
-// Reading a folder or a file is accepted only from this server's own pages or a typed address. A link or image on another site cannot make it read (same rule as the folder picker).
+// Extra hardening on top of the session cookie and the Host check (#265, #252): a read is also refused when the browser says the request was started by another site.
+// A link or image on another site cannot make it read (same rule as the folder picker).
 function fromOtherSite(req) {
   const site = req.headers['sec-fetch-site'];
   return site === 'cross-site' || site === 'same-site';
@@ -249,7 +274,7 @@ function lsLink(dir) {
   return `${BASE}/ls?${new URLSearchParams({ dir })}`;
 }
 
-// ls: a GET form (no token, it changes nothing). With ?dir=<folder> it also shows the folder. The folder picker returns here with ?dir=.
+// ls: a GET form (no token, it changes nothing). Like the folder picker, it can look into protected folders (it shows only names, sizes and times); cat and the changing commands cannot. With ?dir=<folder> it also shows the folder. The folder picker returns here with ?dir=.
 function lsPage(req, { available }) {
   const dir = (queryOf(req).get('dir') ?? '').trim();
   const form = html`<form method="get" action="${BASE}/ls">
@@ -327,7 +352,7 @@ function catPage(req, { available }) {
   let full;
   try {
     full = readablePath(file, 'The file');
-    const reason = protectedReason(full);
+    const reason = protectedOf(full);
     if (reason) throw new FcError(`This file is in a protected place (${reason}), so it is not shown: ${full}`);
     start = readStart(full);
   } catch (err) {
