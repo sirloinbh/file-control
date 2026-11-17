@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-// commands.js가 불러올 때 spawnSync를 받아 두므로 require보다 먼저 바꿔 둔다.
+// commands.js takes spawnSync when it is imported, so it is swapped before the require.
 const realSpawnSync = childProcess.spawnSync;
 let tarResult = null;
 test.mock.method(childProcess, 'spawnSync', (...args) => tarResult ?? realSpawnSync(...args));
@@ -17,7 +17,7 @@ test.mock.method(childProcess, 'spawnSync', (...args) => tarResult ?? realSpawnS
 const { findBroken, formatBroken } = require('../src/broken');
 const { run } = require('../bin/fctl');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -47,7 +47,7 @@ function mp4(table = stco(40)) {
   return Buffer.concat([ftyp(), moov(table), box('mdat', Buffer.alloc(64))]);
 }
 
-// EBML 크기 칸은 8바이트로 쓴다.
+// The EBML size field is written as 8 bytes.
 function element(id, ...parts) {
   const body = Buffer.concat(parts);
   const size = Buffer.alloc(8);
@@ -71,7 +71,7 @@ const u32le = (value) => {
   return b;
 };
 
-// 항목 하나를 무압축으로 담은 zip. CRC는 이 판별에서 보지 않으므로 0으로 둔다.
+// A zip that holds one entry uncompressed. The CRC is not looked at in this judgment, so it is left as 0.
 function zip(name = 'a.txt', content = 'hello') {
   const fileName = latin(name);
   const body = latin(content);
@@ -108,7 +108,7 @@ function tar() {
 
 const png = () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 
-// 파일 하나를 만들어 판별 결과 { status, reason }을 돌려준다. 문제를 찾지 못하면 null이다.
+// It creates one file and returns the judgment result { status, reason }. If it finds no problem, null.
 function judge(name, content) {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, name), content);
@@ -185,15 +185,15 @@ test('앞 바이트가 맞지 않아도 정상일 수 있는 파일은 의심으
 
 test('MP4의 잘린 mdat, 0으로 채워진 moov, 파일 밖을 가리키는 위치표를 찾는다', () => {
   const whole = mp4();
-  assert.match(judge('a.mp4', whole.subarray(0, whole.length - 10)).reason, /mdat.*잘린/);
-  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('mdat', Buffer.alloc(64))])).reason, /moov 박스가 없습니다/);
+  assert.match(judge('a.mp4', whole.subarray(0, whole.length - 10)).reason, /mdat.*truncated/);
+  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('mdat', Buffer.alloc(64))])).reason, /moov box is missing/);
   const zeroed = Buffer.from(whole);
   const start = ftyp().length + 8;
   zeroed.fill(0, start, start + moov(stco(40)).length - 8);
   assert.match(judge('a.mp4', zeroed).reason, /mvhd/);
-  assert.match(judge('a.mp4', mp4(stco(40, 1000000))).reason, /위치표/);
-  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)))])).reason, /트랙/);
-  // 앞쪽까지 받고 나머지는 0인 파일: moov가 뒤에 올 자리가 비어 있다.
+  assert.match(judge('a.mp4', mp4(stco(40, 1000000))).reason, /location table/);
+  assert.match(judge('a.mp4', Buffer.concat([ftyp(), box('moov', box('mvhd', Buffer.alloc(100)))])).reason, /no tracks/);
+  // A file downloaded up to the front with the rest being 0: the place where moov would come later is empty.
   assert.strictEqual(judge('a.mp4', Buffer.concat([ftyp(), Buffer.alloc(4096)])).status, 'broken');
 });
 
@@ -248,9 +248,9 @@ test('조각으로 나뉜 MP4의 빈 위치표는 정상이다', () => {
 
 test('MKV의 잘린 Cluster, 없는 Tracks, 손상된 요소를 찾는다', () => {
   const whole = mkv(tracks(), cluster());
-  assert.match(judge('a.mkv', whole.subarray(0, whole.length - 10)).reason, /Segment.*잘린/);
+  assert.match(judge('a.mkv', whole.subarray(0, whole.length - 10)).reason, /Segment.*truncated/);
   assert.match(judge('a.mkv', mkv(cluster())).reason, /Tracks/);
-  assert.match(judge('a.mkv', mkv(Buffer.alloc(32))).reason, /요소가 손상/);
+  assert.match(judge('a.mkv', mkv(Buffer.alloc(32))).reason, /element at byte \d+ is damaged/);
   assert.match(judge('a.mkv', ebml()).reason, /Segment/);
 });
 
@@ -267,15 +267,15 @@ test('크기를 모르는 MKV 요소를 만나면 판단을 멈춘다', () => {
 
 test('잘린 zip과 항목 머리글이 틀린 zip을 찾는다', () => {
   const whole = zip();
-  assert.match(judge('a.zip', whole.subarray(0, whole.length - 30)).reason, /끝 표시/);
+  assert.match(judge('a.zip', whole.subarray(0, whole.length - 30)).reason, /end marker/);
   const damaged = Buffer.from(whole);
   damaged.fill(0, 0, 4);
   damaged.write('PK\x07\x08', 0, 'latin1');
-  assert.match(judge('a.zip', damaged).reason, /항목의 머리글/);
+  assert.match(judge('a.zip', damaged).reason, /entry header/);
   const beyond = Buffer.from(whole);
   beyond.writeUInt32LE(1000, beyond.length - 22 + 16);
-  assert.match(judge('a.zip', beyond).reason, /목록이 끝 표시/);
-  assert.match(judge('a.docx', whole.subarray(0, 20)).reason, /끝 표시/);
+  assert.match(judge('a.zip', beyond).reason, /directory runs past the end marker/);
+  assert.match(judge('a.docx', whole.subarray(0, 20)).reason, /end marker/);
 });
 
 test('zip 주석 안의 끝 표시에 속지 않고, 뒤에 붙은 데이터는 의심으로만 둔다', () => {
@@ -294,7 +294,7 @@ test('zip 주석 안의 끝 표시에 속지 않고, 뒤에 붙은 데이터는 
 test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로 둔다', () => {
   const dir = tempDir();
   const content = zip();
-  // 끝 레코드까지 실제로 넘지 않게 파일을 키우고 목록 크기를 크게 적는다.
+  // It grows the file so as not to actually pass the end record, and writes a large list size.
   const file = path.join(dir, 'a.zip');
   const big = 65 * 1024 * 1024;
   const fd = fs.openSync(file, 'w');
@@ -306,7 +306,7 @@ test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로
   fs.closeSync(fd);
   const result = findBroken(dir);
   assert.deepStrictEqual(result.broken, []);
-  assert.match(result.unreadable[0].reason, /너무 커/);
+  assert.match(result.unreadable[0].reason, /too large/);
 });
 
 test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
@@ -319,11 +319,11 @@ test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
 });
 
 test('잘린 7z와 머리글이 손상된 7z를 찾는다', () => {
-  assert.match(judge('a.7z', sevenZip({ nextOffset: 100, nextSize: 4 })).reason, /잘린/);
-  assert.match(judge('a.7z', Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4])).reason, /머리글이 잘렸/);
+  assert.match(judge('a.7z', sevenZip({ nextOffset: 100, nextSize: 4 })).reason, /truncated/);
+  assert.match(judge('a.7z', Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4])).reason, /header is truncated/);
   const damaged = sevenZip();
   damaged[14] ^= 0xff;
-  assert.match(judge('a.7z', damaged).reason, /머리글이 손상/);
+  assert.match(judge('a.7z', damaged).reason, /header is damaged/);
 });
 
 test('tar.exe가 손상이라고 알린 파일만 깨졌다고 본다', { skip: process.platform !== 'win32' }, () => {
@@ -337,7 +337,7 @@ test('tar.exe가 손상이라고 알린 파일만 깨졌다고 본다', { skip: 
   const sum = longer.subarray(0, 512).reduce((total, byte) => total + byte, 0);
   longer.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'latin1');
   assert.strictEqual(judge('a.tar', longer).status, 'broken');
-  // 종료 코드가 0이어도 손상 문구가 있으면 깨짐이다.
+  // Even if the exit code is 0, a damage message means broken.
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.tar'), tar());
   tarResult = { status: 0, stdout: Buffer.from('a.txt\n'), stderr: Buffer.from('tar.exe: Damaged tar archive (bad header checksum)\ntar.exe: Retrying...\n') };
@@ -361,7 +361,7 @@ test('잘린 tar와 작은 tar.xz를 실제 tar.exe로 찾는다', { skip: proce
   const xz = made('w.tar.xz', '-J');
   assert.strictEqual(judge('a.tar.xz', xz.subarray(0, xz.length >> 1)).status, 'broken');
   const plain = made('w.tar', '--format', 'ustar');
-  // 두 번째 항목 머리글 중간에서 자른다.
+  // It cuts in the middle of the second entry header.
   assert.strictEqual(judge('a.tar', plain.subarray(0, 512 + 512 + 100)).status, 'broken');
 });
 
@@ -383,10 +383,10 @@ test('압축 해제 오류와 잘림 문구는 깨짐이다', () => {
   }
 });
 
-// lz4·lzop 등 외부 프로그램으로 푸는 압축은 프로그램이 없거나 실패하면 파일 탓인지 알 수 없어 판단 못함으로 둔다(#245).
+// For compression extracted with an external program such as lz4 and lzop, if the program is missing or fails, it cannot be known whether it is the file's fault, so it is left as could not judge (#245).
 test('외부 압축 프로그램이 없으면 판단 못함으로 두고 프로그램 이름을 사유로 알린다 (#245)', { skip: process.platform !== 'win32' }, (t) => {
   const dir = tempDir();
-  // 이름은 .tar, 내용은 lz4(매직과 프레임 머리). 실제 tar.exe가 lz4를 실행하려다 찾지 못한다.
+  // The name is .tar and the content is lz4 (the magic and the frame header). The real tar.exe tries to run lz4 and cannot find it.
   fs.writeFileSync(path.join(dir, 'a.tar'), Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9, 1, 2, 3, 4]));
   const savedPath = process.env.PATH;
   t.after(() => { process.env.PATH = savedPath; });
@@ -396,19 +396,19 @@ test('외부 압축 프로그램이 없으면 판단 못함으로 두고 프로�
   assert.deepStrictEqual(result.broken, []);
   assert.deepStrictEqual(result.suspect, []);
   assert.strictEqual(result.unreadable.length, 1);
-  assert.strictEqual(result.unreadable[0].reason, '압축을 풀 외부 프로그램 lz4이 없어 판단하지 않았습니다. lz4.exe를 PATH에 두면 확인할 수 있습니다.');
-  assert.match(formatBroken(result), /판단 못함: a\.tar \(압축을 풀 외부 프로그램 lz4이 없어/);
+  assert.strictEqual(result.unreadable[0].reason, 'The external program lz4 needed to extract it is missing, so it was not judged. Put lz4.exe on PATH to check it.');
+  assert.match(formatBroken(result), /Undetermined: a\.tar \(The external program lz4 needed to extract it is missing/);
 });
 
 test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 판단 못함으로 둔다 (#245)', () => {
   const cases = {
-    'tar.exe: Error opening archive: Child process exited with status 1': /외부 프로그램이 실패해\(종료 코드 1\) 판단하지 않았습니다/,
-    ' tar.exe: Error opening archive: Child process exited with status 2': /종료 코드 2/,
-    // 압축을 연 뒤 읽는 도중에 실패한 형태(1차 리뷰)
-    'tar.exe: Child process exited with status 3': /외부 프로그램이 실패해\(종료 코드 3\)/,
-    'tar.exe: Error opening archive: Can\'t initialize filter; unable to run program "lzop -d"': /외부 프로그램 lzop이 없어/,
-    // 항목 이름이 문구를 흉내 낸 줄은 프로그램 없음으로 보지 않는다(#241과 같은 규칙).
-    '../unable to run program "lz4 x": Path contains \'..\'': /tar로 읽지 못해 판단하지 않았습니다/,
+    'tar.exe: Error opening archive: Child process exited with status 1': /external extraction program failed \(exit code 1\), so it was not judged/,
+    ' tar.exe: Error opening archive: Child process exited with status 2': /exit code 2/,
+    // A form that fails while reading after opening the archive (first review)
+    'tar.exe: Child process exited with status 3': /external extraction program failed \(exit code 3\)/,
+    'tar.exe: Error opening archive: Can\'t initialize filter; unable to run program "lzop -d"': /external program lzop needed to extract it is missing/,
+    // A line where an entry name imitates the message is not seen as the program being missing (the same rule as #241).
+    '../unable to run program "lz4 x": Path contains \'..\'': /Could not read with tar, so it was not judged/,
   };
   for (const [stderr, reason] of Object.entries(cases)) {
     const dir = tempDir();
@@ -420,7 +420,7 @@ test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 �
     assert.strictEqual(result.unreadable.length, 1, stderr);
     assert.match(result.unreadable[0].reason, reason, stderr);
   }
-  // 정상 종료(0)한 출력에 흉내 줄이 섞여도 판단 못함으로 두지 않는다(1차 리뷰).
+  // Even if an imitation line is mixed into the output of a normal exit (0), it is not left as could not judge (first review).
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.tar'), tar());
   tarResult = { status: 0, stdout: Buffer.from('a.txt\n'), stderr: Buffer.from('tar.exe: Child process exited with status 1\n') };
@@ -444,7 +444,7 @@ test('tar.exe의 그 밖의 실패는 깨졌다고 하지 않고 판단 못함�
     { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Error reading C:/a.tar\n') },
     { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Archive entry has empty or unreadable filename ... skipping.\ntar.exe: Error exit delayed from previous errors.\n') },
     { status: 0xc0000409, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) },
-    // 항목 이름에 든 말을 손상 문구로 오해하지 않는다.
+    // Words in an entry name are not mistaken for a damage message.
     { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from('tar.exe: Truncated input file: Failed to open\n'.replace(/^tar\.exe: /, 'tar.exe: a/')) },
   ];
   for (const failure of failures) {
@@ -455,7 +455,7 @@ test('tar.exe의 그 밖의 실패는 깨졌다고 하지 않고 판단 못함�
     tarResult = null;
     assert.deepStrictEqual(result.broken, []);
     assert.strictEqual(result.unreadable.length, 1);
-    assert.match(result.unreadable[0].reason, /판단하지 않았습니다/);
+    assert.match(result.unreadable[0].reason, /not judged/);
   }
 });
 
@@ -478,9 +478,9 @@ test('파일 하나의 예상 밖 오류가 다른 파일의 결과를 지우지
 test('잘린 RIFF를 찾는다', () => {
   assert.match(judge('a.avi', Buffer.concat([latin('RIFF'), u32le(1000), latin('AVI ')])).reason, /RIFF/);
   assert.strictEqual(judge('a.avi', Buffer.concat([latin('RIFF'), u32le(0), latin('AVI ')])), null);
-  // 크기 칸에 파일 전체 크기를 적는 프로그램도 있다.
+  // Some programs write the whole file size in the size field.
   assert.strictEqual(judge('a.wav', Buffer.concat([latin('RIFF'), u32le(12), latin('WAVE')])), null);
-  // 파이프로 쓴 파일은 크기 칸이 2GB 언저리일 수 있다.
+  // A file written through a pipe may have a size field around 2GB.
   for (const value of [0x7ffff024, 0x7fffffff]) assert.strictEqual(judge('a.wav', Buffer.concat([latin('RIFF'), u32le(value), latin('WAVE')])).status, 'suspect');
 });
 
@@ -536,14 +536,14 @@ test('formatBroken은 상태별 줄과 개수를 보여 준다', () => {
   fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
   fs.writeFileSync(path.join(dir, 'b.jpg'), png());
   const report = formatBroken(findBroken(dir));
-  assert.match(report, /깨짐: a\.mp4 \(/);
-  assert.match(report, /의심: b\.jpg \(/);
-  assert.match(report, /살펴본 파일 2개, 깨짐 1개, 의심 1개, 판단 못함 0개, 건너뜀 0개/);
+  assert.match(report, /Broken: a\.mp4 \(/);
+  assert.match(report, /Suspect: b\.jpg \(/);
+  assert.match(report, /Checked 2 files, 1 broken, 1 suspect, 0 undetermined, 0 skipped/);
 });
 
 test('fctl find-broken은 보고만 하고 성공으로 끝난다', () => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
-  assert.match(run(['find-broken', dir]), /깨짐: a\.mp4/);
+  assert.match(run(['find-broken', dir]), /Broken: a\.mp4/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
 });

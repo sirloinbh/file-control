@@ -3,23 +3,23 @@
 const os = require('node:os');
 const path = require('node:path');
 
-// 장치 이름(#53). Windows 11 빌드 26200에서 실측한 규칙: 장치 이름 그대로이거나 확장자가 하나만 붙은 이름(nul.mp4, con.txt, com².mp4)만
-// PowerShell이 장치로 본다. 점이 둘 이상인 이름(Con.Air.1997.mkv, nul.tar.gz, COM¹.tar.gz), 점 앞에 공백이 있는 이름(Nul .mp4), COM0·LPT0은
-// PowerShell, tar.exe, 휴지통 이동에서 모두 같은 파일로 다뤄진다. 휴지통 이동 스크립트가 Test-Path로 폴더인지 보므로 Test-Path 기준을 따른다.
-// CONIN$·CONOUT$는 그 이름 그대로일 때만 거부한다.
-// 좁은 규칙은 26200과 같은 기반인 24H2(빌드 26100, Server 2025 포함)부터 쓴다. 확인하지 못한 그 아래 버전에서 장치로 열리면
-// 복사가 장치로 사라지고 드라이브 간 이동은 원본을 지우므로, 예전처럼 장치 이름으로 시작하는 이름을 모두 거부한다.
+// Device names (#53). The rule measured on Windows 11 build 26200: only a name that is exactly a device name or has just one extension attached (nul.mp4, con.txt, com².mp4)
+// is seen as a device by PowerShell. Names with two or more dots (Con.Air.1997.mkv, nul.tar.gz, COM¹.tar.gz), a name with a space before the dot (Nul .mp4), and COM0 and LPT0 are
+// handled as the same file by PowerShell, tar.exe, and the Recycle Bin move. The Recycle Bin move script looks at whether it is a folder with Test-Path, so it follows the Test-Path criterion.
+// CONIN$ and CONOUT$ are refused only when it is exactly that name.
+// The narrow rule is used from 24H2 (build 26100, including Server 2025), which has the same base as 26200. On versions below that, which were not checked, if it opens as a device,
+// a copy would vanish into the device and a move across drives would delete the original, so it refuses every name that starts with a device name, as before.
 const WINDOWS_DEVICE_NAME_WIDE = /^(con|prn|aux|nul|com[\d¹²³]|lpt[\d¹²³]|conin\$|conout\$) *(\.|$)/i;
 const WINDOWS_DEVICE_NAME_NARROW = /^((con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(\.[^.]*)?|conin\$|conout\$)$/i;
 const NARROW_DEVICE_BUILD = 26100;
 
-// 확장자 없는 장치 이름 그대로(nul, CON, Com1, lpt¹, CONIN$). Windows가 끝의 점과 공백을 지우므로 nul.·com1 도 같다(#135).
-// 빌드 26200에서 tar.exe는 이런 이름을 인자로 받으면 장치를 열어 실패했고(nul, CON), 휴지통 이동도 실패했다
-// (nul, CON, PRN, AUX, Com1, LPT9, lpt¹, COM², com1 , CONIN$, CONOUT$). COM0·LPT0은 파일이었다.
-// 폴더 안에 든 이런 이름은 tar.exe가 파일로 묶고 푼다.
+// A device name exactly with no extension (nul, CON, Com1, lpt¹, CONIN$). Windows removes a trailing dot and space, so nul. and "com1 " are the same (#135).
+// On build 26200, tar.exe failed by opening a device when it received such a name as an argument (nul, CON), and the Recycle Bin move also failed
+// (nul, CON, PRN, AUX, Com1, LPT9, lpt¹, COM², "com1 ", CONIN$, CONOUT$). COM0 and LPT0 were files.
+// Such a name inside a folder is bundled and extracted by tar.exe as a file.
 const BARE_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)[. ]*$/i;
 
-// os.release()는 "10.0.26200"처럼 빌드 번호를 세 번째에 둔다. 읽지 못하면 넓은 규칙을 쓴다.
+// os.release() puts the build number third, as in "10.0.26200". If it cannot read it, it uses the broad rule.
 function deviceNamePattern(release = os.release()) {
   const build = Number(String(release).split('.')[2]);
   return Number.isInteger(build) && build >= NARROW_DEVICE_BUILD ? WINDOWS_DEVICE_NAME_NARROW : WINDOWS_DEVICE_NAME_WIDE;
@@ -27,13 +27,13 @@ function deviceNamePattern(release = os.release()) {
 
 const WINDOWS_DEVICE_NAME = deviceNamePattern();
 
-// Windows는 이름 끝의 점과 공백을 지우고 연다. 그래서 com1 ·Nul.mp4.는 com1·Nul.mp4와 같은 장치다(#135).
-// 스트림(nul:x)은 : 앞의 이름으로 파일을 만들므로 그 이름도 본다.
+// Windows removes a trailing dot and space from a name and opens it. So "com1 " and Nul.mp4. are the same devices as com1 and Nul.mp4 (#135).
+// A stream (nul:x) creates the file with the name before :, so that name is also looked at.
 function isDeviceName(part, pattern = WINDOWS_DEVICE_NAME) {
   return [part, part.split(':')[0]].some((name) => pattern.test(name) || pattern.test(name.replace(/[. ]+$/, '')));
 }
 
-// 경로에서 장치 이름인 첫 이름(드라이브·UNC 뿌리는 빼고)을 돌려준다. 없거나 Windows가 아니면 undefined다.
+// It returns the first name in the path that is a device name (leaving out the drive and UNC root). If none, or if it is not Windows, it is undefined.
 function deviceNamePart(p, pattern = WINDOWS_DEVICE_NAME) {
   if (process.platform !== 'win32') return undefined;
   const full = path.resolve(p);

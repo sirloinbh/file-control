@@ -1,6 +1,6 @@
 'use strict';
 
-// fctl ui 서버 뼈대와 공통 화면(#251).
+// The fctl ui server skeleton and the common screen (#251).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -14,19 +14,19 @@ const { FcError } = require('../src/commands');
 
 const FCTL = path.join(__dirname, '..', 'bin', 'fctl.js');
 
-function request(url, { method = 'GET' } = {}) {
+function request(url, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request(url, { method }, (res) => {
+    const req = http.request(url, { method, headers }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
-// node bin/fctl.js ui를 자식 프로세스로 띄우고 출력한 주소를 기다린다.
+// It starts node bin/fctl.js ui as a child process and waits for the address it prints.
 function launch(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [FCTL, 'ui', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -38,7 +38,7 @@ function launch(args) {
     }, 20000);
     child.stdout.on('data', (chunk) => {
       out += chunk;
-      const found = /fctl 화면: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
+      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
       if (found) {
         clearTimeout(timer);
         resolve({ child, url: found[1], output: () => out });
@@ -69,7 +69,7 @@ test('html``은 끼워 넣는 값을 이스케이프하고 html``·raw()와 그 
   assert.strictEqual(html`<a title="${name}">${name}</a>`.text, '<a title="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</a>');
   assert.strictEqual(html`<ul>${['<a>', '&'].map((x) => html`<li>${x}</li>`)}</ul>`.text, '<ul><li>&lt;a&gt;</li><li>&amp;</li></ul>');
   assert.strictEqual(html`${raw('<b>')}${null}${undefined}${false}${0}`.text, '<b>0');
-  // 배열 안의 일반 문자열도 이스케이프한다.
+  // Even a plain string in an array is escaped.
   assert.strictEqual(html`${['<', '>']}`.text, '&lt;&gt;');
 });
 
@@ -79,10 +79,10 @@ test('공통 부품: 표는 경로를 이스케이프하고 빈 표에는 안내
   assert.ok(out.includes('C:\\a&amp;b\\&lt;한글 😀&gt;\\&quot;x&quot;.mp4'));
   assert.ok(!out.includes('<한글'));
   assert.ok(out.includes('<col style="width: 70%">'));
-  assert.ok(out.includes('<span class="badge badge-ok">이동</span>'));
-  assert.ok(out.includes('<span class="badge badge-skip">건너뜀</span>'));
+  assert.ok(out.includes('<span class="badge badge-ok">Moved</span>'));
+  assert.ok(out.includes('<span class="badge badge-skip">Skipped</span>'));
   assert.ok(out.includes('<span class="badge badge-error">실패: 잠김</span>'));
-  assert.ok(table([{ label: 'a' }, { label: 'b' }], []).text.includes('<td class="empty" colspan="2">항목이 없습니다.</td>'));
+  assert.ok(table([{ label: 'a' }, { label: 'b' }], []).text.includes('<td class="empty" colspan="2">No items.</td>'));
   assert.ok(summaryCards([{ label: '이동', value: 3, tone: 'ok' }, { label: '<실패>', value: 0 }]).text.includes('<div class="card card-ok"><div class="value">3</div><div class="label">이동</div></div><div class="card"><div class="value">0</div><div class="label">&lt;실패&gt;</div></div>'));
   assert.strictEqual(alertBox('error', '<잠김>').text, '<div class="alert alert-error" role="alert">&lt;잠김&gt;</div>');
   assert.strictEqual(alertBox('success', '끝').text, '<div class="alert alert-success" role="status">끝</div>');
@@ -97,9 +97,9 @@ test('page는 제목·알림을 이스케이프하고, 어두운 화면 CSS와 �
   assert.ok(out.includes('<div class="alert alert-warning" role="alert">a&amp;b</div>'));
   assert.ok(out.includes('<p>&lt;본문&gt;</p>'));
   assert.ok(out.includes('@media (prefers-color-scheme: dark)') && out.includes(':root {'));
-  assert.ok(out.includes('<a href="/files" aria-current="page">기본 파일 작업</a>'));
-  for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="준비 중">${category.label}</span>`), category.label);
-  // 클라이언트 JS는 쓰지 않는다(#250).
+  assert.ok(out.includes('<a href="/files" aria-current="page">Basic file tasks</a>'));
+  for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="Coming soon">${category.label}</span>`), category.label);
+  // No client JS is used (#250).
   assert.ok(!/<script/i.test(out));
 });
 
@@ -120,11 +120,11 @@ test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 
   const home = await request(url);
   assert.strictEqual(home.status, 200);
   assert.strictEqual(home.headers['content-type'], 'text/html; charset=utf-8');
-  assert.ok(home.body.includes('<h1>파일 컨트롤</h1>'));
+  assert.ok(home.body.includes('<h1>File Control</h1>'));
   for (const category of CATEGORIES) assert.ok(home.body.includes(category.label));
   const missing = await request(new URL('/nope?<x>', url));
   assert.strictEqual(missing.status, 404);
-  assert.ok(missing.body.includes('없는 주소입니다: /nope?%3Cx%3E') || missing.body.includes('없는 주소입니다: /nope?&lt;x&gt;'));
+  assert.ok(missing.body.includes('No such address: /nope?%3Cx%3E') || missing.body.includes('No such address: /nope?&lt;x&gt;'));
   assert.ok(!missing.body.includes('<x>'));
   const head = await request(url, { method: 'HEAD' });
   assert.strictEqual(head.status, 200);
@@ -139,9 +139,9 @@ test('fctl ui는 포트를 이미 쓰고 있으면 다른 포트로 넘어가지
   await new Promise((resolve) => busy.listen(0, '127.0.0.1', resolve));
   t.after(() => busy.close());
   const { port } = busy.address();
-  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`) && err.message.includes('netstat'));
-  // 명령으로 띄워도 종료 코드 1과 같은 안내로 끝난다.
-  await assert.rejects(launch(['--no-open', `--port=${port}`]), (err) => err.code === 1 && err.stderr.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`));
+  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`Port ${port} is already used by another program`) && err.message.includes('netstat'));
+  // Even when started by the command, it ends with the same guidance as exit code 1.
+  await assert.rejects(launch(['--no-open', `--port=${port}`]), (err) => err.code === 1 && err.stderr.includes(`Port ${port} is already used by another program`));
 });
 
 test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 계속 돈다 (#251)', async (t) => {
@@ -152,11 +152,11 @@ test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 �
   const base = `http://127.0.0.1:${server.address().port}`;
   const failed = await request(`${base}/files`);
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('화면을 만들지 못했습니다: &lt;boom&gt;'));
+  assert.ok(failed.body.includes('Could not build the page: &lt;boom&gt;'));
   const home = await request(`${base}/`);
   assert.strictEqual(home.status, 200);
-  // 등록된 분류는 메뉴와 첫 화면에서 링크가 된다.
-  assert.ok(home.body.includes('<a href="/files">기본 파일 작업</a>'));
+  // The registered categories become links in the menu and the first screen.
+  assert.ok(home.body.includes('<a href="/files">Basic file tasks</a>'));
 });
 
 test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)로 듣고 있어도 실패한다 (#251 1차 리뷰)', async (t) => {
@@ -164,7 +164,7 @@ test('fctl ui는 다른 프로그램이 같은 포트를 모든 주소(0.0.0.0)�
   await new Promise((resolve) => busy.listen(0, '0.0.0.0', resolve));
   t.after(() => busy.close());
   const { port } = busy.address();
-  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`포트 ${port}를 이미 다른 프로그램이 쓰고 있습니다`));
+  await assert.rejects(startServer({ port }), (err) => err instanceof FcError && err.message.includes(`Port ${port} is already used by another program`));
 });
 
 test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 정하며, 비동기 예외도 500으로 답한다 (#251 1차 리뷰)', async (t) => {
@@ -173,17 +173,19 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
     ['/organize', { GET: () => ({ body: 'get' }), POST: async () => ({ status: 201, body: 'posted' }) }],
     ['/archive', async () => { throw new Error('<later>'); }],
   ]);
-  const server = http.createServer(createHandler(routes));
+  const server = http.createServer(createHandler(routes, { token: 'tok' }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
+  // A POST reaches the handler only with the form type and the token (#252).
+  const post = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'token=tok' };
   const files = await request(`${base}/files`);
   assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);
-  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, { method: 'POST' })).status], ['get', 201]);
+  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, post)).status], ['get', 201]);
   const put = await request(`${base}/organize`, { method: 'PUT' });
   assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
   const failed = await request(`${base}/archive`);
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('화면을 만들지 못했습니다: &lt;later&gt;'));
+  assert.ok(failed.body.includes('Could not build the page: &lt;later&gt;'));
   assert.strictEqual((await request(`${base}/`)).status, 200);
 });

@@ -1,6 +1,6 @@
 'use strict';
 
-// .tar.gz 확인(#197)의 분기별 테스트. 파일을 만들어 별도 프로세스 스캔(scanTarGzSync)으로 확인한다.
+// Per-branch tests of the .tar.gz check (#197). It makes files and checks with a separate-process scan (scanTarGzSync).
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -15,7 +15,7 @@ function tempDir() {
   return dir;
 }
 
-// tar 헤더 하나. name은 Buffer나 latin1 문자열, size는 숫자(8진수로 적음)나 12바이트 Buffer(base-256 등)다.
+// One tar header. name is a Buffer or a latin1 string, and size is a number (written in octal) or a 12-byte Buffer (base-256 and so on).
 function header(name, size, { type = '0', magic = 'ustar\0', prefix = '', breakChecksum = false } = {}) {
   const block = Buffer.alloc(512);
   (Buffer.isBuffer(name) ? name : Buffer.from(name, 'latin1')).copy(block, 0, 0, 100);
@@ -77,7 +77,7 @@ test('정상 tar.gz는 항목 이름과 크기를 돌려준다: pax 이름·크�
       { name: 'b.txt', size: 3 }, { name: 'dir2/', size: 0 }, { name: 'link.txt', size: null },
     ],
   });
-  // GNU 형식('ustar  ')은 prefix 칸을 쓰지 않는다.
+  // The GNU format ('ustar  ') does not use the prefix field.
   assert.deepStrictEqual(scan(dir, 'gnu.tar.gz', Buffer.concat([file('g.txt', 'g', { magic: 'ustar  \0', prefix: 'no' }), END])), { entries: [{ name: 'g.txt', size: 1 }] });
 });
 
@@ -85,21 +85,21 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
   const dir = tempDir();
   const good = zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), END]));
   const cases = {
-    // tar.exe는 체크섬이 틀린 헤더를 건너뛰고(Damaged… Retrying) 성공으로 끝낸다.
-    checksum: [Buffer.concat([file('a.txt', 'a', { breakChecksum: true }), END]), /체크섬이 맞지 않아/],
-    'non-ascii': [Buffer.concat([file(Buffer.from([0xc7, 0xd1, 0x2e, 0x74]), 'a'), END]), /코드페이지에 따라/],
-    'empty-pax-path': [Buffer.concat([pax({ path: '' }), file('e.txt', ''), END]), /이름이 비어 있어/],
-    'pax-utf8': [Buffer.concat([pax({ path: Buffer.from([0xff, 0x41]) }), file('e.txt', ''), END]), /UTF-8이 아니라/],
-    sparse: [Buffer.concat([file('s.txt', 'a', { type: 'S' }), END]), /항목 종류/],
-    'gnu-sparse-pax': [Buffer.concat([pax({ 'GNU.sparse.size': '10' }), file('s.txt', 'a'), END]), /희소 파일/],
-    symlink: [Buffer.concat([header('l', 0, { type: '2' }), END]), /항목 종류/],
-    'hardlink-data': [Buffer.concat([file('h.txt', 'abc', { type: '1' }), END]), /내용이 있는 하드링크/],
-    'bad-size': [Buffer.concat([header('a.txt', Buffer.from('zzzzzzzzzzz\0', 'latin1')), END]), /크기를 읽지 못해/],
-    'zero-then-data': [Buffer.concat([Buffer.alloc(512), file('a.txt', 'a'), END]), /끝 표시 뒤에/],
-    'no-end': [file('a.txt', 'a'), /끝 표시가 없어/],
+    // tar.exe skips a header with a wrong checksum (Damaged... Retrying) and ends as a success.
+    checksum: [Buffer.concat([file('a.txt', 'a', { breakChecksum: true }), END]), /checksum does not match/],
+    'non-ascii': [Buffer.concat([file(Buffer.from([0xc7, 0xd1, 0x2e, 0x74]), 'a'), END]), /depending on the code page/],
+    'empty-pax-path': [Buffer.concat([pax({ path: '' }), file('e.txt', ''), END]), /is empty/],
+    'pax-utf8': [Buffer.concat([pax({ path: Buffer.from([0xff, 0x41]) }), file('e.txt', ''), END]), /is not UTF-8/],
+    sparse: [Buffer.concat([file('s.txt', 'a', { type: 'S' }), END]), /entry type/],
+    'gnu-sparse-pax': [Buffer.concat([pax({ 'GNU.sparse.size': '10' }), file('s.txt', 'a'), END]), /sparse file/],
+    symlink: [Buffer.concat([header('l', 0, { type: '2' }), END]), /entry type/],
+    'hardlink-data': [Buffer.concat([file('h.txt', 'abc', { type: '1' }), END]), /hard link entry with content/],
+    'bad-size': [Buffer.concat([header('a.txt', Buffer.from('zzzzzzzzzzz\0', 'latin1')), END]), /size could not be read/],
+    'zero-then-data': [Buffer.concat([Buffer.alloc(512), file('a.txt', 'a'), END]), /after the tar end marker/],
+    'no-end': [file('a.txt', 'a'), /end marker is missing/],
   };
   for (const [name, [tar, reason]] of Object.entries(cases)) assert.match(scan(dir, `${name}.tar.gz`, tar).reason ?? '', reason, name);
-  // 멤버 뒤가 0x00으로 시작하면 Node는 오류 없이 멈추므로 읽은 바이트 수로 잡는다.
+  // If what follows a member starts with 0x00, Node stops without an error, so it is caught by the number of bytes read.
   const raw = {
     'zero-gap': Buffer.concat([good, Buffer.alloc(1), good]),
     'zero-tail': Buffer.concat([good, Buffer.alloc(100)]),
@@ -107,7 +107,7 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
     cut: good.subarray(0, good.length - 1),
   };
   for (const [name, data] of Object.entries(raw)) assert.ok(scan(dir, `${name}.tar.gz`, data, { raw: true }).reason, name);
-  assert.match(scan(dir, 'zero-gap2.tar.gz', Buffer.concat([good, Buffer.alloc(1), good]), { raw: true }).reason, /gzip 끝 뒤에 다른 데이터/);
-  // 없는 파일도 사유로 돌려준다.
-  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /다시 읽지 못해/);
+  assert.match(scan(dir, 'zero-gap2.tar.gz', Buffer.concat([good, Buffer.alloc(1), good]), { raw: true }).reason, /other data after the end of the gzip/);
+  // A file that does not exist is also returned as a reason.
+  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /could not be read again/);
 });

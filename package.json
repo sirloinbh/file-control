@@ -1,7 +1,7 @@
 {
   "name": "file-control",
   "version": "0.1.0",
-  "description": "파일 컨트롤 - 내 컴퓨터 속 파일의 이름 변경, 압축 해제, 이동, 삭제 등을 자동화하는 개인 도구",
+  "description": "File Control - a personal tool that automates renaming, extracting, moving, and deleting files on my computer",
   "private": true,
   "bin": {
     "fctl": "bin/fctl.js"

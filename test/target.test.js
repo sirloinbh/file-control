@@ -10,13 +10,13 @@ const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeI
 
 const isWindows = process.platform === 'win32';
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로,
-// 이 파일에서는 사용자 폴더를 임시 폴더 밖의 가짜 경로로 바꿔 둔다. 보호 테스트는 home을 직접 정한다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so
+// in this file the user folder is swapped with a fake path outside the temporary folder. The protection tests decide home directly.
 const defaultHome = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
 let home = defaultHome;
 test.mock.method(os, 'homedir', () => home);
 
-// 테스트 안에서만 사용자 폴더를 바꾸고, 끝나면 되돌린다.
+// It changes the user folder only inside the test and restores it when done.
 function useHome(t, dir) {
   home = dir;
   t.after(() => {
@@ -87,7 +87,7 @@ test('resolveInside는 안쪽 경로를 절대경로로 돌려주고 밖이면 �
   assert.throws(() => resolveInside(target, path.resolve('/etc/passwd')), FcError);
 });
 
-// Windows에서는 디렉토리 심볼릭 링크에 관리자 권한이 필요해서 정션을 쓴다.
+// On Windows, directory symbolic links need administrator rights, so it uses junctions.
 function linkDir(from, to) {
   fs.symlinkSync(from, to, isWindows ? 'junction' : 'dir');
 }
@@ -166,7 +166,7 @@ test('walk는 하위 폴더 하나라도 읽지 못하면 일부 목록 대신 �
   assert.throws(() => walk(dir), (err) => err instanceof FcError && err.message.includes('locked') && err.message.includes('EPERM'));
 });
 
-// 순회 중 폴더를 정션으로 바꾸는 경쟁(#46). readdirSync가 when 폴더를 처음 읽은 직후에 swap을 부른다.
+// A race that swaps a folder for a junction during traversal (#46). It calls swap right after readdirSync first reads the when folder.
 function walkWithSwap(t, when, swap) {
   const readdir = fs.readdirSync;
   let swapped = false;
@@ -197,8 +197,8 @@ function swapFixture() {
 test('walk는 목록에 올린 하위 폴더가 읽기 전에 타겟 밖 정션으로 바뀌면 그 안을 목록에 넣지 않고 오류를 낸다 (#46)', (t) => {
   const { outside, target, toJunction } = swapFixture();
   walkWithSwap(t, target, toJunction(outside));
-  assert.throws(() => walk(target), (err) => err instanceof FcError && /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/.test(err.message) && err.message.includes(`${path.join(target, 's')} -> ${outside}`));
-  // 바꾼 뒤의 상태는 정션으로만 보인다.
+  assert.throws(() => walk(target), (err) => err instanceof FcError && /was turned into a link while reading and now points elsewhere/.test(err.message) && err.message.includes(`${path.join(target, 's')} -> ${outside}`));
+  // The state after the swap looks only like a junction.
   t.mock.restoreAll();
   assert.ok(walk(target).some((e) => e.relative === 's' && e.type === 'link'));
   assert.ok(!walk(target).some((e) => e.relative.endsWith('secret.txt')));
@@ -212,17 +212,17 @@ test('walk는 하위 폴더가 타겟 안의 다른 폴더를 가리키는 정�
 
 test('walk는 하위 폴더를 읽는 동안 정션으로 바뀌어도 읽은 목록을 내지 않는다 (#46)', (t) => {
   const { outside, target, toJunction } = swapFixture();
-  // s를 읽은 직후에 바꾸면 읽은 뒤 확인이 잡는다.
+  // If it swaps right after reading s, the check after reading catches it.
   walkWithSwap(t, path.join(target, 's'), toJunction(outside));
-  assert.throws(() => walk(target), /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/);
+  assert.throws(() => walk(target), /was turned into a link while reading and now points elsewhere/);
 });
 
 test('grant는 링크 검사로 훑는 폴더 자신이 그 사이 정션으로 바뀌어도 내주지 않는다 (#46)', (t) => {
   const { outside, target, toJunction } = swapFixture();
   const access = grant(target, ['read']);
-  // read(s)는 s의 실제 경로를 구한 뒤 s 안의 링크를 훑는다(rejectLinksInside). 그 목록을 읽은 직후 s를 바꾼다.
+  // read(s) gets the real path of s and then scans the links inside s (rejectLinksInside). Right after reading that list, it swaps s.
   walkWithSwap(t, path.join(target, 's'), toJunction(outside));
-  assert.throws(() => access.read('s'), /읽는 도중 폴더가 링크로 바뀌어 다른 곳을 가리킵니다/);
+  assert.throws(() => access.read('s'), /was turned into a link while reading and now points elsewhere/);
 });
 
 
@@ -251,8 +251,8 @@ test('fileSizeInside는 타겟 안 파일의 크기만 돌려준다', () => {
   fs.writeFileSync(path.join(outside, 'o.mp4'), '0');
   fs.mkdirSync(path.join(target, 'd'));
   assert.strictEqual(fileSizeInside(target, 'v.mp4'), 10);
-  assert.throws(() => fileSizeInside(target, path.join(outside, 'o.mp4')), /타겟 폴더 밖/);
-  assert.throws(() => fileSizeInside(target, 'd'), /파일이 아닙니다/);
+  assert.throws(() => fileSizeInside(target, path.join(outside, 'o.mp4')), /outside the target folder/);
+  assert.throws(() => fileSizeInside(target, 'd'), /Not a file/);
 });
 
 test('readRange는 잘못된 offset·length를 거부한다', () => {
@@ -287,8 +287,8 @@ test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고,
   fs.writeFileSync(path.join(target, 'real', 'ok.txt'), 'ok');
   linkDir(outside, path.join(target, 'escape'));
   linkDir(path.join(target, 'real'), path.join(target, 'alias'));
-  assert.throws(() => readInside(target, 'escape/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => readRange(target, 'escape/secret.txt', { length: 1 }), /링크를 거쳐/);
+  assert.throws(() => readInside(target, 'escape/secret.txt'), /through a link/);
+  assert.throws(() => readRange(target, 'escape/secret.txt', { length: 1 }), /through a link/);
   assert.strictEqual(readInside(target, 'alias/ok.txt').toString(), 'ok');
 });
 
@@ -297,7 +297,7 @@ test('readRange는 손상된 헤더처럼 큰 length를 받아도 파일에 있�
   fs.writeFileSync(path.join(target, 'tiny.mp4'), 'abcde');
   const result = readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 });
   assert.strictEqual(result.toString(), 'bcde');
-  // subarray는 원래 할당한 메모리를 공유하므로, 할당 자체가 작았는지 확인한다.
+  // subarray shares the originally allocated memory, so it checks that the allocation itself was small.
   assert.ok(result.buffer.byteLength <= 5, `할당 크기: ${result.buffer.byteLength}`);
 });
 
@@ -318,9 +318,9 @@ test('resolveTarget은 사용자 폴더 바로 아래 숨김 설정 폴더와 �
   for (const dir of ['.ssh', '.config/gh', 'AppData/Local/Temp', 'Downloads/.hidden', 'Downloads']) {
     fs.mkdirSync(path.join(home, dir), { recursive: true });
   }
-  assert.throws(() => resolveTarget(path.join(home, '.ssh')), /보호된 경로/);
-  assert.throws(() => resolveTarget(path.join(home, '.config', 'gh')), /보호된 경로/);
-  assert.throws(() => resolveTarget(path.join(home, 'AppData', 'Local', 'Temp')), /보호된 경로/);
+  assert.throws(() => resolveTarget(path.join(home, '.ssh')), /protected path/);
+  assert.throws(() => resolveTarget(path.join(home, '.config', 'gh')), /protected path/);
+  assert.throws(() => resolveTarget(path.join(home, 'AppData', 'Local', 'Temp')), /protected path/);
   assert.strictEqual(resolveTarget(path.join(home, 'Downloads')), path.join(home, 'Downloads'));
   assert.strictEqual(resolveTarget(path.join(home, 'Downloads', '.hidden')), path.join(home, 'Downloads', '.hidden'));
 });
@@ -328,16 +328,16 @@ test('resolveTarget은 사용자 폴더 바로 아래 숨김 설정 폴더와 �
 test('resolveTarget은 Windows에서 대소문자가 다른 AppData도 거부한다', { skip: !isWindows }, (t) => {
   useHome(t, path.join(tempDir(), 'kim'));
   fs.mkdirSync(path.join(home, 'AppData'), { recursive: true });
-  assert.throws(() => resolveTarget(path.join(home, 'APPDATA')), /보호된 경로/);
+  assert.throws(() => resolveTarget(path.join(home, 'APPDATA')), /protected path/);
 });
 
 test('resolveTarget은 사용자 폴더 자신과 그것을 품은 상위 폴더를 거부한다', (t) => {
   const root = tempDir();
   useHome(t, path.join(root, 'users', 'kim'));
   fs.mkdirSync(home, { recursive: true });
-  assert.throws(() => resolveTarget(home), /사용자 폴더/);
-  assert.throws(() => resolveTarget(path.join(root, 'users')), /사용자 폴더/);
-  assert.throws(() => resolveTarget(root), /사용자 폴더/);
+  assert.throws(() => resolveTarget(home), /user folder/);
+  assert.throws(() => resolveTarget(path.join(root, 'users')), /user folder/);
+  assert.throws(() => resolveTarget(root), /user folder/);
   fs.mkdirSync(path.join(root, 'users', 'kim2'));
   assert.strictEqual(resolveTarget(path.join(root, 'users', 'kim2')), path.join(root, 'users', 'kim2'));
 });
@@ -347,21 +347,21 @@ test('resolveTarget은 정션을 거쳐 보호 폴더를 가리켜도 거부한�
   useHome(t, path.join(root, 'kim'));
   fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
   linkDir(path.join(home, '.ssh'), path.join(root, 'keys'));
-  assert.throws(() => resolveTarget(path.join(root, 'keys')), /보호된 경로/);
+  assert.throws(() => resolveTarget(path.join(root, 'keys')), /protected path/);
 });
 
 test('resolveTarget은 Windows 시스템 폴더와 그 안, 그것을 품은 드라이브 루트를 거부한다', { skip: !isWindows }, () => {
   const windows = process.env.SystemRoot;
   const programFiles = process.env.ProgramFiles;
   for (const dir of [windows, windows.toLowerCase(), path.join(windows, 'System32'), programFiles, path.parse(windows).root]) {
-    assert.throws(() => resolveTarget(dir), /보호된 경로/, dir);
+    assert.throws(() => resolveTarget(dir), /protected path/, dir);
   }
   const x86 = process.env['ProgramFiles(x86)'];
-  if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /보호된 경로/);
+  if (x86 && fs.existsSync(x86)) assert.throws(() => resolveTarget(x86), /protected path/);
 });
 
-// 테스트 안에서만 환경 변수를 바꾸고, 끝나면 되돌린다. t.after는 먼저 등록한 것부터 돌므로,
-// 한 테스트에서 같은 변수를 여러 번 바꿔도 처음 값으로 돌아가도록 키마다 처음 한 번만 저장한다(1차 리뷰).
+// It changes the environment variable only inside the test and restores it when done. t.after runs the earliest registered first, so
+// even if one test changes the same variable several times, it saves only the first time per key so that it returns to the first value (first review).
 const savedEnv = new WeakMap();
 function useEnv(t, values) {
   if (!savedEnv.has(t)) {
@@ -384,20 +384,20 @@ function useEnv(t, values) {
 
 test('resolveTarget은 ProgramData(All Users), 64비트 Program Files, 복구 폴더를 거부한다 (#50)', { skip: !isWindows }, (t) => {
   const programData = process.env.ProgramData;
-  assert.throws(() => resolveTarget(programData), /보호된 경로/);
+  assert.throws(() => resolveTarget(programData), /protected path/);
   const allUsers = path.join(path.dirname(process.env.PUBLIC ?? 'C:\\Users\\Public'), 'All Users');
-  if (fs.existsSync(allUsers)) assert.throws(() => resolveTarget(allUsers), /보호된 경로.*ProgramData/i);
+  if (fs.existsSync(allUsers)) assert.throws(() => resolveTarget(allUsers), /protected path.*ProgramData/i);
   const root = tempDir();
   for (const name of ['pf64', 'pd', 'aup']) fs.mkdirSync(path.join(root, name));
-  // 32비트 Node에서는 ProgramFiles가 x86 폴더라 64비트 폴더는 ProgramW6432로만 알 수 있다.
+  // In 32-bit Node, ProgramFiles is the x86 folder, so the 64-bit folder can be known only through ProgramW6432.
   useEnv(t, { ProgramW6432: path.join(root, 'pf64'), ProgramData: path.join(root, 'pd') });
-  assert.throws(() => resolveTarget(path.join(root, 'pf64')), /시스템 폴더/);
-  assert.throws(() => resolveTarget(path.join(root, 'pd')), /시스템 폴더/);
+  assert.throws(() => resolveTarget(path.join(root, 'pf64')), /system folder/);
+  assert.throws(() => resolveTarget(path.join(root, 'pd')), /system folder/);
   for (const programDataValue of [undefined, 'relative\\pd']) {
     useEnv(t, { ProgramData: programDataValue, ALLUSERSPROFILE: path.join(root, 'aup') });
-    assert.throws(() => resolveTarget(path.join(root, 'aup')), /시스템 폴더/, String(programDataValue));
+    assert.throws(() => resolveTarget(path.join(root, 'aup')), /system folder/, String(programDataValue));
   }
-  assert.match(protectedReason('C:\\Recovery\\WindowsRE'), /시스템 폴더 C:\\Recovery/i);
+  assert.match(protectedReason('C:\\Recovery\\WindowsRE'), /system folder C:\\Recovery/i);
 });
 
 test('useEnv는 같은 변수를 여러 번 바꿔도 테스트가 끝나면 처음 값으로 되돌린다', async (t) => {
@@ -412,14 +412,14 @@ test('useEnv는 같은 변수를 여러 번 바꿔도 테스트가 끝나면 처
 
 test('resolveTarget은 드라이브마다 있는 휴지통·System Volume Information과 드라이브 루트를 거부한다 (#50)', { skip: !isWindows }, () => {
   for (const p of ['E:\\$RECYCLE.BIN', 'E:\\$Recycle.Bin\\S-1-5-21', 'e:\\system volume information\\x']) {
-    assert.match(protectedReason(p), /시스템 폴더/, p);
+    assert.match(protectedReason(p), /system folder/, p);
   }
   assert.strictEqual(protectedReason('E:\\Recycle.Bin'), null);
   assert.strictEqual(protectedReason('E:\\data\\$Recycle.Bin'), null);
-  // 드라이브 루트는 휴지통이 아직 없어도 막는다. 처음 rm할 때 생기므로 있는지에 따라 달라지지 않게 한다(1차 리뷰).
-  for (const p of ['Y:\\', 'z:\\']) assert.match(protectedReason(p), /드라이브 루트/, p);
-  assert.throws(() => resolveTarget(path.parse(process.cwd()).root), /보호된 경로/);
-  // 실제 경로를 볼 권한이 없는 폴더는 날것 오류 대신 FcError로 거부한다(관리자로 실행하면 보호 경로로 거부된다).
+  // A drive root is blocked even if the Recycle Bin does not exist yet. It is created on the first rm, so it must not vary with whether it exists (first review).
+  for (const p of ['Y:\\', 'z:\\']) assert.match(protectedReason(p), /drive root/, p);
+  assert.throws(() => resolveTarget(path.parse(process.cwd()).root), /protected path/);
+  // A folder whose real path you have no permission to see is refused with an FcError instead of a raw error (run as administrator, it is refused as a protected path).
   for (const p of ['C:\\$Recycle.Bin', 'C:\\System Volume Information']) {
     if (fs.existsSync(p)) assert.throws(() => resolveTarget(p), (err) => err instanceof FcError, p);
   }
@@ -432,7 +432,7 @@ test('resolveTarget은 stat이 실패하는 폴더도 날것 오류 대신 FcErr
     if (p === dir) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
     return statSync(p, opts);
   });
-  assert.throws(() => resolveTarget(dir), (err) => err instanceof FcError && /확인할 수 없어/.test(err.message) && err.message.includes('EPERM'));
+  assert.throws(() => resolveTarget(dir), (err) => err instanceof FcError && /cannot be checked/.test(err.message) && err.message.includes('EPERM'));
 });
 
 test('resolveTarget은 다른 사용자의 프로필과 설정 폴더, 기본 프로필을 거부하고 Public은 허용한다 (#50)', { skip: !isWindows }, (t) => {
@@ -445,23 +445,23 @@ test('resolveTarget은 다른 사용자의 프로필과 설정 폴더, 기본 �
   }
   linkDir(path.join(users, 'Default'), path.join(users, 'Default User'));
   const at = (...parts) => path.join(users, ...parts);
-  assert.throws(() => resolveTarget(at('kim2')), /다른 사용자 폴더/);
-  assert.throws(() => resolveTarget(at('kim2', '.ssh')), /다른 사용자의 설정 폴더/);
-  assert.throws(() => resolveTarget(at('KIM2', 'APPDATA', 'Local')), /다른 사용자의 설정 폴더/);
+  assert.throws(() => resolveTarget(at('kim2')), /another user's folder/);
+  assert.throws(() => resolveTarget(at('kim2', '.ssh')), /another user's settings folder/);
+  assert.throws(() => resolveTarget(at('KIM2', 'APPDATA', 'Local')), /another user's settings folder/);
   for (const p of [at('Default'), at('Default', 'Documents'), at('Default User')]) {
-    assert.throws(() => resolveTarget(p), /기본 사용자 프로필/, p);
+    assert.throws(() => resolveTarget(p), /default user profile/, p);
   }
   for (const p of [at('kim2', 'Documents'), at('kim2', 'Documents', '.notes'), at('Public'), at('Public', 'Documents')]) {
     assert.strictEqual(resolveTarget(p), p);
   }
-  // 사용자 폴더가 프로필 폴더 밖에 있으면 그 형제를 다른 사용자로 보지 않는다.
+  // If the user folder is outside the profile folder, its siblings are not seen as other users.
   useHome(t, path.join(root, 'elsewhere', 'kim'));
   assert.strictEqual(resolveTarget(at('kim2', '.ssh')), at('kim2', '.ssh'));
 });
 
 test('resolveTarget은 UNC·네트워크 경로를 존재 여부와 상관없이 거부한다', { skip: !isWindows }, () => {
   for (const dir of ['\\\\localhost\\C$\\Windows', '\\\\?\\UNC\\localhost\\C$\\Windows', '\\\\127.0.0.1\\C$\\Users', '\\\\server\\share', '\\\\.\\C:\\Windows']) {
-    assert.throws(() => resolveTarget(dir), /네트워크 경로/, dir);
+    assert.throws(() => resolveTarget(dir), /network path/, dir);
   }
 });
 
@@ -473,7 +473,7 @@ test('resolveTarget은 링크로 된 환경 변수 경로도 실제 경로로 �
   const alias = path.join(tempDir(), 'pf');
   linkDir(programFiles, alias);
   process.env.ProgramFiles = alias;
-  assert.throws(() => resolveTarget(programFiles), /보호된 경로/);
+  assert.throws(() => resolveTarget(programFiles), /protected path/);
 });
 
 test('resolveTarget은 절대경로가 아닌 환경 변수 대신 기본 위치를 보호한다', { skip: !isWindows }, (t) => {
@@ -482,19 +482,19 @@ test('resolveTarget은 절대경로가 아닌 환경 변수 대신 기본 위치
     process.env.SystemRoot = systemRoot;
   });
   process.env.SystemRoot = 'relative\\windows';
-  // 상대경로를 그대로 쓰면 현재 폴더 아래를 보호 대상으로 잡아 현재 폴더까지 거부된다.
+  // If a relative path were used as is, the area under the current folder would be caught as protected, and even the current folder would be refused.
   assert.strictEqual(resolveTarget('.'), fs.realpathSync.native('.'));
-  assert.throws(() => resolveTarget('C:\\Windows'), /보호된 경로/);
+  assert.throws(() => resolveTarget('C:\\Windows'), /protected path/);
 });
 
 test('resolveTarget은 사용자 폴더를 알 수 없으면 FcError를 낸다', (t) => {
   useHome(t, '');
-  assert.throws(() => resolveTarget(tempDir()), (err) => err instanceof FcError && err.message.includes('사용자 폴더'));
+  assert.throws(() => resolveTarget(tempDir()), (err) => err instanceof FcError && err.message.includes('user folder'));
 });
 
 const ALL_ACCESS = ['read', 'write', 'delete'];
 
-// 타겟 안에 일반 폴더·파일을, 타겟 밖에 비밀 파일을 만든다.
+// It makes ordinary folders and files inside the target and a secret file outside the target.
 function accessFixture() {
   const root = tempDir();
   const outside = path.join(root, 'outside');
@@ -511,11 +511,11 @@ test('grant는 부여한 작업만 허용한다', () => {
   const readOnly = grant(target, ['read']);
   assert.strictEqual(readOnly.target, target);
   assert.strictEqual(readOnly.read('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
-  assert.throws(() => readOnly.write('sub/a.txt'), /쓰기 권한이 없습니다/);
-  assert.throws(() => readOnly.delete('sub/a.txt'), /삭제 권한이 없습니다/);
+  assert.throws(() => readOnly.write('sub/a.txt'), /No Write permission/);
+  assert.throws(() => readOnly.delete('sub/a.txt'), /No Delete permission/);
   const deleteOnly = grant(target, ['delete']);
   assert.strictEqual(deleteOnly.delete('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
-  assert.throws(() => deleteOnly.read('sub/a.txt'), /읽기 권한이 없습니다/);
+  assert.throws(() => deleteOnly.read('sub/a.txt'), /No Read permission/);
 });
 
 test('grant는 잘못된 권한 목록을 거부한다', () => {
@@ -530,7 +530,7 @@ test('grant는 부여 뒤에 권한 목록을 고쳐도 늘어나지 않고, 함
   const kinds = ['read'];
   const access = grant(target, kinds);
   kinds.push('delete');
-  assert.throws(() => access.delete('sub/a.txt'), /삭제 권한이 없습니다/);
+  assert.throws(() => access.delete('sub/a.txt'), /No Delete permission/);
   assert.ok(Object.isFrozen(access));
 });
 
@@ -538,8 +538,8 @@ test('grant는 보호 경로와 없는 타겟을 거부한다', (t) => {
   const root = tempDir();
   useHome(t, path.join(root, 'kim'));
   fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
-  assert.throws(() => grant(path.join(home, '.ssh'), ALL_ACCESS), /보호된 경로/);
-  assert.throws(() => grant(home, ALL_ACCESS), /사용자 폴더/);
+  assert.throws(() => grant(path.join(home, '.ssh'), ALL_ACCESS), /protected path/);
+  assert.throws(() => grant(home, ALL_ACCESS), /user folder/);
   assert.throws(() => grant(path.join(root, 'nope'), ALL_ACCESS), FcError);
 });
 
@@ -549,7 +549,7 @@ test('grant는 세 작업 모두 타겟 밖 경로를 거부하고 아무것도 
   const before = listing(root);
   for (const kind of ALL_ACCESS) {
     for (const p of ['..', '../outside/secret.txt', 'sub/../../outside/secret.txt', path.join(outside, 'secret.txt'), root]) {
-      assert.throws(() => access[kind](p), /타겟 폴더 밖/, `${kind} ${p}`);
+      assert.throws(() => access[kind](p), /outside the target folder/, `${kind} ${p}`);
     }
   }
   assert.deepStrictEqual(listing(root), before);
@@ -560,19 +560,19 @@ test('grant는 Windows에서 다른 드라이브 경로를 거부한다', { skip
   const { target } = accessFixture();
   const other = path.parse(target).root.toUpperCase().startsWith('Z') ? 'Y:\\a.txt' : 'Z:\\a.txt';
   const access = grant(target, ALL_ACCESS);
-  for (const kind of ALL_ACCESS) assert.throws(() => access[kind](other), /타겟 폴더 밖/, kind);
+  for (const kind of ALL_ACCESS) assert.throws(() => access[kind](other), /outside the target folder/, kind);
 });
 
 test('grant는 세 작업 모두 정션을 거쳐 타겟 밖으로 나가는 경로를 거부한다', () => {
   const { outside, target } = accessFixture();
   linkDir(outside, path.join(target, 'escape'));
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.read('escape'), /링크를 거쳐/);
-  assert.throws(() => access.read('escape/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => access.write('escape'), /링크를 거쳐/);
-  assert.throws(() => access.write('escape/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => access.write('escape/new/deep.txt'), /링크를 거쳐/);
-  assert.throws(() => access.delete('escape/secret.txt'), /링크를 거쳐/);
+  assert.throws(() => access.read('escape'), /through a link/);
+  assert.throws(() => access.read('escape/secret.txt'), /through a link/);
+  assert.throws(() => access.write('escape'), /through a link/);
+  assert.throws(() => access.write('escape/secret.txt'), /through a link/);
+  assert.throws(() => access.write('escape/new/deep.txt'), /through a link/);
+  assert.throws(() => access.delete('escape/secret.txt'), /through a link/);
   assert.ok(!fs.existsSync(path.join(outside, 'new')));
 });
 
@@ -580,8 +580,8 @@ test('grant는 Windows에서 대소문자가 다른 정션 이름도 같은 링�
   const { outside, target } = accessFixture();
   linkDir(outside, path.join(target, 'escape'));
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.write('ESCAPE/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => access.delete('ESCAPE'), /링크는 삭제할 수 없습니다/);
+  assert.throws(() => access.write('ESCAPE/secret.txt'), /through a link/);
+  assert.throws(() => access.delete('ESCAPE'), /Cannot delete a link/);
 });
 
 test('grant는 Windows에서 해석이 갈리는 이름을 세 작업 모두 거부하고 아무것도 바꾸지 않는다', { skip: !isWindows }, () => {
@@ -590,13 +590,13 @@ test('grant는 Windows에서 해석이 갈리는 이름을 세 작업 모두 거
   const access = grant(target, ALL_ACCESS);
   const before = listing(root);
   const names = [
-    // PowerShell·tar.exe는 끝의 점과 공백을 지워 정션이나 타겟 밖으로 풀어낸다.
+    // PowerShell and tar.exe remove a trailing dot and space and resolve to a junction or outside the target.
     'escape.', 'escape ', 'escape./new.txt', 'escape /new.txt', '. ', '.. ', '.. /outside', 'sub/.. ', 'sub./a.txt',
-    // 스트림과 장치 이름
+    // Streams and device names
     'sub/a.txt:hidden', 'sub/a.txt::$DATA', 'NUL', 'nul.txt', 'sub/COM1', 'LPT9.log', 'CONIN$',
   ];
   for (const kind of ALL_ACCESS) {
-    for (const p of names) assert.throws(() => access[kind](p), /다르게 해석될 수 있는 이름/, `${kind} ${p}`);
+    for (const p of names) assert.throws(() => access[kind](p), /interpreted differently on Windows/, `${kind} ${p}`);
   }
   assert.deepStrictEqual(listing(root), before);
 });
@@ -609,7 +609,7 @@ test('grant는 점이 들어간 평범한 이름과 장치 이름으로 시작�
   }
 });
 
-// Windows 11 24H2 이상(빌드 26100 이상)에서는 장치 이름 + 확장자 하나만 장치로 본다(#53). 그 아래 버전은 넓게 거부한다.
+// On Windows 11 24H2 and above (build 26100 and above), only a device name plus one extension is seen as a device (#53). Versions below that are refused broadly.
 const WINDOWS_11 = deviceNamePattern() === deviceNamePattern('10.0.26200');
 const DEVICE_LIKE = ['Con.Air.1997.mkv', 'Aux.2018.mp4', 'nul.tar.gz', 'Prn.Movie.mkv', 'Com0.txt', 'Lpt0.txt', 'Nul .mp4', 'NUL..mp4', 'CONIN$.txt', 'sub/Con.Air.1997/a.mkv'];
 
@@ -618,7 +618,7 @@ test('grant는 Windows 11 24H2 이상에서 점이 둘 이상이거나 장치 �
   const access = grant(target, ['write']);
   for (const name of DEVICE_LIKE) {
     if (WINDOWS_11) assert.strictEqual(access.write(name), path.join(target, name), name);
-    else assert.throws(() => access.write(name), /다르게 해석될 수 있는 이름/, name);
+    else assert.throws(() => access.write(name), /interpreted differently on Windows/, name);
   }
 });
 
@@ -627,9 +627,9 @@ test('장치 이름 규칙은 Windows 빌드에 따라 고르고, 빌드를 읽�
   assert.strictEqual(deviceNamePattern('10.0.26100'), narrow);
   const wide = deviceNamePattern('10.0.19045');
   assert.notStrictEqual(narrow, wide);
-  // 확인하지 못한 Windows 11 23H2 이하(22000~22631)와 Server 2022(20348)는 넓은 규칙이다.
+  // Windows 11 23H2 and below (22000 to 22631) and Server 2022 (20348), which were not checked, use the broad rule.
   for (const release of ['10.0.26099', '10.0.22631', '10.0.22000', '10.0.20348', '10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
-  // [이름, Windows 11에서 거부, 그 아래에서 거부]
+  // [name, refused on Windows 11, refused on versions below]
   const cases = [
     ['NUL', true, true], ['nul', true, true], ['Nul.mp4', true, true], ['con.txt', true, true], ['Com1.mkv', true, true],
     ['LPT9.log', true, true], ['COM¹.txt', true, true], ['com².mp4', true, true], ['lpt³', true, true], ['Con.Air', true, true], ['CONIN$', true, true], ['conout$', true, true],
@@ -658,10 +658,10 @@ test('grant는 끊어진 링크로 쓰지 않는다', () => {
   linkDir(gone, path.join(target, 'dangling'));
   fs.rmdirSync(gone);
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.write('dangling'), /끊어진 링크/);
-  assert.throws(() => access.write('dangling/new.txt'), /끊어진 링크/);
-  assert.throws(() => access.read('dangling'), /끊어진 링크/);
-  assert.throws(() => access.delete('dangling'), /링크는 삭제할 수 없습니다/);
+  assert.throws(() => access.write('dangling'), /broken link/);
+  assert.throws(() => access.write('dangling/new.txt'), /broken link/);
+  assert.throws(() => access.read('dangling'), /broken link/);
+  assert.throws(() => access.delete('dangling'), /Cannot delete a link/);
   assert.ok(!fs.existsSync(gone));
 });
 
@@ -680,7 +680,7 @@ test('grant.read는 폴더와 타겟 자신을 허용하고, 없는 경로는 �
   const access = grant(target, ALL_ACCESS);
   assert.strictEqual(access.read('sub'), path.join(target, 'sub'));
   assert.strictEqual(access.read('.'), target);
-  assert.throws(() => access.read('nope.txt'), /경로가 없거나/);
+  assert.throws(() => access.read('nope.txt'), /does not exist or is a broken link/);
 });
 
 test('grant.write는 아직 없는 경로를 허용하되 폴더를 미리 만들지 않는다', () => {
@@ -696,10 +696,10 @@ test('grant.write는 아직 없는 경로를 허용하되 폴더를 미리 만�
 test('grant.write는 타겟 자신과 파일 아래 경로를 거부한다', () => {
   const { target } = accessFixture();
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.write('.'), /타겟 폴더 자체/);
-  assert.throws(() => access.write('sub/..'), /타겟 폴더 자체/);
-  assert.throws(() => access.write('sub/a.txt/x.txt'), /파일 아래/);
-  assert.throws(() => access.write('sub/a.txt/x/y.txt'), /파일 아래/);
+  assert.throws(() => access.write('.'), /target folder itself/);
+  assert.throws(() => access.write('sub/..'), /target folder itself/);
+  assert.throws(() => access.write('sub/a.txt/x.txt'), /below a file/);
+  assert.throws(() => access.write('sub/a.txt/x/y.txt'), /below a file/);
 });
 
 test('grant.write는 Windows에서 대소문자가 다른 타겟 경로도 안으로 본다', { skip: !isWindows }, () => {
@@ -711,10 +711,10 @@ test('grant.write는 Windows에서 대소문자가 다른 타겟 경로도 안�
 test('grant.delete는 타겟 자신과 없는 경로를 거부한다', () => {
   const { target } = accessFixture();
   const access = grant(target, ['delete']);
-  assert.throws(() => access.delete('.'), /타겟 폴더 자체/);
-  assert.throws(() => access.delete(''), /타겟 폴더 자체/);
-  assert.throws(() => access.delete('sub/..'), /타겟 폴더 자체/);
-  assert.throws(() => access.delete('nope.txt'), /경로가 없거나/);
+  assert.throws(() => access.delete('.'), /target folder itself/);
+  assert.throws(() => access.delete(''), /target folder itself/);
+  assert.throws(() => access.delete('sub/..'), /target folder itself/);
+  assert.throws(() => access.delete('nope.txt'), /does not exist or is a broken link/);
 });
 
 test('grant.delete는 일반 파일·폴더를 허용하고 링크와 링크가 든 폴더는 거부한다', () => {
@@ -726,9 +726,9 @@ test('grant.delete는 일반 파일·폴더를 허용하고 링크와 링크가 
   const access = grant(target, ['delete']);
   assert.strictEqual(access.delete('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
   assert.strictEqual(access.delete('plain'), path.join(target, 'plain'));
-  assert.throws(() => access.delete('alias'), /링크는 삭제할 수 없습니다/);
-  assert.throws(() => access.delete('holder'), /링크가 든 폴더/);
-  assert.throws(() => access.delete('holder/deep'), /링크가 든 폴더/);
+  assert.throws(() => access.delete('alias'), /Cannot delete a link/);
+  assert.throws(() => access.delete('holder'), /folder that contains a link/);
+  assert.throws(() => access.delete('holder/deep'), /folder that contains a link/);
 });
 
 test('grant.delete는 폴더 안을 다 읽지 못하면 거부한다', (t) => {
@@ -757,18 +757,18 @@ test('grant는 예상 못 한 파일 시스템 오류와 잘못된 경로 값도
 test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 밖 형제 폴더를 정션으로 읽지 못하게 한다', () => {
   const root = tempDir();
   const target = path.join(root, 'work');
-  // U+212A(켈빈 기호)는 toLowerCase하면 k지만 NTFS에서는 다른 이름이다.
+  // U+212A (the Kelvin sign) is k when toLowerCase is applied, but on NTFS it is a different name.
   const sibling = path.join(root, 'wor\u212A');
   fs.mkdirSync(target);
   fs.mkdirSync(sibling);
   fs.writeFileSync(path.join(sibling, 'secret.txt'), 'SECRET');
   linkDir(sibling, path.join(target, 'esc'));
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.read('esc/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => access.write('esc/new.txt'), /링크를 거쳐/);
-  assert.throws(() => access.delete('esc/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => readInside(target, 'esc/secret.txt'), /링크를 거쳐/);
-  assert.throws(() => readRange(target, 'esc/secret.txt', { length: 1 }), /링크를 거쳐/);
+  assert.throws(() => access.read('esc/secret.txt'), /through a link/);
+  assert.throws(() => access.write('esc/new.txt'), /through a link/);
+  assert.throws(() => access.delete('esc/secret.txt'), /through a link/);
+  assert.throws(() => readInside(target, 'esc/secret.txt'), /through a link/);
+  assert.throws(() => readRange(target, 'esc/secret.txt', { length: 1 }), /through a link/);
 });
 
 test('grant는 대소문자 무시로만 같아 보이는 형제 폴더의 절대경로를 타겟 안 파일로 바꾸지 않는다', () => {
@@ -781,8 +781,8 @@ test('grant는 대소문자 무시로만 같아 보이는 형제 폴더의 절�
   fs.writeFileSync(path.join(sibling, 'a.txt'), 'sibling');
   const access = grant(target, ALL_ACCESS);
   for (const kind of ALL_ACCESS) {
-    assert.throws(() => access[kind](path.join(sibling, 'a.txt')), /타겟 폴더 밖/, kind);
-    assert.throws(() => access[kind](sibling), /타겟 폴더 밖/, kind);
+    assert.throws(() => access[kind](path.join(sibling, 'a.txt')), /outside the target folder/, kind);
+    assert.throws(() => access[kind](sibling), /outside the target folder/, kind);
   }
 });
 
@@ -796,7 +796,7 @@ test('resolveTarget은 Windows에서 끝이 U+00A0·U+0085인 폴더도 거부�
   useHome(t, path.join(tempDir(), 'kim'));
   for (const end of [' ', '\u0085']) {
     fs.mkdirSync(path.join(home, `AppData${end}`), { recursive: true });
-    assert.throws(() => resolveTarget(path.join(home, `AppData${end}`)), /끝이 점이나 공백/);
+    assert.throws(() => resolveTarget(path.join(home, `AppData${end}`)), /(ends|ending) with a dot or space/);
   }
 });
 
@@ -805,8 +805,8 @@ test('grant.read·write는 두 단계 아래에 링크가 든 폴더도 거부�
   fs.mkdirSync(path.join(target, 'deep', 'er'), { recursive: true });
   linkDir(outside, path.join(target, 'deep', 'er', 'escape'));
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.read('deep'), /링크가 든 폴더/);
-  assert.throws(() => access.write('deep'), /링크가 든 폴더/);
+  assert.throws(() => access.read('deep'), /folder that contains a link/);
+  assert.throws(() => access.write('deep'), /folder that contains a link/);
 });
 
 test('grant는 Windows에서 드라이브 문자 표기가 달라도 타겟 안을 밖으로 잘못 보지 않는다', { skip: !isWindows }, () => {
@@ -825,9 +825,9 @@ test('grant.read·write는 링크가 든 폴더를 거부하고, 링크 옆의 �
   const { outside, target } = accessFixture();
   linkDir(outside, path.join(target, 'sub', 'escape'));
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.read('sub'), /링크가 든 폴더/);
-  assert.throws(() => access.read('.'), /링크가 든 폴더/);
-  assert.throws(() => access.write('sub'), /링크가 든 폴더/);
+  assert.throws(() => access.read('sub'), /folder that contains a link/);
+  assert.throws(() => access.read('.'), /folder that contains a link/);
+  assert.throws(() => access.write('sub'), /folder that contains a link/);
   assert.strictEqual(access.read('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
   assert.strictEqual(access.write('sub/a.txt'), path.join(target, 'sub', 'a.txt'));
   assert.strictEqual(access.write('sub/new.txt'), path.join(target, 'sub', 'new.txt'));
@@ -835,29 +835,29 @@ test('grant.read·write는 링크가 든 폴더를 거부하고, 링크 옆의 �
 
 test('grant는 정션을 풀어낸 실제 경로에 해석이 갈리는 이름이 있으면 거부한다', { skip: !isWindows }, () => {
   const { outside, target } = accessFixture();
-  // Node는 끝의 점을 그대로 만들지만, 돌려준 경로를 PowerShell·tar.exe에 넘기면 타겟 밖 정션 weird로 풀린다.
+  // Node creates a trailing dot literally, but if the returned path is passed to PowerShell or tar.exe, it resolves to the junction "weird" outside the target.
   fs.mkdirSync(path.join(target, 'weird.'));
   fs.writeFileSync(path.join(target, 'weird.', 'decoy.txt'), 'decoy');
   linkDir(outside, path.join(target, 'weird'));
   linkDir(path.join(target, 'weird.'), path.join(target, 'alias'));
   const access = grant(target, ALL_ACCESS);
   for (const kind of ALL_ACCESS) {
-    assert.throws(() => access[kind]('alias/decoy.txt'), /다르게 해석될 수 있는 이름/, kind);
+    assert.throws(() => access[kind]('alias/decoy.txt'), /interpreted differently on Windows/, kind);
   }
-  assert.throws(() => access.write('alias/new.txt'), /다르게 해석될 수 있는 이름/);
+  assert.throws(() => access.write('alias/new.txt'), /interpreted differently on Windows/);
 });
 
 test('resolveTarget은 Windows에서 끝이 점·공백인 폴더를 타겟으로 받지 않아 보호 경로 우회를 막는다', { skip: !isWindows }, (t) => {
   const root = tempDir();
   useHome(t, path.join(root, 'kim'));
   for (const dir of ['AppData', 'AppData.', 'Downloads/proj./inner', 'plain']) fs.mkdirSync(path.join(home, dir), { recursive: true });
-  assert.throws(() => grant(path.join(home, 'AppData.'), ALL_ACCESS), /끝이 점이나 공백/);
-  assert.throws(() => resolveTarget(path.join(home, 'AppData.')), /끝이 점이나 공백/);
-  assert.throws(() => walk(path.join(home, 'Downloads', 'proj.')), /끝이 점이나 공백/);
-  assert.throws(() => resolveTarget(path.join(home, 'Downloads', 'proj.', 'inner')), /끝이 점이나 공백/);
-  // 정션으로 감싸도 실제 경로 기준으로 거부한다.
+  assert.throws(() => grant(path.join(home, 'AppData.'), ALL_ACCESS), /(ends|ending) with a dot or space/);
+  assert.throws(() => resolveTarget(path.join(home, 'AppData.')), /(ends|ending) with a dot or space/);
+  assert.throws(() => walk(path.join(home, 'Downloads', 'proj.')), /(ends|ending) with a dot or space/);
+  assert.throws(() => resolveTarget(path.join(home, 'Downloads', 'proj.', 'inner')), /(ends|ending) with a dot or space/);
+  // Even wrapped in a junction, it refuses by the real path.
   linkDir(path.join(home, 'AppData.'), path.join(home, 'plain', 'wrapped'));
-  assert.throws(() => resolveTarget(path.join(home, 'plain', 'wrapped')), /끝이 점이나 공백/);
+  assert.throws(() => resolveTarget(path.join(home, 'plain', 'wrapped')), /(ends|ending) with a dot or space/);
   fs.mkdirSync(path.join(home, 'clean'));
   assert.strictEqual(resolveTarget(path.join(home, 'clean')), path.join(home, 'clean'));
 });
@@ -870,8 +870,8 @@ test('grant는 Windows 도구가 지우는 다른 공백 문자로 끝나는 이
   }
   const access = grant(target, ALL_ACCESS);
   for (const kind of ALL_ACCESS) {
-    assert.throws(() => access[kind]('keep.txt\u00a0'), /다르게 해석될 수 있는 이름/, kind);
-    assert.throws(() => access[kind]('keep.txt\u0085'), /다르게 해석될 수 있는 이름/, kind);
+    assert.throws(() => access[kind]('keep.txt\u00a0'), /interpreted differently on Windows/, kind);
+    assert.throws(() => access[kind]('keep.txt\u0085'), /interpreted differently on Windows/, kind);
   }
 });
 
@@ -879,12 +879,12 @@ test('grant는 Windows에서 쓸 수 없는 문자와 변형 장치 이름을 �
   const { target } = accessFixture();
   const access = grant(target, ['write']);
   for (const p of ['es*/new.txt', 'es?ape/new.txt', 'a*.zip', 'a|b', 'a<b', 'a>b', 'a"b', 'a\x01b', 'COM¹', 'LPT³', 'com¹.txt', 'sub/Con.Air/a.mkv']) {
-    assert.throws(() => access.write(p), /다르게 해석될 수 있는 이름/, p);
+    assert.throws(() => access.write(p), /interpreted differently on Windows/, p);
   }
-  // 점 앞에 공백이 있는 장치 이름은 Windows 11에서 장치가 아니다(#53).
+  // A device name with a space before the dot is not a device on Windows 11 (#53).
   for (const p of ['NUL .txt', 'CON .log', 'aux .x']) {
     if (WINDOWS_11) assert.strictEqual(access.write(p), path.join(target, p), p);
-    else assert.throws(() => access.write(p), /다르게 해석될 수 있는 이름/, p);
+    else assert.throws(() => access.write(p), /interpreted differently on Windows/, p);
   }
 });
 
@@ -897,9 +897,9 @@ test('grant는 파일 심볼릭 링크도 타겟 밖이면 거부하고 링크 �
     throw err;
   }
   const access = grant(target, ALL_ACCESS);
-  assert.throws(() => access.read('file-link'), /링크를 거쳐/);
-  assert.throws(() => access.write('file-link'), /링크를 거쳐/);
-  assert.throws(() => access.delete('file-link'), /링크는 삭제할 수 없습니다/);
+  assert.throws(() => access.read('file-link'), /through a link/);
+  assert.throws(() => access.write('file-link'), /through a link/);
+  assert.throws(() => access.delete('file-link'), /Cannot delete a link/);
 });
 
 test('walk는 unreadable을 넘기면 읽지 못한 하위 폴더를 담고 계속 읽고, 넘기지 않으면 실패한다 (#74)', (t) => {
@@ -911,11 +911,11 @@ test('walk는 unreadable을 넘기면 읽지 못한 하위 폴더를 담고 계�
     if (p === path.join(root, 'locked')) throw Object.assign(new Error('denied'), { code: 'EACCES' });
     return readdirSync(p, ...rest);
   });
-  assert.throws(() => walk(root), /폴더를 읽을 수 없습니다: .*locked \(EACCES\)/);
+  assert.throws(() => walk(root), /Cannot read the folder: .*locked \(EACCES\)/);
   const unreadable = [];
   const entries = walk(root, { unreadable });
   assert.deepStrictEqual(entries.map((entry) => entry.relative), ['a', 'locked', 'z', path.join('z', 'f.txt')]);
-  assert.deepStrictEqual(unreadable, [{ path: path.join(root, 'locked'), relative: 'locked', reason: '폴더를 읽을 수 없어 그 안은 보지 않았습니다: EACCES' }]);
+  assert.deepStrictEqual(unreadable, [{ path: path.join(root, 'locked'), relative: 'locked', reason: 'Skipped the contents because the folder could not be read: EACCES' }]);
 });
 
 test('walk는 목록을 만든 뒤 사라지거나 파일로 바뀐 하위 폴더도 건너뛰고, 다른 읽기 오류는 실패한다 (2차 리뷰, #74)', (t) => {
@@ -930,9 +930,9 @@ test('walk는 목록을 만든 뒤 사라지거나 파일로 바뀐 하위 폴�
   for (code of ['ENOENT', 'ENOTDIR']) {
     const unreadable = [];
     walk(root, { unreadable });
-    assert.deepStrictEqual(unreadable.map((item) => item.reason), [`폴더를 읽을 수 없어 그 안은 보지 않았습니다: ${code}`], code);
+    assert.deepStrictEqual(unreadable.map((item) => item.reason), [`Skipped the contents because the folder could not be read: ${code}`], code);
   }
   for (code of ['EIO', 'EMFILE', undefined]) {
-    assert.throws(() => walk(root, { unreadable: [] }), /폴더를 읽을 수 없습니다/, String(code));
+    assert.throws(() => walk(root, { unreadable: [] }), /Cannot read the folder/, String(code));
   }
 });

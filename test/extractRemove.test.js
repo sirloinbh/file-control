@@ -8,14 +8,14 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-// 테스트가 사용자 휴지통을 건드리지 않게, commands.js를 불러오기 전에 휴지통 호출을 가짜로 바꿔 둔다.
+// So that the test does not touch the user's Recycle Bin, the Recycle Bin call is swapped for a fake before commands.js is imported.
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 let onRecycle = () => {};
-// 파일 시스템 확인(#184). 기본은 NTFS로 답하고, 테스트마다 바꿔 exFAT 등을 흉내 낸다.
+// File system check (#184). By default it answers NTFS, and each test swaps it to imitate exFAT and so on.
 let format = () => 'NTFS\r\n';
 let formatProbes = 0;
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
@@ -57,8 +57,8 @@ function tree(dir) {
     .sort();
 }
 
-// 무압축 zip. cut을 'entries'로 주면 항목 뒤에서, 'directory'로 주면 중앙 디렉터리 중간에서 잘린 파일이 된다.
-// hide에 든 이름은 로컬 항목만 넣고 중앙 디렉터리에서 뺀다.
+// An uncompressed zip. If cut is 'entries', it becomes a file cut after the entries, and if 'directory', a file cut in the middle of the central directory.
+// For names in hide, only the local entry is put in and it is left out of the central directory.
 function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0, prefix = Buffer.alloc(0), hide = [] } = {}) {
   const locals = [prefix];
   const centrals = [];
@@ -129,7 +129,7 @@ test('정상으로 풀린 압축 파일을 휴지통으로 보낸다', () => {
   assert.deepStrictEqual(recycled.sort(), [a, b].sort());
   assert.deepStrictEqual(result.removed.sort(), [a, b].sort());
   assert.deepStrictEqual(tree(dir), ['a/x.txt', 'sub/b/y.txt']);
-  assert.match(formatExtractions(result), /압축 해제 2개, 휴지통 2개, 남김 0개, 건너뜀 0개, 실패 0개/);
+  assert.match(formatExtractions(result), /Extract 2, Recycle Bin 2, kept 0, skipped 0, failed 0/);
 });
 
 test('exFAT 볼륨이면 풀기만 하고 압축 파일은 남긴다 (#184)', () => {
@@ -137,10 +137,10 @@ test('exFAT 볼륨이면 풀기만 하고 압축 파일은 남긴다 (#184)', ()
   makeZip(dir, 'a.zip', { 'x.txt': 'x' });
   format = () => 'exFAT\r\n';
   const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
-  assert.match(preview.kept[0].reason, /^exFAT 볼륨은 변경 시각을 적지 않아/);
+  assert.match(preview.kept[0].reason, /^Kept because exFAT volumes do not record change times/);
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(result.removed, []);
-  assert.deepStrictEqual(result.kept.map((item) => item.reason.slice(0, 5)), ['exFAT']);
+  assert.deepStrictEqual(result.kept.map((item) => item.reason.slice(0, 18)), ['Kept because exFAT']);
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
   assert.strictEqual(formatProbes, 2);
@@ -164,12 +164,12 @@ test('.zip·.7z·.tar.gz·.tgz만 지우고, 다른 형식은 풀기만 하고 �
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)).sort(), [...removed].sort());
   assert.deepStrictEqual(result.kept.map((item) => path.basename(item.archive)).sort(), kept);
-  for (const item of result.kept) assert.match(item.reason, /온전한지 확인할 수 없어/);
+  for (const item of result.kept) assert.match(item.reason, /cannot be confirmed that the extracted content of this format is intact/);
   for (const name of kept) assert.ok(fs.existsSync(path.join(dir, name)));
-  assert.match(formatExtractions(result), /남김: k\.tar \(/);
+  assert.match(formatExtractions(result), /Kept: k\.tar \(/);
 });
 
-// 지우면 안 되는 zip. tar.exe는 모두 오류 없이 일부만 풀거나 이름을 바꾸어 푼다.
+// Zips that must not be deleted. tar.exe either extracts only part without an error or extracts with names changed.
 test('구조가 맞지 않는 zip은 풀려도 지우지 않는다', () => {
   const inner = zipBuffer({ 'inner1.txt': '1', 'inner2.txt': '2' });
   const whole = zipBuffer({ 'a.txt': 'a', 'inner.zip': inner });
@@ -177,12 +177,12 @@ test('구조가 맞지 않는 zip은 풀려도 지우지 않는다', () => {
   const first = zipBuffer({ 'A1.txt': '1', 'A2.txt': '2' });
   const second = zipBuffer({ 'B1.txt': 'b' });
   const cases = {
-    'cut-inner.zip': [whole.subarray(0, after), /구조가 파일 크기와 맞지 않아/],
-    'joined.zip': [Buffer.concat([first, second]), /구조가 파일 크기와 맞지 않아/],
-    'in-comment.zip': [zipBuffer({ 'real.txt': 'r' }, { comment: second.toString('latin1') }), /구조가 파일 크기와 맞지 않아/],
-    'tail.zip': [Buffer.concat([zipBuffer({ 'x.txt': 'x' }), Buffer.from('trailing')]), /끝 표시 뒤에 다른 데이터/],
-    'head.zip': [Buffer.concat([Buffer.from('prefix'), zipBuffer({ 'x.txt': 'x' })]), /zip으로 시작하지 않아/],
-    'split.zip': [zipBuffer({ 'x.txt': 'x' }, { disk: 1 }), /분할 압축/],
+    'cut-inner.zip': [whole.subarray(0, after), /zip structure does not match the file size/],
+    'joined.zip': [Buffer.concat([first, second]), /zip structure does not match the file size/],
+    'in-comment.zip': [zipBuffer({ 'real.txt': 'r' }, { comment: second.toString('latin1') }), /zip structure does not match the file size/],
+    'tail.zip': [Buffer.concat([zipBuffer({ 'x.txt': 'x' }), Buffer.from('trailing')]), /other data after the zip end marker/],
+    'head.zip': [Buffer.concat([Buffer.from('prefix'), zipBuffer({ 'x.txt': 'x' })]), /does not start as a zip/],
+    'split.zip': [zipBuffer({ 'x.txt': 'x' }, { disk: 1 }), /split archive/],
   };
   const dir = tempDir();
   for (const [name, [data]] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), data);
@@ -190,7 +190,7 @@ test('구조가 맞지 않는 zip은 풀려도 지우지 않는다', () => {
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(result.removed, []);
   const reasons = Object.fromEntries([...result.kept, ...result.failed].map((item) => [path.basename(item.archive), item.reason]));
-  // tar.exe가 풀지 못한 것은 실패로 남아도 된다. 지우지 않는 것이 핵심이다.
+  // Whatever tar.exe could not extract may stay a failure. Not deleting is the point.
   for (const [name, [, reason]] of Object.entries(cases)) {
     assert.ok(reasons[name] !== undefined, name);
     if (result.kept.some((item) => path.basename(item.archive) === name)) assert.match(reasons[name], reason, name);
@@ -204,7 +204,7 @@ test('이어 붙인 뒤 오프셋을 고친 zip은 앞쪽 항목이 풀리지 �
   fs.writeFileSync(path.join(dir, 'a.zip'), zipBuffer({ 'B1.txt': 'b' }, { prefix: first }));
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.kept[0].reason, /앞쪽에 목록에 없는 데이터/);
+  assert.match(result.kept[0].reason, /at the start of the zip that is not in the directory/);
   assert.ok(fs.existsSync(path.join(dir, 'a.zip')));
 });
 
@@ -224,14 +224,14 @@ test('뒤에 데이터가 붙거나 이어 붙은 .7z는 지우지 않고, 온�
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['whole.7z']);
   assert.deepStrictEqual(result.kept.map((item) => path.basename(item.archive)).sort(), ['joined.7z', 'tail.7z']);
-  for (const item of result.kept) assert.match(item.reason, /7z 끝 뒤에/);
+  for (const item of result.kept) assert.match(item.reason, /after the end of the 7z/);
 });
 
-// 7z 헤더(압축된 헤더 포함)를 읽어 UTF-16 이름과 CRC를 확인한다(#198).
+// It reads the 7z header (including a compressed header) and checks the UTF-16 names and the CRC (#198).
 test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 확인하고 지운다 (#198)', () => {
   const dir = tempDir();
   const source = tempDir();
-  // tar.exe는 ANSI에 없는 이름에서 비정상 종료하므로 코드페이지에 있는 글자를 쓴다.
+  // tar.exe ends abnormally on names not in ANSI, so it uses letters in the code page.
   const name = require('../src/commands').oemCodePage() === 949 ? '한글 이름.txt' : 'café.txt';
   fs.mkdirSync(path.join(source, 'sub'));
   fs.writeFileSync(path.join(source, 'sub', name), 'x');
@@ -244,7 +244,7 @@ test('ASCII가 아닌 이름의 .7z도 헤더의 이름 그대로 풀렸는지 �
 
 test('extract-all은 임시 폴더 경로가 tar.exe 한도를 넘는 압축 파일을 미리보기에서도 같은 사유로 알린다 (#238)', () => {
   const dir = tempDir();
-  // 압축 파일 폴더가 230자: 최종 풀 폴더(…\a)는 258자 안이지만 임시 폴더(…\.fctl-new-<pid>-<시각>-0)는 넘는다.
+  // The archive folder is 230 characters: the final extraction folder (...\a) is within 258 characters, but the temporary folder (...\.fctl-new-<pid>-<time>-0) exceeds it.
   let folder = dir;
   while (folder.length < 220) folder = path.join(folder, 'x'.repeat(9));
   folder = path.join(folder, 'y'.repeat(230 - folder.length - 1));
@@ -259,7 +259,7 @@ test('extract-all은 임시 폴더 경로가 tar.exe 한도를 넘는 압축 파
   }
   assert.strictEqual(reasons[0], reasons[1]);
   const limit = 258 - 4 - `.fctl-new-${process.pid}-${Date.now()}-0`.length - 1;
-  assert.strictEqual(reasons[0], `압축 파일이 있는 폴더의 경로가 230자라, 풀 때 그 안에 만드는 임시 폴더로 tar.exe가 옮겨 갈 수 없습니다(-C 폴더는 258자까지). 압축 파일을 ${limit}자 이하인 폴더로 옮긴 뒤 다시 실행하세요.`);
+  assert.strictEqual(reasons[0], `The path of the folder holding the archive is 230 characters, so tar.exe cannot change into the temporary folder created inside it when extracting (the -C folder can be up to 258 characters). Move the archive to a folder of ${limit} characters or fewer and run again.`);
   assert.deepStrictEqual(fs.readdirSync(folder), ['a.zip']);
 });
 
@@ -285,7 +285,7 @@ test('extract-all의 임시 폴더 판정 경계: 알려 준 한도의 폴더는
 
 test('extract-all은 외부 프로그램이 필요한 압축 내용(lz4)을 풀지 못하면 프로그램 이름을 사유로 알리고 원본을 남긴다 (#241)', (t) => {
   const dir = tempDir();
-  // 이름은 .tar.gz지만 내용은 lz4다. tar.exe는 내용으로 판별해 lz4를 실행하려 한다.
+  // The name is .tar.gz but the content is lz4. tar.exe identifies it by content and tries to run lz4.
   fs.writeFileSync(path.join(dir, 'a.tar.gz'), Buffer.from([0x04, 0x22, 0x4d, 0x18, 0x64, 0x70, 0xb9, 1, 2, 3, 4]));
   const savedPath = process.env.PATH;
   t.after(() => { process.env.PATH = savedPath; });
@@ -294,7 +294,7 @@ test('extract-all은 외부 프로그램이 필요한 압축 내용(lz4)을 풀�
     const result = extractArchives(dir, { removeArchives: true, dryRun });
     assert.deepStrictEqual(recycled, []);
     assert.strictEqual(result.failed.length, 1);
-    assert.match(result.failed[0].reason, /외부 프로그램 lz4이 필요한데 실행하지 못했습니다/);
+    assert.match(result.failed[0].reason, /needs the external program lz4, but it could not be run/);
   }
   assert.deepStrictEqual(tree(dir), ['a.tar.gz']);
 });
@@ -321,7 +321,7 @@ test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CR
   changed[changed.indexOf('hello')] = 0x4a;
   fs.writeFileSync(path.join(dir, 'changed.7z'), changed);
   fs.writeFileSync(path.join(dir, 'gap.7z'), sevenZipBuffer(files, { gap: 3 }));
-  // 폴더 CRC만 있는 7z는 tar.exe가 검사하지 않아 본문이 바뀌어도 풀린다(1차 리뷰에서 지워지던 경우).
+  // A 7z with only a folder CRC is not checked by tar.exe and extracts even if the body changed (the case that was being deleted in the first review).
   const folderOnly = sevenZipBuffer([{ name: 'z.txt', data: 'hello' }], { folderCrcOnly: true });
   folderOnly[folderOnly.indexOf('hello')] = 0x6a;
   fs.writeFileSync(path.join(dir, 'folder-crc.7z'), folderOnly);
@@ -329,12 +329,12 @@ test('CRC가 없는 .7z는 본문이 변해도 풀리므로 지우지 않고, CR
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(result.removed.map((p) => path.basename(p)), ['with-crc.7z']);
   const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
-  assert.match(kept['no-crc.7z'], /CRC가 없어/);
-  assert.match(kept['changed.7z'], /CRC가 없어/);
-  assert.match(kept['gap.7z'], /목록에 없는 데이터/);
-  assert.match(kept['folder-crc.7z'], /CRC가 없어/);
+  assert.match(kept['no-crc.7z'], /has no CRC/);
+  assert.match(kept['changed.7z'], /has no CRC/);
+  assert.match(kept['gap.7z'], /not in the listing/);
+  assert.match(kept['folder-crc.7z'], /has no CRC/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'folder-crc', 'z.txt'), 'utf8'), 'jello');
-  // 본문이 바뀐 CRC 없는 7z도 tar.exe는 성공으로 푼다(지우지 않는 이유).
+  // tar.exe also extracts a 7z with no CRC and a changed body as a success (the reason it is not deleted).
   assert.strictEqual(fs.readFileSync(path.join(dir, 'changed', 'dir', 'x.txt'), 'utf8'), 'Jello');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'with-crc', 'y.txt'), 'utf8'), 'world');
 });
@@ -368,12 +368,12 @@ test('내용이 확장자와 다르면 풀려도 지우지 않는다', () => {
   run(['zip', path.join(source, 'real.zip'), path.join(source, 'x.txt')]);
   fs.copyFileSync(path.join(source, 'real.zip'), path.join(dir, 'fake3.tgz'));
   const result = extractArchives(dir, { removeArchives: true });
-  // 내용이 맞는 real.tar.gz만 지운다(#197).
+  // It deletes only the real.tar.gz whose content is right (#197).
   assert.deepStrictEqual(recycled, [path.join(dir, 'real.tar.gz')]);
   const reason = (name) => result.kept.find((item) => path.basename(item.archive) === name)?.reason;
-  assert.match(reason('fake.7z'), /7z로 시작하지 않아/);
-  assert.match(reason('fake2.zip'), /zip으로 시작하지 않아/);
-  assert.match(reason('fake3.tgz'), /gzip으로 시작하지 않아/);
+  assert.match(reason('fake.7z'), /does not start as a 7z/);
+  assert.match(reason('fake2.zip'), /does not start as a zip/);
+  assert.match(reason('fake3.tgz'), /does not start as gzip/);
 });
 
 test('이름이 바뀌어 풀리는 항목이 있으면 지우지 않는다', () => {
@@ -388,7 +388,7 @@ test('이름이 바뀌어 풀리는 항목이 있으면 지우지 않는다', ()
   assert.deepStrictEqual(recycled, []);
   assert.strictEqual(result.removed.length, 0);
   const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
-  for (const name of ['colon.zip', 'question.zip', 'drive.zip']) assert.match(kept[name], /이름이 바뀌는 항목/);
+  for (const name of ['colon.zip', 'question.zip', 'drive.zip']) assert.match(kept[name], /an item would get a different name when extracted/);
 });
 
 test('폴더 항목에 내용이 있으면 지우지 않는다', () => {
@@ -410,7 +410,7 @@ test('폴더 항목과 주석이 있는 정상 zip은 지운다', () => {
 });
 
 test('UTF-8 표시가 있는 한글 이름은 그대로 풀렸는지 확인하고 지운다', (t) => {
-  // tar.exe는 코드페이지에 없는 문자를 처리하지 못해 영문 Windows에서는 시험할 수 없다.
+  // tar.exe cannot handle characters not in the code page, so this cannot be tested on English Windows.
   const codePage = realExecFileSync('powershell.exe', ['-NoProfile', '-Command', '[Text.Encoding]::Default.CodePage'], { encoding: 'utf8' }).trim();
   if (codePage !== '949') return t.skip(`코드페이지 ${codePage}에서는 한글을 처리하지 못한다`);
   const dir = tempDir();
@@ -437,17 +437,17 @@ test('푸는 동안 같은 크기와 수정 시각의 다른 파일로 바뀌어
   const result = extractArchives(dir, { removeArchives: true });
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+  assert.match(result.failed[0].reason, /the file changed after extracting/);
 });
 
 test('푸는 동안 같은 크기와 수정 시각으로 제자리에서 다시 써도 지우지 않는다', (t) => {
   const dir = tempDir();
   const file = makeZip(dir, 'a.zip', { 'x.txt': 'x' });
-  // utimesSync는 ms 아래 자리를 정확히 되돌리지 못하므로, 수정 시각을 ms 단위 값으로 맞춰 두고 그 값으로 되돌린다.
-  // 그래야 파일 번호, 크기, 수정 시각이 모두 풀기 전과 같아진다.
+  // utimesSync cannot restore the digits below ms exactly, so it sets the modification time to a ms-unit value and restores it to that value.
+  // That way the file ID, size, and modification time are all the same as before extracting.
   const old = new Date(Date.now() - 3600 * 1000 - 123);
   fs.utimesSync(file, old, old);
-  // 구조가 온전하고 이름과 크기도 같아 내용 확인은 통과하는 다른 zip이다.
+  // Another zip whose structure is intact and whose names and sizes are also the same, so it passes the content check.
   const other = zipBuffer({ 'x.txt': 'y' });
   const original = fs.lstatSync(file, { bigint: true });
   const before = fileStamp(original);
@@ -455,7 +455,7 @@ test('푸는 동안 같은 크기와 수정 시각으로 제자리에서 다시 
   let rewritten = false;
   t.mock.method(fs, 'readdirSync', (p, options) => {
     if (String(p).includes('.fctl-new') && options?.recursive) {
-      // 변경 시각이 시계 단위로 적혀 같은 단위 안이면 구분할 수 없으므로, 식별값이 달라질 때까지 다시 쓴다(#116).
+      // The change time is written in clock ticks and cannot be told apart within the same tick, so it rewrites until the identification value differs (#116).
       for (let tries = 0; tries < 100 && !rewritten; tries += 1) {
         const fd = fs.openSync(file, 'r+');
         fs.writeSync(fd, other, 0, other.length, 0);
@@ -470,19 +470,19 @@ test('푸는 동안 같은 크기와 수정 시각으로 제자리에서 다시 
   const result = extractArchives(dir, { removeArchives: true });
   t.mock.restoreAll();
   assert.ok(rewritten);
-  // 바꿔치기는 변경 시각으로만 드러난다.
+  // The swap shows up only in the change time.
   const after = fs.lstatSync(file, { bigint: true });
   assert.deepStrictEqual([after.ino, after.size, after.mtimeNs], [original.ino, original.size, original.mtimeNs]);
   assert.notStrictEqual(after.ctimeNs, original.ctimeNs);
   assert.ok(fs.readFileSync(file).equals(other));
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(result.removed, []);
-  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+  assert.match(result.failed[0].reason, /the file changed after extracting/);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
 });
 
 test('파일 번호가 2^53을 넘어도 하나만 달라진 것을 알아챈다', (t) => {
-  // ReFS의 파일 번호는 2^53을 넘는다. 숫자로 비교하면 아래 두 값이 같아진다.
+  // ReFS file IDs exceed 2^53. Comparing as numbers would make the two values below equal.
   const base = 2n ** 62n;
   assert.strictEqual(Number(base), Number(base + 1n));
   const dir = tempDir();
@@ -502,7 +502,7 @@ test('파일 번호가 2^53을 넘어도 하나만 달라진 것을 알아챈다
   t.mock.restoreAll();
   assert.ok(extracted);
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+  assert.match(result.failed[0].reason, /the file changed after extracting/);
 });
 
 test('확장자가 대문자여도 같게 판단한다', () => {
@@ -518,7 +518,7 @@ test('끝 표시 없이 잘린 zip은 풀려도 지우지 않는다', () => {
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(cut));
   assert.deepStrictEqual(result.extracted.map((item) => item.entries), [2]);
-  assert.match(result.kept[0].reason, /zip 끝 표시가 없어/);
+  assert.match(result.kept[0].reason, /zip end marker is missing/);
 });
 
 test('항목 뒤에서 잘린 zip은 실패로 보고하고 지우지 않는다', () => {
@@ -543,7 +543,7 @@ test('본문이 손상된 zip은 실패로 보고하고 지우지 않는다', ()
   assert.deepStrictEqual(tree(dir), ['bad.zip']);
 });
 
-// tar 헤더 하나(512바이트). 체크섬까지 채운다.
+// One tar header (512 bytes). It fills in the checksum too.
 function tarHeader(name, size, type = '0') {
   const block = Buffer.alloc(512);
   block.write(name, 0, 100, 'latin1');
@@ -555,7 +555,7 @@ function tarHeader(name, size, type = '0') {
   return block;
 }
 
-// 파일 항목들과 끝 표시(0 블록 두 개)로 된 tar. end를 false로 주면 끝 표시를 넣지 않는다.
+// A tar made of file entries and an end marker (two zero blocks). If end is false, no end marker is put.
 function tarBuffer(files, { end = true, after = Buffer.alloc(0) } = {}) {
   const parts = [];
   for (const [name, data] of Object.entries(files)) {
@@ -574,13 +574,13 @@ test('tar.exe로 만든 .tar.gz·.tgz는 gzip CRC와 tar 구조, 풀린 이름�
   fs.writeFileSync(path.join(source, 'a.txt'), 'A'.repeat(5000));
   fs.writeFileSync(path.join(source, 'empty.txt'), '');
   fs.mkdirSync(path.join(source, 'sub', 'deep'), { recursive: true });
-  // 영어 Windows(CI)의 tar.exe는 ANSI에 없는 한글 이름에서 비정상 종료(0xC0000005)하므로 949일 때만 넣는다.
-  // pax UTF-8 이름은 test/tarGzScan.test.js에서 따로 본다.
+  // tar.exe on English Windows (CI) ends abnormally (0xC0000005) on Hangul names not in ANSI, so they are included only when it is 949.
+  // pax UTF-8 names are looked at separately in test/tarGzScan.test.js.
   const hangul = require('../src/commands').oemCodePage() === 949;
   const named = hangul ? '한글 이름.txt' : 'space name.txt';
   fs.writeFileSync(path.join(source, 'sub', named), '한');
   fs.writeFileSync(path.join(source, 'sub', 'deep', `${'n'.repeat(120)}.txt`), 'long');
-  // -C source .로 묶으면 ./ 항목이 생기고 이름은 tar.exe가 유니코드로 읽어 pax에 UTF-8로 적는다.
+  // Bundling with -C source . makes a ./ entry, and tar.exe reads the name as Unicode and writes it in pax as UTF-8.
   realExecFileSync(SYSTEM_TAR, ['-czf', path.join(dir, 'a.tar.gz'), '-C', source, '.']);
   realExecFileSync(SYSTEM_TAR, ['-czf', path.join(dir, 'b.tgz'), '-C', source, 'a.txt', 'sub']);
   const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
@@ -612,19 +612,19 @@ test('손상되거나 tar.exe가 일부만 푸는 .tar.gz는 지우지 않는다
   const good = zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }));
   const other = zlib.gzipSync(tarBuffer({ 'y.txt': 'more' }));
   const cases = {
-    // 끝이 잘림: gzip 끝(CRC·길이)이 없다.
+    // Truncated at the end: the gzip end (CRC and length) is missing.
     'cut.tar.gz': good.subarray(0, good.length - 6),
-    // 이어 붙인 gzip: tar.exe는 첫 tar의 끝 표시에서 멈춰 y.txt를 풀지 않는다.
+    // Concatenated gzip: tar.exe stops at the end marker of the first tar and does not extract y.txt.
     'concat.tar.gz': Buffer.concat([good, other]),
-    // gzip 뒤에 다른 데이터
+    // Other data after the gzip
     'junk.tgz': Buffer.concat([good, Buffer.from('garbage')]),
-    // 멤버 뒤가 0x00으로 시작하면 Node도 tar.exe도 오류 없이 뒤를 버린다(1차 리뷰에서 지워지던 경우).
+    // If what follows a member starts with 0x00, both Node and tar.exe discard the rest without an error (the case that was being deleted in the first review).
     'zero-gap.tar.gz': Buffer.concat([good, Buffer.alloc(1), other]),
-    // 끝 표시 뒤의 항목
+    // An entry after the end marker
     'after-end.tar.gz': zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }, { after: tarBuffer({ 'z.txt': 'hidden' }) })),
-    // 끝 표시가 없다(항목 경계에서 잘린 tar를 다시 gzip으로 싼 것)
+    // There is no end marker (a tar cut at an entry boundary and wrapped in gzip again)
     'no-end.tar.gz': zlib.gzipSync(tarBuffer({ 'x.txt': 'ok' }, { end: false })),
-    // 이름은 .tar.gz인데 gzip이 아니다.
+    // The name is .tar.gz but it is not gzip.
     'plain.tar.gz': tarBuffer({ 'x.txt': 'ok' }),
   };
   for (const [name, data] of Object.entries(cases)) fs.writeFileSync(path.join(dir, name), data);
@@ -636,19 +636,19 @@ test('손상되거나 tar.exe가 일부만 푸는 .tar.gz는 지우지 않는다
     assert.ok(reasons[name] !== undefined, name);
     assert.ok(fs.existsSync(path.join(dir, name)), name);
   }
-  // tar.exe가 성공으로 푼 것은 확인 단계의 사유로 남는다.
+  // What tar.exe extracted as a success stays as the reason of the check step.
   const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
   const expect = {
-    'cut.tar.gz': /gzip이 손상됐거나 잘렸거나/,
-    'concat.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
-    'junk.tgz': /gzip이 손상됐거나 잘렸거나 뒤에 다른 데이터/,
-    'zero-gap.tar.gz': /gzip 끝 뒤에 다른 데이터/,
-    'after-end.tar.gz': /tar 끝 표시 뒤에 다른 데이터/,
-    'no-end.tar.gz': /tar 끝 표시가 없어/,
-    'plain.tar.gz': /gzip으로 시작하지 않아/,
+    'cut.tar.gz': /gzip is damaged, truncated/,
+    'concat.tar.gz': /other data after the tar end marker/,
+    'junk.tgz': /gzip is damaged, truncated, or has other data after it/,
+    'zero-gap.tar.gz': /other data after the end of the gzip/,
+    'after-end.tar.gz': /other data after the tar end marker/,
+    'no-end.tar.gz': /tar end marker is missing/,
+    'plain.tar.gz': /does not start as gzip/,
   };
   for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
-  // 이어 붙인 gzip과 끝 표시 뒤의 항목은 tar.exe가 성공으로 풀므로 반드시 확인 단계에서 걸려야 한다.
+  // A concatenated gzip and an entry after the end marker are extracted as a success by tar.exe, so they must be caught in the check step.
   for (const name of ['concat.tar.gz', 'after-end.tar.gz', 'junk.tgz', 'zero-gap.tar.gz']) assert.ok(kept[name] !== undefined, `${name}: ${reasons[name]}`);
 });
 
@@ -670,8 +670,8 @@ test('tar.gz 본문이 변해 성공으로 풀려도 지우지 않는다', () =>
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(file));
   assert.strictEqual(result.removed.length, 0);
-  // tar.exe는 성공으로 풀지만 gzip CRC가 맞지 않는다(#197).
-  assert.match(result.kept[0].reason, /gzip이 손상됐거나/);
+  // tar.exe extracts it as a success but the gzip CRC does not match (#197).
+  assert.match(result.kept[0].reason, /gzip is damaged/);
 });
 
 test('건너뛰거나 항목이 없는 압축 파일은 지우지 않는다', () => {
@@ -698,7 +698,7 @@ test('푸는 동안 압축 파일이 바뀌면 풀린 결과는 두고 원본을
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(result.extracted.map((item) => item.name), ['a']);
-  assert.match(result.failed[0].reason, /풀고 난 뒤 파일이 바뀌어/);
+  assert.match(result.failed[0].reason, /the file changed after extracting/);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
 });
 
@@ -710,13 +710,13 @@ test('휴지통으로 보내지 못하면 풀린 결과와 원본을 두고 실�
     if (path.basename(target) === 'a.zip') throw Object.assign(new Error('recycle'), { status: 1 });
   };
   const result = extractArchives(dir, { removeArchives: true });
-  assert.match(result.failed[0].reason, /풀었지만 원본을 확인하거나 휴지통으로 보내지 못했습니다/);
+  assert.match(result.failed[0].reason, /Extracted, but could not check the original or send it to the Recycle Bin/);
   assert.strictEqual(result.extracted.length, 2);
   assert.strictEqual(result.removed.length, 1);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt', 'b/y.txt']);
 });
 
-// 휴지통 이동이 사유를 밝힌 FcError로 실패해도 풀린 뒤라는 맥락을 붙인다(#185).
+// Even if the Recycle Bin move fails with an FcError that states a reason, the context that it is after extraction is added (#185).
 test('원본이 사용 중이라 휴지통으로 보내지 못하면 풀었다는 맥락과 Windows 사유를 함께 보고한다 (#185)', () => {
   const dir = tempDir();
   makeZip(dir, 'a.zip', { 'x.txt': 'x' });
@@ -726,23 +726,23 @@ test('원본이 사용 중이라 휴지통으로 보내지 못하면 풀었다�
   };
   const result = extractArchives(dir, { removeArchives: true });
   assert.strictEqual(result.failed.length, 1);
-  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 휴지통으로 보내지 못했습니다: .*a\.zip \(The process cannot access the file/);
+  assert.match(result.failed[0].reason, /^Extracted, but could not delete the original\. Could not send to the Recycle Bin: .*a\.zip \(The process cannot access the file/);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
 });
 
 test('경로가 길어 휴지통으로 보낼 수 없으면 풀었다는 맥락을 붙이고, 미리보기에서는 풀어도 지울 수 없다고 보고한다 (#185)', () => {
   const dir = tempDir();
-  // 압축 파일 경로만 259자를 넘기고, 임시 폴더(.fctl-new-*, 약 32자)와 풀린 항목은 260자 안에 들어오게 한다(1차 리뷰).
+  // Only the archive path exceeds 259 characters, and the temporary folder (.fctl-new-*, about 32 characters) and the extracted items are made to fit within 260 characters (first review).
   let folder = dir;
   while (folder.length < 200) folder = path.join(folder, 'x'.repeat(9));
   fs.mkdirSync(folder, { recursive: true });
   const archive = makeZip(folder, `${'y'.repeat(262 - folder.length - 5)}.zip`, { 'x.txt': 'x' });
   assert.ok(archive.length > 259 && folder.length + 40 < 260, `${archive.length} ${folder.length}`);
   const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
-  assert.match(preview.failed[0].reason, /^풀어도 원본을 지울 수 없습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  assert.match(preview.failed[0].reason, /^Even if extracted, the original cannot be deleted\. The path is \d+ characters, so it cannot be sent to the Recycle Bin/);
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(recycled, []);
-  assert.match(result.failed[0].reason, /^풀었지만 원본을 지우지 못했습니다\. 경로가 \d+자라 휴지통으로 보낼 수 없습니다/);
+  assert.match(result.failed[0].reason, /^Extracted, but could not delete the original\. The path is \d+ characters, so it cannot be sent to the Recycle Bin/);
   assert.ok(fs.existsSync(archive));
   assert.ok(fs.existsSync(path.join(archive.slice(0, -'.zip'.length), 'x.txt')));
 });
@@ -753,13 +753,13 @@ test('미리보기에서 원본을 확인하지 못하면 풀었다고 하지 �
   const lstatSync = fs.lstatSync;
   let calls = 0;
   t.mock.method(fs, 'lstatSync', (p, options) => {
-    // 풀기 전 식별값을 잡은 뒤, 지우기 직전 확인에서 실패하게 한다.
+    // After taking the identification value before extracting, it makes the check right before deleting fail.
     if (path.basename(String(p)) === 'a.zip' && options?.bigint && ++calls === 2) throw Object.assign(new Error('denied'), { code: 'EPERM' });
     return lstatSync(p, options);
   });
   const preview = extractArchives(dir, { removeArchives: true, dryRun: true });
   t.mock.restoreAll();
-  assert.match(preview.failed[0].reason, /^풀어도 원본을 확인하거나 휴지통으로 보낼 수 없습니다\. \(EPERM\)/);
+  assert.match(preview.failed[0].reason, /^Even if extracted, the original cannot be checked or sent to the Recycle Bin\. \(EPERM\)/);
 });
 
 test('대화형 세션이 아니라는 거부를 그대로 보고하고 영구 삭제하지 않는다', () => {
@@ -769,7 +769,7 @@ test('대화형 세션이 아니라는 거부를 그대로 보고하고 영구 �
     throw Object.assign(new Error('non-interactive'), { status: 75 });
   };
   const result = extractArchives(dir, { removeArchives: true });
-  assert.match(result.failed[0].reason, /대화형 세션이 아니면/);
+  assert.match(result.failed[0].reason, /outside an interactive session/);
   assert.ok(fs.existsSync(file));
 });
 
@@ -792,8 +792,8 @@ test('미리보기는 지울 대상과 남길 대상을 보여 주고 아무것�
   makeZip(dir, 'a.zip', { 'x.txt': 'x' });
   makeZip(dir, 'cut.zip', { 'x.txt': 'x' }, { cut: 'directory' });
   const report = run(['extract-all', dir, '--dry-run', '--remove-archives']);
-  assert.match(report, /\[미리보기\] 휴지통으로 이동: a\.zip/);
-  assert.match(report, /\[미리보기\] 남김: cut\.zip/);
+  assert.match(report, /\[Preview\] Move to the Recycle Bin: a\.zip/);
+  assert.match(report, /\[Preview\] Kept: cut\.zip/);
   assert.deepStrictEqual(recycled, []);
   assert.deepStrictEqual(tree(dir), ['a.zip', 'cut.zip']);
 });
@@ -802,19 +802,19 @@ test('--remove-archives 옵션은 extract-all에서만 받고 지우지 못하�
   const dir = tempDir();
   makeZip(dir, 'a.zip', { 'x.txt': 'x' });
   for (const command of [['flatten', dir], ['product-number', dir], ['unzip', path.join(dir, 'a.zip')], ['rm', path.join(dir, 'a.zip')]]) {
-    assert.throws(() => run([...command, '--remove-archives']), /extract-all에서만/);
+    assert.throws(() => run([...command, '--remove-archives']), /used only with extract-all/);
   }
   assert.ok(fs.existsSync(path.join(dir, 'a.zip')));
   onRecycle = () => {
     throw Object.assign(new Error('recycle'), { status: 1 });
   };
-  assert.throws(() => run(['extract-all', dir, '--remove-archives']), (err) => err instanceof FcError && /실패: a\.zip/.test(err.message));
+  assert.throws(() => run(['extract-all', dir, '--remove-archives']), (err) => err instanceof FcError && /Failed: a\.zip/.test(err.message));
   onRecycle = () => {};
   assert.deepStrictEqual(tree(dir), ['a.zip', 'a/x.txt']);
 });
 
-// 무압축 Zip64 zip(#83). 중앙 디렉터리의 크기와 위치 칸을 모두 1로 두고 Zip64 extra 필드와 Zip64 끝 레코드에 적는다.
-// change로 Zip64 끝 레코드의 값을 바꿀 수 있다.
+// An uncompressed Zip64 zip (#83). It sets the size and position fields of the central directory all to 1 and writes them in the Zip64 extra field and the Zip64 end record.
+// change can alter a value of the Zip64 end record.
 function zip64Buffer(files, { change = {} } = {}) {
   const locals = [];
   const centrals = [];
@@ -886,7 +886,7 @@ test('Zip64 zip은 Zip64 끝 레코드와 extra 필드로 구조를 확인하고
   const dir = tempDir();
   const good = path.join(dir, 'good.zip');
   fs.writeFileSync(good, zip64Buffer({ 'sub/': '', 'sub/x.txt': 'x', 'y.txt': 'yy' }));
-  // 끝 레코드의 항목 수나 중앙 디렉터리 위치가 어긋나면 남긴다.
+  // If the entry count or the central directory position of the end record is off, it keeps it.
   fs.writeFileSync(path.join(dir, 'count.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { total: 2, onDisk: 2 } }));
   fs.writeFileSync(path.join(dir, 'offset.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { directoryOffset: 1 } }));
   fs.writeFileSync(path.join(dir, 'split.zip'), zip64Buffer({ 'x.txt': 'x' }, { change: { onDisk: 0 } }));
@@ -899,7 +899,7 @@ test('Zip64 zip은 Zip64 끝 레코드와 extra 필드로 구조를 확인하고
     assert.ok(reasons[name] !== undefined, name);
     assert.ok(fs.existsSync(path.join(dir, name)), name);
   }
-  if (result.kept.some((item) => path.basename(item.archive) === 'split.zip')) assert.match(reasons['split.zip'], /분할 압축/);
+  if (result.kept.some((item) => path.basename(item.archive) === 'split.zip')) assert.match(reasons['split.zip'], /split archive/);
 });
 
 test('tar.exe가 Zip64로 묶은 zip과 데이터 설명자를 쓴 보통 zip은 지운다 (#83)', () => {
@@ -925,15 +925,15 @@ test('중앙 디렉터리에 없는 항목이 사이에 끼면 풀리지 않으�
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(recycled, []);
   const reasons = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
-  assert.match(reasons['hidden.zip'], /항목 사이에 목록에 없는 데이터/);
-  assert.match(reasons['last.zip'], /항목 사이에 목록에 없는 데이터/);
+  assert.match(reasons['hidden.zip'], /data between zip entries that is not in the directory/);
+  assert.match(reasons['last.zip'], /data between zip entries that is not in the directory/);
 });
 
 test('UTF-8 표시가 없는 한글 이름은 OEM 코드페이지로 읽어 그대로 풀렸는지 확인하고 지운다 (#83)', (t) => {
   const { oemCodePage } = require('../src/commands');
   if (oemCodePage() !== 949) return t.skip(`OEM 코드페이지 ${oemCodePage()}에서는 CP949 이름을 시험하지 않는다`);
   const dir = tempDir();
-  // 한글.txt를 CP949로 적는다. 자리 표시 ABCD를 같은 길이의 바이트로 바꾼다.
+  // It writes 한글.txt (a Hangul file name) in CP949. It replaces the placeholder ABCD with bytes of the same length.
   const hangul = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]);
   const data = zipBuffer({ 'ABCD.txt': 'x', 'ok.txt': 'o' });
   for (let at = data.indexOf('ABCD'); at !== -1; at = data.indexOf('ABCD', at + 4)) hangul.copy(data, at);
@@ -960,23 +960,23 @@ test('fctl zip으로 묶은 한글 이름의 zip도 OEM 코드페이지로 확�
   assert.deepStrictEqual(tree(dir), ['a/사진/여름.txt']);
 });
 
-// 손상 샘플(#83 1차 리뷰). 모두 지우지 않아야 한다. tar.exe가 풀지 못해 실패로 끝나도 된다.
+// Damaged samples (#83 first review). None of them may be deleted. It is fine if tar.exe cannot extract them and it ends in failure.
 test('구조가 어긋난 Zip64·데이터 설명자·겹친 항목 zip은 지우지 않는다 (#83)', () => {
   const dir = tempDir();
   const source = tempDir();
   const endOf = (buf) => buf.lastIndexOf(Buffer.from('PK\x05\x06', 'latin1'));
-  // 중앙 디렉터리의 n번째 항목 위치를 찾는다(32비트 zip).
+  // It finds the position of the nth entry of the central directory (32-bit zip).
   const centralAt = (buf, n) => {
     let pos = buf.readUInt32LE(endOf(buf) + 16);
     for (let i = 0; i < n; i += 1) pos += 46 + buf.readUInt16LE(pos + 28) + buf.readUInt16LE(pos + 30) + buf.readUInt16LE(pos + 32);
     return pos;
   };
   const cases = {};
-  // 두 항목이 같은 로컬 헤더를 가리킨다.
+  // Two entries point to the same local header.
   const same = zipBuffer({ 'a.txt': 'a', 'b.txt': 'b' });
   same.writeUInt32LE(0, centralAt(same, 1) + 42);
   cases['same-offset.zip'] = same;
-  // 데이터 설명자의 CRC가 중앙 디렉터리와 다르다.
+  // The CRC of the data descriptor differs from the central directory.
   fs.writeFileSync(path.join(source, 'x.txt'), 'x'.repeat(100));
   run(['zip', path.join(source, 'desc.zip'), path.join(source, 'x.txt')]);
   const desc = fs.readFileSync(path.join(source, 'desc.zip'));
@@ -984,20 +984,20 @@ test('구조가 어긋난 Zip64·데이터 설명자·겹친 항목 zip은 지�
   assert.notStrictEqual(signature, -1);
   desc[signature + 4] ^= 0xff;
   cases['descriptor-crc.zip'] = desc;
-  // Zip64 extra 필드의 칸이 모자란다(로컬 헤더 위치가 빠짐).
+  // The Zip64 extra field is short of fields (the local header position is missing).
   const shortExtra = zip64Buffer({ 'x.txt': 'x' });
   const extraAt = shortExtra.indexOf(Buffer.from('PK\x01\x02', 'latin1')) + 46 + 'x.txt'.length;
   shortExtra.writeUInt16LE(16, extraAt + 2);
   cases['zip64-short-extra.zip'] = shortExtra;
-  // Zip64 위치 표시가 끝 레코드가 아닌 곳을 가리킨다.
+  // The Zip64 locator points to a place that is not the end record.
   const noRecord = zip64Buffer({ 'x.txt': 'x' });
   noRecord.writeBigUInt64LE(0n, endOf(noRecord) - 20 + 8);
   cases['zip64-no-record.zip'] = noRecord;
-  // 32비트 끝 레코드의 중앙 디렉터리 크기가 표시값도 아니고 Zip64 값과도 다르다.
+  // The central directory size of the 32-bit end record is neither the marker value nor the same as the Zip64 value.
   const mismatch = zip64Buffer({ 'x.txt': 'x' });
   mismatch.writeUInt32LE(5, endOf(mismatch) + 12);
   cases['zip64-mismatch.zip'] = mismatch;
-  // 이 디스크의 항목 수와 전체 항목 수가 다르다.
+  // The entry count of this disk differs from the total entry count.
   const counts = zipBuffer({ 'a.txt': 'a', 'b.txt': 'b' });
   counts.writeUInt16LE(1, endOf(counts) + 8);
   cases['disk-count.zip'] = counts;
@@ -1012,12 +1012,12 @@ test('구조가 어긋난 Zip64·데이터 설명자·겹친 항목 zip은 지�
   }
   const kept = Object.fromEntries(result.kept.map((item) => [path.basename(item.archive), item.reason]));
   const expect = {
-    'same-offset.zip': /겹쳐|항목 수가 풀린 목록과 달라/,
-    'descriptor-crc.zip': /데이터 설명자가 중앙 디렉터리와 달라/,
-    'zip64-short-extra.zip': /Zip64 구조를 읽지 못해/,
-    'zip64-no-record.zip': /Zip64 구조를 읽지 못해/,
-    'zip64-mismatch.zip': /구조가 파일 크기와 맞지 않아/,
-    'disk-count.zip': /분할 압축/,
+    'same-offset.zip': /overlap|number of zip entries differs from the extracted list/,
+    'descriptor-crc.zip': /data descriptor differs from the central directory/,
+    'zip64-short-extra.zip': /Zip64 structure could not be read/,
+    'zip64-no-record.zip': /Zip64 structure could not be read/,
+    'zip64-mismatch.zip': /zip structure does not match the file size/,
+    'disk-count.zip': /split archive/,
   };
   for (const [name, reason] of Object.entries(expect)) if (kept[name] !== undefined) assert.match(kept[name], reason, name);
 });
@@ -1029,5 +1029,5 @@ test('1MB를 넘는 항목 뒤의 숨은 데이터도 잡고, 정상이면 지�
   makeZip(dir, 'hidden.zip', { 'big.bin': big, 'secret.txt': 'hidden', 'small.txt': 's' }, { hide: ['secret.txt'] });
   const result = extractArchives(dir, { removeArchives: true });
   assert.deepStrictEqual(recycled, [good]);
-  assert.match(result.kept.find((item) => path.basename(item.archive) === 'hidden.zip').reason, /항목 사이에 목록에 없는 데이터/);
+  assert.match(result.kept.find((item) => path.basename(item.archive) === 'hidden.zip').reason, /data between zip entries that is not in the directory/);
 });

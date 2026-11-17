@@ -1,16 +1,16 @@
 'use strict';
 
-// MP4 표본 항목의 avcC(H.264)나 hvcC(HEVC) 안 첫 SPS에서 화소 비율(VUI의 aspect_ratio)을 읽는다(#113).
-// 영상 데이터(mdat)는 읽지 않는다. SPS는 처음부터 VUI의 화소 비율까지만 읽고 그 뒤는 보지 않는다.
-// 구조가 틀리거나 값이 없으면 null을 돌려준다. 이 값은 보이는 크기 계산에만 쓰이므로 틀린 SPS를 오류로 보지 않는다.
+// It reads the pixel aspect ratio (aspect_ratio of the VUI) from the first SPS inside avcC (H.264) or hvcC (HEVC) of the MP4 sample entry (#113).
+// It does not read the video data (mdat). It reads the SPS only from the start up to the pixel aspect ratio of the VUI and does not look beyond.
+// If the structure is wrong or there is no value, it returns null. This value is used only for computing the visible size, so a wrong SPS is not treated as an error.
 
-// aspect_ratio_idc 1~16의 화소 비율. H.264(표 E-1)와 HEVC(표 E-1)가 같다. 255는 값을 따로 적는다.
+// The pixel aspect ratios of aspect_ratio_idc 1 to 16. H.264 (Table E-1) and HEVC (Table E-1) are the same. 255 writes the value separately.
 const SAMPLE_ASPECT = [null, [1, 1], [12, 11], [10, 11], [16, 11], [40, 33], [24, 11], [20, 11], [32, 11], [80, 33], [18, 11], [15, 11], [64, 33], [160, 99], [4, 3], [3, 2], [2, 1]];
 const EXTENDED_SAR = 255;
-// 화소 비율 이후를 읽기 위해 SPS 전체가 필요하지는 않지만, 비정상적으로 큰 값은 보지 않는다.
+// The whole SPS is not needed to read after the pixel aspect ratio, but abnormally large values are not looked at.
 const MAX_SPS = 4096;
 
-// 앞 2바이트가 0이고 다음 바이트가 3이면 그 3은 내용이 아니다(emulation prevention).
+// If the first 2 bytes are 0 and the next byte is 3, that 3 is not content (emulation prevention).
 function unescape(nal) {
   const out = [];
   let zeros = 0;
@@ -25,7 +25,7 @@ function unescape(nal) {
   return Buffer.from(out);
 }
 
-// 비트 단위로 읽는다. 끝을 넘으면 예외 대신 ended를 세우고 0을 돌려주므로, 읽은 뒤 ended를 확인한다.
+// It reads bit by bit. If it goes past the end, instead of an exception it sets ended and returns 0, so check ended after reading.
 function bitReader(buffer) {
   let pos = 0;
   const reader = {
@@ -48,7 +48,7 @@ function bitReader(buffer) {
       pos += count;
       if (pos > buffer.length * 8) reader.ended = true;
     },
-    // Exp-Golomb. 32비트를 넘는 값은 규격에 없으므로 끝난 것으로 본다.
+    // Exp-Golomb. A value over 32 bits is not in the specification, so it is seen as finished.
     ue() {
       let zeros = 0;
       while (reader.bit() === 0) {
@@ -68,7 +68,7 @@ function bitReader(buffer) {
   return reader;
 }
 
-// VUI의 첫 부분. aspect_ratio_info_present_flag 뒤에 비율이 온다.
+// The first part of the VUI. After aspect_ratio_info_present_flag comes the ratio.
 function readAspect(r, vuiPresent) {
   if (!vuiPresent || r.ended) return null;
   if (r.bit() === 0) return null;
@@ -85,7 +85,7 @@ function readAspect(r, vuiPresent) {
   return { h: sar[0], v: sar[1] };
 }
 
-// H.264 scaling_list(): 크기만큼 delta_scale을 건너뛴다.
+// H.264 scaling_list(): it skips delta_scale as many times as the size.
 function skipAvcScalingList(r, size) {
   let last = 8;
   let next = 8;
@@ -95,15 +95,15 @@ function skipAvcScalingList(r, size) {
   }
 }
 
-// chroma_format_idc 등이 있는 높은 프로필. 144는 2007년에 빠진 옛 High 4:4:4이지만 같은 구조라 FFmpeg처럼 받는다.
+// High profiles that have chroma_format_idc and so on. 144 is the old High 4:4:4 dropped in 2007, but it has the same structure, so it is accepted like FFmpeg.
 const AVC_HIGH_PROFILES = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135, 144]);
 
-// H.264 SPS (7.3.2.1.1). nal은 NAL 머리 1바이트를 포함한다.
+// H.264 SPS (7.3.2.1.1). nal includes 1 byte of the NAL header.
 function avcAspect(nal) {
   if (nal.length < 4 || (nal[0] & 0x1f) !== 7) return null;
   const r = bitReader(unescape(nal.subarray(1)));
   const profile = r.bits(8);
-  r.skip(16); // constraint_set 플래그, level_idc
+  r.skip(16); // constraint_set flags, level_idc
   r.ue(); // seq_parameter_set_id
   if (AVC_HIGH_PROFILES.has(profile)) {
     const chroma = r.ue();
@@ -132,7 +132,7 @@ function avcAspect(nal) {
   r.skip(1); // gaps_in_frame_num_value_allowed_flag
   r.ue(); // pic_width_in_mbs_minus1
   r.ue(); // pic_height_in_map_units_minus1
-  if (r.bit() === 0) r.skip(1); // frame_mbs_only_flag가 0이면 mb_adaptive_frame_field_flag
+  if (r.bit() === 0) r.skip(1); // If frame_mbs_only_flag is 0, mb_adaptive_frame_field_flag
   r.skip(1); // direct_8x8_inference_flag
   if (r.bit() === 1) for (let i = 0; i < 4; i += 1) r.ue(); // frame_cropping
   return readAspect(r, r.bit() === 1);
@@ -171,13 +171,13 @@ function skipHevcScalingList(r) {
   }
 }
 
-// HEVC st_ref_pic_set(stRpsIdx) (7.3.7). 다음 집합이 참조할 수 있도록 이 집합의 NumDeltaPocs를 돌려준다.
-// 참조하는 집합은 개수만 알면 읽을 수 있으므로 값은 기억하지 않는다(FFmpeg와 같은 셈).
+// HEVC st_ref_pic_set(stRpsIdx) (7.3.7). It returns this set's NumDeltaPocs so that the next set can refer to it.
+// A referencing set can be read if only the count is known, so values are not remembered (the same as FFmpeg).
 function readShortTermRefPicSet(r, index, counts) {
   if (index !== 0 && r.bit() === 1) {
     r.skip(1); // delta_rps_sign
     r.ue(); // abs_delta_rps_minus1
-    // SPS 안에서는 delta_idx_minus1이 없으므로 바로 앞 집합을 참조한다.
+    // Inside the SPS there is no delta_idx_minus1, so it refers to the set right before.
     let count = 0;
     for (let j = 0; j <= counts[index - 1] && !r.ended; j += 1) {
       const used = r.bit();
@@ -199,10 +199,10 @@ function readShortTermRefPicSet(r, index, counts) {
   return negative + positive;
 }
 
-// HEVC SPS (7.3.2.2). nal은 NAL 머리 2바이트를 포함한다.
+// HEVC SPS (7.3.2.2). nal includes 2 bytes of the NAL header.
 function hevcAspect(nal) {
   if (nal.length < 4 || ((nal[0] >> 1) & 0x3f) !== 33) return null;
-  // 여러 계층(MV-HEVC 등) SPS는 구조가 달라 읽지 않는다.
+  // SPSs with several layers (MV-HEVC and so on) have a different structure, so they are not read.
   if (((nal[0] & 1) << 5) | (nal[1] >> 3)) return null;
   const r = bitReader(unescape(nal.subarray(2)));
   r.skip(4); // sps_video_parameter_set_id
@@ -224,11 +224,11 @@ function hevcAspect(nal) {
     r.ue();
     r.ue();
   }
-  for (let i = 0; i < 6; i += 1) r.ue(); // 부호화 블록과 변환 블록 크기, 변환 계층 깊이
+  for (let i = 0; i < 6; i += 1) r.ue(); // The sizes of coding blocks and transform blocks, and the transform hierarchy depth
   if (r.bit() === 1 && r.bit() === 1) skipHevcScalingList(r); // scaling_list_enabled_flag, sps_scaling_list_data_present_flag
   r.skip(2); // amp_enabled_flag, sample_adaptive_offset_enabled_flag
   if (r.bit() === 1) {
-    r.skip(8); // pcm 표본 비트 깊이
+    r.skip(8); // pcm sample bit depth
     r.ue();
     r.ue();
     r.skip(1);
@@ -246,7 +246,7 @@ function hevcAspect(nal) {
   return readAspect(r, r.bit() === 1);
 }
 
-// avcC: 5바이트 머리 뒤에 SPS 개수(아래 5비트)와 [길이 2바이트, SPS]가 이어진다.
+// avcC: after a 5-byte header come the SPS count (the lower 5 bits) and [2-byte length, SPS].
 function firstAvcSps(config) {
   if (config.length < 6 || config[0] !== 1) return null;
   const count = config[5] & 0x1f;
@@ -256,8 +256,8 @@ function firstAvcSps(config) {
   return config.subarray(8, 8 + length);
 }
 
-// hvcC: 22바이트 머리, 배열 개수 1바이트, 배열마다 [종류 1바이트, NAL 개수 2바이트, [길이 2바이트, NAL]...].
-// 초안 시절 먹서가 configurationVersion을 0으로 적은 파일이 있어 0도 받는다(FFmpeg와 같다).
+// hvcC: a 22-byte header, a 1-byte array count, and for each array [1-byte kind, 2-byte NAL count, [2-byte length, NAL]...].
+// Some files from the draft era had a muxer write configurationVersion as 0, so 0 is also accepted (the same as FFmpeg).
 function firstHevcSps(config) {
   if (config.length < 23 || config[0] > 1) return null;
   let offset = 23;
@@ -278,7 +278,7 @@ function firstHevcSps(config) {
   return null;
 }
 
-// kind는 박스 종류('avcC', 'hvcC'), config는 그 박스의 내용이다. 화소 비율 { h, v }나 null을 돌려준다.
+// kind is the box type ('avcC', 'hvcC') and config is the content of that box. It returns the pixel aspect ratio { h, v } or null.
 function spsAspect(kind, config) {
   if (kind === 'avcC') {
     const sps = firstAvcSps(config);

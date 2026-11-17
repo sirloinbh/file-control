@@ -1,47 +1,47 @@
 'use strict';
 
-// 제품번호 형식: 영문 2~6자, 하이픈, 숫자 2~5자 (ABC-123).
-// 앞뒤에 영숫자가 이어지거나(1ABC-123, ABC-123A), 앞에 영문 단어와 하이픈이 있거나(summer-trip-20),
-// 뒤에 숫자 묶음이 더 이어지면(PIC-2024-05-01, CVE-2024-1234, ABC-123-01) 제품번호가 아니다.
-// 화질 꼬리(ABC-123-1080p, -60fps, -10bit)는 숫자 묶음으로 보지 않는다.
-// 경계의 '영문'은 라틴 문자 전체와 그 뒤에 붙은 결합 부호다. Pokémon-12, naïve-12(é를 e와 결합 부호로 쓴 경우도)의 단어 중간을 번호로 잡지 않는다.
-// 한글·한자·가나는 경계로 보지 않으므로 영상ABC-123의 번호는 찾는다. 가나 뒤의 결합 부호(NFD ガイド의 ド = ト + U+3099)도 경계가 아니다.
+// The product number format: 2 to 6 English letters, a hyphen, 2 to 5 digits (ABC-123).
+// If alphanumerics continue before or after (1ABC-123, ABC-123A), if there is an English word and a hyphen in front (summer-trip-20), or
+// if more digit groups continue after (PIC-2024-05-01, CVE-2024-1234, ABC-123-01), it is not a product number.
+// A quality tail (ABC-123-1080p, -60fps, -10bit) is not seen as a digit group.
+// The boundary "English" is all Latin letters and the combining marks after them. It does not catch the middle of a word such as Pokémon-12 or naïve-12 (even where é is written as e plus a combining mark) as a number.
+// Hangul, Chinese characters, and kana are not seen as boundaries, so the number in "영상ABC-123" ("video ABC-123") is found. A combining mark after kana (the ド of NFD ガイド = ト + U+3099) is not a boundary either.
 const CANDIDATE = /(?<![\p{Script=Latin}0-9]\p{M}*)(?<!\p{Script=Latin}\p{M}*-)[A-Za-z]{2,6}-\d{2,5}(?![\p{Script=Latin}\p{M}0-9]|-\d{2}(?!\d*(?:[pPiI]|[fF][pP][sS]|[bB][iI][tT])(?![\p{Script=Latin}\p{M}0-9])))/gu;
 
-// 형식은 맞지만 제품번호가 아닌 말. 잘못 찾아 파일 이름을 바꾸는 것보다 못 찾았다고 보고하는 쪽이 안전하므로 넓게 잡는다.
+// Words that fit the format but are not product numbers. Reporting that none was found is safer than wrongly finding one and renaming the file, so it is set broadly.
 const NOT_PRODUCT = new Set([
-  // 순서·묶음
+  // Order and bundle
   'PART', 'PARTS', 'DISC', 'DISK', 'CD', 'DVD', 'BD', 'EP', 'VOL', 'NO', 'SEASON', 'DAY', 'WEEK', 'YEAR', 'LESSON', 'PAGE', 'TRACK', 'SCENE', 'TOP',
-  // 일반 파일 이름
+  // General file names
   'CLIP', 'CLIPS', 'COPY', 'FINAL', 'DRAFT', 'TEST', 'BACKUP', 'SAMPLE', 'FILE', 'FILES', 'VIDEO', 'VIDEOS', 'MOVIE', 'MOVIES', 'FILM', 'IMAGE', 'IMAGES', 'PHOTO', 'PHOTOS', 'AUDIO', 'REPORT', 'VLOG', 'SCAN', 'PIC', 'PICS',
-  // 카메라 파일 이름
+  // Camera file names
   'IMG', 'DSC', 'DSCF', 'DSCN', 'VID', 'MOV', 'MVI', 'PXL', 'GOPR', 'DJI', 'DCIM',
-  // 화질·코덱·기술·등급 이름
+  // Quality, codec, technology, and rating names
   'HD', 'SD', 'FHD', 'QHD', 'UHD', 'HDR', 'MP', 'MPEG', 'AVC', 'HEVC', 'AAC', 'UTF', 'CP', 'ISO', 'SHA', 'AES', 'MD', 'RFC', 'CVE', 'HTTP', 'WIN', 'OS', 'IOS', 'MACOS', 'OFFICE', 'RTX', 'GTX', 'PG', 'TV', 'TEL',
-  // 영상 출처·컨테이너·음성·코덱 이름 (REMUX-2160, BLURAY-1080, DTS-51, VP-09처럼 영상 제목에 붙는 말). 7자 이상은 원래 번호 형식이 아니라 넣지 않는다.
+  // Video source, container, audio, and codec names (words attached to video titles, such as REMUX-2160, BLURAY-1080, DTS-51, and VP-09). Ones of 7 or more characters are originally not in the number format, so they are not included.
   'REMUX', 'BLURAY', 'BLU', 'BDRIP', 'BRRIP', 'WEB', 'WEBDL', 'WEBRIP', 'HDRIP', 'DVDRIP', 'HDTV', 'UHDTV', 'AMZN', 'NF', 'DSNP', 'HMAX', 'ATVP', 'HULU',
   'MKV', 'AVI', 'WMV', 'FLV', 'WEBM', 'TS', 'DTS', 'DD', 'DDP', 'EAC', 'AC', 'FLAC', 'OPUS', 'PCM', 'LPCM', 'ATMOS', 'TRUEHD',
   'VP', 'AV', 'XVID', 'DIVX', 'VC', 'YUV', 'RGB', 'BT', 'SDR', 'HLG', 'DOVI', 'CH', 'BIT', 'BITS', 'FPS', 'HZ', 'KHZ', 'KBPS', 'MBPS',
-  // 언어·자막
+  // Language and subtitles
   'KOR', 'KOREAN', 'KR', 'ENG', 'ENGSUB', 'EN', 'JPN', 'JP', 'JAP', 'CHN', 'CHS', 'CHT', 'SUB', 'SUBS', 'DUB', 'MULTI',
-  // 날짜·연도 앞에 오는 말과 흔한 이름
+  // Words that come before dates and years, and common names
   'JAN', 'FEB', 'MAR', 'MARCH', 'APR', 'APRIL', 'MAY', 'JUN', 'JUNE', 'JUL', 'JULY', 'AUG', 'AUGUST', 'SEP', 'SEPT', 'OCT', 'NOV', 'DEC', 'FY', 'COVID',
 ]);
 
-// 전각 영숫자·기호(ＡＢＣ－１２３)만 반각으로 바꾼다. NFKC는 ½, ², ① 같은 글자를 숫자로 풀어 번호 자체를 바꾼다.
+// It converts only full-width alphanumerics and symbols (ＡＢＣ－１２３) to half-width. NFKC would unfold characters such as ½, ², and ① into digits and change the number itself.
 function halfWidth(text) {
   return text.replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
 }
 
-// 글에서 제품번호를 찾아 대문자로 바꿔 나온 순서대로 돌려준다. 같은 번호는 한 번만 넣는다.
-// 기본은 대문자만 찾는다. 소문자·대소문자 혼합은 summer-2023, Vlog-2024처럼 보통 단어인 경우가 많기 때문이다.
-// lowercase를 켜면 전부 소문자인 말(abc-123)도 찾는다. 대소문자 혼합은 찾지 않는다.
+// It finds product numbers in text, makes them upper case, and returns them in the order they appeared. The same number is included only once.
+// By default it finds only upper case. Lowercase and mixed case are often ordinary words, such as summer-2023 and Vlog-2024.
+// If lowercase is on, it also finds words that are all lowercase (abc-123). It does not find mixed case.
 function extractProductNumbers(text, options) {
   return [...new Set(findProductNumberRanges(text, options).map((range) => range.number))];
 }
 
-// 제품번호와 원문에서의 위치를 나온 순서대로 { number, start, end } 목록으로 돌려준다. 같은 번호가 또 나오면 또 넣는다.
-// 전각을 반각으로 바꿔도 글자 수가 같으므로 위치는 원문 기준이다.
+// It returns the product numbers and their positions in the original, in the order they appeared, as a list of { number, start, end }. If the same number appears again, it is included again.
+// Changing full-width to half-width keeps the character count the same, so the position is based on the original.
 function findProductNumberRanges(text, { lowercase = false } = {}) {
   if (typeof text !== 'string') return [];
   const ranges = [];
@@ -54,13 +54,13 @@ function findProductNumberRanges(text, { lowercase = false } = {}) {
   return ranges;
 }
 
-// 제품번호를 찾아 { number, source, candidates }를 돌려준다. 찾지 못하면 null이다.
-// 찾는 순서: 파일명의 대문자 번호, 제목, 폴더명(가까운 폴더부터), 코멘트, 파일명의 소문자 번호.
-// - 파일명을 먼저 보는 것은 이미 번호가 들어 있으면 건너뛰기 위해서다.
-// - 코멘트는 주소나 다른 글을 담을 수 있어 폴더명보다 뒤에 둔다.
-// - 소문자 번호는 파일명에서만 인정하고 맨 뒤에 둔다. abc-123.mp4의 번호를 알아보되 vlog-2024.mp4가 제목의 ABC-123을 가리지 않게 한다.
-// number는 처음 찾은 번호이고, candidates에는 찾은 번호가 모두 들어 있어 호출한 쪽이 번호가 엇갈리는 파일을 가려낼 수 있다.
-// source는 'fileName', 'title', 'folder', 'comment' 중 하나다.
+// It finds the product number and returns { number, source, candidates }. If it finds none, it is null.
+// The search order: an upper-case number in the file name, the title, the folder names (from the nearest folder), the comment, a lowercase number in the file name.
+// - The file name is looked at first so as to skip if a number is already in it.
+// - The comment can hold an address or other text, so it is placed after the folder name.
+// - A lowercase number is accepted only in the file name and placed last. It recognizes the number of abc-123.mp4 but does not let vlog-2024.mp4 hide the ABC-123 in the title.
+// number is the first number found, and candidates holds all the numbers found, so the caller can pick out files whose numbers conflict.
+// source is one of 'fileName', 'title', 'folder', and 'comment'.
 function findProductNumber(input) {
   const { fileName, title, comment, folders } = input ?? {};
   const sources = [
@@ -81,10 +81,10 @@ function findProductNumber(input) {
   return { number: list[0].number, source: list[0].source, candidates: list };
 }
 
-// 앞뒤에 글자·숫자가 붙어 제품번호 규칙이 번호로 보지 않는 대문자 번호(1ABC-123, ABC-123A, ABC-123-01)를 찾아 앞부분 번호만 돌려준다.
-// 이름에 다른 번호가 이미 들어 있을 수 있다는 신호로만 쓴다(#75). 앞에 라틴 문자가 붙은 말(Pokémon-12, XABC-123)은 단어 중간이라 보지 않는다.
-// 연-월-일 날짜 꼴(ZZZ-2024-05-01: 19xx·20xx 연도 뒤에 1~2자리 숫자 묶음 둘)과 제품번호가 아닌 말(PIC, CVE, TEL 등)도 보지 않는다.
-// ABC-123-01-1080p, ABC-123-01-02처럼 연도가 아닌 번호 뒤의 숫자 묶음은 글자가 붙은 번호로 본다(2차 리뷰).
+// It finds upper-case numbers that the product number rule does not see as a number because letters or digits are attached before or after (1ABC-123, ABC-123A, ABC-123-01) and returns only the front number.
+// It is used only as a signal that the name may already hold another number (#75). A word with a Latin letter attached in front (Pokémon-12, XABC-123) is not seen, because it is the middle of a word.
+// It also does not look at the year-month-day date form (ZZZ-2024-05-01: after a 19xx or 20xx year, two groups of 1 to 2 digits) and words that are not product numbers (PIC, CVE, TEL, and so on).
+// A digit group after a number that is not a year, as in ABC-123-01-1080p and ABC-123-01-02, is seen as a number with letters attached (second review).
 const ATTACHED = /(?<!\p{Script=Latin}\p{M}*)(?<!\p{Script=Latin}\p{M}*-)([A-Z]{2,6})-(\d{2,5})(?!\d)/gu;
 const YEAR = /^(?:19|20)\d\d$/;
 const MONTH_DAY = /^-\d{1,2}-\d{1,2}(?!\d)/;

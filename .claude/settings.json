@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "sirloinbh-standards": {
+      "source": {
+        "source": "github",
+        "repo": "sirloinbh/project-standards"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "sirloinbh-standards@sirloinbh-standards": true
+  }
+}

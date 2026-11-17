@@ -13,7 +13,7 @@ test('H.264 SPS: 표의 화소 비율과 직접 적은 비율을 읽는다 (#113
   assert.deepStrictEqual(avc({ sar: 1 }), { h: 1, v: 1 });
   assert.deepStrictEqual(avc({ sar: 16 }), { h: 2, v: 1 });
   assert.deepStrictEqual(avc({ sar: [32, 27] }), { h: 32, v: 27 });
-  // VUI가 없거나, 비율이 없거나, 정하지 않음(0)이거나, 예약값(17)이거나, 0이 든 값이면 null이다.
+  // If there is no VUI, no ratio, undefined (0), a reserved value (17), or a value that holds 0, it is null.
   for (const sar of [undefined, null, 0, 17, [0, 1], [1, 0]]) assert.strictEqual(avc({ sar }), null, JSON.stringify(sar));
 });
 
@@ -23,14 +23,14 @@ test('H.264 SPS: 프로필, scaling list, POC 종류, 필드 부호화, 자르�
   assert.deepStrictEqual(avc({ frameMbsOnly: 0, sar: 14 }), { h: 4, v: 3 });
   assert.deepStrictEqual(avc({ crop: [0, 0, 0, 4], sar: 14 }), { h: 4, v: 3 });
   assert.deepStrictEqual(avc({ chroma: 3, sar: 14 }), { h: 4, v: 3 });
-  // 목록 0은 첫 값에서 next가 0이 되어 그 뒤를 읽지 않고, 목록 6은 64개를 모두 읽는다.
+  // In list 0, next becomes 0 at the first value and it does not read after that, and list 6 reads all 64.
   const scaling = { 0: [-8], 1: [2, -1, 3, ...Array(13).fill(0)], 6: Array(64).fill(1) };
   assert.deepStrictEqual(avc({ scaling, sar: [32, 27] }), { h: 32, v: 27 });
   assert.deepStrictEqual(avc({ chroma: 3, scaling: { ...scaling, 11: Array.from({ length: 64 }, (_, i) => (i % 2 === 0 ? -1 : 1)) }, sar: [32, 27] }), { h: 32, v: 27 });
 });
 
 test('SPS의 emulation prevention 바이트(00 00 03)를 내용에서 뺀다 (#113)', () => {
-  // 32768:1은 0이 30비트 이어져 어떤 정렬에서도 00 00 뒤에 3 이하의 바이트가 와 3이 끼워진다. 자르기 값으로 정렬을 바꿔 가며 본다.
+  // 32768:1 has 30 zero bits in a row, so at any alignment a byte of 3 or less comes after 00 00 and a 3 is inserted. It looks at it while changing the alignment with the crop value.
   for (let shift = 0; shift < 8; shift += 1) {
     const sps = avcSps({ crop: [shift, 0, 0, 0], sar: [0x8000, 1] });
     assert.ok(sps.includes(Buffer.from([0, 0, 3])), `shift ${shift}`);
@@ -50,14 +50,14 @@ test('HEVC SPS: 화소 비율을 읽고, 하위 계층·자르기·scaling list�
   assert.deepStrictEqual(hevc({ scaling: true, sar }), expected);
   assert.deepStrictEqual(hevc({ pcm: true, sar }), expected);
   assert.deepStrictEqual(hevc({ longTerm: 2, sar }), expected);
-  // 참조 집합: 1번은 0번(3개)을 참조해 4칸을 읽고 그중 3개가 남는다. 2번은 1번(3개)을 참조해 4칸을 읽는다.
+  // Reference sets: set 1 refers to set 0 (3 entries) and reads 4 slots, of which 3 remain. Set 2 refers to set 1 (3 entries) and reads 4 slots.
   const sets = [
     { negative: 2, positive: 1 },
     { inter: [[1], [0, 0], [1], [0, 1]] },
     { inter: [[0, 1], [1], [0, 0], [1]] },
   ];
   assert.deepStrictEqual(hevc({ sets, sar }), expected);
-  // 참조 집합의 개수를 잘못 세면 뒤가 어긋난다. 1번이 4개를 남기면 2번은 5칸을 읽어야 한다.
+  // If the count of the reference set is counted wrong, what follows goes off. If set 1 leaves 4, set 2 must read 5 slots.
   const four = [{ negative: 2, positive: 1 }, { inter: [[1], [1], [1], [1]] }, { inter: [[1], [1], [1], [1], [0, 0]] }];
   assert.deepStrictEqual(hevc({ sets: four, sar }), expected);
 });
@@ -75,19 +75,19 @@ test('잘리거나 틀린 SPS와 설정 상자는 null이고 예외를 내지 �
   }
   const config = avcC(sps);
   for (let cut = 0; cut < config.length - 4; cut += 1) assert.deepStrictEqual(spsAspect('avcC', config.subarray(0, cut)), cut >= 8 + sps.length ? spsAspect('avcC', config) : null, `avcC cut ${cut}`);
-  // 버전이 1이 아니거나 SPS가 없거나 NAL 종류가 다르면 null이다.
+  // If the version is not 1, there is no SPS, or the NAL kind differs, it is null.
   assert.strictEqual(spsAspect('avcC', Buffer.from([0, ...config.subarray(1)])), null);
   assert.strictEqual(spsAspect('avcC', Buffer.from([...config.subarray(0, 5), 0xe0])), null);
   assert.strictEqual(spsAspect('avcC', avcC(Buffer.from([0x68, ...sps.subarray(1)]))), null);
   assert.strictEqual(spsAspect('hvcC', hvcC(Buffer.from([0x40, ...hevcNal.subarray(1)]))), null);
-  // hvcC 버전 0(초안 시절 먹서)은 받고, 2 이상은 받지 않는다.
+  // An hvcC of version 0 (a muxer of the draft era) is accepted, and 2 or more is not accepted.
   const hevcConfig = hvcC(hevcNal);
   assert.deepStrictEqual(spsAspect('hvcC', Buffer.from([0, ...hevcConfig.subarray(1)])), { h: 32, v: 27 });
   assert.strictEqual(spsAspect('hvcC', Buffer.from([2, ...hevcConfig.subarray(1)])), null);
-  // 여러 계층 SPS(nuh_layer_id > 0)는 구조가 달라 읽지 않는다.
+  // An SPS with several layers (nuh_layer_id > 0) has a different structure, so it is not read.
   assert.strictEqual(hevc({ layer: 1, sar: [32, 27] }), null);
   assert.strictEqual(spsAspect('esds', config), null);
-  // 0이 끝없이 이어지는 Exp-Golomb
+  // An Exp-Golomb with zeros continuing endlessly
   assert.strictEqual(spsAspect('avcC', avcC(Buffer.from([0x67, 100, 0, 40, ...Array(64).fill(0)]))), null);
 });
 

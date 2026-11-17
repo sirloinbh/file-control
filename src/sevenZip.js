@@ -1,15 +1,15 @@
 'use strict';
 
-// .7z 헤더를 읽어 항목 이름(UTF-16)과 크기, CRC가 있는지 확인한다(#198).
-// tar.exe(libarchive)는 CRC가 있는 항목만 풀 때 내용을 검사하므로(빌드 26200 실측: "7-Zip bad CRC"로 실패), CRC가 없는 항목은 본문이 변해도 성공으로 풀린다.
-// tar.exe와 7-Zip은 헤더를 LZMA로 압축해 적으므로(EncodedHeader) 헤더를 풀 LZMA 디코더도 함께 둔다. 본문은 풀지 않는다.
-// 결과는 { entries: [{ name, size, folder }] } 또는 { reason }이다.
+// It reads the .7z header and checks the entry names (UTF-16), sizes, and whether a CRC exists (#198).
+// tar.exe (libarchive) checks the content when extracting only entries that have a CRC (measured on build 26200: it fails with "7-Zip bad CRC"), so an entry without a CRC extracts as a success even if the body changed.
+// tar.exe and 7-Zip write the header compressed with LZMA (EncodedHeader), so an LZMA decoder to decode the header is also included. The body is not decoded.
+// The result is { entries: [{ name, size, folder }] } or { reason }.
 
 const zlib = require('node:zlib');
 
 const SIGNATURE = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
 const START_HEADER = 32;
-// 헤더(풀린 크기)와 압축된 헤더는 이 크기까지만 읽는다. 항목 수십만 개도 이 안에 든다.
+// The header (decoded size) and the compressed header are read only up to this size. Hundreds of thousands of entries fit within it.
 const MAX_HEADER = 64 * 1024 * 1024;
 
 const ID = {
@@ -31,18 +31,18 @@ class Reader {
   }
 
   byte() {
-    if (this.pos >= this.buf.length) throw broken('7z 헤더가 중간에 끝나 남겼습니다.');
+    if (this.pos >= this.buf.length) throw broken('Kept because the 7z header ends prematurely.');
     return this.buf[this.pos++];
   }
 
   bytes(n) {
-    if (n > this.buf.length - this.pos) throw broken('7z 헤더가 중간에 끝나 남겼습니다.');
+    if (n > this.buf.length - this.pos) throw broken('Kept because the 7z header ends prematurely.');
     const out = this.buf.subarray(this.pos, this.pos + n);
     this.pos += n;
     return out;
   }
 
-  // 7z NUMBER: 첫 바이트의 앞쪽 1 비트 수만큼 뒤 바이트가 이어진다.
+  // 7z NUMBER: as many following bytes continue as the number of leading 1 bits in the first byte.
   number() {
     const first = this.byte();
     let mask = 0x80;
@@ -56,14 +56,14 @@ class Reader {
       value |= BigInt(this.byte()) << BigInt(8 * i);
       mask >>= 1;
     }
-    if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw broken('7z 헤더의 값이 너무 커서 남겼습니다.');
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw broken('Kept because a value in the 7z header is too large.');
     return Number(value);
   }
 
-  // 개수로 쓰는 NUMBER. 헤더 크기를 넘는 개수는 손상이다.
+  // A NUMBER used as a count. A count larger than the header size is damage.
   count() {
     const value = this.number();
-    if (value > this.buf.length * 8 + 8) throw broken('7z 헤더의 개수가 맞지 않아 남겼습니다.');
+    if (value > this.buf.length * 8 + 8) throw broken('Kept because a count in the 7z header does not add up.');
     return value;
   }
 
@@ -81,7 +81,7 @@ class Reader {
     return out;
   }
 
-  // allDefined 바이트와(0이면) 비트 벡터
+  // The allDefined byte and (if 0) the bit vector
   defined(n) {
     return this.byte() !== 0 ? new Array(n).fill(true) : this.bits(n);
   }
@@ -100,23 +100,23 @@ function readPackInfo(r) {
     const id = r.number();
     if (id === ID.END) break;
     if (id === ID.SIZE) sizes = Array.from({ length: count }, () => r.number());
-    // libarchive처럼 kSize가 먼저 와야 한다. 그 전에 큰 개수로 CRC 배열을 만들지 않는다(2차 리뷰).
+    // Like libarchive, kSize must come first. Before that, it does not build the CRC array with a large count (second review).
     else if (id === ID.CRC && sizes.length === count) readDigests(r, count);
-    else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    else throw broken('Kept because the 7z header structure could not be read.');
   }
-  if (sizes.length !== count) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (sizes.length !== count) throw broken('Kept because the 7z header structure could not be read.');
   return { packPos, sizes };
 }
 
 function readFolder(r) {
   const coders = [];
   const numCoders = r.count();
-  if (numCoders === 0 || numCoders > 64) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (numCoders === 0 || numCoders > 64) throw broken('Kept because the 7z header structure could not be read.');
   let totalIn = 0;
   let totalOut = 0;
   for (let i = 0; i < numCoders; i += 1) {
     const flags = r.byte();
-    if (flags & 0x80) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    if (flags & 0x80) throw broken('Kept because the 7z header structure could not be read.');
     const id = r.bytes(flags & 0x0f).toString('hex');
     const numIn = flags & 0x10 ? r.count() : 1;
     const numOut = flags & 0x10 ? r.count() : 1;
@@ -125,37 +125,37 @@ function readFolder(r) {
     totalIn += numIn;
     totalOut += numOut;
   }
-  if (totalOut === 0 || totalOut > 64 || totalIn > 64) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (totalOut === 0 || totalOut > 64 || totalIn > 64) throw broken('Kept because the 7z header structure could not be read.');
   const bindPairs = Array.from({ length: totalOut - 1 }, () => ({ inIndex: r.count(), outIndex: r.count() }));
   const numPacked = totalIn - bindPairs.length;
-  if (numPacked < 1) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (numPacked < 1) throw broken('Kept because the 7z header structure could not be read.');
   if (numPacked > 1) for (let i = 0; i < numPacked; i += 1) r.count();
   return { coders, totalOut, bindPairs, numPacked };
 }
 
 function readUnpackInfo(r) {
-  if (r.number() !== ID.FOLDER) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (r.number() !== ID.FOLDER) throw broken('Kept because the 7z header structure could not be read.');
   const count = r.count();
-  if (r.byte() !== 0) throw broken('7z 헤더가 다른 곳을 가리켜 남겼습니다.');
+  if (r.byte() !== 0) throw broken('Kept because the 7z header points elsewhere.');
   const folders = Array.from({ length: count }, () => readFolder(r));
-  if (r.number() !== ID.CODERS_UNPACK_SIZE) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if (r.number() !== ID.CODERS_UNPACK_SIZE) throw broken('Kept because the 7z header structure could not be read.');
   for (const folder of folders) {
     folder.outSizes = Array.from({ length: folder.totalOut }, () => r.number());
     const bound = new Set(folder.bindPairs.map((pair) => pair.outIndex));
     const main = [...folder.outSizes.keys()].filter((i) => !bound.has(i));
-    if (main.length !== 1) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    if (main.length !== 1) throw broken('Kept because the 7z header structure could not be read.');
     folder.unpackSize = folder.outSizes[main[0]];
   }
   for (;;) {
     const id = r.number();
     if (id === ID.END) break;
     if (id === ID.CRC) readDigests(r, count).forEach((crc, i) => { folders[i].crc = crc; });
-    else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    else throw broken('Kept because the 7z header structure could not be read.');
   }
   return folders;
 }
 
-// 폴더마다 풀린 스트림(파일 내용)의 크기와 CRC
+// The size and CRC of the decoded stream (file content) of each folder
 function readSubStreams(r, folders) {
   const counts = folders.map(() => 1);
   let id = r.number();
@@ -174,23 +174,23 @@ function readSubStreams(r, folders) {
         sum += size;
         sizes.push(size);
       }
-      if (sum > folder.unpackSize) throw broken('7z 헤더의 크기가 맞지 않아 남겼습니다.');
+      if (sum > folder.unpackSize) throw broken('Kept because a size in the 7z header does not add up.');
       sizes.push(folder.unpackSize - sum);
     });
     id = r.number();
   } else {
     folders.forEach((folder, i) => {
-      if (counts[i] > 1) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+      if (counts[i] > 1) throw broken('Kept because the 7z header structure could not be read.');
       if (counts[i] === 1) sizes.push(folder.unpackSize);
     });
   }
   const needDigest = folders.reduce((n, folder, i) => n + (counts[i] === 1 && folder.crc !== undefined ? 0 : counts[i]), 0);
   let digests = new Array(needDigest).fill(undefined);
-  // libarchive는 이 블록에 kCRC가 있을 때만 폴더 CRC를 항목 CRC로 옮겨 검사한다. kCRC가 없으면 폴더 CRC만 있어도
-  // 내용을 검사하지 않아 본문이 바뀌어도 성공으로 풀린다(1차 리뷰에서 실측). 그래서 그때는 모든 항목을 CRC 없음으로 본다.
+  // libarchive moves the folder CRC to the entry CRC and checks it only when this block has kCRC. If there is no kCRC, even when the folder CRC exists,
+  // it does not check the content and extracts as a success even if the body changed (measured in the first review). So in that case it sees every entry as having no CRC.
   let hasCrcBlock = false;
   for (; id !== ID.END; id = r.number()) {
-    if (id !== ID.CRC) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    if (id !== ID.CRC) throw broken('Kept because the 7z header structure could not be read.');
     digests = readDigests(r, needDigest);
     hasCrcBlock = true;
   }
@@ -215,19 +215,19 @@ function readStreamsInfo(r) {
     if (id === ID.PACK_INFO) info.pack = readPackInfo(r);
     else if (id === ID.UNPACK_INFO) info.folders = readUnpackInfo(r);
     else if (id === ID.SUBSTREAMS) info.streams = readSubStreams(r, info.folders);
-    else throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+    else throw broken('Kept because the 7z header structure could not be read.');
   }
-  // SubStreamsInfo가 없으면 tar.exe는 풀지 못한다(1차 리뷰에서 실측). 같은 기준으로 CRC 없음으로 본다.
+  // Without SubStreamsInfo, tar.exe cannot extract (measured in the first review). By the same criterion it is seen as no CRC.
   info.streams ??= info.folders.map((folder) => ({ size: folder.unpackSize, crc: undefined }));
   const packed = info.folders.reduce((n, folder) => n + folder.numPacked, 0);
-  if ((info.pack?.sizes.length ?? 0) !== packed) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+  if ((info.pack?.sizes.length ?? 0) !== packed) throw broken('Kept because the 7z header structure could not be read.');
   return info;
 }
 
 function readFiles(r) {
-  // 항목마다 이름(끝의 NUL 포함 2바이트 이상)이 있어야 하므로 남은 헤더 길이의 절반을 넘을 수 없다(큰 배열을 만들지 않게, 1차 리뷰).
+  // Each entry must have a name (at least 2 bytes including the trailing NUL), so the count cannot exceed half the remaining header length (so as not to build a large array, first review).
   const count = r.number();
-  if (count > (r.buf.length - r.pos) / 2) throw broken('7z 헤더의 개수가 맞지 않아 남겼습니다.');
+  if (count > (r.buf.length - r.pos) / 2) throw broken('Kept because a count in the 7z header does not add up.');
   let emptyStream = new Array(count).fill(false);
   let emptyFile = [];
   let names = null;
@@ -241,11 +241,11 @@ function readFiles(r) {
     } else if (type === ID.EMPTY_FILE) {
       emptyFile = body.bits(emptyStream.filter(Boolean).length);
     } else if (type === ID.ANTI) {
-      throw broken('7z에 지우기 표시 항목이 있어 남겼습니다.');
+      throw broken('Kept because the 7z has an item marked as deleted.');
     } else if (type === ID.NAME) {
-      if (body.byte() !== 0) throw broken('7z 헤더가 다른 곳을 가리켜 남겼습니다.');
+      if (body.byte() !== 0) throw broken('Kept because the 7z header points elsewhere.');
       const text = body.bytes(body.buf.length - 1);
-      if (text.length % 2 !== 0) throw broken('7z 항목 이름을 읽지 못해 남겼습니다.');
+      if (text.length % 2 !== 0) throw broken('Kept because the 7z entry names could not be read.');
       names = [];
       let start = 0;
       for (let i = 0; i < text.length; i += 2) {
@@ -253,15 +253,15 @@ function readFiles(r) {
         names.push(text.subarray(start, i).toString('utf16le'));
         start = i + 2;
       }
-      if (start !== text.length || names.length !== count) throw broken('7z 항목 이름을 읽지 못해 남겼습니다.');
+      if (start !== text.length || names.length !== count) throw broken('Kept because the 7z entry names could not be read.');
     }
   }
-  if (names === null && count > 0) throw broken('7z 항목 이름이 없어 남겼습니다.');
+  if (names === null && count > 0) throw broken('Kept because the 7z has no entry names.');
   return { count, emptyStream, emptyFile, names: names ?? [] };
 }
 
-// LZMA 디코더(LZMA SDK의 LzmaSpec과 같은 순서). out 버퍼가 사전이다. LZMA2(#222)가 청크마다 범위 디코더를 새로 시작하고
-// 상태·속성만 이어 쓰므로, 상태를 가진 디코더로 둔다. run(input, from, to, end)는 input[from..to)를 범위 디코더로 읽어 out을 end까지 채운다.
+// The LZMA decoder (in the same order as LzmaSpec of the LZMA SDK). The out buffer is the dictionary. LZMA2 (#222) restarts the range decoder for each chunk and
+// carries over only the state and properties, so it is kept as a decoder with state. run(input, from, to, end) reads input[from..to) with the range decoder and fills out up to end.
 function lzmaDecoder(out) {
   let lc = 0;
   let lp = 0;
@@ -273,7 +273,7 @@ function lzmaDecoder(out) {
   let inPos = 0;
   let inEnd = 0;
   const next = () => {
-    if (inPos >= inEnd) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');
+    if (inPos >= inEnd) throw broken('Kept because the compressed data of the 7z header ends prematurely.');
     return input[inPos++];
   };
   const probs = (n) => new Uint16Array(n).fill(1024);
@@ -352,20 +352,20 @@ function lzmaDecoder(out) {
   let rep1 = 0;
   let rep2 = 0;
   let rep3 = 0;
-  // 사전 시작 자리. 이보다 앞을 가리키는 거리는 손상이다(LZMA2의 사전 재설정).
+  // The dictionary start position. A distance that points before it is damage (the dictionary reset of LZMA2).
   let dictStart = 0;
 
-  // maxLcLp는 LZMA2의 lc+lp 한도(4, xz의 LZMA_LCLP_MAX)다. 그보다 큰 값으로 상태를 자주 재설정하면 큰 표를 매번 채우게 된다(1차 리뷰).
+  // maxLcLp is the lc+lp limit of LZMA2 (4, LZMA_LCLP_MAX of xz). If the state is reset often with a larger value, a large table would be filled each time (first review).
   function setProps(byte, maxLcLp = Infinity) {
-    if (byte >= 9 * 5 * 5) throw broken('7z 헤더의 LZMA 설정을 읽지 못해 남겼습니다.');
+    if (byte >= 9 * 5 * 5) throw broken('Kept because the LZMA settings of the 7z header could not be read.');
     lc = byte % 9;
     lp = Math.floor(byte / 9) % 5;
     pb = Math.floor(byte / 45);
-    if (lc + lp > maxLcLp) throw broken('7z 헤더의 LZMA2 설정을 읽지 못해 남겼습니다.');
+    if (lc + lp > maxLcLp) throw broken('Kept because the LZMA2 settings of the 7z header could not be read.');
   }
 
   function resetState() {
-    // 같은 크기면 표를 새로 만들지 않고 다시 채운다.
+    // If the size is the same, it refills the table instead of making a new one.
     const size = 0x300 << (lc + lp);
     if (literal?.length === size) literal.fill(1024);
     else literal = probs(size);
@@ -387,22 +387,22 @@ function lzmaDecoder(out) {
     rep3 = 0;
   }
 
-  // 끝 표시(거리 0xFFFFFFFF)를 만나면 true를 돌려준다. allowEnd가 아니면 끝 표시도 손상이다.
+  // If it meets the end marker (distance 0xFFFFFFFF), it returns true. If allowEnd is not set, even an end marker is damage.
   function run(data, from, to, end, allowEnd) {
     input = data;
     inPos = from;
     inEnd = to;
     range = 0xffffffff;
     code = 0;
-    if (next() !== 0) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (next() !== 0) throw broken('Kept because the compressed data of the 7z header is damaged.');
     for (let i = 0; i < 4; i += 1) code = ((code << 8) | next()) >>> 0;
-    if (code === range) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (code === range) throw broken('Kept because the compressed data of the 7z header is damaged.');
     const pbMask = (1 << pb) - 1;
     const lpMask = (1 << lp) - 1;
     while (pos < end) {
       const posState = pos & pbMask;
       if (bit(isMatch, (state << 4) + posState) === 0) {
-        // 사전을 재설정한 자리에서는 앞 바이트를 0으로 본다(1차 리뷰).
+        // At a position where the dictionary was reset, the previous byte is seen as 0 (first review).
         const prev = pos > dictStart ? out[pos - 1] : 0;
         const base = 0x300 * (((pos & lpMask) << lc) + (prev >> (8 - lc)));
         let symbol = 1;
@@ -423,7 +423,7 @@ function lzmaDecoder(out) {
       }
       let len;
       if (bit(isRep, state) !== 0) {
-        if (pos === dictStart) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+        if (pos === dictStart) throw broken('Kept because the compressed data of the 7z header is damaged.');
         if (bit(isRepG0, state) === 0) {
           if (bit(isRep0Long, (state << 4) + posState) === 0) {
             state = state < 7 ? 9 : 11;
@@ -467,13 +467,13 @@ function lzmaDecoder(out) {
           rep0 = dist >>> 0;
         }
         if (rep0 === 0xffffffff) {
-          if (!allowEnd) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+          if (!allowEnd) throw broken('Kept because the compressed data of the 7z header is damaged.');
           return true;
         }
       }
-      if (rep0 >= pos - dictStart) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+      if (rep0 >= pos - dictStart) throw broken('Kept because the compressed data of the 7z header is damaged.');
       len += 2;
-      if (len > end - pos) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+      if (len > end - pos) throw broken('Kept because the compressed data of the 7z header is damaged.');
       for (let i = 0; i < len; i += 1) {
         out[pos] = out[pos - rep0 - 1];
         pos += 1;
@@ -489,58 +489,58 @@ function lzmaDecoder(out) {
     get pos() { return pos; },
     set pos(value) { pos = value; },
     resetDict() { dictStart = pos; },
-    // 범위 디코더가 읽은 자리(LZMA2 청크가 압축된 크기만큼 정확히 읽혔는지 확인용)
+    // The position the range decoder read up to (to check that an LZMA2 chunk was read exactly by its compressed size)
     get consumed() { return inPos; },
   };
 }
 
-// 7z LZMA 코더: 속성 5바이트(lc·lp·pb와 사전 크기) 뒤에 범위 디코더 데이터가 이어진다.
+// The 7z LZMA coder: after the 5 property bytes (lc, lp, pb and the dictionary size), the range decoder data continues.
 function lzmaDecode(props, input, outSize) {
-  if (props.length < 5) throw broken('7z 헤더의 LZMA 설정을 읽지 못해 남겼습니다.');
+  if (props.length < 5) throw broken('Kept because the LZMA settings of the 7z header could not be read.');
   const out = Buffer.alloc(outSize);
   const lzma = lzmaDecoder(out);
   lzma.setProps(props[0]);
   lzma.resetState();
   lzma.run(input, 0, input.length, outSize, true);
-  if (lzma.pos !== outSize) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');
+  if (lzma.pos !== outSize) throw broken('Kept because the compressed data of the 7z header ends prematurely.');
   return out;
 }
 
-// 7z LZMA2 코더(#222): 속성 1바이트(사전 크기)와 청크들. 제어 바이트 0은 끝, 1·2는 압축하지 않은 청크(1은 사전 재설정),
-// 0x80 이상은 LZMA 청크다. LZMA 청크의 비트 5~6은 재설정 단계(0 없음, 1 상태, 2 상태+속성, 3 상태+속성+사전)이고,
-// 풀린 크기는 비트 0~4와 뒤 2바이트, 압축된 크기는 그 뒤 2바이트(모두 1을 더함)다. 청크마다 범위 디코더를 새로 시작한다.
-// 첫 청크는 사전을 재설정해야 하고, 사전 재설정(0x01, 0xE0 이상) 뒤의 첫 LZMA 청크는 속성을 정해야 한다(xz·LZMA SDK와 같은 조건).
-// 압축하지 않은 청크(0x02) 뒤에는 상태와 rep 거리를 그대로 이어 쓴다(2차 리뷰: xz는 이때 상태 재설정을 요구하지 않는다).
+// The 7z LZMA2 coder (#222): 1 property byte (the dictionary size) and chunks. Control byte 0 is the end, 1 and 2 are uncompressed chunks (1 resets the dictionary),
+// 0x80 or more is an LZMA chunk. Bits 5 to 6 of an LZMA chunk are the reset level (0 none, 1 state, 2 state+properties, 3 state+properties+dictionary),
+// the decoded size is bits 0 to 4 plus the next 2 bytes, and the compressed size is the 2 bytes after that (both plus 1). The range decoder restarts for each chunk.
+// The first chunk must reset the dictionary, and the first LZMA chunk after a dictionary reset (0x01, 0xE0 or more) must set the properties (the same conditions as xz and the LZMA SDK).
+// After an uncompressed chunk (0x02), the state and the rep distances carry on as they are (second review: xz does not require a state reset here).
 function lzma2Decode(props, input, outSize) {
-  if (props.length < 1 || props[0] > 40) throw broken('7z 헤더의 LZMA2 설정을 읽지 못해 남겼습니다.');
+  if (props.length < 1 || props[0] > 40) throw broken('Kept because the LZMA2 settings of the 7z header could not be read.');
   const out = Buffer.alloc(outSize);
   const lzma = lzmaDecoder(out);
   let at = 0;
   let first = true;
   let haveProps = false;
   const byte = () => {
-    if (at >= input.length) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');
+    if (at >= input.length) throw broken('Kept because the compressed data of the 7z header ends prematurely.');
     return input[at++];
   };
   for (;;) {
     const control = byte();
     if (control === 0x00) break;
-    if (first && control !== 0x01 && control < 0xe0) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (first && control !== 0x01 && control < 0xe0) throw broken('Kept because the compressed data of the 7z header is damaged.');
     first = false;
     if (control === 0x01 || control === 0x02) {
       const size = ((byte() << 8) | byte()) + 1;
-      // 사전을 재설정하면 다음 LZMA 청크는 속성도 다시 정해야 한다(xz·LZMA SDK와 같은 조건, 1차 리뷰).
+      // If the dictionary is reset, the next LZMA chunk must also set the properties again (the same conditions as xz and the LZMA SDK, first review).
       if (control === 0x01) {
         lzma.resetDict();
         haveProps = false;
       }
-      if (size > outSize - lzma.pos || size > input.length - at) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+      if (size > outSize - lzma.pos || size > input.length - at) throw broken('Kept because the compressed data of the 7z header is damaged.');
       input.copy(out, lzma.pos, at, at + size);
       lzma.pos += size;
       at += size;
       continue;
     }
-    if (control < 0x80) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (control < 0x80) throw broken('Kept because the compressed data of the 7z header is damaged.');
     const reset = (control >> 5) & 3;
     const unpacked = (((control & 0x1f) << 16) | (byte() << 8) | byte()) + 1;
     const packed = ((byte() << 8) | byte()) + 1;
@@ -549,33 +549,33 @@ function lzma2Decode(props, input, outSize) {
       lzma.setProps(byte(), 4);
       haveProps = true;
     }
-    if (!haveProps) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (!haveProps) throw broken('Kept because the compressed data of the 7z header is damaged.');
     if (reset >= 1) lzma.resetState();
-    if (unpacked > outSize - lzma.pos || packed > input.length - at) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    if (unpacked > outSize - lzma.pos || packed > input.length - at) throw broken('Kept because the compressed data of the 7z header is damaged.');
     lzma.run(input, at, at + packed, lzma.pos + unpacked, false);
-    // 청크는 압축된 크기만큼 정확히 읽혀야 한다(xz와 같은 조건, 1차 리뷰).
-    if (lzma.consumed !== at + packed) throw broken('7z 헤더의 압축 데이터가 손상돼 남겼습니다.');
+    // A chunk must be read exactly by its compressed size (the same condition as xz, first review).
+    if (lzma.consumed !== at + packed) throw broken('Kept because the compressed data of the 7z header is damaged.');
     at += packed;
   }
-  if (lzma.pos !== outSize) throw broken('7z 헤더의 압축 데이터가 중간에 끝나 남겼습니다.');
+  if (lzma.pos !== outSize) throw broken('Kept because the compressed data of the 7z header ends prematurely.');
   return out;
 }
 
-// read(offset, length)로 파일 일부를 읽는다. size는 파일 크기다.
+// It reads part of the file with read(offset, length). size is the file size.
 function readSevenZip(read, size) {
   try {
-    if (size < START_HEADER) throw broken('7z 헤더가 중간에 끝나 남겼습니다.');
+    if (size < START_HEADER) throw broken('Kept because the 7z header ends prematurely.');
     const start = read(0, START_HEADER);
-    if (!start.subarray(0, 6).equals(SIGNATURE)) throw broken('내용이 7z로 시작하지 않아 남겼습니다.');
-    if (zlib.crc32(start.subarray(12, 32)) !== start.readUInt32LE(8)) throw broken('7z 시작 헤더의 CRC가 맞지 않아 남겼습니다.');
+    if (!start.subarray(0, 6).equals(SIGNATURE)) throw broken('Kept because the content does not start as a 7z.');
+    if (zlib.crc32(start.subarray(12, 32)) !== start.readUInt32LE(8)) throw broken('Kept because the CRC of the 7z start header does not match.');
     const nextOffset = start.readBigUInt64LE(12);
     const nextSize = start.readBigUInt64LE(20);
-    if (BigInt(START_HEADER) + nextOffset + nextSize !== BigInt(size)) throw broken('7z 끝 뒤에 다른 데이터가 있어 남겼습니다.');
-    if (nextSize > BigInt(MAX_HEADER)) throw broken('7z 헤더가 너무 커서 남겼습니다.');
+    if (BigInt(START_HEADER) + nextOffset + nextSize !== BigInt(size)) throw broken('Kept because there is other data after the end of the 7z.');
+    if (nextSize > BigInt(MAX_HEADER)) throw broken('Kept because the 7z header is too large.');
     const headerAt = START_HEADER + Number(nextOffset);
     let header = read(headerAt, Number(nextSize));
-    if (zlib.crc32(header) !== start.readUInt32LE(28)) throw broken('7z 헤더의 CRC가 맞지 않아 남겼습니다.');
-    // 본문과 압축된 헤더가 차지하는 자리. 시작 헤더 뒤부터 헤더 앞까지 빈틈없이 이어져야 목록에 없는 데이터가 없다.
+    if (zlib.crc32(header) !== start.readUInt32LE(28)) throw broken('Kept because the CRC of the 7z header does not match.');
+    // The positions that the bodies and the compressed header take up. They must continue without a gap from after the start header to before the header, so that there is no data not in the list.
     const ranges = [];
     const addPack = (pack) => {
       let at = START_HEADER + (pack?.packPos ?? 0);
@@ -588,22 +588,22 @@ function readSevenZip(read, size) {
       const r = new Reader(header);
       const id = r.number();
       if (id === ID.HEADER) break;
-      if (id !== ID.ENCODED_HEADER || depth >= 4) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+      if (id !== ID.ENCODED_HEADER || depth >= 4) throw broken('Kept because the 7z header structure could not be read.');
       const info = readStreamsInfo(r);
-      if (info.folders.length !== 1 || info.pack.sizes.length !== 1) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+      if (info.folders.length !== 1 || info.pack.sizes.length !== 1) throw broken('Kept because the 7z header structure could not be read.');
       const [folder] = info.folders;
       const [coder] = folder.coders;
-      if (folder.coders.length !== 1 || ![LZMA, LZMA2, COPY].includes(coder.id)) throw broken('7z 헤더의 압축 방식을 읽지 못해 남겼습니다.');
-      if (folder.crc === undefined) throw broken('7z 헤더에 CRC가 없어 남겼습니다.');
+      if (folder.coders.length !== 1 || ![LZMA, LZMA2, COPY].includes(coder.id)) throw broken('Kept because the compression method of the 7z header could not be read.');
+      if (folder.crc === undefined) throw broken('Kept because the 7z header has no CRC.');
       const packSize = info.pack.sizes[0];
-      if (packSize > MAX_HEADER || folder.unpackSize > MAX_HEADER) throw broken('7z 헤더가 너무 커서 남겼습니다.');
+      if (packSize > MAX_HEADER || folder.unpackSize > MAX_HEADER) throw broken('Kept because the 7z header is too large.');
       const packAt = START_HEADER + info.pack.packPos;
-      if (packAt + packSize > headerAt) throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+      if (packAt + packSize > headerAt) throw broken('Kept because the 7z header structure could not be read.');
       addPack(info.pack);
       const packed = read(packAt, packSize);
       const decode = { [LZMA]: lzmaDecode, [LZMA2]: lzma2Decode }[coder.id];
       header = decode === undefined ? packed.subarray(0, folder.unpackSize) : decode(coder.props, packed, folder.unpackSize);
-      if (header.length !== folder.unpackSize || zlib.crc32(header) !== folder.crc) throw broken('7z 헤더의 CRC가 맞지 않아 남겼습니다.');
+      if (header.length !== folder.unpackSize || zlib.crc32(header) !== folder.crc) throw broken('Kept because the CRC of the 7z header does not match.');
     }
     const r = new Reader(header);
     r.number();
@@ -619,17 +619,17 @@ function readSevenZip(read, size) {
       } else if (id === ID.FILES) {
         files = readFiles(r);
       } else {
-        throw broken('7z 헤더의 구조를 읽지 못해 남겼습니다.');
+        throw broken('Kept because the 7z header structure could not be read.');
       }
     }
     addPack(main.pack);
     ranges.sort((a, b) => a[0] - b[0]);
     let at = START_HEADER;
     for (const [from, to] of ranges) {
-      if (from !== at) throw broken('7z 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.');
+      if (from !== at) throw broken('Kept because there is data between 7z entries that is not in the listing.');
       at = to;
     }
-    if (at !== headerAt) throw broken('7z 항목 사이에 목록에 없는 데이터가 있어 남겼습니다.');
+    if (at !== headerAt) throw broken('Kept because there is data between 7z entries that is not in the listing.');
     const entries = [];
     let stream = 0;
     let empty = 0;
@@ -641,11 +641,11 @@ function readSevenZip(read, size) {
         continue;
       }
       const item = main.streams[stream++];
-      if (item === undefined) throw broken('7z 항목과 내용의 수가 맞지 않아 남겼습니다.');
-      if (item.crc === undefined) throw broken(`CRC가 없어 내용이 온전한지 확인할 수 없는 항목이 있어 남겼습니다: ${JSON.stringify(name)}`);
+      if (item === undefined) throw broken('Kept because the number of 7z entries and contents does not match.');
+      if (item.crc === undefined) throw broken(`Kept because an item has no CRC, so its content cannot be confirmed intact: ${JSON.stringify(name)}`);
       entries.push({ name, size: item.size, folder: false });
     }
-    if (stream !== main.streams.length) throw broken('7z 항목과 내용의 수가 맞지 않아 남겼습니다.');
+    if (stream !== main.streams.length) throw broken('Kept because the number of 7z entries and contents does not match.');
     return { entries };
   } catch (err) {
     if (err instanceof Broken) return { reason: err.message };

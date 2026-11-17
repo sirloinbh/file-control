@@ -1,9 +1,9 @@
 'use strict';
 
-// #97: 휴지통 이동이 잠긴 파일에서 멈추지 않고, 사유를 짧게 알리는지 본다.
-// 사용자 휴지통을 건드리지 않도록 휴지통 PowerShell 호출(FC_TARGET)은 가짜로 바꾸고, 사용 중인 파일 찾기만 실제 잠금으로 본다.
-// 실측(빌드 26200, 대화형 세션): 다른 프로세스가 공유 없이(또는 읽기 공유로) 연 파일과 그런 파일이 든 폴더는
-// DeleteFile/DeleteDirectory(OnlyErrorDialogs, SendToRecycleBin)가 대화상자 없이 1~2초 안에 IOException으로 실패했다.
+// #97: it checks that the Recycle Bin move does not stall on a locked file and reports the reason briefly.
+// So as not to touch the user's Recycle Bin, the Recycle Bin PowerShell call (FC_TARGET) is swapped for a fake, and only the search for files in use is checked with a real lock.
+// Measured (build 26200, interactive session): a file that another process opened without sharing (or with read sharing) and a folder that holds such a file
+// failed with IOException from DeleteFile/DeleteDirectory (OnlyErrorDialogs, SendToRecycleBin) within 1 to 2 seconds without a dialog.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -14,7 +14,7 @@ const childProcess = require('node:child_process');
 
 const isWindows = process.platform === 'win32';
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -23,7 +23,7 @@ function tempDir() {
   return fs.realpathSync.native(dir);
 }
 
-// execFileSync를 바꾼 뒤 그것을 쓰는 commands.js를 새로 읽는다. 다른 테스트가 쓰는 모듈은 그대로 둔다.
+// After swapping execFileSync, it reads commands.js, which uses it, anew. Modules other tests use are left as they are.
 function reload() {
   const id = require.resolve('../src/commands');
   const saved = require.cache[id];
@@ -33,8 +33,8 @@ function reload() {
   return fresh;
 }
 
-// 휴지통 호출만 fail로 바꾸고 나머지(잠금용 PowerShell 등)는 그대로 둔다. 휴지통 호출의 옵션을 calls에 모은다.
-// fail이 오류를 돌려주면 그 오류로 실패하고, 아무것도 돌려주지 않으면 대상을 지워 성공한 것처럼 한다.
+// It swaps only the Recycle Bin call for fail and leaves the rest (the PowerShell for locking and so on) as they are. It collects the options of the Recycle Bin call in calls.
+// If fail returns an error, it fails with that error, and if it returns nothing, it deletes the target as if it succeeded.
 function fakeRecycle(t, fail) {
   const real = childProcess.execFileSync;
   const calls = [];
@@ -52,7 +52,7 @@ function fakeRecycle(t, fail) {
 const encode = (text) => Buffer.from(text, 'utf16le').toString('base64');
 const failed = (status, stdout = '') => Object.assign(new Error(`Command failed: powershell secret script\n${'°³'.repeat(5)}`), { status, stdout });
 
-// 다른 프로세스가 공유 없이 파일을 열어 둔다. 열었다고 알릴 때까지 기다리고, 프로세스를 끝내고 끝날 때까지 기다리는 함수를 돌려준다.
+// Another process holds a file open without sharing. It waits until it reports that it opened it, and returns a function that ends the process and waits until it ends.
 async function lockFile(file) {
   const lock = childProcess.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$f = [IO.File]::Open($env:F, 'Open', 'Read', 'None'); 'locked'; Start-Sleep 60; $f.Close()"], {
     env: { ...process.env, F: file },
@@ -72,11 +72,11 @@ test('휴지통 이동은 시간 제한을 두지 않고, 실패 사유를 UTF-1
   const { fresh, calls } = fakeRecycle(t, () => failed(77, encode('사유')));
   assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), fresh.FcError);
   assert.strictEqual(calls.length, 1);
-  // 도중에 끝내면 폴더 안의 파일 일부가 원래 자리에도 휴지통에도 남지 않으므로 시간 제한을 두지 않는다(1차 리뷰).
+  // Ending midway leaves some files in the folder in neither the original place nor the Recycle Bin, so there is no time limit (first review).
   assert.strictEqual(calls[0].options.timeout, undefined);
   assert.deepStrictEqual(calls[0].options.stdio, ['ignore', 'pipe', 'ignore']);
   assert.match(calls[0].script, /catch \{ \$e = \$_\.Exception;.*ToBase64String.*exit 77 \}$/);
-  // 대화형 세션 검사는 try 밖에서 먼저 한다. 볼륨 설정과 크기 검사(#81)도 지우기 전에 한다.
+  // The interactive session check is done first, outside try. The volume setting and size check (#81) is also done before deleting.
   assert.match(calls[0].script, /^if \(-not \[Environment\]::UserInteractive\) \{ exit 75 \}\n/);
   assert.ok(calls[0].script.indexOf("Refuse 'nuke'") < calls[0].script.indexOf('DeleteFile('));
 });
@@ -93,24 +93,24 @@ test('휴지통 이동이 사용 중인 파일 때문에 실패하면 Windows의
   const unlockOne = await lockFile(path.join(dir, 'one.txt'));
   try {
     assert.throws(() => fresh.remove([path.join(dir, 'box')]), {
-      message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'box')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다). 안에 다른 프로그램이 사용 중인 파일이 있습니다: ${path.join('sub', 'busy.txt')}. 그 프로그램을 닫은 뒤 다시 지우세요.`,
+      message: `Could not send to the Recycle Bin: ${path.join(dir, 'box')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다). A file inside is in use by another program: ${path.join('sub', 'busy.txt')}. Close that program and delete again.`,
     });
     assert.throws(() => fresh.remove([path.join(dir, 'one.txt')]), {
-      message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'one.txt')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다). 다른 프로그램이 이 파일을 사용 중입니다. 그 프로그램을 닫은 뒤 다시 지우세요.`,
+      message: `Could not send to the Recycle Bin: ${path.join(dir, 'one.txt')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다). Another program is using this file. Close that program and delete again.`,
     });
   } finally {
     await unlockBox();
     await unlockOne();
   }
-  // 잠기지 않은 파일이면 Windows의 사유만 알린다. 사유를 못 읽으면 괄호를 붙이지 않는다.
-  assert.throws(() => fresh.remove([path.join(dir, 'box', 'free.txt')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'box', 'free.txt')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다).` });
+  // If the file is not locked, it reports only Windows' reason. If the reason cannot be read, no parentheses are added.
+  assert.throws(() => fresh.remove([path.join(dir, 'box', 'free.txt')]), { message: `Could not send to the Recycle Bin: ${path.join(dir, 'box', 'free.txt')} (다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 액세스 할 수 없습니다).` });
 });
 
 test('휴지통 이동이 사유를 내보내지 못하고 77로 끝나면 경로만 알린다 (#97)', (t) => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
   const { fresh } = fakeRecycle(t, () => failed(77, '깨진 출력'));
-  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.txt')}.` });
+  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')]), { message: `Could not send to the Recycle Bin: ${path.join(dir, 'a.txt')}.` });
 });
 
 test('decodeReason은 마지막 줄의 UTF-16 base64만 풀고, 아니면 빈 문자열을 돌려준다 (#97 1차 리뷰)', () => {
@@ -132,8 +132,8 @@ test('사용 중인 파일 찾기는 정션을 따라가 폴더 밖의 잠긴 �
   const { fresh } = fakeRecycle(t, () => failed(77, encode('사유')));
   const unlock = await lockFile(path.join(dir, 'outside', 'busy.txt'));
   try {
-    // 정션 너머의 잠긴 파일은 찾지 않는다.
-    assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'box')} (사유).` });
+    // It does not look for locked files beyond a junction.
+    assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: `Could not send to the Recycle Bin: ${path.join(dir, 'box')} (사유).` });
   } finally {
     await unlock();
   }
@@ -145,7 +145,7 @@ test('휴지통 이동이 다른 이유로 실패하면 원래 오류를 던지�
   const { fresh } = fakeRecycle(t, () => failed(1));
   assert.throws(
     () => fresh.remove([path.join(dir, 'a.txt')]),
-    (err) => !(err instanceof fresh.FcError) && err.status === 1 && err.message === `휴지통으로 보내지 못했습니다: ${path.join(dir, 'a.txt')} (PowerShell 종료 코드 1)`,
+    (err) => !(err instanceof fresh.FcError) && err.status === 1 && err.message === `Could not send to the Recycle Bin: ${path.join(dir, 'a.txt')} (PowerShell exit code 1)`,
   );
 });
 
@@ -155,7 +155,7 @@ test('실제 휴지통 스크립트는 실패하면 77로 끝나고 Windows의 �
   fs.writeFileSync(file, 'g');
   const real = childProcess.execFileSync;
   let seen;
-  // 휴지통을 건드리지 않도록 PowerShell을 부르기 직전에 파일을 지워 DeleteFile이 "파일 없음"으로 실패하게 한다.
+  // So as not to touch the Recycle Bin, it deletes the file right before calling PowerShell so that DeleteFile fails with "file not found".
   t.mock.method(childProcess, 'execFileSync', (cmd, args, options) => {
     if (options?.env?.FC_TARGET === undefined) return real(cmd, args, options);
     fs.rmSync(options.env.FC_TARGET);
@@ -167,7 +167,7 @@ test('실제 휴지통 스크립트는 실패하면 77로 끝나고 Windows의 �
     }
   });
   const fresh = reload();
-  assert.throws(() => fresh.remove([file]), (err) => err instanceof fresh.FcError && err.message.startsWith(`휴지통으로 보내지 못했습니다: ${file} (`) && !/Command failed|Add-Type/.test(err.message));
+  assert.throws(() => fresh.remove([file]), (err) => err instanceof fresh.FcError && err.message.startsWith(`Could not send to the Recycle Bin: ${file} (`) && !/Command failed|Add-Type/.test(err.message));
   assert.strictEqual(seen.status, 77);
   assert.match(seen.stdout.trim(), /^[A-Za-z0-9+/=]+$/);
 });
@@ -175,7 +175,7 @@ test('실제 휴지통 스크립트는 실패하면 77로 끝나고 Windows의 �
 test('사용 중인 파일 찾기는 파일과 폴더를 합쳐 limit개를 보면 멈춘다 (#97 2차 리뷰)', { skip: !isWindows && 'Windows 잠금' }, async () => {
   const { busyInside } = require('../src/commands');
   const dir = tempDir();
-  // 폴더만 여럿 있고 잠긴 파일은 맨 뒤에 있다. 폴더도 세므로 limit이 작으면 잠긴 파일까지 가지 않는다.
+  // There are only several folders and the locked file is last. Folders are also counted, so if limit is small, it does not get to the locked file.
   for (let i = 0; i < 5; i++) fs.mkdirSync(path.join(dir, `d${i}`));
   fs.mkdirSync(path.join(dir, 'z'));
   fs.writeFileSync(path.join(dir, 'z', 'busy.txt'), 'b');
@@ -188,7 +188,7 @@ test('사용 중인 파일 찾기는 파일과 폴더를 합쳐 limit개를 보�
   }
 });
 
-// #129: 휴지통으로 보낼 수 없는 경로를 미리보기와 여러 대상 실행 전에 알린다.
+// #129: it reports paths that cannot be sent to the Recycle Bin in the preview and before running on several targets.
 const LONG_PREFIX = '\\\\?\\';
 const LONG =(prefix) => path.join(prefix, 'x'.repeat(120), 'y'.repeat(120), 'long-file-name.txt');
 function makeLong(dir) {
@@ -205,13 +205,13 @@ test('rm은 259자를 넘는 경로를 미리보기에서도 거부하고, 여�
   const long = makeLong(dir);
   assert.ok(long.length > 259);
   const { fresh, calls } = fakeRecycle(t, () => undefined);
-  const reason = `경로가 ${long.length}자라 휴지통으로 보낼 수 없습니다(259자까지): ${long}`;
+  const reason = `The path is ${long.length} characters, so it cannot be sent to the Recycle Bin (up to 259): ${long}`;
   assert.throws(() => fresh.remove([long], { dryRun: true }), { message: reason });
   assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt'), long]), { message: reason });
   assert.strictEqual(calls.length, 0);
   assert.ok(fs.existsSync(path.join(dir, 'a.txt')) && fs.existsSync(path.join(dir, 'b.txt')));
-  // 영구 삭제는 Node로 지우므로 길이 검사를 하지 않는다.
-  assert.deepStrictEqual(fresh.remove([long], { permanent: true }), [`영구 삭제: ${long}`]);
+  // Permanent deletion deletes with Node, so it does not run the length check.
+  assert.deepStrictEqual(fresh.remove([long], { permanent: true }), [`Delete permanently: ${long}`]);
   assert.ok(!fs.existsSync(`${LONG_PREFIX}${long}`));
 });
 
@@ -223,38 +223,38 @@ test('rm은 \\\\?\\ 접두어를 떼도 같은 항목이면 떼고 보내고, �
   fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'd');
   const { fresh, calls } = fakeRecycle(t, () => undefined);
   const prefixed = `${LONG_PREFIX}${path.join(dir, 'a.txt')}`;
-  assert.deepStrictEqual(fresh.remove([prefixed], { dryRun: true }), [`[미리보기] 휴지통으로 이동: ${prefixed}`]);
-  assert.deepStrictEqual(fresh.remove([prefixed]), [`휴지통으로 이동: ${prefixed}`]);
+  assert.deepStrictEqual(fresh.remove([prefixed], { dryRun: true }), [`[Preview] Move to the Recycle Bin: ${prefixed}`]);
+  assert.deepStrictEqual(fresh.remove([prefixed]), [`Move to the Recycle Bin: ${prefixed}`]);
   assert.deepStrictEqual(calls.map((call) => call.options.env.FC_TARGET), [path.join(dir, 'a.txt')]);
-  // 끝이 점·공백인 이름은 접두어를 떼면 다른 항목을 가리킨다. 위 폴더 이름이 그래도 같다.
+  // A name ending in a dot or a space points to another item if the prefix is stripped. The folder name above is the same anyway.
   for (const name of ['dot.', path.join('box ', 'in.txt')]) {
-    assert.throws(() => fresh.remove([`${LONG_PREFIX}${path.join(dir, name)}`], { dryRun: true }), { message: /^끝이 점이나 공백인 이름\((dot\.|box )\)이 있어 휴지통으로 보낼 수 없습니다\. .*fctl rename.*--permanent/ });
+    assert.throws(() => fresh.remove([`${LONG_PREFIX}${path.join(dir, name)}`], { dryRun: true }), { message: /^It cannot be sent to the Recycle Bin because of a name ending with a dot or space \((dot\.|box )\)\. .*fctl rename.*--permanent/ });
   }
-  // 드라이브 문자가 아닌 꼴은 거부한다.
-  // \\.\ 꼴은 대상이 있어도 거부하고, \\?\UNC\ 꼴은 (관리 공유가 없으면 없는 경로로) 거부한다.
+  // A form that is not a drive letter is refused.
+  // The \\.\ form is refused even if the target exists, and the \\?\UNC\ form is refused (as a nonexistent path if there is no administrative share).
   fs.writeFileSync(path.join(dir, 'keep.txt'), 'k');
-  assert.throws(() => fresh.remove([`\\\\.\\${path.join(dir, 'keep.txt')}`], { dryRun: true }), { message: /^이 꼴의 경로는 휴지통으로 보낼 수 없습니다: .*드라이브 문자 경로/ });
-  assert.throws(() => fresh.remove([`\\\\?\\UNC\\localhost\\c$\\${path.join(dir, 'dot.').slice(3)}`], { dryRun: true }), { message: /^(이 꼴의 경로는 휴지통으로 보낼 수 없습니다|경로가 없습니다)/ });
+  assert.throws(() => fresh.remove([`\\\\.\\${path.join(dir, 'keep.txt')}`], { dryRun: true }), { message: /^A path of this form cannot be sent to the Recycle Bin: .*drive-letter path/ });
+  assert.throws(() => fresh.remove([`\\\\?\\UNC\\localhost\\c$\\${path.join(dir, 'dot.').slice(3)}`], { dryRun: true }), { message: /^(A path of this form cannot be sent to the Recycle Bin|Path does not exist)/ });
   assert.strictEqual(calls.length, 1);
-  // 영구 삭제는 접두어 그대로 지운다.
-  assert.deepStrictEqual(fresh.remove([`${LONG_PREFIX}${path.join(dir, 'dot.')}`], { permanent: true }), [`영구 삭제: ${LONG_PREFIX}${path.join(dir, 'dot.')}`]);
+  // Permanent deletion deletes with the prefix as it is.
+  assert.deepStrictEqual(fresh.remove([`${LONG_PREFIX}${path.join(dir, 'dot.')}`], { permanent: true }), [`Delete permanently: ${LONG_PREFIX}${path.join(dir, 'dot.')}`]);
 });
 
 test('rm은 접두어 없이도 끝이 점인 이름을 거부해, 점을 지운 같은 이름의 다른 파일을 휴지통으로 보내지 않는다 (#129 1차 리뷰)', { skip: !isWindows && 'Windows 이름' }, (t) => {
   const dir = tempDir();
-  // dot.과 dot이 함께 있으면 휴지통 이동(PowerShell 5.1)은 dot.을 받아 dot을 지웠다(실측).
+  // If dot. and dot exist together, the Recycle Bin move (PowerShell 5.1) received dot. and deleted dot (measured).
   fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'DOTTED');
   fs.writeFileSync(path.join(dir, 'dot'), 'PLAIN');
   const { fresh, calls } = fakeRecycle(t, () => undefined);
   for (const dryRun of [true, false]) {
     assert.throws(() => fresh.remove([path.join(dir, 'dot.')], { dryRun }), {
-      message: new RegExp(`^끝이 점이나 공백인 이름\\(dot\\.\\)이 있어 휴지통으로 보낼 수 없습니다\\. .*fctl rename에 .*--permanent`),
+      message: new RegExp(`^It cannot be sent to the Recycle Bin because of a name ending with a dot or space \\(dot\\.\\)\\. .*fctl rename.*--permanent`),
     });
   }
   assert.strictEqual(calls.length, 0);
-  // 안내하는 접두어 경로는 드라이브 경로면 \\?\D:\…, UNC 경로면 \\?\UNC\server\share\… 꼴이다(2차 리뷰).
-  assert.throws(() => fresh.recycleTarget(path.join(dir, 'dot.')), { message: new RegExp(`\\(${`${LONG_PREFIX}${path.join(dir, 'dot.')}`.replace(/[\\.?$]/g, '\\$&')}\\)를 주세요`) });
-  assert.throws(() => fresh.recycleTarget('\\\\server\\share.\\x'), { message: /\(\\\\\?\\UNC\\server\\share\.\\x\)를 주세요/ });
+  // The prefixed path it points to is of the form \\?\D:\... for a drive path and \\?\UNC\server\share\... for a UNC path (second review).
+  assert.throws(() => fresh.recycleTarget(path.join(dir, 'dot.')), { message: new RegExp(`\\(${`${LONG_PREFIX}${path.join(dir, 'dot.')}`.replace(/[\\.?$]/g, '\\$&')}\\)\\.`) });
+  assert.throws(() => fresh.recycleTarget('\\\\server\\share.\\x'), { message: /\(\\\\\?\\UNC\\server\\share\.\\x\)\./ });
   assert.strictEqual(fs.readFileSync(path.join(dir, 'dot'), 'utf8'), 'PLAIN');
   assert.strictEqual(fs.readFileSync(`${LONG_PREFIX}${path.join(dir, 'dot.')}`, 'utf8'), 'DOTTED');
 });
@@ -265,15 +265,15 @@ test('rm은 접두어 경로를 Node가 정리한 결과와 뗀 경로가 같을
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
   fs.writeFileSync(path.join(dir, 'b.txt'), 'b');
   const { fresh, calls } = fakeRecycle(t, () => undefined);
-  // .과 ..이 같은 곳을 가리키면 정리한 경로로 보낸다. 슬래시 꼴(//?/)도 같다.
+  // If . and .. point to the same place, it sends the normalized path. The slash form (//?/) is the same.
   fresh.remove([`${LONG_PREFIX}${path.join(dir, 'sub')}\\.\\..\\a.txt`]);
   fresh.remove([`//?/${path.join(dir, 'b.txt').replaceAll('\\', '/')}`]);
   assert.deepStrictEqual(calls.map((call) => call.options.env.FC_TARGET), [path.join(dir, 'a.txt'), path.join(dir, 'b.txt')]);
-  // ..이 드라이브 성분까지 빠져나가면 Node는 \\?\y로, 뗀 경로는 C:\y로 풀려 서로 다르다.
+  // If .. escapes up to the drive component, Node resolves to \\?\y and the stripped path to C:\y, so they differ.
   const depth = dir.split(path.sep).length;
   const escape = `${LONG_PREFIX}${dir}${'\\..'.repeat(depth)}\\y`;
-  // 그런 경로는 대개 없어서 rm이 먼저 "경로가 없습니다"로 막으므로, 검사 함수를 직접 본다.
-  assert.throws(() => fresh.recycleTarget(escape), { message: /^\\\\\?\\ 접두어를 떼면 다른 곳을 가리켜 휴지통으로 보낼 수 없습니다: / });
+  // Such a path usually does not exist, so rm first blocks it with "Path does not exist", so it looks at the check function directly.
+  assert.throws(() => fresh.recycleTarget(escape), { message: /^Removing the \\\\\?\\ prefix would point somewhere else, so it cannot be sent to the Recycle Bin: / });
   assert.strictEqual(fresh.recycleTarget(`${LONG_PREFIX}${path.join(dir, 'sub')}\\..\\a.txt`), path.join(dir, 'a.txt'));
   assert.strictEqual(calls.length, 2);
 });
@@ -283,38 +283,38 @@ test('rm은 앞 대상이 뒤 대상을 품어 이미 지웠으면 예전처럼 
   fs.mkdirSync(path.join(dir, 'a'));
   fs.writeFileSync(path.join(dir, 'a', 'b.txt'), 'b');
   const { fresh } = fakeRecycle(t, () => undefined);
-  assert.throws(() => fresh.remove([path.join(dir, 'a'), path.join(dir, 'a', 'b.txt')]), { message: `경로가 없습니다: ${path.join(dir, 'a', 'b.txt')}` });
+  assert.throws(() => fresh.remove([path.join(dir, 'a'), path.join(dir, 'a', 'b.txt')]), { message: `Path does not exist: ${path.join(dir, 'a', 'b.txt')}` });
   assert.ok(!fs.existsSync(path.join(dir, 'a')));
-  // 미리보기는 겹친다고 알린다.
+  // The preview reports that they overlap.
   fs.mkdirSync(path.join(dir, 'c'));
   fs.writeFileSync(path.join(dir, 'c', 'd.txt'), 'd');
-  assert.throws(() => fresh.remove([path.join(dir, 'c'), path.join(dir, 'c', 'd.txt')], { dryRun: true }), { message: /앞 항목과 겹칩니다/ });
+  assert.throws(() => fresh.remove([path.join(dir, 'c'), path.join(dir, 'c', 'd.txt')], { dryRun: true }), { message: /Overlaps an earlier item/ });
 });
 
 test('rm은 폴더 안의 끝이 점·공백인 이름 때문에 휴지통 이동이 실패하면 바꿀 항목과 접두어 경로를 알린다 (#190)', { skip: !isWindows && 'Windows 이름' }, (t) => {
   const dir = tempDir();
-  // 끝이 점인 폴더 아래 파일: 바꿀 것은 폴더(dot.)다.
+  // A file under a folder ending in a dot: what to change is the folder (dot.).
   fs.mkdirSync(path.join(dir, 'box', 'sub'), { recursive: true });
   fs.mkdirSync(`${LONG_PREFIX}${path.join(dir, 'box', 'sub', 'dot.')}`);
   fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box', 'sub', 'dot.', 'a.txt')}`, 'a');
-  // 끝이 공백인 파일
+  // A file ending in a space
   fs.mkdirSync(path.join(dir, 'box2'));
   fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box2', 'sp ')}`, 's');
-  // 실측 사유 문구와 같은 꼴로 77을 낸다.
+  // It emits 77 in the same form as the measured reason text.
   const { fresh } = fakeRecycle(t, () => failed(77, encode('지정한 파일을 찾을 수 없습니다.')));
   const odd = path.join('sub', 'dot.');
   assert.throws(() => fresh.remove([path.join(dir, 'box')]), {
-    message: `휴지통으로 보내지 못했습니다. 안에 끝이 점이나 공백인 이름(${odd})이 있어 휴지통 이동이 폴더째 실패했습니다: ${path.join(dir, 'box')}. fctl rename에 \\\\?\\ 접두어 경로(${LONG_PREFIX}${path.join(dir, 'box', odd)})를 주어 이름을 바꾼 뒤 다시 지우세요.`,
+    message: `Could not send to the Recycle Bin. A name ending with a dot or space inside (${odd}) made the whole folder fail: ${path.join(dir, 'box')}. Give fctl rename the \\\\?\\ prefixed path (${LONG_PREFIX}${path.join(dir, 'box', odd)}), rename it, and delete again.`,
   });
-  assert.throws(() => fresh.remove([path.join(dir, 'box2')]), { message: /안에 끝이 점이나 공백인 이름\(sp \)이 있어/ });
-  // 그런 이름이 없으면 예전처럼 Windows의 사유를 알린다.
+  assert.throws(() => fresh.remove([path.join(dir, 'box2')]), { message: /A name ending with a dot or space inside \(sp \)/ });
+  // If there is no such name, it reports Windows' reason as before.
   fs.mkdirSync(path.join(dir, 'plain'));
   fs.writeFileSync(path.join(dir, 'plain', 'a.txt'), 'a');
-  assert.throws(() => fresh.remove([path.join(dir, 'plain')]), { message: `휴지통으로 보내지 못했습니다: ${path.join(dir, 'plain')} (지정한 파일을 찾을 수 없습니다).` });
+  assert.throws(() => fresh.remove([path.join(dir, 'plain')]), { message: `Could not send to the Recycle Bin: ${path.join(dir, 'plain')} (지정한 파일을 찾을 수 없습니다).` });
 });
 
 test('rm은 폴더 안의 259자를 넘는 경로는 미리 거부하지 않는다 (#190)', { skip: !isWindows && 'Windows 경로' }, (t) => {
-  // 실측(빌드 26200): 안쪽 경로가 274~377자인 폴더도 휴지통으로 갔고, 긴 경로 파일도 휴지통 안에 그대로 남았다.
+  // Measured (build 26200): a folder with inner paths of 274 to 377 characters also went to the Recycle Bin, and the long-path files stayed intact inside the Recycle Bin.
   const dir = tempDir();
   let deep = path.join(dir, 'box');
   while (deep.length < 270) deep = path.join(deep, 'd'.repeat(20));
@@ -327,18 +327,18 @@ test('rm은 폴더 안의 259자를 넘는 경로는 미리 거부하지 않는�
 });
 
 test('실제 휴지통 이동은 안에 끝이 점인 이름이 든 폴더를 옮기지 않고 실패한다 (#190)', { skip: (!isWindows || process.env.CI) && '대화형 Windows에서만' }, (t) => {
-  // 이 PC에서 확인한 전제를 지킨다. 실패가 바뀌어 폴더가 휴지통으로 가도 임시 폴더라 사용자 파일은 잃지 않는다.
+  // It keeps the premise confirmed on this PC. Even if the failure changes and the folder goes to the Recycle Bin, it is a temporary folder, so no user files are lost.
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'box'));
   fs.writeFileSync(path.join(dir, 'box', 'ok.txt'), 'ok');
   fs.writeFileSync(`${LONG_PREFIX}${path.join(dir, 'box', 'dot.')}`, 'x');
   const fresh = reload();
-  assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: /안에 끝이 점이나 공백인 이름\(dot\.\)이 있어/ });
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), { message: /A name ending with a dot or space inside \(dot\.\)/ });
   assert.strictEqual(fs.readFileSync(path.join(dir, 'box', 'ok.txt'), 'utf8'), 'ok');
   assert.ok(fs.existsSync(`${LONG_PREFIX}${path.join(dir, 'box', 'dot.')}`));
 });
 
-// #194: 묶음 휴지통 이동 스크립트를 실제 PowerShell로 돌린다. 사용자 휴지통을 건드리지 않도록 휴지통 이동만 영구 삭제(임시 폴더 안)로 바꾼다.
+// #194: it runs the batch Recycle Bin move script with real PowerShell. So as not to touch the user's Recycle Bin, only the Recycle Bin move is changed to permanent deletion (inside a temporary folder).
 test('recycleFiles의 PowerShell 스크립트는 파일마다 지우기 직전에 실제 경로·파일 여부·fileStamp를 다시 본다 (#194)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
@@ -382,7 +382,7 @@ test('recycleFiles의 PowerShell 스크립트는 심볼릭 링크 파일을 지�
   }
   const script = reload().RECYCLE_FILES_SCRIPT;
   const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
-  // 링크 자신의 stamp를 주어도, 대상 파일의 stamp를 주어도 지우지 않는다.
+  // Even if it is given the link's own stamp or the target file's stamp, it does not delete.
   for (const stamp of [fileStamp(fs.lstatSync(link, { bigint: true })), fileStamp(fs.lstatSync(real, { bigint: true }))]) {
     const [result] = reload().recycleFiles([{ path: link, stamp }], { script: swapped });
     assert.notStrictEqual(result.status, 'ok');
@@ -434,14 +434,14 @@ test('recycleFiles의 PowerShell 스크립트는 경로가 긴 남길 파일도 
   const [result] = reload().recycleFiles([{ path: copy, stamp: stamp(copy), keep: { path: keep, stamp: stamp(keep) } }], { script: swapped });
   assert.strictEqual(result.status, 'ok');
   assert.ok(!fs.existsSync(copy) && fs.existsSync(keep));
-  // 남길 파일 경로만 있고 stamp가 없는 줄(칸 3개)은 남길 파일 검사를 건너뛰지 않도록 지우지 않는다.
+  // A line with only the path of the file to keep and no stamp (3 fields) is not deleted, so that the check of the file to keep is not skipped.
   const b64 = (p) => Buffer.from(p, 'utf16le').toString('base64');
   const output = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', swapped], { input: `${b64(odd)} ${stamp(odd)} ${b64(keep)}\n`, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
   assert.match(output.trim(), /^error /);
   assert.ok(fs.existsSync(odd));
 });
 
-// #236: 지우기 직전에 볼륨 휴지통 설정을 다시 본다. 사용자 설정은 바꾸지 않고, 스크립트 사본 안에서 폴더마다 읽은 설정값만 바꾼다.
+// #236: it looks at the volume's Recycle Bin setting again right before deleting. It does not change the user's settings; it changes only the setting values read for each folder inside a copy of the script.
 test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설정이 바로 제거·최대 크기 초과·고정 디스크 아님이면 지우지 않는다 (#236)', { skip: !isWindows && 'PowerShell' }, () => {
   const { fileStamp } = require('../src/target');
   const dir = tempDir();
@@ -453,7 +453,7 @@ test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설�
   }
   const items = names.map((parts) => ({ path: p(...parts), stamp: fileStamp(fs.lstatSync(p(...parts), { bigint: true })) }));
   const script = reload().RECYCLE_FILES_SCRIPT;
-  // 폴더 이름에 따라 설정을 바꾸고, 폴더마다 설정을 몇 번 읽었는지 stderr 대신 파일에 남긴다.
+  // It changes the setting by folder name and records, in a file instead of stderr, how many times the setting was read for each folder.
   const reads = p('reads.txt');
   const override = `[IO.File]::AppendAllText('${reads}', $p + "\`n")
   if ($p.EndsWith('nuke')) { $nuke = '1' }
@@ -469,14 +469,14 @@ test('recycleFiles의 PowerShell 스크립트는 지우기 직전에 볼륨 설�
   assert.deepStrictEqual(results.map((item) => [path.relative(dir, item.path), item.status, item.reason]), [
     [path.join('ok', 'a.mp4'), 'ok', ''],
     [path.join('ok', 'b.mp4'), 'ok', ''],
-    [path.join('nuke', 'a.mp4'), 'permanent', '이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로'],
-    [path.join('cap', 'big.mp4'), 'permanent', '휴지통 최대 크기(1MB)보다 커서 Windows가 묻지 않고 영구 삭제하므로'],
+    [path.join('nuke', 'a.mp4'), 'permanent', 'because this volume is set to remove files immediately instead of using the Recycle Bin, so it would be permanently deleted'],
+    [path.join('cap', 'big.mp4'), 'permanent', 'because it is larger than the Recycle Bin maximum size (1MB), so Windows would permanently delete it without asking'],
     [path.join('cap', 'small.mp4'), 'ok', ''],
-    [path.join('removable', 'a.mp4'), 'permanent', '휴지통이 없을 수 있는 드라이브(Removable)라 영구 삭제될 수 있으므로'],
+    [path.join('removable', 'a.mp4'), 'permanent', 'because the drive (Removable) may have no Recycle Bin and the file could be permanently deleted'],
   ]);
   assert.ok(!fs.existsSync(p('ok', 'a.mp4')) && !fs.existsSync(p('cap', 'small.mp4')));
   assert.ok(fs.existsSync(p('nuke', 'a.mp4')) && fs.existsSync(p('cap', 'big.mp4')) && fs.existsSync(p('removable', 'a.mp4')));
-  // 설정은 폴더마다 한 번만 읽는다.
+  // The setting is read only once per folder.
   assert.deepStrictEqual(fs.readFileSync(reads, 'utf8').trim().split('\n').map((line) => path.relative(dir, line)), ['ok', 'nuke', 'cap', 'removable']);
 });
 
@@ -503,7 +503,7 @@ test('recycleFiles의 PowerShell 스크립트는 휴지통 최대 크기를 모�
   const dir = tempDir();
   const file = path.join(dir, 'a.mp4');
   fs.writeFileSync(file, 'a');
-  // 크기를 바꾸는 대신 기준(1GB - 1)을 0으로 낮춘 사본으로 같은 판정 줄을 탄다.
+  // Instead of changing the size, it takes the same judgment line with a copy that lowered the standard (1GB - 1) to 0.
   const script = reload().RECYCLE_FILES_SCRIPT;
   const swapped = script
     .replace('  return @($type, $nuke, $cap, $root)', "  return @($type, $nuke, '', $root)")
@@ -511,7 +511,7 @@ test('recycleFiles의 PowerShell 스크립트는 휴지통 최대 크기를 모�
     .replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", '[IO.File]::Delete($long)');
   assert.ok(swapped.includes("@($type, $nuke, '', $root)") && swapped.includes('{ 0 }'));
   const [result] = reload().recycleFiles([{ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) }], { script: swapped });
-  assert.deepStrictEqual([result.status, result.reason], ['permanent', '1GB 이상이고 휴지통 최대 크기를 확인하지 못해 영구 삭제될 수 있으므로']);
+  assert.deepStrictEqual([result.status, result.reason], ['permanent', 'because it is 1GB or larger and the Recycle Bin maximum size could not be checked, so it could be permanently deleted']);
   assert.ok(fs.existsSync(file));
 });
 
@@ -524,7 +524,7 @@ test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 W
   fs.writeFileSync(b, 'b');
   const items = [a, b].map((file) => ({ path: file, stamp: fileStamp(fs.lstatSync(file, { bigint: true })) }));
   const script = reload().RECYCLE_FILES_SCRIPT;
-  // a.mp4만 한글 사유로 실패하게 한다.
+  // It makes only a.mp4 fail with a Windows-style reason (a localized Korean message).
   const swapped = script.replace("[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')", "if ($p.EndsWith('a.mp4')) { throw [IO.IOException]::new('사용 중입니다.') }; [IO.File]::Delete($long)");
   assert.notStrictEqual(swapped, script);
   const results = reload().recycleFiles(items, { script: swapped });
@@ -535,7 +535,7 @@ test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 W
   assert.ok(fs.existsSync(a) && !fs.existsSync(b));
 });
 
-// #81: 영구 삭제될 대상은 지우기 전에 거부한다. 볼륨 설정 확인(FC_VOLUME)과 휴지통 이동(FC_TARGET)을 가짜로 바꾼다.
+// #81: a target that would be deleted permanently is refused before deleting. It swaps the volume setting check (FC_VOLUME) and the Recycle Bin move (FC_TARGET) for fakes.
 function fakeVolume(t, answer) {
   const calls = [];
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
@@ -551,12 +551,12 @@ function fakeVolume(t, answer) {
 }
 
 for (const [name, answer, pattern] of [
-  ['바로 제거', 'True|Fixed|1|26427\r\n', /이 볼륨은 휴지통 설정이 "바로 제거"라 휴지통을 거치지 않고 영구 삭제되므로 지우지 않았습니다\./],
-  ['최대 크기 초과', 'True|Fixed|0|0\r\n', /휴지통 최대 크기\(0MB\)보다 커서 Windows가 묻지 않고 영구 삭제하므로 지우지 않았습니다\./],
-  ['이동식 드라이브', 'True|Removable|0|26427\r\n', /휴지통이 없을 수 있는 드라이브\(Removable\)라 영구 삭제될 수 있으므로/],
-  ['네트워크 드라이브', 'True|Network||\r\n', /휴지통이 없을 수 있는 드라이브\(Network\)라/],
-  ['종류를 모름', 'True|Unknown||\r\n', /드라이브 종류를 확인하지 못해 휴지통이 있는지 알 수 없으므로/],
-  ['확인 실패', '뜻밖의 출력', /드라이브 종류를 확인하지 못해/],
+  ['remove immediately', 'True|Fixed|1|26427\r\n', /It was not deleted because this volume is set to remove files immediately instead of using the Recycle Bin, so it would be permanently deleted\./],
+  ['over max size', 'True|Fixed|0|0\r\n', /It was not deleted because it is larger than the Recycle Bin maximum size \(0MB\), so Windows would permanently delete it without asking\./],
+  ['removable drive', 'True|Removable|0|26427\r\n', /because the drive \(Removable\) may have no Recycle Bin and the file could be permanently deleted/],
+  ['network drive', 'True|Network||\r\n', /because the drive \(Network\) may have no Recycle Bin/],
+  ['unknown type', 'True|Unknown||\r\n', /because the drive type could not be checked, so it is unknown whether a Recycle Bin exists/],
+  ['check failed', '뜻밖의 출력', /drive type could not be checked/],
 ]) {
   test(`rm은 휴지통을 거치지 않고 영구 삭제될 대상이면 미리보기에서도, 여러 대상이면 아무것도 지우기 전에 거부한다 (#81): ${name}`, { skip: !isWindows && 'Windows 휴지통' }, (t) => {
     const dir = tempDir();
@@ -566,17 +566,17 @@ for (const [name, answer, pattern] of [
     for (const dryRun of [true, false]) {
       assert.throws(() => fresh.remove([path.join(dir, 'a.txt'), path.join(dir, 'b.txt')], { dryRun, permanentHint: true }), (err) => {
         assert.ok(err instanceof fresh.FcError);
-        assert.ok(err.message.startsWith(`휴지통으로 보내지 않았습니다: ${path.join(dir, 'b.txt')}. `), err.message);
+        assert.ok(err.message.startsWith(`Not sent to the Recycle Bin: ${path.join(dir, 'b.txt')}. `), err.message);
         assert.match(err.message, pattern);
-        assert.match(err.message, /지우지 않았습니다\. 휴지통을 거치지 않고 지우려면 --permanent를 쓰세요\.$/);
+        assert.match(err.message, / To delete without the Recycle Bin, use --permanent\.$/);
         return true;
       });
     }
-    // --permanent를 받지 않는 명령(extract-all, collapse)이 부르면 그 안내를 붙이지 않는다(1차 리뷰).
-    assert.throws(() => fresh.remove([path.join(dir, 'b.txt')]), (err) => /지우지 않았습니다\.$/.test(err.message) && !err.message.includes('--permanent'));
+    // If a command that does not accept --permanent (extract-all, collapse) calls it, that hint is not attached (first review).
+    assert.throws(() => fresh.remove([path.join(dir, 'b.txt')]), (err) => /It was not deleted .*\.$/.test(err.message) && !err.message.includes('--permanent'));
     assert.deepStrictEqual(calls, []);
     assert.ok(fs.existsSync(path.join(dir, 'a.txt')) && fs.existsSync(path.join(dir, 'b.txt')));
-    // --permanent는 휴지통을 거치지 않으므로 이 검사를 하지 않는다.
+    // --permanent does not go through the Recycle Bin, so it does not run this check.
     fresh.remove([path.join(dir, 'b.txt')], { permanent: true });
     assert.ok(!fs.existsSync(path.join(dir, 'b.txt')));
   });
@@ -587,12 +587,12 @@ test('rm은 폴더면 안의 파일 합계로 최대 크기를 보고, 크기 �
   fs.mkdirSync(path.join(dir, 'box', 'sub'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'box', 'a.bin'), Buffer.alloc(700 * 1024));
   fs.writeFileSync(path.join(dir, 'box', 'sub', 'b.bin'), Buffer.alloc(700 * 1024));
-  // 최대 크기 1MB: 파일 하나(700KB)는 되고 합계(1400KB)는 넘는다.
+  // Maximum size 1MB: one file (700KB) is fine and the total (1400KB) exceeds it.
   const { fresh, calls } = fakeVolume(t, 'True|Fixed|0|1\r\n');
-  assert.throws(() => fresh.remove([path.join(dir, 'box')]), /휴지통 최대 크기\(1MB\)보다 커서/);
+  assert.throws(() => fresh.remove([path.join(dir, 'box')]), /larger than the Recycle Bin maximum size \(1MB\)/);
   fresh.remove([path.join(dir, 'box', 'a.bin')]);
   assert.deepStrictEqual(calls, [path.join(dir, 'box', 'a.bin')]);
-  // a.bin을 보낸 뒤 남은 합계(700KB)는 최대 크기 안이다.
+  // After sending a.bin, the remaining total (700KB) is within the maximum size.
   assert.strictEqual(fresh.previewRefusal(path.join(dir, 'box')), null);
 });
 
@@ -604,14 +604,14 @@ test('rm은 대상 자체가 정션이면 그 너머를 세지 않는다 (#81 1�
   const { fresh } = fakeVolume(t, 'True|Fixed|0|1\r\n');
   assert.strictEqual(fresh.sizeUpTo(path.join(dir, 'jn'), 1e9), 0);
   assert.strictEqual(fresh.previewRefusal(path.join(dir, 'jn')), null);
-  assert.match(fresh.previewRefusal(path.join(dir, 'big')), /휴지통 최대 크기\(1MB\)보다 커서/);
+  assert.match(fresh.previewRefusal(path.join(dir, 'big')), /larger than the Recycle Bin maximum size \(1MB\)/);
 });
 
 test('휴지통 이동 스크립트의 78 표시가 비었거나 알 수 없으면 크기를 확인하지 못한 것으로 거부한다 (#81)', (t) => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
   const { fresh } = fakeRecycle(t, () => failed(78, ''));
-  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), /크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로 지우지 않았습니다\.$/);
+  assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), /because the size could not be checked, so it is unknown whether it exceeds the Recycle Bin maximum size\.$/);
   assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
 });
 
@@ -632,24 +632,24 @@ test('sizeUpTo는 링크·정션을 따라가지 않고, 한도를 넘으면 그
 test('휴지통 이동 스크립트가 영구 삭제될 대상이라고 알리면(78) 사유를 밝혀 거부한다 (#81)', (t) => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
-  // 같은 함수를 여러 번 가짜로 바꾸면 테스트 뒤에 원래대로 돌아오지 않으므로 한 번만 바꾸고 알릴 표시만 바꾼다.
+  // Swapping the same function several times to fakes would not restore it after the test, so it swaps only once and changes only the marker to report.
   let mark;
   const { fresh } = fakeRecycle(t, () => failed(78, encode(mark)));
   for (const [next, pattern] of [
-    ['nuke', /"바로 제거"라/],
-    ['cap|7164', /휴지통 최대 크기\(7164MB\)보다 커서/],
-    ['unknown', /1GB 이상이고 휴지통 최대 크기를 확인하지 못해/],
-    ['type|Removable', /드라이브\(Removable\)라/],
-    ['type|Unknown', /드라이브 종류를 확인하지 못해/],
-    ['size', /크기를 확인하지 못해 휴지통 최대 크기를 넘는지 알 수 없으므로/],
+    ['nuke', /set to remove files immediately/],
+    ['cap|7164', /larger than the Recycle Bin maximum size \(7164MB\)/],
+    ['unknown', /1GB or larger and the Recycle Bin maximum size could not be checked/],
+    ['type|Removable', /drive \(Removable\)/],
+    ['type|Unknown', /drive type could not be checked/],
+    ['size', /size could not be checked, so it is unknown whether it exceeds the Recycle Bin maximum size/],
   ]) {
     mark = next;
-    assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), (err) => err instanceof fresh.FcError && pattern.test(err.message) && err.message.startsWith('휴지통으로 보내지 않았습니다: '), mark);
+    assert.throws(() => fresh.remove([path.join(dir, 'a.txt')], { checkVolume: false }), (err) => err instanceof fresh.FcError && pattern.test(err.message) && err.message.startsWith('Not sent to the Recycle Bin: '), mark);
   }
   assert.ok(fs.existsSync(path.join(dir, 'a.txt')));
 });
 
-// 실제 PowerShell로 지우기 직전 검사를 돌린다. 사용자 설정은 바꾸지 않고 스크립트 사본 안에서만 설정값을 바꾸며, 휴지통 이동은 하지 않게 한다.
+// It runs the check right before deleting with real PowerShell. It does not change the user's settings and changes setting values only inside a copy of the script, and it makes the Recycle Bin move not happen.
 test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크기(폴더 합계, 정션 제외)를 보고 78로 거부한다 (#81)', { skip: !isWindows && 'PowerShell' }, () => {
   const { RECYCLE_SCRIPT } = reload();
   const dir = tempDir();
@@ -669,7 +669,7 @@ test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크�
       return { status: err.status, out: reload().decodeReason(err.stdout) };
     }
   };
-  // 정션 너머(2MB)는 세지 않아 최대 크기 1MB 안이다.
+  // What is beyond a junction (2MB) is not counted, so it is within the maximum size of 1MB.
   assert.deepStrictEqual(run(path.join(dir, 'box'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 0, out: 'deleted-dir' });
   assert.deepStrictEqual(run(path.join(dir, 'big'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 78, out: 'cap|1' });
   assert.deepStrictEqual(run(path.join(dir, 'big', 'x.bin'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 78, out: 'cap|1' });
@@ -677,9 +677,9 @@ test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크�
   assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Fixed'; $nuke = '1'; $cap = '26427'"), { status: 78, out: 'nuke' });
   assert.deepStrictEqual(run(path.join(dir, 'box', 'a.bin'), "$type = 'Removable'"), { status: 78, out: 'type|Removable' });
   assert.deepStrictEqual(run(path.join(dir, 'big'), "$type = 'Fixed'; $nuke = ''; $cap = ''"), { status: 0, out: 'deleted-dir' });
-  // 대상 자체가 정션이어도 그 너머를 세지 않는다(1차 리뷰). Node의 sizeUpTo와 같다.
+  // Even if the target itself is a junction, what is beyond it is not counted (first review). The same as sizeUpTo of Node.
   assert.deepStrictEqual(run(path.join(dir, 'box', 'j'), "$type = 'Fixed'; $nuke = '0'; $cap = '1'"), { status: 0, out: 'deleted-dir' });
-  // 볼륨 설정 부분은 실제 값을 읽는다(사본 안에서 바꾸지 않으면).
+  // The volume setting part reads the real values (unless changed inside the copy).
   const state = run(path.join(dir, 'box', 'a.bin'), '');
   assert.ok(state.status === 0 || state.status === 78, JSON.stringify(state));
   assert.ok(fs.existsSync(path.join(dir, 'box', 'a.bin')) && fs.existsSync(path.join(dir, 'big', 'x.bin')));

@@ -9,7 +9,7 @@ const { FcError } = require('../src/commands');
 const { planNormalize, applyNormalize, normalizeFiles, formatNormalize } = require('../src/normalizeFiles');
 const { run } = require('../bin/fctl');
 
-// 임시 폴더가 실제 사용자 폴더의 AppData 아래에 있어 보호 경로로 거부되므로 사용자 폴더를 가짜 경로로 바꿔 둔다.
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 function tempDir() {
@@ -26,7 +26,7 @@ function make(dir, files) {
   }
 }
 
-// 실제 표기 그대로의 목록. 대소문자가 바뀌었는지 보려고 readdir로 읽는다.
+// A list with the real spelling as it is. It is read with readdir to see whether the case changed.
 function tree(dir) {
   return fs
     .readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -50,7 +50,7 @@ test('소문자 말은 기본으로 바꾸지 않고 보고하며, 옵션을 주
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir), ['trip-2023.mp4', '영상 abc-123.mp4']);
   assert.deepStrictEqual(result.inferred.map((item) => item.name).sort(), ['ABC-123 영상.mp4', 'TRIP-2023.mp4']);
-  assert.match(formatNormalize(result), /소문자 말이라 그대로 둠: trip-2023\.mp4 -> TRIP-2023\.mp4/);
+  assert.match(formatNormalize(result), /Left as is because it is a lowercase word: trip-2023\.mp4 -> TRIP-2023\.mp4/);
   normalizeFiles(dir, { includeLowercase: true });
   assert.deepStrictEqual(tree(dir), ['ABC-123 영상.mp4', 'TRIP-2023.mp4']);
 });
@@ -66,11 +66,11 @@ test('대소문자만 바뀌는 이름도 임시 이름을 거쳐 바꾼다', (t
   assert.deepStrictEqual(result.failed, []);
   assert.deepStrictEqual(fs.readdirSync(dir), ['ABC-123.mp4']);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), 'abc-123.mp4');
-  // 임시 이름으로는 rename, 새 이름으로는 덮어쓰지 않는 하드링크 이동(#73)을 한 번씩 쓴다.
+  // It uses rename once for the temporary name and the non-overwriting hard-link move (#73) once for the new name.
   assert.deepStrictEqual(steps, [1, 1]);
 });
 
-// 임시 이름(.fctl-new)의 원래 이름 지우기를 실패시킨다. 잠긴 파일처럼 하드링크는 만들어지고 지우기만 실패한다.
+// It makes deleting the original name of the temporary name (.fctl-new) fail. Like a locked file, the hard link is made and only the deletion fails.
 function lockMiddle(t, times) {
   const unlinkSync = fs.unlinkSync;
   let count = 0;
@@ -96,7 +96,7 @@ test('되돌리지도 못하면 임시 이름을 알린다', (t) => {
   lockMiddle(t, Infinity);
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
+  assert.match(result.failed[0].reason, /could not restore it either.*\.fctl-new/);
   const left = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
   assert.strictEqual(fs.readFileSync(path.join(dir, left), 'utf8'), 'abc-123.mp4');
 });
@@ -113,7 +113,7 @@ test('대소문자 변경 중 원래 이름에 다른 파일이 생기면 덮어
   });
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다.*\.fctl-new/);
+  assert.match(result.failed[0].reason, /could not restore it either.*\.fctl-new/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'abc-123.mp4'), 'utf8'), '다른 프로그램');
   const left = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
   assert.strictEqual(fs.readFileSync(path.join(dir, left), 'utf8'), 'abc-123.mp4');
@@ -122,7 +122,7 @@ test('대소문자 변경 중 원래 이름에 다른 파일이 생기면 덮어
 test('대소문자 변경 중 자리표시에 내용이 생기면 그 내용을 지우지 않는다', (t) => {
   const dir = tempDir();
   make(dir, ['abc-123.mp4']);
-  // 하드링크를 못 만드는 드라이브(FAT32·exFAT 등)에서는 빈 자리표시를 먼저 만드는 방식으로 옮긴다.
+  // On a drive that cannot make hard links (FAT32, exFAT, and so on), it moves with the method that first creates an empty placeholder.
   t.mock.method(fs, 'linkSync', () => {
     throw Object.assign(new Error('not supported'), { code: 'EPERM' });
   });
@@ -139,7 +139,7 @@ test('대소문자 변경 중 자리표시에 내용이 생기면 그 내용을 
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
   assert.doesNotMatch(result.failed[0].reason, /undefined/);
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다/);
+  assert.match(result.failed[0].reason, /could not restore it either/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), '다른 프로그램');
 });
 
@@ -161,7 +161,7 @@ test('대소문자 변경 중 끊어진 정션이 생겨도 타겟 밖에 만들
   });
   const result = normalizeFiles(dir, { includeLowercase: true });
   t.mock.restoreAll();
-  assert.match(result.failed[0].reason, /되돌리지도 못했습니다/);
+  assert.match(result.failed[0].reason, /could not restore it either/);
   assert.deepStrictEqual(fs.readdirSync(outside), []);
   const left = fs.readdirSync(dir).find((name) => name.startsWith('.fctl-new'));
   assert.ok(left);
@@ -177,7 +177,7 @@ test('그리스 문자처럼 대소문자 변환이 문맥을 타는 이름의 �
 });
 
 test('저장소가 들어 있거나 타겟이 저장소 폴더 안이면 전체를 거부한다', () => {
-  const rejected = /저장소.*다루지 않습니다/;
+  const rejected = /Not handled because it (contains|is inside) a repository/;
   const dir = tempDir();
   make(dir, ['repo/.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
   assert.throws(() => normalizeFiles(dir), rejected);
@@ -202,14 +202,14 @@ test('HEAD 표기가 소문자인 베어 저장소도 거부한다', { skip: pro
   const dir = tempDir();
   make(dir, ['backup.git/head', 'backup.git/refs/heads/ABC-123-fix', '영상 ABC-123.mp4']);
   fs.mkdirSync(path.join(dir, 'backup.git', 'objects'));
-  assert.throws(() => normalizeFiles(dir), /저장소.*다루지 않습니다/);
+  assert.throws(() => normalizeFiles(dir), /Not handled because it (contains|is inside) a repository/);
   assert.ok(fs.existsSync(path.join(dir, '영상 ABC-123.mp4')));
 });
 
 test('결과 이름이 다른 파일의 8.3 짧은 이름과 겹치면 바꾸지 않고 보고한다', (t) => {
   const dir = tempDir();
   make(dir, ['[ABC-123].mp4', 'ABC-123 긴 이름.mp4']);
-  // 8.3 이름은 드라이브 설정에 따라 꺼져 있을 수 있어, 짧은 이름이 긴 이름으로 풀리는 동작을 흉내 낸다.
+  // 8.3 names may be turned off depending on the drive setting, so it imitates the behavior where a short name resolves to a long name.
   const long = (p) => (path.basename(p) === 'ABC-123.mp4' ? path.join(dir, 'ABC-123 긴 이름.mp4') : p);
   const { lstatSync } = fs;
   const native = fs.realpathSync.native;
@@ -218,7 +218,7 @@ test('결과 이름이 다른 파일의 8.3 짧은 이름과 겹치면 바꾸지
   const result = normalizeFiles(dir);
   t.mock.restoreAll();
   assert.deepStrictEqual(result.renamed, []);
-  assert.deepStrictEqual(result.conflicts.map((item) => item.reason), ['같은 이름이 이미 있습니다.']);
+  assert.deepStrictEqual(result.conflicts.map((item) => item.reason), ['The name already exists.']);
   assert.ok(fs.existsSync(path.join(dir, '[ABC-123].mp4')));
 });
 
@@ -229,7 +229,7 @@ test('결과가 다른 결과와 겹치면 어느 쪽도 바꾸지 않고 보고
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir), ['XYZ-999 영상.mp4', '[ABC-123].mp4', '_ABC-123_.mp4', 'sub/ABC-123.mp4'].sort());
   assert.strictEqual(result.conflicts.length, 2);
-  assert.match(result.conflicts[0].reason, /다른 파일도 같은 이름/);
+  assert.match(result.conflicts[0].reason, /Another file would get the same name/);
 });
 
 test('결과가 기존 파일이나 폴더와 겹치면 덮어쓰지 않고 보고한다', () => {
@@ -239,7 +239,7 @@ test('결과가 기존 파일이나 폴더와 겹치면 덮어쓰지 않고 보�
   const result = normalizeFiles(dir);
   assert.strictEqual(result.renamed.length, 0);
   assert.strictEqual(result.conflicts.length, 3);
-  for (const item of result.conflicts) assert.match(item.reason, /같은 이름이 이미 있습니다/);
+  for (const item of result.conflicts) assert.match(item.reason, /The name already exists/);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), 'ABC-123.mp4');
   assert.strictEqual(fs.readFileSync(path.join(dir, '[ABC-123].mp4'), 'utf8'), '[ABC-123].mp4');
 });
@@ -250,7 +250,7 @@ test('계획 뒤에 이름이 차면 덮어쓰지 않고 실패로 보고하고 
   const plan = planNormalize(dir);
   fs.writeFileSync(path.join(dir, 'ABC-123.mp4'), '새 내용');
   const result = applyNormalize(plan);
-  assert.match(result.failed[0].reason, /같은 이름이 이미 있어/);
+  assert.match(result.failed[0].reason, /the name already exists/);
   assert.strictEqual(result.renamed.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(dir, 'ABC-123.mp4'), 'utf8'), '새 내용');
   assert.ok(fs.existsSync(path.join(dir, '[ABC-123].mp4')));
@@ -291,7 +291,7 @@ test('번호가 여럿인 이름은 보고하고, 바꿀 것이 없는 숨김 �
   make(dir, ['ABC-123 XYZ-999.mp4', '.hidden', 'desktop.ini']);
   const result = normalizeFiles(dir);
   assert.strictEqual(result.skipped.length, 1);
-  assert.match(result.skipped[0].reason, /번호가 여럿/);
+  assert.match(result.skipped[0].reason, /Several numbers/);
   assert.strictEqual(result.renamed.length, 0);
 });
 
@@ -309,7 +309,7 @@ test('미리보기는 아무것도 바꾸지 않고 같은 계획을 보여 준�
   make(dir, ['영상 ABC-123.mp4']);
   const result = normalizeFiles(dir, { dryRun: true });
   assert.deepStrictEqual(tree(dir), ['영상 ABC-123.mp4']);
-  assert.match(formatNormalize(result), /\[미리보기\] 이름 변경: 영상 ABC-123\.mp4 -> ABC-123 영상\.mp4/);
+  assert.match(formatNormalize(result), /\[Preview\] Rename: 영상 ABC-123\.mp4 -> ABC-123 영상\.mp4/);
 });
 
 test('보호 경로는 거부한다', () => {
@@ -319,29 +319,29 @@ test('보호 경로는 거부한다', () => {
 test('normalize 명령은 결과를 보여 주고 실패가 있으면 오류로 끝낸다', (t) => {
   const dir = tempDir();
   make(dir, ['[ABC-123].mp4', 'abc-456.mp4']);
-  assert.match(run(['normalize', dir, '--dry-run']), /\[미리보기\] 이름 변경 1개, 소문자 말 1개/);
-  // 잠긴 파일처럼 원래 이름을 지우지 못하게 한다. 만든 새 이름은 지워 되돌린다.
+  assert.match(run(['normalize', dir, '--dry-run']), /\[Preview\] Rename 1, lowercase words 1/);
+  // It makes the original name undeletable like a locked file. It deletes the new name it made and rolls back.
   const unlinkSync = fs.unlinkSync;
   const mock = t.mock.method(fs, 'unlinkSync', (p) => {
     if (path.basename(p) === '[ABC-123].mp4') throw Object.assign(new Error('busy'), { code: 'EBUSY' });
     return unlinkSync(p);
   });
-  assert.throws(() => run(['normalize', dir]), (err) => err instanceof FcError && /실패: .*EBUSY/.test(err.message));
+  assert.throws(() => run(['normalize', dir]), (err) => err instanceof FcError && /Failed: .*EBUSY/.test(err.message));
   assert.deepStrictEqual(tree(dir), ['[ABC-123].mp4', 'abc-456.mp4']);
   mock.mock.restore();
-  assert.match(run(['normalize', dir, '--include-lowercase']), /이름 변경 2개, 소문자 말 0개, 겹침 0개, 건너뜀 0개, 실패 0개/);
+  assert.match(run(['normalize', dir, '--include-lowercase']), /Rename 2, lowercase words 0, conflicts 0, skipped 0, failed 0/);
   assert.deepStrictEqual(tree(dir), ['ABC-123.mp4', 'ABC-456.mp4']);
 });
 
 test('normalize 명령은 잘못된 인자를 거부한다', () => {
   const dir = tempDir();
-  assert.throws(() => run(['normalize']), /사용법/);
-  assert.throws(() => run(['normalize', dir, 'more']), /타겟은 하나만/);
-  assert.throws(() => run(['normalize', 'C:']), /드라이브 문자/);
+  assert.throws(() => run(['normalize']), /Usage/);
+  assert.throws(() => run(['normalize', dir, 'more']), /Only one target/);
+  assert.throws(() => run(['normalize', 'C:']), /drive letter/);
   assert.throws(() => run(['normalize', dir, '--force']), /--force/);
   assert.throws(() => run(['normalize', dir, '--permanent']), /--permanent/);
-  assert.throws(() => run(['normalize', dir, '--remove-archives']), /extract-all에서만/);
-  assert.throws(() => run(['flatten', dir, '--include-lowercase']), /normalize에서만/);
+  assert.throws(() => run(['normalize', dir, '--remove-archives']), /used only with extract-all/);
+  assert.throws(() => run(['flatten', dir, '--include-lowercase']), /used only with normalize/);
 });
 
 test('normalize는 이전 실행이 남긴 같은 파일의 다른 이름을 겹침 사유에 알린다 (1차 리뷰, #73)', () => {
@@ -350,7 +350,7 @@ test('normalize는 이전 실행이 남긴 같은 파일의 다른 이름을 겹
   fs.linkSync(path.join(dir, '[ABC-123].mp4'), path.join(dir, 'ABC-123.mp4'));
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(result.renamed, []);
-  assert.match(result.conflicts[0].reason, /같은 이름이 이미 있습니다\. \(원본과 같은 파일의 다른 이름/);
+  assert.match(result.conflicts[0].reason, /The name already exists\. \(another name of the same file/);
 });
 
 test('받는 중인 파일과 그 표시 파일이 옆에 있는 파일은 바꾸지 않고 알린다 (#94)', () => {
@@ -366,11 +366,11 @@ test('받는 중인 파일과 그 표시 파일이 옆에 있는 파일은 바�
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir), ['EFG-567 받음.mp4', 'x.mp4.download/DEF-456 영상.mp4', '영상 ABC-123.mp4.crdownload', '영상 BCD-234.mp4.part', '영상 CDE-345.mp4', '영상 CDE-345.mp4.aria2'].sort());
   const reasons = Object.fromEntries(result.skipped.map((item) => [path.relative(dir, item.path).replaceAll(path.sep, '/'), item.reason]));
-  assert.match(reasons['영상 ABC-123.mp4.crdownload'], /받는 중인 파일의 이름\(\.crdownload\)/);
-  assert.match(reasons['영상 BCD-234.mp4.part'], /받는 중인 파일의 이름/);
-  assert.match(reasons['영상 CDE-345.mp4'], /표시 파일\(영상 CDE-345\.mp4\.aria2\)/);
-  assert.match(reasons['영상 CDE-345.mp4.aria2'], /받는 중인 파일의 이름/);
-  // Safari 표시 폴더 안이라도 폴더 이름(x.mp4.download)과 파일 이름이 다르면 표시로 보지 않는다. 안의 x.mp4만 받는 중이다.
+  assert.match(reasons['영상 ABC-123.mp4.crdownload'], /name of a file being downloaded \(\.crdownload\)/);
+  assert.match(reasons['영상 BCD-234.mp4.part'], /name of a file being downloaded/);
+  assert.match(reasons['영상 CDE-345.mp4'], /marker file \(영상 CDE-345\.mp4\.aria2\)/);
+  assert.match(reasons['영상 CDE-345.mp4.aria2'], /name of a file being downloaded/);
+  // Even inside a Safari marker folder, if the folder name (x.mp4.download) and the file name differ, it is not seen as a marker. Only the x.mp4 inside is downloading.
   assert.strictEqual(result.renamed.length, 2);
 });
 
@@ -379,7 +379,7 @@ test('Safari 표시 폴더 안에서 받는 중인 파일은 바꾸지 않는다
   make(dir, ['영상 ABC-123.mp4.download/영상 ABC-123.mp4']);
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir), ['영상 ABC-123.mp4.download/영상 ABC-123.mp4']);
-  assert.match(result.skipped[0].reason, /표시 폴더\(영상 ABC-123\.mp4\.download\)/);
+  assert.match(result.skipped[0].reason, /marker folder \(영상 ABC-123\.mp4\.download\)/);
 });
 
 test('~로 시작하는 임시 파일은 알리지 않고 그대로 둔다 (#94)', () => {
@@ -417,31 +417,31 @@ test('프로그램·프로젝트·실행 파일 폴더 안의 파일은 바꾸�
   ].sort());
   const skipped = result.skipped.map((item) => [path.relative(dir, item.path), item.reason]).sort();
   assert.deepStrictEqual(skipped.map(([relative]) => relative), ['App', 'node_modules', 'proj']);
-  assert.match(skipped[0][1], /실행 파일과 DLL이 함께 든 프로그램 폴더라 안의 파일 이름을 바꾸지 않습니다/);
-  assert.match(skipped[1][1], /프로그램 폴더\(node_modules\)라/);
-  assert.match(skipped[2][1], /프로젝트 폴더\(package\.json 있음\)라/);
+  assert.match(skipped[0][1], /Names inside are not changed because the folder is a program folder holding both executables and DLLs/);
+  assert.match(skipped[1][1], /program folder \(node_modules\)/);
+  assert.match(skipped[2][1], /project folder \(contains package\.json\)/);
 });
 
 test('타겟이 프로그램 폴더 안이거나 프로젝트 폴더면 거부한다 (#94)', () => {
   const dir = tempDir();
   make(dir, ['node_modules/pkg/README ABC-123.md', 'proj/package.json', 'proj/영상 ABC-123.mp4']);
-  assert.throws(() => normalizeFiles(path.join(dir, 'node_modules', 'pkg')), (err) => err instanceof FcError && /프로그램 폴더 안이라/.test(err.message));
-  assert.throws(() => normalizeFiles(path.join(dir, 'proj')), (err) => err instanceof FcError && /프로젝트 폴더로 보여/.test(err.message));
+  assert.throws(() => normalizeFiles(path.join(dir, 'node_modules', 'pkg')), (err) => err instanceof FcError && /inside a program folder/.test(err.message));
+  assert.throws(() => normalizeFiles(path.join(dir, 'proj')), (err) => err instanceof FcError && /looks like a project folder/.test(err.message));
   assert.deepStrictEqual(tree(dir), ['node_modules/pkg/README ABC-123.md', 'proj/package.json', 'proj/영상 ABC-123.mp4']);
 });
 
 test('타겟의 위 폴더가 프로젝트·프로그램 폴더면 아무것도 바꾸지 않고 거부한다 (#167)', () => {
   const project = tempDir();
   make(project, ['myproj/package.json', 'myproj/src/영상 ABC-123.mp4', 'myproj/src/a/b/그림 BCD-234.png']);
-  assert.throws(() => normalizeFiles(path.join(project, 'myproj', 'src')), (err) => err instanceof FcError && /위 폴더가 프로젝트 폴더로 보여\(package\.json 있음\) 다루지 않습니다: .*myproj$/.test(err.message));
-  // 몇 단계 위든 막고, 계획(planNormalize)만 만들 때도 거부한다.
-  assert.throws(() => planNormalize(path.join(project, 'myproj', 'src', 'a', 'b')), (err) => err instanceof FcError && /위 폴더가 프로젝트 폴더로 보여/.test(err.message));
+  assert.throws(() => normalizeFiles(path.join(project, 'myproj', 'src')), (err) => err instanceof FcError && /a parent folder looks like a project folder \(contains package\.json\): .*myproj$/.test(err.message));
+  // It blocks at any number of levels up, and also refuses when only making the plan (planNormalize).
+  assert.throws(() => planNormalize(path.join(project, 'myproj', 'src', 'a', 'b')), (err) => err instanceof FcError && /a parent folder looks like a project folder/.test(err.message));
   assert.deepStrictEqual(tree(project), ['myproj/package.json', 'myproj/src/a/b/그림 BCD-234.png', 'myproj/src/영상 ABC-123.mp4']);
   const program = tempDir();
   make(program, ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
-  assert.throws(() => normalizeFiles(path.join(program, 'App', 'sub')), (err) => err instanceof FcError && /위 폴더에 실행 파일과 DLL이 함께 있어 프로그램 폴더로 보고 다루지 않습니다: .*App$/.test(err.message));
+  assert.throws(() => normalizeFiles(path.join(program, 'App', 'sub')), (err) => err instanceof FcError && /a parent folder holds both executables and DLLs, so it is treated as a program folder: .*App$/.test(err.message));
   assert.deepStrictEqual(tree(program), ['App/a.exe', 'App/b.dll', 'App/sub/영상 ABC-123.mp4']);
-  // 옆 폴더의 표시 파일은 위 폴더가 아니므로 막지 않는다.
+  // A marker file in a neighboring folder is not a folder above, so it is not blocked.
   const side = tempDir();
   make(side, ['lib/package.json', 'videos/영상 ABC-123.mp4']);
   normalizeFiles(path.join(side, 'videos'));
@@ -455,8 +455,8 @@ test('저장한 웹 페이지와 그 _files 폴더는 바꾸지 않는다 (#94)'
   assert.deepStrictEqual(tree(dir), ['CDE-345 다른.html', '페이지 ABC-123.html', '페이지 ABC-123_files/그림 BCD-234.png'].sort());
   const reasons = result.skipped.map((item) => `${path.relative(dir, item.path)}: ${item.reason}`).sort();
   assert.strictEqual(reasons.length, 2);
-  assert.match(reasons[0], /^페이지 ABC-123\.html: 자료 폴더\(페이지 ABC-123_files\)와 이름으로 이어진 웹 페이지라/);
-  assert.match(reasons[1], /^페이지 ABC-123_files: 웹 페이지\(페이지 ABC-123\.html\)의 자료 폴더라/);
+  assert.match(reasons[0], /^페이지 ABC-123\.html: Not renamed because it is a web page linked by name to the resource folder \(페이지 ABC-123_files\)/);
+  assert.match(reasons[1], /^페이지 ABC-123_files: Names inside are not changed because the folder is a resource folder of the web page \(페이지 ABC-123\.html\)/);
 });
 
 test('숨김 속성 폴더 안의 파일은 바꾸지 않는다 (#94)', { skip: process.platform !== 'win32' }, () => {
@@ -466,7 +466,7 @@ test('숨김 속성 폴더 안의 파일은 바꾸지 않는다 (#94)', { skip: 
   execFileSync('attrib', ['+h', path.join(dir, '숨김')]);
   const result = normalizeFiles(dir);
   assert.deepStrictEqual(tree(dir), ['보임/BCD-234 영상.mp4', '숨김/영상 ABC-123.mp4']);
-  assert.match(result.skipped[0].reason, /숨김 속성 폴더라/);
+  assert.match(result.skipped[0].reason, /folder with the hidden attribute/);
 });
 
 test('웹 페이지와 _files 폴더는 대소문자가 달라도 짝으로 보고, .htm도 같다 (1차 리뷰, #94)', () => {
@@ -476,8 +476,8 @@ test('웹 페이지와 _files 폴더는 대소문자가 달라도 짝으로 보�
   assert.deepStrictEqual(tree(dir), ['Page ABC-123.HTML', 'page ABC-123_files/a.png', '옛 BCD-234.htm', '옛 BCD-234_files/b.png'].sort());
   const reasons = result.skipped.map((item) => `${path.basename(item.path)}: ${item.reason}`).sort();
   assert.deepStrictEqual(reasons, [
-    'Page ABC-123.HTML: 자료 폴더(page ABC-123_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
-    '옛 BCD-234.htm: 자료 폴더(옛 BCD-234_files)와 이름으로 이어진 웹 페이지라 바꾸지 않습니다.',
+    'Page ABC-123.HTML: Not renamed because it is a web page linked by name to the resource folder (page ABC-123_files).',
+    '옛 BCD-234.htm: Not renamed because it is a web page linked by name to the resource folder (옛 BCD-234_files).',
   ]);
 });
 

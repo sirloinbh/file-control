@@ -1,6 +1,6 @@
 'use strict';
 
-// 시험용 H.264·HEVC SPS와 avcC·hvcC를 규격대로 만든다(#113). 테스트 파일이 아니라 도우미다.
+// It builds test H.264 and HEVC SPS and avcC and hvcC to the specification (#113). It is a helper, not a test file.
 
 function bitWriter() {
   const out = [];
@@ -18,7 +18,7 @@ function bitWriter() {
     se(value) {
       return w.ue(value <= 0 ? -2 * value : 2 * value - 1);
     },
-    // rbsp_trailing_bits를 붙여 바이트로 만든다.
+    // It attaches rbsp_trailing_bits and makes bytes.
     bytes() {
       const bits = [...out, 1];
       while (bits.length % 8 !== 0) bits.push(0);
@@ -30,7 +30,7 @@ function bitWriter() {
   return w;
 }
 
-// 0 두 바이트 뒤에 3 이하의 바이트가 오면 3을 끼운다(emulation prevention).
+// If a byte of 3 or less comes after two 0 bytes, it inserts a 3 (emulation prevention).
 function escape(bytes) {
   const out = [];
   let zeros = 0;
@@ -45,7 +45,7 @@ function escape(bytes) {
   return out;
 }
 
-// VUI의 앞부분. sar가 숫자면 aspect_ratio_idc, [h, v]면 255(직접 적음)로 쓴다. 뒤에는 다른 VUI 필드처럼 보이는 비트를 붙인다.
+// The front of the VUI. If sar is a number, it is written as aspect_ratio_idc, and if [h, v], as 255 (written directly). After it, it attaches bits that look like other VUI fields.
 function writeVui(w, sar) {
   if (sar === undefined) return w.u(1, 0);
   w.u(1, 1);
@@ -55,8 +55,8 @@ function writeVui(w, sar) {
   return w.u(1, 0).u(1, 1).u(3, 5);
 }
 
-// H.264 SPS. sar: undefined면 VUI 없음, null이면 VUI는 있지만 비율 없음.
-// scaling: 높은 프로필의 scaling list. 목록 번호 => delta 값들(next가 0이 되면 그 뒤는 쓰지 않는다).
+// H.264 SPS. sar: if undefined, no VUI; if null, there is a VUI but no ratio.
+// scaling: the scaling list of high profiles. List number => delta values (if next becomes 0, nothing after is written).
 function avcSps({ profile = 100, width = 1920, height = 1088, crop = null, pocType = 0, frameMbsOnly = 1, chroma = 1, scaling = null, sar } = {}) {
   const w = bitWriter();
   w.u(8, profile).u(8, 0).u(8, 40).ue(0);
@@ -84,11 +84,11 @@ function avcSps({ profile = 100, width = 1920, height = 1088, crop = null, pocTy
   return Buffer.from([0x67, ...escape(w.bytes())]);
 }
 
-// HEVC SPS. sets: st_ref_pic_set 목록. { negative, positive } 또는 { inter: [[used, useDelta], ...] }.
+// HEVC SPS. sets: the st_ref_pic_set list. { negative, positive } or { inter: [[used, useDelta], ...] }.
 function hevcSps({ width = 1920, height = 1080, maxSubLayers = 1, subLayers = [], conformance = null, ordering = 1, scaling = false, pcm = false, sets = [], longTerm = null, sar, layer = 0 } = {}) {
   const w = bitWriter();
   w.u(4, 0).u(3, maxSubLayers - 1).u(1, 1);
-  // profile_tier_level: general 88비트 + level 8비트
+  // profile_tier_level: 88 bits of general + 8 bits of level
   w.u(2, 0).u(1, 0).u(5, 1).u(32, 0x60000000).u(1, 1).u(1, 0).u(1, 0).u(1, 1).u(43, 0).u(1, 0).u(8, 93);
   for (let i = 0; i < maxSubLayers - 1; i += 1) w.u(1, subLayers[i]?.profile ? 1 : 0).u(1, subLayers[i]?.level ? 1 : 0);
   if (maxSubLayers - 1 > 0) for (let i = maxSubLayers - 1; i < 8; i += 1) w.u(2, 0);
@@ -108,7 +108,7 @@ function hevcSps({ width = 1920, height = 1080, maxSubLayers = 1, subLayers = []
     w.u(1, 1);
     for (let sizeId = 0; sizeId < 4; sizeId += 1) {
       for (let matrixId = 0; matrixId < 6; matrixId += sizeId === 3 ? 3 : 1) {
-        // 큰 목록 하나는 값을 직접 적고 나머지는 앞 목록을 따른다.
+        // One large list writes the values directly and the rest follow the previous list.
         if (sizeId === 2 && matrixId === 1) {
           w.u(1, 1).se(3);
           for (let i = 0; i < 64; i += 1) w.se(i % 2 === 0 ? 1 : -2);
@@ -150,13 +150,13 @@ function hevcSps({ width = 1920, height = 1080, maxSubLayers = 1, subLayers = []
 
 const u16 = (value) => [value >> 8, value & 0xff];
 
-// avcC: SPS 하나와 PPS 하나
+// avcC: one SPS and one PPS
 function avcC(sps) {
   const pps = [0x68, 0xce, 0x3c, 0x80];
   return Buffer.from([1, sps[1], sps[2], sps[3], 0xff, 0xe1, ...u16(sps.length), ...sps, 1, ...u16(pps.length), ...pps]);
 }
 
-// hvcC: VPS 배열을 SPS 배열 앞에 둔다.
+// hvcC: the VPS array is placed before the SPS array.
 function hvcC(sps) {
   const vps = [0x40, 0x01, 0x0c, 0x01, 0xff, 0xff];
   const head = Buffer.alloc(22);
