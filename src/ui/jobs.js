@@ -16,6 +16,24 @@ const MAX_LINES = 2000;
 const KEPT_HEAD_LINES = 100;
 // The length of the end of standard error to show as the reason when the child died without a result.
 const MAX_STDERR = 4000;
+// How long stop() waits for the process to close before it answers anyway.
+const STOP_WAIT_MS = 5000;
+
+// It ends the child and, on Windows, the whole process tree it started (PowerShell, tar.exe and so on), which child.kill() alone would leave running.
+function killTree(child) {
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    try {
+      childProcess.spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5000 });
+    } catch {
+      // Fall through to child.kill() below.
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    // Already gone.
+  }
+}
 
 class BusyError extends fc.FcError {
   constructor(job) {
@@ -29,6 +47,8 @@ class BusyError extends fc.FcError {
 function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.now, keep = KEEP_FINISHED, env = process.env } = {}) {
   const jobs = new Map();
   let active = null;
+  // The live child process and the promise of its close, per running job. Kept here (not on the job) so a job stays plain data.
+  const children = new Map();
 
   function forget() {
     const finished = [...jobs.values()].filter((job) => job.status !== 'running');
@@ -46,6 +66,8 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       status: 'running',
       startedAt: now(),
       endedAt: null,
+      lastProgressAt: null,
+      stopRequested: false,
       lines: [],
       droppedLines: 0,
       outcome: null,
@@ -58,6 +80,9 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       throw new fc.FcError(`Could not start the job process: ${err.message}`);
     }
     active = job;
+    let closed;
+    const done = new Promise((resolve) => { closed = resolve; });
+    children.set(job.id, { child, done, closed });
     jobs.set(job.id, job);
 
     let stderr = '';
@@ -70,7 +95,10 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     let reply = null;
     child.on('message', (message) => {
       if (!message || job.status !== 'running') return;
-      if (message.type === 'progress') addLine(job, message.line);
+      if (message.type === 'progress') {
+        addLine(job, message.line);
+        job.lastProgressAt = now();
+      }
       else if (message.type === 'done' || message.type === 'error') reply = message;
     });
     let settled = false;
@@ -84,6 +112,8 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       } else if (reply && reply.type === 'error') {
         job.status = 'error';
         job.error = reply.error;
+      } else if (job.stopRequested) {
+        job.status = 'stopped';
       } else {
         const reason = spawnError ? spawnError.message : signal ? `signal ${signal}` : `exit code ${code}`;
         const detail = stderr.trim() ? `\n${stderr.trim()}` : '';
@@ -91,6 +121,9 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
         job.error = { name: 'FcError', message: `The job process ended without a result (${reason}).${detail}` };
       }
       if (active === job) active = null;
+      const entry = children.get(job.id);
+      children.delete(job.id);
+      if (entry) entry.closed();
       forget();
     };
     // Even after receiving the result message, it does not accept the next job until the process ends.
@@ -107,8 +140,24 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     return job;
   }
 
+  // It stops a running job: kills the process (tree) and waits for close, which clears the running state. It resolves to the job.
+  // A job that is not running (finished, or already stopping and closed) is returned as it is.
+  async function stop(job) {
+    const entry = children.get(job.id);
+    if (!entry || job.status !== 'running') return job;
+    job.stopRequested = true;
+    killTree(entry.child);
+    let timer;
+    await Promise.race([entry.done, new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]);
+    clearTimeout(timer);
+    return job;
+  }
+
   return {
     start,
+    stop,
+    // Milliseconds since the last progress line (or since the start if none came yet).
+    idle: (job) => (job.endedAt ?? now()) - (job.lastProgressAt ?? job.startedAt),
     get: (id) => jobs.get(id),
     running: () => active,
     elapsed: (job) => (job.endedAt ?? now()) - job.startedAt,
