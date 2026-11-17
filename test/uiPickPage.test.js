@@ -15,7 +15,8 @@ const home = path.join(base, 'home');
 fs.mkdirSync(home);
 test.mock.method(os, 'homedir', () => home);
 
-const { startServer, runUi } = require('../src/ui/server');
+const { runUi } = require('../src/ui/server');
+const { startUi, connect } = require('./uiClient');
 const { pickRoutes, pathInput, pickUrl, readPickQuery } = require('../src/ui/pickPage');
 const { browseFolder } = require('../src/ui/folders');
 const { escapeHtml } = require('../src/ui/html');
@@ -28,13 +29,13 @@ const SOURCES = {
 };
 
 async function serve(t) {
-  const { server, url } = await startServer({ port: 0, routes: pickRoutes(SOURCES) });
+  const { server, get: send } = await startUi({ routes: pickRoutes(SOURCES) });
   t.after(() => {
     server.close();
     server.closeAllConnections();
   });
   const get = async (query) => {
-    const res = await fetch(new URL(`/pick${query}`, url));
+    const res = await send(`/pick${query}`);
     return { status: res.status, body: await res.text() };
   };
   return { get };
@@ -154,14 +155,15 @@ test('fctl ui의 기본 주소에 폴더 고르기 화면이 있다 (#254)', asy
     server.close();
     server.closeAllConnections();
   });
-  const url = /http:\/\/127\.0\.0\.1:\d+\//.exec(lines.join('\n'))[0];
-  const res = await fetch(new URL('/pick', url));
+  const launchUrl = /http:\/\/127\.0\.0\.1:\d+\/\?launch=\S+/.exec(lines.join('\n'))[0];
+  const { get } = await connect(launchUrl);
+  const res = await get('/pick');
   assert.strictEqual(res.status, 200);
   assert.match(await res.text(), /<h2>Drives<\/h2>/);
 });
 
 test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워크 경로도 열지 않는다 (#254 1차 리뷰)', async (t) => {
-  const { server, url } = await startServer({ port: 0, routes: pickRoutes(SOURCES) });
+  const { server, get } = await startUi({ routes: pickRoutes(SOURCES) });
   t.after(() => {
     server.close();
     server.closeAllConnections();
@@ -170,7 +172,7 @@ test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워
   fs.mkdirSync(path.join(dir, 'inner'));
   const query = `/pick?${new URLSearchParams({ dir, return: '/organize', field: 'target' })}`;
   for (const site of ['cross-site', 'same-site']) {
-    const res = await fetch(new URL(query, url), { headers: { 'sec-fetch-site': site } });
+    const res = await get(query, { headers: { 'sec-fetch-site': site } });
     const body = await res.text();
     assert.strictEqual(res.status, 200, site);
     assert.match(body, /The address was opened from another site, so the folder was not opened/, site);
@@ -178,22 +180,22 @@ test('다른 사이트에서 연 주소로는 폴더를 열지 않고, 네트워
     assert.match(body, /<h2>Drives<\/h2>/, site);
   }
   // A link pressed on this screen (same-origin) is opened.
-  const same = await (await fetch(new URL(query, url), { headers: { 'sec-fetch-site': 'same-origin' } })).text();
+  const same = await (await get(query, { headers: { 'sec-fetch-site': 'same-origin' } })).text();
   assert.ok(same.includes('>inner</a>'));
   if (process.platform === 'win32') {
-    const unc = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir: '\\\\attacker\\share', return: '/organize', field: 'target' })}`, url))).text();
+    const unc = await (await get(`/pick?${new URLSearchParams({ dir: '\\\\attacker\\share', return: '/organize', field: 'target' })}`)).text();
     assert.match(unc, /Network and device paths are not opened/);
   }
 });
 
 test('하위 폴더가 한도로 잘리면 요약 카드는 전체 폴더 수를, 아래에는 뺀 수를 보여 준다 (#254 2차 리뷰)', async (t) => {
   const many = { path: 'D:\\many', parent: 'D:\\', protected: null, folders: [{ name: 'a', path: 'D:\\many\\a', protected: null }], hiddenFolders: 4, files: 0, size: 0 };
-  const { server, url } = await startServer({ port: 0, routes: pickRoutes({ ...SOURCES, browseFolder: () => many }) });
+  const { server, get } = await startUi({ routes: pickRoutes({ ...SOURCES, browseFolder: () => many }) });
   t.after(() => {
     server.close();
     server.closeAllConnections();
   });
-  const body = await (await fetch(new URL('/pick?dir=D%3A%5Cmany&return=%2Forganize&field=target', url))).text();
+  const body = await (await get('/pick?dir=D%3A%5Cmany&return=%2Forganize&field=target')).text();
   assert.match(body, /<div class="value">5<\/div><div class="label">Folders<\/div>/);
   assert.match(body, /only the first 1 are shown \(4 more\)/);
 });

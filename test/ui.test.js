@@ -11,6 +11,7 @@ const { escapeHtml, html, raw } = require('../src/ui/html');
 const { page, alertBox, summaryCards, badge, table, CATEGORIES } = require('../src/ui/layout');
 const { parseUiArgs, startServer, createHandler, DEFAULT_PORT } = require('../src/ui/server');
 const { FcError } = require('../src/commands');
+const { LAUNCH, connect } = require('./uiClient');
 
 const FCTL = path.join(__dirname, '..', 'bin', 'fctl.js');
 
@@ -38,10 +39,10 @@ function launch(args) {
     }, 20000);
     child.stdout.on('data', (chunk) => {
       out += chunk;
-      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)/.exec(out);
+      const found = /fctl UI: (http:\/\/127\.0\.0\.1:\d+\/)\?launch=(\S+)/.exec(out);
       if (found) {
         clearTimeout(timer);
-        resolve({ child, url: found[1], output: () => out });
+        resolve({ child, url: found[1], launchUrl: found[0].slice('fctl UI: '.length), output: () => out });
       }
     });
     child.stderr.on('data', (chunk) => {
@@ -114,22 +115,24 @@ test('parseUiArgs: 기본 포트 8109, --port=0, --no-open, 잘못된 포트·�
 });
 
 test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 404, POST 405 (#251)', async (t) => {
-  const { child, url } = await launch(['--no-open', '--port=0']);
+  const { child, url, launchUrl } = await launch(['--no-open', '--port=0']);
   t.after(() => child.kill());
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
-  const home = await request(url);
+  const { cookie } = await connect(launchUrl);
+  const headers = { cookie };
+  const home = await request(url, { headers });
   assert.strictEqual(home.status, 200);
   assert.strictEqual(home.headers['content-type'], 'text/html; charset=utf-8');
   assert.ok(home.body.includes('<h1>File Control</h1>'));
   for (const category of CATEGORIES) assert.ok(home.body.includes(category.label));
-  const missing = await request(new URL('/nope?<x>', url));
+  const missing = await request(new URL('/nope?<x>', url), { headers });
   assert.strictEqual(missing.status, 404);
   assert.ok(missing.body.includes('No such address: /nope?%3Cx%3E') || missing.body.includes('No such address: /nope?&lt;x&gt;'));
   assert.ok(!missing.body.includes('<x>'));
-  const head = await request(url, { method: 'HEAD' });
+  const head = await request(url, { method: 'HEAD', headers });
   assert.strictEqual(head.status, 200);
   assert.strictEqual(head.body, '');
-  const post = await request(url, { method: 'POST' });
+  const post = await request(url, { method: 'POST', headers });
   assert.strictEqual(post.status, 405);
   assert.strictEqual(post.headers.allow, 'GET, HEAD');
 });
@@ -146,14 +149,14 @@ test('fctl ui는 포트를 이미 쓰고 있으면 다른 포트로 넘어가지
 
 test('화면 코드가 예외를 내면 500 화면을 보여 주고 서버는 계속 돈다 (#251)', async (t) => {
   const routes = new Map([['/files', () => { throw new Error('<boom>'); }]]);
-  const server = http.createServer(createHandler(routes));
+  const server = http.createServer(createHandler(routes, { launch: LAUNCH }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const failed = await request(`${base}/files`);
+  const { get } = await connect(`http://127.0.0.1:${server.address().port}/?launch=${LAUNCH}`);
+  const failed = await get('/files');
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('Could not build the page: &lt;boom&gt;'));
-  const home = await request(`${base}/`);
+  assert.ok((await failed.text()).includes('Could not build the page: &lt;boom&gt;'));
+  const home = { status: (await get('/')).status, body: await (await get('/')).text() };
   assert.strictEqual(home.status, 200);
   // The registered categories become links in the menu and the first screen.
   assert.ok(home.body.includes('<a href="/files">Basic file tasks</a>'));
@@ -173,19 +176,18 @@ test('처리기: async와 SafeHtml 본문을 받고, 경로마다 메서드를 �
     ['/organize', { GET: () => ({ body: 'get' }), POST: async () => ({ status: 201, body: 'posted' }) }],
     ['/archive', async () => { throw new Error('<later>'); }],
   ]);
-  const server = http.createServer(createHandler(routes, { token: 'tok' }));
+  const server = http.createServer(createHandler(routes, { token: 'tok', launch: LAUNCH }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.address().port}`;
-  // A POST reaches the handler only with the form type and the token (#252).
-  const post = { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'token=tok' };
-  const files = await request(`${base}/files`);
-  assert.deepStrictEqual([files.status, files.body], [200, '<p>&lt;a&gt;</p>']);
-  assert.deepStrictEqual([(await request(`${base}/organize`)).body, (await request(`${base}/organize`, post)).status], ['get', 201]);
-  const put = await request(`${base}/organize`, { method: 'PUT' });
-  assert.deepStrictEqual([put.status, put.headers.allow], [405, 'GET, HEAD, POST']);
-  const failed = await request(`${base}/archive`);
+  // A POST reaches the handler only with the form type and the token (#252); connect()'s post sends token=tok.
+  const { get, post } = await connect(`http://127.0.0.1:${server.address().port}/?launch=${LAUNCH}`, { token: 'tok' });
+  const files = await get('/files');
+  assert.deepStrictEqual([files.status, await files.text()], [200, '<p>&lt;a&gt;</p>']);
+  assert.deepStrictEqual([await (await get('/organize')).text(), (await post('/organize')).status], ['get', 201]);
+  const put = await get('/organize', { method: 'PUT' });
+  assert.deepStrictEqual([put.status, put.headers.get('allow')], [405, 'GET, HEAD, POST']);
+  const failed = await get('/archive');
   assert.strictEqual(failed.status, 500);
-  assert.ok(failed.body.includes('Could not build the page: &lt;later&gt;'));
-  assert.strictEqual((await request(`${base}/`)).status, 200);
+  assert.ok((await failed.text()).includes('Could not build the page: &lt;later&gt;'));
+  assert.strictEqual((await get('/')).status, 200);
 });
