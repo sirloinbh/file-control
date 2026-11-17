@@ -211,8 +211,21 @@ function openBrowser(url) {
 function defaultRoutes() {
   const { createJobs } = require('./jobs');
   const { jobRoutes } = require('./jobPages');
+  const { flowRoutes } = require('./flowPages');
   const { pickRoutes } = require('./pickPage');
-  return new Map([...jobRoutes(createJobs()), ...pickRoutes()]);
+  // One module per screen area (src/ui/screens/<area>.js): { specs, views, routes(jobs) }.
+  const SCREENS = [
+    require('./screens/organize'),
+  ];
+  const jobs = createJobs();
+  const specs = SCREENS.flatMap((screen) => screen.specs);
+  const views = Object.assign({}, ...SCREENS.map((screen) => screen.views));
+  return new Map([
+    ...jobRoutes(jobs, { specs, views }),
+    ...flowRoutes(jobs, specs),
+    ...SCREENS.flatMap((screen) => [...screen.routes(jobs)]),
+    ...pickRoutes(),
+  ]);
 }
 
 // The fctl ui command. out is a function that writes the guide lines.
