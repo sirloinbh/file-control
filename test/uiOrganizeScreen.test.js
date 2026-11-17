@@ -2,11 +2,14 @@
 
 // The folder cleanup screens (#257): form -> preview -> run -> result for flatten, collapse, normalize and product-number,
 // through the real server and the real job process. normalize, collapse and product-number only rename, so they run for real in temp folders.
-// flatten sends emptied folders to the Recycle Bin, so it is only taken up to the preview and the stale-run step here (never a real run).
+// collapse and flatten send emptied folders to the Recycle Bin, so every run in this file (job process and in-process) uses the fake in fakeRecyclePreload.js.
 // Each real run is compared against execute() run directly on a copy of the same folder: the screen must make the same file changes as the CLI.
 
+// The fake Recycle Bin goes first, before src/commands.js is imported, so no run in this file (in-process or in a job process) touches the real bin.
+require('./fakeRecyclePreload');
 const test = require('node:test');
 const assert = require('node:assert');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -19,6 +22,13 @@ const { execute } = require('../src/execute');
 
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fc-ui-organize-screen-')));
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
+// Where the fake Recycle Bin writes each folder it was given (the job processes inherit this variable).
+const RECYCLE_LOG = path.join(root, 'recycled.log');
+process.env.FC_FAKE_RECYCLE_LOG = RECYCLE_LOG;
+const recycledFolders = () => (fs.existsSync(RECYCLE_LOG) ? fs.readFileSync(RECYCLE_LOG, 'utf8').split('\n').filter(Boolean) : []);
+// Job processes load the same fake before anything else.
+const PRELOAD = path.join(__dirname, 'fakeRecyclePreload.js');
+const forkWithFake = (workerPath, args, options) => childProcess.fork(workerPath, args, { ...options, execArgv: [...process.execArgv, '--require', PRELOAD] });
 // The temp folder is inside the user folder (AppData), which whole-folder commands refuse. The job process gets a home folder that does not exist,
 // and this process (which runs execute() directly) gets the same through a mock.
 const FAKE_HOME = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
@@ -58,7 +68,7 @@ async function settled(jobs, job, timeoutMs = 120000) {
 }
 
 async function serve(t) {
-  const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME } });
+  const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME }, fork: forkWithFake });
   const routes = new Map([
     ...jobRoutes(jobs, { specs: organize.specs, views: organize.views }),
     ...flowRoutes(jobs, organize.specs),
@@ -148,7 +158,7 @@ test('normalize with the lowercase option follows --include-lowercase (#257)', a
   assert.match(off.body, /<div class="value">0<\/div><div class="label">Renamed<\/div>/);
   const on = await finish(await post('/organize/normalize/preview', { target: dir, includeLowercase: 'on' }));
   assert.match(on.body, /ABC-123/);
-  assert.deepStrictEqual(on.job.argv, ['normalize', dir, '--include-lowercase']);
+  assert.deepStrictEqual(on.job.argv, ['normalize', '--include-lowercase', '--', dir]);
   assert.match(on.body, /name="includeLowercase" value="on"/, 'the Run form carries the option');
   const run = await finish(await post('/organize/normalize/run', { target: dir, includeLowercase: 'on', fingerprint: fingerprintOf(on.body) }));
   assert.strictEqual(run.job.outcome.ran, true, run.body);
@@ -159,6 +169,8 @@ test('collapse: preview -> run -> result, same changes as the CLI (#257)', async
   const { dir, run } = await previewAndRun(t, { command: 'collapse', argv: ['collapse'], files: ['Show/Show/Show/video.mp4'] });
   assert.match(run.body, /<h2>Collapsed/);
   assert.ok(fs.existsSync(path.join(dir, 'Show', 'video.mp4')));
+  // The emptied folders went to the fake Recycle Bin (the job's run and the in-process CLI comparison), never the real one.
+  assert.ok(recycledFolders().some((folder) => folder.startsWith(dir)), 'the job process used the fake Recycle Bin');
 });
 
 test('product-number: preview -> run -> result, same changes as the CLI (#257)', async (t) => {
@@ -167,7 +179,7 @@ test('product-number: preview -> run -> result, same changes as the CLI (#257)',
   assert.ok(fs.readdirSync(path.join(dir, 'ABC-123')).some((name) => name.startsWith('ABC-123 ')));
 });
 
-test('flatten: the preview shows the plan and the stale run changes nothing; no real run here because emptied folders go to the Recycle Bin (#257)', async (t) => {
+test('flatten: the preview shows the plan and the stale run changes nothing; (#257)', async (t) => {
   const dir = makeTree(['Show/CD1/video.mp4', 'Show/CD2/other.mp4']);
   const before = tree(dir);
   const { post, finish } = await serve(t);
@@ -193,6 +205,17 @@ test('flatten: the preview shows the plan and the stale run changes nothing; no 
   assert.match(stale.body, /extra\.mp4/);
   assert.deepStrictEqual(tree(dir), [...before, path.join('Show', 'CD1', 'extra.mp4')].sort(), 'a stale run changes nothing');
   assert.notStrictEqual(fingerprintOf(stale.body), first);
+});
+
+test('flatten: a real run (with the fake Recycle Bin) moves the files, removes the emptied folders and shows the progress lines (#257)', async (t) => {
+  const { dir, run } = await previewAndRun(t, { command: 'flatten', argv: ['flatten'], files: ['Show/CD1/video.mp4', 'Show/CD2/other.mp4'] });
+  assert.deepStrictEqual(tree(dir).filter((entry) => !entry.endsWith(path.sep)), ['other.mp4', 'Show CD1.mp4'].sort());
+  // The progress lines the command reported while it ran are on the result page, and in the job's lines.
+  assert.ok(run.job.lines.some((line) => line.startsWith('Move: ')), run.job.lines.join('\n'));
+  assert.match(run.body, /progress lines/);
+  assert.match(run.body, /Move: Show[\\/]CD1[\\/]video\.mp4 -&gt; Show CD1\.mp4/);
+  assert.match(run.body, /Empty folder to the Recycle Bin/);
+  assert.ok(recycledFolders().some((folder) => folder.startsWith(dir)), `the emptied folders went to the fake Recycle Bin: ${JSON.stringify(run.job.outcome.result)} ${JSON.stringify(run.job.lines)}`);
 });
 
 test('a run request without a preview is refused for every command (#257)', async (t) => {

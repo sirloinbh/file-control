@@ -32,7 +32,7 @@ const specs = [
     path: `${CATEGORY_PATH}/flatten`,
     title: 'Flatten folders',
     fields: [TARGET_FIELD],
-    toArgv: (values) => ['flatten', requireTarget(values)],
+    toArgv: (values) => ['flatten', '--', requireTarget(values)],
     doneLabel: 'Moved',
   },
   {
@@ -40,7 +40,7 @@ const specs = [
     path: `${CATEGORY_PATH}/collapse`,
     title: 'Collapse single-folder chains',
     fields: [TARGET_FIELD],
-    toArgv: (values) => ['collapse', requireTarget(values)],
+    toArgv: (values) => ['collapse', '--', requireTarget(values)],
     doneLabel: 'Collapsed',
   },
   {
@@ -48,7 +48,7 @@ const specs = [
     path: `${CATEGORY_PATH}/normalize`,
     title: 'Normalize names',
     fields: [TARGET_FIELD, { name: 'includeLowercase', label: 'Also treat lowercase words (abc-123) as product numbers', kind: 'checkbox' }],
-    toArgv: (values) => ['normalize', requireTarget(values), ...(values.includeLowercase ? ['--include-lowercase'] : [])],
+    toArgv: (values) => ['normalize', ...(values.includeLowercase ? ['--include-lowercase'] : []), '--', requireTarget(values)],
     doneLabel: 'Renamed',
   },
   {
@@ -56,7 +56,7 @@ const specs = [
     path: `${CATEGORY_PATH}/product-number`,
     title: 'Add product numbers',
     fields: [TARGET_FIELD],
-    toArgv: (values) => ['product-number', requireTarget(values)],
+    toArgv: (values) => ['product-number', '--', requireTarget(values)],
     doneLabel: 'Renamed',
   },
 ];
@@ -69,6 +69,7 @@ function landingPage({ available }) {
   return {
     body: page({
       title: 'Organize folders',
+      current: CATEGORY_PATH,
       available,
       body: html`<p>Each command shows a preview first. Nothing changes until you run it from the preview.</p>
 ${table([{ label: 'Command', width: '30%' }, { label: 'What it does' }], rows)}`,
