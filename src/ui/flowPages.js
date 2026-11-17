@@ -13,7 +13,7 @@ const { FcError } = require('../commands');
 const { html } = require('./html');
 const { page } = require('./layout');
 const { pathInput } = require('./pickPage');
-const { checkRunRequest, isOn } = require('./flow');
+const { checkRunRequest, dangerOptionsOf, isOn } = require('./flow');
 const { runButton, startJobResponse } = require('./jobPages');
 
 // Only the values of the fields the spec names. Anything else in the form is dropped here.
@@ -76,11 +76,12 @@ function previewHandler(jobs, spec) {
 function runHandler(jobs, spec) {
   return (req, { available, form }) => {
     const plain = Object.fromEntries([...form.keys()].map((key) => [key, form.get(key)]));
-    const checked = checkRunRequest(plain);
-    if (checked.action === 'reject') return rejectPage(spec, checked.reason, available);
     const values = fieldValues(spec, form);
     const built = buildArgv(spec, values);
     if (built.error) return rejectPage(spec, built.error, available);
+    // The overwrite and permanent-delete confirmations follow the argv that will run, not the form field names.
+    const checked = checkRunRequest({ ...plain, ...dangerOptionsOf(built.argv) });
+    if (checked.action === 'reject') return rejectPage(spec, checked.reason, available);
     return startJobResponse(jobs, built.argv, { available, start: { mode: 'run', expect: plain.fingerprint }, form: values });
   };
 }

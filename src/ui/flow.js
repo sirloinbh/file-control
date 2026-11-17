@@ -117,4 +117,13 @@ function resultSection(items, { doneLabel = 'Moved' } = {}) {
   return html`${cards}${table([{ label: 'Status', width: '7.5em' }, { label: 'Path', width: '55%' }, { label: 'Reason / details' }], rows)}`;
 }
 
-module.exports = { DANGEROUS_OPTIONS, canonical, fingerprint, checkRunRequest, decideExecution, dangerConfirmations, orderResults, countResults, resultSection, isOn };
+// The dangerous options the argv really turns on, as form-style values ({ force: 'on' | '', permanent: 'on' | '' }).
+// The checks look at the argv a spec built, not at the form field names, so a spec cannot skip the confirmation by naming its field differently.
+// Only arguments before a literal -- are options.
+function dangerOptionsOf(argv) {
+  const end = argv.indexOf('--');
+  const options = end === -1 ? argv : argv.slice(0, end);
+  return Object.fromEntries(Object.keys(DANGEROUS_OPTIONS).map((name) => [name, options.includes(`--${name}`) ? 'on' : '']));
+}
+
+module.exports = { dangerOptionsOf, DANGEROUS_OPTIONS, canonical, fingerprint, checkRunRequest, decideExecution, dangerConfirmations, orderResults, countResults, resultSection, isOn };

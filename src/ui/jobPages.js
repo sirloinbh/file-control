@@ -7,7 +7,7 @@
 const { html } = require('./html');
 const { page, alertBox } = require('./layout');
 const { BusyError, formatElapsed, KEPT_HEAD_LINES: KEPT_HEAD } = require('./jobs');
-const { dangerConfirmations, resultSection, isOn } = require('./flow');
+const { dangerConfirmations, dangerOptionsOf, resultSection, isOn } = require('./flow');
 
 const STATUS_PATH = '/job';
 const RESULT_PATH = '/job/result';
@@ -84,7 +84,8 @@ function runForm(spec, job, outcome, { tokenField, jobs }) {
   const hidden = spec.fields
     .filter((field) => (field.kind === 'checkbox' ? isOn(form[field.name]) : form[field.name] !== undefined))
     .map((field) => html`<input type="hidden" name="${field.name}" value="${field.kind === 'checkbox' ? 'on' : form[field.name]}">`);
-  const options = Object.fromEntries(spec.fields.filter((field) => field.kind === 'checkbox').map((field) => [field.name, form[field.name]]));
+  // The confirmation boxes follow the argv the preview ran, the same as the run request's check (flowPages.js).
+  const options = dangerOptionsOf(job.argv);
   return html`<h2>Run</h2>
 <form method="post" action="${spec.path}/run">
 ${tokenField}${hidden}<input type="hidden" name="fingerprint" value="${outcome.fingerprint}">
@@ -123,7 +124,14 @@ function resultPage(jobs, job, { available, views = {}, specs = [], tokenField =
     else if (outcome.help) content = html`<p class="muted">See the help in a terminal with fctl --help.</p>`;
     else if (outcome.report) content = html`<pre class="report">${outcome.report}</pre>`;
     else content = html`<p class="muted">Nothing to report.</p>`;
-    if (spec && job.mode === 'run' && !outcome.repreview && typeof spec.toItems === 'function') content = resultSection(spec.toItems(outcome), { doneLabel: spec.doneLabel });
+    if (spec && job.mode === 'run' && !outcome.repreview && typeof spec.toItems === 'function') {
+      // The run already happened, so a broken result table falls back to the report instead of failing the page.
+      try {
+        content = resultSection(spec.toItems(outcome), { doneLabel: spec.doneLabel });
+      } catch (err) {
+        content = html`${alertBox('warning', `Could not build the result table: ${err.message}`)}${content}`;
+      }
+    }
   }
   const lines = job.lines.length > 0 || job.droppedLines > 0
     ? html`<details><summary>${job.lines.length + job.droppedLines} progress lines</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`

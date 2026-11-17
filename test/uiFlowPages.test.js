@@ -166,3 +166,54 @@ test('a run result shows summary cards and no run form', () => {
   assert.match(body, /locked/);
   assert.doesNotMatch(body, /\/files\/rm\/run/);
 });
+
+// A spec whose toArgv always turns on --permanent, with no checkbox named permanent (first review of #279).
+const alwaysPermanent = {
+  command: 'rm',
+  path: '/files/purge',
+  title: 'Purge',
+  fields: [{ name: 'target', label: 'Target', kind: 'path' }, { name: 'wipe', label: 'Wipe', kind: 'checkbox' }],
+  toArgv(values) {
+    if (!values.target) throw new FcError('Enter a target.');
+    return ['rm', values.target, '--permanent'];
+  },
+};
+
+test('the confirmation follows the argv that will run, not the form field names', async (t) => {
+  const jobs = fakeJobs();
+  const routes = new Map([...jobRoutes(jobs, { specs: [alwaysPermanent] }), ...flowRoutes(jobs, [alwaysPermanent])]);
+  routes.set('/token', (req, { tokenField }) => ({ body: tokenField }));
+  const { server, url } = await startServer({ port: 0, routes });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const get = (p, init = {}) => fetch(new URL(p, url), { redirect: 'manual', ...init });
+  const token = /value="([^"]+)"/.exec(await (await get('/token')).text())[1];
+  const post = (p, fields) => get(p, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token, ...fields }).toString() });
+
+  for (const extra of [{}, { wipe: 'on' }, { permanent: '' }]) {
+    const res = await post('/files/purge/run', { target: 'D:/x', fingerprint: FP, ...extra });
+    assert.strictEqual(res.status, 400, JSON.stringify(extra));
+    assert.match(await res.text(), /not confirmed again/);
+  }
+  assert.strictEqual(jobs.starts.length, 0);
+
+  // The preview page asks for the permanent-delete confirmation because the argv has --permanent.
+  await post('/files/purge/preview', { target: 'D:/x' });
+  jobs.finish(jobs.get('j1'), { command: 'rm', report: 'p', result: {}, fingerprint: FP });
+  assert.match(await (await get('/job/result?id=j1')).text(), /name="confirm-permanent" value="yes" required/);
+
+  const ok = await post('/files/purge/run', { target: 'D:/x', fingerprint: FP, 'confirm-permanent': 'yes' });
+  assert.strictEqual(ok.status, 303);
+  assert.deepStrictEqual(jobs.starts[1], { argv: ['rm', 'D:/x', '--permanent'], options: { mode: 'run', expect: FP } });
+});
+
+test('a toItems that throws falls back to the report with a warning', () => {
+  const jobs = fakeJobs();
+  const job = {
+    id: 'r', argv: ['rm', 'D:/x'], mode: 'run', status: 'done', startedAt: 0, endedAt: 1, lines: [], droppedLines: 0, error: null,
+    outcome: { command: 'rm', ran: true, report: 'Recycled D:/x', result: {} },
+  };
+  const broken = { ...spec, toItems: () => { throw new Error('no items'); } };
+  const body = String(resultPage(jobs, job, { specs: [broken], tokenField: '' }));
+  assert.match(body, /Could not build the result table: no items/);
+  assert.ok(body.includes('Recycled D:/x'));
+});
