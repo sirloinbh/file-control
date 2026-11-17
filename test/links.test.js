@@ -137,3 +137,48 @@ test('the picker screen shows link folders as links to enter and lists the other
   assert.match(body, /Broken link/);
   assert.ok(!body.includes(escapeHtml(`/pick?${enter(path.join(dir, 'broken'))}`)), 'a broken link has no enter link');
 });
+
+test('a link whose target exists but cannot be read is unreadable, not broken (#267)', async (t) => {
+  const { dir } = build('unreadable');
+  const original = fs.statSync;
+  const mocked = t.mock.method(fs, 'statSync', (p, ...rest) => {
+    if (path.basename(String(p)) === 'junc') throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+    return original(p, ...rest);
+  });
+  const byName = Object.fromEntries(list(dir).map((e) => [e.name, e]));
+  assert.strictEqual(byName.junc.linkTo, 'unreadable');
+  assert.strictEqual(byName.broken.linkTo, 'broken');
+  assert.match(execute(['ls', dir]).report, /junc -> .* \(unreadable\)/);
+  const folder = browseFolder(dir);
+  assert.strictEqual(folder.links.find((l) => l.name === 'junc').linkTo, 'unreadable');
+  assert.ok(!folder.folders.some((f) => f.name === 'junc'));
+  mocked.mock.restore();
+  // The page is rendered from the browse result of the mocked read, served through a stub.
+  const fake = { ...browseFolder(dir), links: [{ name: 'junc', linkTo: 'unreadable', target: 'x' }] };
+  const { server: s2, url: u2 } = await startServer({ port: 0, routes: pickRoutes({ listDrives, commonPlaces, browseFolder: () => fake }) });
+  t.after(() => {
+    s2.close();
+    s2.closeAllConnections();
+  });
+  const body = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir })}`, u2))).text();
+  assert.match(body, /Unreadable link/);
+});
+
+test('a junction to a junction shows as a link in ls and entering it lands on the final real folder (#267)', async (t) => {
+  const { dir, real } = build('chain');
+  fs.symlinkSync(path.join(dir, 'junc'), path.join(dir, 'chain'), 'junction');
+  const line = execute(['ls', dir]).report.split('\n').find((l) => /\schain -> /.test(l));
+  assert.match(line, /^\[lnk\] {12}chain -> .*junc \(folder\)$/);
+  const folder = browseFolder(dir);
+  const entry = folder.folders.find((f) => f.name === 'chain');
+  assert.strictEqual(entry.link, true);
+  assert.strictEqual(entry.choosePath, real);
+  assert.strictEqual(browseFolder(path.join(dir, 'chain')).path, real);
+  const { server, url } = await startServer({ port: 0, routes: pickRoutes({ listDrives, commonPlaces, browseFolder }) });
+  t.after(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  const body = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir: path.join(dir, 'chain'), return: '/organize', field: 'target' })}`, url))).text();
+  assert.ok(body.includes(`<code>${escapeHtml(real)}</code>`));
+});

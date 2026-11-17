@@ -75,7 +75,7 @@ function folderBody(query, folder) {
     child.protected === null ? (canReturn ? html`<a href="${chosenUrl({ ...query, dir: child.choosePath ?? child.path })}">Choose</a>` : '') : html`${badge('warning', 'Cannot choose')} <span class="muted">${child.protected}</span>`,
   ]);
   const otherLinks = (folder.links ?? []).length === 0 ? '' : html`<h2>Links that cannot be entered</h2>
-${table([{ label: 'Link', width: '40%' }, { label: 'Target' }, { label: '' }], folder.links.map((l) => [l.name, l.target ?? '?', badge(l.linkTo === 'broken' ? 'warning' : 'skipped', l.linkTo === 'broken' ? 'Broken link' : 'Link to a file')]), { empty: '' })}`;
+${table([{ label: 'Link', width: '40%' }, { label: 'Target' }, { label: '' }], folder.links.map((l) => [l.name, l.target ?? '?', badge(l.linkTo === 'file' ? 'skipped' : 'warning', { broken: 'Broken link', unreadable: 'Unreadable link' }[l.linkTo] ?? 'Link to a file')]), { empty: '' })}`;
   return html`<p><code>${folder.path}</code></p>
 <p>${up}</p>
 ${choose}
