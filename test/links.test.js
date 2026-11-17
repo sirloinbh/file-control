@@ -17,7 +17,7 @@ test.mock.method(os, 'homedir', () => home);
 
 const { list } = require('../src/commands');
 const { execute } = require('../src/execute');
-const { startServer } = require('../src/ui/server');
+const { startUi } = require('./uiClient');
 const { pickRoutes } = require('../src/ui/pickPage');
 const { browseFolder, listDrives, commonPlaces } = require('../src/ui/folders');
 const { escapeHtml } = require('../src/ui/html');
@@ -121,13 +121,13 @@ function make(dir, items) {
 test('the picker screen shows link folders as links to enter and lists the others apart (#267)', async (t) => {
   const { dir, real } = build('screen');
   const sources = { listDrives, commonPlaces, browseFolder };
-  const { server, url } = await startServer({ port: 0, routes: pickRoutes(sources) });
+  const { server, get } = await startUi({ routes: pickRoutes(sources) });
   t.after(() => {
     server.close();
     server.closeAllConnections();
   });
   const query = new URLSearchParams({ dir, return: '/organize', field: 'target' });
-  const body = await (await fetch(new URL(`/pick?${query}`, url))).text();
+  const body = await (await get(`/pick?${query}`)).text();
   const enter = (p) => new URLSearchParams({ dir: p, return: '/organize', field: 'target' });
   const junction = path.join(dir, 'junc');
   assert.ok(body.includes(`href="${escapeHtml(`/pick?${enter(junction)}`)}"`), 'the link folder is entered by its own path');
@@ -155,12 +155,12 @@ test('a link whose target exists but cannot be read is unreadable, not broken (#
   mocked.mock.restore();
   // The page is rendered from the browse result of the mocked read, served through a stub.
   const fake = { ...browseFolder(dir), links: [{ name: 'junc', linkTo: 'unreadable', target: 'x' }] };
-  const { server: s2, url: u2 } = await startServer({ port: 0, routes: pickRoutes({ listDrives, commonPlaces, browseFolder: () => fake }) });
+  const { server: s2, get: get2 } = await startUi({ routes: pickRoutes({ listDrives, commonPlaces, browseFolder: () => fake }) });
   t.after(() => {
     s2.close();
     s2.closeAllConnections();
   });
-  const body = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir })}`, u2))).text();
+  const body = await (await get2(`/pick?${new URLSearchParams({ dir })}`)).text();
   assert.match(body, /Unreadable link/);
 });
 
@@ -174,11 +174,11 @@ test('a junction to a junction shows as a link in ls and entering it lands on th
   assert.strictEqual(entry.link, true);
   assert.strictEqual(entry.choosePath, real);
   assert.strictEqual(browseFolder(path.join(dir, 'chain')).path, real);
-  const { server, url } = await startServer({ port: 0, routes: pickRoutes({ listDrives, commonPlaces, browseFolder }) });
+  const { server, get } = await startUi({ routes: pickRoutes({ listDrives, commonPlaces, browseFolder }) });
   t.after(() => {
     server.close();
     server.closeAllConnections();
   });
-  const body = await (await fetch(new URL(`/pick?${new URLSearchParams({ dir: path.join(dir, 'chain'), return: '/organize', field: 'target' })}`, url))).text();
+  const body = await (await get(`/pick?${new URLSearchParams({ dir: path.join(dir, 'chain'), return: '/organize', field: 'target' })}`)).text();
   assert.ok(body.includes(`<code>${escapeHtml(real)}</code>`));
 });
