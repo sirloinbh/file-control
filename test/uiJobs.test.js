@@ -275,3 +275,15 @@ test('createJobs는 살아 있는 자식의 error에서는 풀지 않고 close�
   assert.strictEqual(jobs.running(), null);
   assert.match(failed.error.message, /spawn ENOENT/);
 });
+
+test('jobs.start passes mode and expect to the worker and records job.mode (#255)', async () => {
+  const jobs = createJobs({ workerPath: FAKE_WORKER });
+  const plain = jobs.start(['echo']);
+  await settled(jobs, plain);
+  assert.strictEqual(plain.mode, undefined);
+  assert.deepStrictEqual(plain.outcome.result, { mode: null, expect: null });
+  const checked = jobs.start(['echo'], { mode: 'run', expect: 'a'.repeat(64) });
+  await settled(jobs, checked);
+  assert.strictEqual(checked.mode, 'run');
+  assert.deepStrictEqual(checked.outcome.result, { mode: 'run', expect: 'a'.repeat(64) });
+});

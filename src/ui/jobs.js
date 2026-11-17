@@ -36,11 +36,13 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
   }
 
   // argv is the same argument array as the CLI. If a job is running, it throws BusyError.
-  function start(argv) {
+  // mode 'preview' or 'run' (with expect, the preview fingerprint) makes the worker use the checked flow (#255). Without mode it runs argv as is.
+  function start(argv, { mode, expect } = {}) {
     if (active) throw new BusyError(active);
     const job = {
       id: crypto.randomBytes(12).toString('hex'),
       argv: argv.map(String),
+      mode,
       status: 'running',
       startedAt: now(),
       endedAt: null,
@@ -101,7 +103,7 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       childError = err;
       if (child.pid === undefined) settle(null, null, err);
     });
-    child.send({ argv: job.argv });
+    child.send({ argv: job.argv, mode, expect });
     return job;
   }
 

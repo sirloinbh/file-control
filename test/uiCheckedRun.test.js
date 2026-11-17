@@ -1,0 +1,292 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const childProcess = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
+test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
+
+// Keep test files out of the real Recycle Bin (same approach as removeBroken.test.js). It is swapped before commands.js is imported.
+const realExecFileSync = childProcess.execFileSync;
+const recycled = [];
+test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+  if (options?.env?.FC_FORMAT_VOLUME !== undefined) return 'NTFS\r\n';
+  if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed\r\n';
+  if (options?.env?.FC_RECYCLE_FILES !== undefined) {
+    const lines = [];
+    for (const line of options.input.split('\n').filter(Boolean)) {
+      const [encoded] = line.split(' ');
+      const target = Buffer.from(encoded, 'base64').toString('utf16le');
+      recycled.push(target);
+      fs.rmSync(target);
+      lines.push(`ok ${encoded} `);
+    }
+    return lines.join('\r\n') + '\r\n';
+  }
+  if (options?.env?.FC_TARGET === undefined) return realExecFileSync(file, args, options);
+  recycled.push(options.env.FC_TARGET);
+  fs.rmSync(options.env.FC_TARGET, { recursive: true, force: true });
+  return Buffer.alloc(0);
+});
+
+// Files made just now are protected from removal, so the clock is moved forward 1 hour.
+const HOUR = 60 * 60 * 1000;
+const realNow = Date.now;
+test.mock.method(Date, 'now', () => realNow() + HOUR);
+
+const { execute } = require('../src/execute');
+const fc = require('../src/commands');
+const { previewFingerprint, runChecked, stripFlow } = require('../src/ui/checkedRun');
+const { runOnce } = require('../src/ui/worker');
+
+const OLD = new Date(realNow() - HOUR);
+const BROKEN = '<html>not found</html>';
+const HEX64 = /^[0-9a-f]{64}$/;
+
+function tempDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-checked-'));
+  test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return fs.realpathSync.native(dir);
+}
+
+function make(dir, files) {
+  for (const [name, content] of Object.entries(files)) {
+    const full = path.join(dir, name);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+    fs.utimesSync(full, OLD, OLD);
+  }
+}
+
+test.beforeEach(() => {
+  recycled.length = 0;
+});
+
+const fp = (argv) => previewFingerprint(argv, execute([...argv, '--dry-run']));
+
+// ---- unit tests with a fake execute ----
+
+function fakeExecute(results) {
+  const calls = [];
+  const fn = (argv) => {
+    calls.push(argv);
+    const dry = argv.includes('--dry-run');
+    return { command: argv[0], result: dry ? results.shift() ?? results.at(-1) : { changed: true }, report: dry ? 'preview' : 'done' };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('preview mode runs argv with --dry-run once and adds a 64-hex fingerprint', () => {
+  const exec = fakeExecute([{ code: 'abc', items: [1] }]);
+  const outcome = runChecked(['mv', 'a', 'b'], { mode: 'preview' }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['mv', 'a', 'b', '--dry-run']]);
+  assert.match(outcome.fingerprint, HEX64);
+  assert.strictEqual(outcome.ran, undefined);
+  assert.strictEqual(outcome.repreview, undefined);
+});
+
+test('preview mode strips a user-supplied --dry-run and --yes and keeps -- in place', () => {
+  const exec = fakeExecute([{}]);
+  runChecked(['rm', '--dry-run', '--yes=abc', '--yes', '--', '--odd'], { mode: 'preview' }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['rm', '--dry-run', '--', '--odd']]);
+  assert.deepStrictEqual(stripFlow(['rm', '--yes=1', 'x', '--', '--yes=2']), ['rm', 'x', '--', '--yes=2']);
+});
+
+test('the fingerprint depends on the argv and on the preview result but not on --dry-run or --yes', () => {
+  const outcome = { command: 'mv', result: ['a'] };
+  const base = previewFingerprint(['mv', 'a', 'b'], outcome);
+  assert.strictEqual(previewFingerprint(['mv', 'a', 'b', '--dry-run'], outcome), base);
+  assert.strictEqual(previewFingerprint(['mv', 'a', 'b', '--yes=1'], outcome), base);
+  assert.notStrictEqual(previewFingerprint(['mv', 'a', 'c'], outcome), base);
+  assert.notStrictEqual(previewFingerprint(['mv', 'a', 'b'], { ...outcome, result: ['a', 'b'] }), base);
+});
+
+test('run mode with a matching fingerprint runs for real and marks ran', () => {
+  const first = runChecked(['mv', 'a', 'b'], { mode: 'preview' }, { execute: fakeExecute([{ n: 1 }]) });
+  const exec = fakeExecute([{ n: 1 }]);
+  const outcome = runChecked(['mv', 'a', 'b'], { mode: 'run', expect: first.fingerprint }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['mv', 'a', 'b', '--dry-run'], ['mv', 'a', 'b']]);
+  assert.strictEqual(outcome.ran, true);
+  assert.deepStrictEqual(outcome.result, { changed: true });
+});
+
+test('run mode with a stale fingerprint changes nothing and returns the fresh preview with repreview', () => {
+  const first = runChecked(['mv', 'a', 'b'], { mode: 'preview' }, { execute: fakeExecute([{ n: 1 }]) });
+  const exec = fakeExecute([{ n: 2 }]);
+  const outcome = runChecked(['mv', 'a', 'b'], { mode: 'run', expect: first.fingerprint }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['mv', 'a', 'b', '--dry-run']]);
+  assert.strictEqual(outcome.repreview, true);
+  assert.strictEqual(outcome.ran, undefined);
+  assert.deepStrictEqual(outcome.result, { n: 2 });
+  assert.match(outcome.fingerprint, HEX64);
+  assert.notStrictEqual(outcome.fingerprint, first.fingerprint);
+});
+
+test('run mode rejects a missing or invalid fingerprint before running anything', () => {
+  for (const expect of [undefined, '', 'abc', 'G'.repeat(64), 'a'.repeat(63), 42]) {
+    const exec = fakeExecute([{}]);
+    assert.throws(() => runChecked(['mv', 'a', 'b'], { mode: 'run', expect }, { execute: exec }), fc.FcError);
+    assert.deepStrictEqual(exec.calls, []);
+  }
+  assert.throws(() => runChecked(['mv', 'a', 'b'], { mode: 'nope' }, { execute: fakeExecute([{}]) }), fc.FcError);
+});
+
+test('run mode never passes a user-supplied --dry-run or --yes to the real run, and remove-* get the fresh code', () => {
+  const argv = ['remove-broken', 'dir', '--yes=stale', '--dry-run'];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute: fakeExecute([{ code: 'fresh1234567' }]) });
+  const exec = fakeExecute([{ code: 'fresh1234567' }]);
+  runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['remove-broken', 'dir', '--dry-run'], ['remove-broken', 'dir', '--yes=fresh1234567']]);
+  // other commands do not get --yes
+  const mv = runChecked(['mv', 'a', 'b', '--yes=x'], { mode: 'preview' }, { execute: fakeExecute([{}]) });
+  const exec2 = fakeExecute([{}]);
+  runChecked(['mv', 'a', 'b', '--yes=x'], { mode: 'run', expect: mv.fingerprint }, { execute: exec2 });
+  assert.deepStrictEqual(exec2.calls[1], ['mv', 'a', 'b']);
+});
+
+test('runOnce without mode runs the command as before, with mode it uses the checked flow', () => {
+  const sent = [];
+  const calls = [];
+  const executeFn = (argv) => {
+    calls.push(argv);
+    return { command: argv[0], result: ['x'], report: 'r' };
+  };
+  runOnce(['mv', 'a', 'b'], (msg) => sent.push(msg), { executeFn });
+  assert.deepStrictEqual(calls, [['mv', 'a', 'b']]);
+  assert.strictEqual(sent.at(-1).type, 'done');
+  calls.length = 0;
+  runOnce(['mv', 'a', 'b'], (msg) => sent.push(msg), { mode: 'preview', executeFn });
+  assert.deepStrictEqual(calls, [['mv', 'a', 'b', '--dry-run']]);
+  assert.match(sent.at(-1).outcome.fingerprint, HEX64);
+  runOnce(['mv', 'a', 'b'], (msg) => sent.push(msg), { mode: 'run', expect: 'bad', executeFn });
+  assert.strictEqual(sent.at(-1).type, 'error');
+});
+
+// ---- empirical volatility: two dry-runs of an unchanged folder give the same fingerprint, a changed folder does not ----
+
+function scene() {
+  const dir = tempDir();
+  make(dir, {
+    'a/b/one.txt': '1',
+    'a/two.txt': '2',
+    'src.txt': 's',
+    'dup/a.txt': 'a',
+    'dup/b/a.txt': 'b',
+    'page.html': '<html>x</html>',
+    'arch/x.txt': 'x',
+    'broken/bad.mp4': BROKEN,
+  });
+  return dir;
+}
+
+test('every file-changing command has a stable fingerprint on an unchanged folder', () => {
+  const dir = scene();
+  const p = (...parts) => path.join(dir, ...parts);
+  const cases = [
+    ['mkdir', p('newdir')],
+    ['write', p('w.txt'), 'hi'],
+    ['append', p('src.txt'), 'hi'],
+    ['rename', p('src.txt'), 'r.txt'],
+    ['mv', p('a', 'two.txt'), p('dup')],
+    ['cp', p('src.txt'), p('cp.txt')],
+    ['rm', p('src.txt')],
+    ['zip', p('z.zip'), p('a')],
+    ['flatten', p('a')],
+    ['product-number', dir],
+    ['normalize', dir],
+    ['collapse', dir],
+    ['extract-all', p('arch')],
+    ['remove-broken', dir],
+    ['remove-duplicates', dir],
+    ['remove-low-quality', dir],
+  ];
+  for (const argv of cases) assert.strictEqual(fp(argv), fp(argv), argv[0]);
+  assert.deepStrictEqual(recycled, []);
+});
+
+test('flatten and remove-broken fingerprints change when the folder changes; mv and rm follow their sources', () => {
+  const dir = scene();
+  const p = (...parts) => path.join(dir, ...parts);
+  const cases = {
+    mv: ['mv', p('dup', 'a.txt'), p('a')],
+    rm: ['rm', p('dup')],
+    flatten: ['flatten', p('a')],
+    'remove-broken': ['remove-broken', dir],
+  };
+  const before = Object.fromEntries(Object.entries(cases).map(([name, argv]) => [name, fp(argv)]));
+  // flatten and remove-broken scan their folders.
+  make(dir, { 'dup/new.txt': 'n', 'a/b/deep/three.txt': '3', 'more/bad2.mp4': BROKEN + ' too' });
+  for (const name of ['flatten', 'remove-broken']) assert.notStrictEqual(fp(cases[name]), before[name], name);
+  // mv and rm name their sources only (rm treats a folder as one item), so an unrelated change leaves them alone and a missing source is an error.
+  assert.strictEqual(fp(cases.mv), before.mv);
+  assert.strictEqual(fp(cases.rm), before.rm);
+  fs.rmSync(p('dup'), { recursive: true });
+  assert.throws(() => fp(cases.mv), fc.FcError);
+  assert.throws(() => fp(cases.rm), fc.FcError);
+});
+
+// ---- real files ----
+
+test('real run (mv): a stale fingerprint changes nothing, a matching one moves the file', () => {
+  const dir = tempDir();
+  make(dir, { 'one.txt': '1', 'dest/keep.txt': 'k' });
+  const argv = ['mv', path.join(dir, 'one.txt'), path.join(dir, 'dest')];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.ok(fs.existsSync(path.join(dir, 'one.txt')), 'a preview does not move');
+  const stale = runChecked(argv, { mode: 'run', expect: 'f'.repeat(64) }, { execute });
+  assert.strictEqual(stale.repreview, true);
+  assert.ok(fs.existsSync(path.join(dir, 'one.txt')), 'a stale run does not move');
+  assert.strictEqual(stale.fingerprint, preview.fingerprint);
+  const ran = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(ran.ran, true);
+  assert.ok(!fs.existsSync(path.join(dir, 'one.txt')));
+  assert.ok(fs.existsSync(path.join(dir, 'dest', 'one.txt')));
+});
+
+test('real run (flatten): a folder that changed after the preview is not flattened', () => {
+  const dir = tempDir();
+  make(dir, { 'a/b/one.txt': '1' });
+  const argv = ['flatten', path.join(dir, 'a')];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  make(dir, { 'a/c/two.txt': '2' });
+  const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(outcome.repreview, true);
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'b', 'one.txt')));
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'c', 'two.txt')));
+  const again = runChecked(argv, { mode: 'run', expect: outcome.fingerprint }, { execute });
+  assert.strictEqual(again.ran, true);
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'one.txt')));
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'two.txt')));
+});
+
+test('real run (remove-broken): files go to the Recycle Bin only with a matching fingerprint', () => {
+  const dir = tempDir();
+  make(dir, { 'bad.mp4': BROKEN, 'good.txt': 'fine text' });
+  const argv = ['remove-broken', dir];
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.deepStrictEqual(recycled, []);
+  assert.strictEqual(preview.result.removals.length, 1);
+
+  // a new broken file appears after the preview
+  make(dir, { 'bad2.mp4': BROKEN + ' again' });
+  const stale = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(stale.repreview, true);
+  assert.deepStrictEqual(recycled, []);
+  assert.ok(fs.existsSync(path.join(dir, 'bad.mp4')));
+  assert.ok(fs.existsSync(path.join(dir, 'bad2.mp4')));
+  assert.strictEqual(stale.result.removals.length, 2);
+
+  // a run without a valid fingerprint is refused outright
+  assert.throws(() => runChecked(argv, { mode: 'run' }, { execute }), fc.FcError);
+  assert.deepStrictEqual(recycled, []);
+
+  const ran = runChecked(argv, { mode: 'run', expect: stale.fingerprint }, { execute });
+  assert.strictEqual(ran.ran, true);
+  assert.deepStrictEqual(recycled.sort(), [path.join(dir, 'bad.mp4'), path.join(dir, 'bad2.mp4')].sort());
+  assert.ok(fs.existsSync(path.join(dir, 'good.txt')));
+});
