@@ -223,3 +223,27 @@ test('parseLines and the specs build the argv from the named fields only (#258)'
   const all = archiveScreens.specs.find((spec) => spec.command === 'extract-all');
   assert.deepStrictEqual(all.toArgv({ target: 'D:\\dl', removeArchives: '' }), ['extract-all', '--', 'D:\\dl']);
 });
+
+test('unzip preview warns when the extraction folder already has entries; zip strips quotes around the archive (#258)', async (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.writeFileSync(path.join(dir, 'src', 'a.txt'), 'new');
+  const archive = path.join(dir, 'pack.zip');
+  const { post, finish } = await serve(t);
+  const quoted = `"${archive}"`;
+  const made = await finish(await post('/archive/zip/preview', { archive: quoted, sources: path.join(dir, 'src') }));
+  assert.strictEqual(made.job.argv[2], archive, 'the quotes around the zip archive are removed');
+  await finish(await post('/archive/zip/run', { archive: quoted, sources: path.join(dir, 'src'), fingerprint: fingerprintOf(made.body) }));
+
+  const fresh = path.join(dir, 'fresh');
+  const none = await finish(await post('/archive/unzip/preview', { archive, dest: fresh }));
+  assert.doesNotMatch(none.body, /extraction folder already exists/);
+
+  const dest = path.join(dir, 'existing');
+  fs.mkdirSync(path.join(dest, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dest, 'src', 'a.txt'), 'old');
+  fs.writeFileSync(path.join(dest, 'other.txt'), 'x');
+  const preview = await finish(await post('/archive/unzip/preview', { archive, dest }));
+  assert.match(preview.body, /alert-warning[^>]*>The extraction folder already exists and has 2 entries\. Files in the archive with the same name will overwrite them/);
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'old', 'a preview overwrites nothing');
+});

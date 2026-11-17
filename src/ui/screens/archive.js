@@ -6,14 +6,18 @@
 // - unzip: an archive and an optional folder. The preview shows the size check of #77 (it is part of unzip --dry-run) and the free space left.
 // - extract-all: a target folder and --remove-archives. The result is a table with one row per archive. Originals go to the Recycle Bin.
 
+const fs = require('node:fs');
 const { FcError } = require('../../commands');
 const { html } = require('../html');
-const { page, table } = require('../layout');
+const { page, table, alertBox } = require('../layout');
 const { describeArchiveFormat, extractAllView, unzipSpace } = require('../archive');
 
 const AREA = '/archive';
 
 // One path per line. Blank lines are dropped and a pair of double quotes around a path (copied with "Copy as path") is removed.
+// A pair of double quotes around one path is removed.
+const unquote = (text) => String(text).trim().replace(/^"(.*)"$/, '$1').trim();
+
 function parseLines(text) {
   return String(text).split(/\r?\n/).map((line) => line.trim().replace(/^"(.*)"$/, '$1').trim()).filter((line) => line !== '');
 }
@@ -35,7 +39,7 @@ const specs = [
       { name: 'force', label: 'Overwrite the archive if it already exists', kind: 'checkbox' },
     ],
     toArgv(values) {
-      const archive = values.archive.trim();
+      const archive = unquote(values.archive);
       const sources = parseLines(values.sources);
       if (archive === '') throw new FcError('Enter the archive file to create.');
       if (sources.length === 0) throw new FcError('Enter at least one file or folder to compress.');
@@ -52,7 +56,7 @@ const specs = [
       { name: 'dest', label: 'Folder to extract into (empty: a folder named after the archive, next to it)', kind: 'path' },
     ],
     toArgv(values) {
-      const archive = values.archive.trim().replace(/^"(.*)"$/, '$1').trim();
+      const archive = unquote(values.archive);
       const dest = values.dest.trim();
       if (archive === '') throw new FcError('Enter the archive file to extract.');
       return ['unzip', '--', archive, ...(dest === '' ? [] : [dest])];
@@ -81,6 +85,18 @@ const specs = [
 const report = (outcome) => html`<pre class="report">${outcome.report}</pre>`;
 const isPreview = (outcome, job) => job.mode === 'preview' || outcome.repreview === true;
 
+// Extracting into a folder that already has entries overwrites files with the same name, and the old content cannot be restored.
+function existingWarning(dest) {
+  let count = 0;
+  try {
+    count = fs.readdirSync(dest).length;
+  } catch {
+    return '';
+  }
+  if (count === 0) return '';
+  return alertBox('warning', `The extraction folder already exists and has ${count} ${count === 1 ? 'entry' : 'entries'}. Files in the archive with the same name will overwrite them, and the old content cannot be restored.`);
+}
+
 const views = {
   zip(outcome, job) {
     const archive = pathsOf(job.argv)[0] ?? '';
@@ -91,7 +107,7 @@ ${report(outcome)}`;
     const [archive, dest] = pathsOf(job.argv);
     if (!isPreview(outcome, job)) return report(outcome);
     const space = unzipSpace(archive ?? '', dest);
-    return html`<p>Extraction folder: <code>${space.dest}</code></p>
+    return html`${existingWarning(space.dest)}<p>Extraction folder: <code>${space.dest}</code></p>
 <p>${space.text}</p>
 ${report(outcome)}`;
   },
