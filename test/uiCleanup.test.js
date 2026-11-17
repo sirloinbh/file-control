@@ -54,8 +54,10 @@ test('find-duplicates screen: each group splits the file to keep from the delete
   assert.match(body, /<h3>Duplicate candidates: number ABC-123 \(2 files\)<\/h3>/);
   const table = rows(body);
   const keeper = outcome.result.groups[0].keep.path;
+  // The result reports real paths. On CI the temp folder is an 8.3 short name (RUNNER~1), so compare with its real path.
+  const realDir = fs.realpathSync.native(dir);
   for (const cells of table.slice(0, 2)) {
-    if (path.join(dir, cells[0]) === keeper) assert.match(cells[1], /Keep/);
+    if (path.join(realDir, cells[0]) === keeper) assert.match(cells[1], /Keep/);
     else assert.match(cells[1], /Delete candidate/);
   }
   assert.strictEqual(table.filter((cells) => /Keep/.test(cells[1])).length, 1);
