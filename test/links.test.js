@@ -79,8 +79,9 @@ test('fctl ls prints links with their target and keeps the lines of files and fo
   assert.ok(junc.endsWith(`${real} (folder)`), junc);
   const broken = lines.find((l) => /\sbroken /.test(l));
   assert.match(broken, /^\[lnk\] {12}broken -> .* \(broken\)$/);
-  // A link line has no size.
-  assert.doesNotMatch(junc, /\d+B/);
+  // A link line has no size. Only the part before ' -> ' is checked: the target path holds a random temp folder name
+  // that can contain something like '5B' (#295).
+  assert.doesNotMatch(junc.split(' -> ')[0], /\d+B/);
 });
 
 test('the folder picker lists link folders as enterable folders, not counted as files, and shows broken links apart (#267)', () => {
