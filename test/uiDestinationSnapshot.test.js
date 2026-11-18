@@ -139,16 +139,32 @@ test('the destination snapshot counts what is there: type, items inside and tota
   ]);
 });
 
-test('without --force nothing is overwritten, so there is no destination snapshot and the fingerprint is computed as before (#284)', () => {
+test('without --force there is no destination snapshot; only the followed flag on a source that reads through links changes the fingerprint (#284)', () => {
   const dir = tempDir();
   make(dir, { 'src/a.txt': '1', 'dest/keep.txt': 'k' });
+  // The fingerprint as #280 computed it: the snapshot had no followed flag and the preview no destinations.
+  const before280 = (command, argv, preview) => fingerprint({
+    command,
+    args: argv,
+    options: {},
+    preview: { result: toPlain(preview.result), sources: preview.sources.map(({ followed, ...rest }) => rest) },
+  });
   for (const command of ['mv', 'cp']) {
     const argv = [command, path.join(dir, 'src'), path.join(dir, 'dest')];
     const preview = runChecked(argv, { mode: 'preview' }, { execute });
-    assert.strictEqual(preview.destinations, undefined);
-    const before = fingerprint({ command, args: argv, options: {}, preview: { result: toPlain(preview.result), sources: preview.sources } });
-    assert.strictEqual(preview.fingerprint, before, `${command}: the same value as before #284`);
-    assert.strictEqual(previewFingerprint(argv, preview), before);
+    assert.strictEqual(preview.destinations, undefined, `${command}: no destination snapshot without --force`);
+    assert.strictEqual(previewFingerprint(argv, preview), preview.fingerprint);
+    if (command === 'mv') {
+      // mv on one volume renames, so it does not follow links: the value is exactly the one before #284.
+      assert.strictEqual(preview.sources[0].followed, undefined);
+      assert.strictEqual(preview.fingerprint, before280(command, argv, preview), 'mv: the same value as before #284');
+    } else {
+      // cp reads through links, and its snapshot now says so; that flag is the only difference.
+      assert.strictEqual(preview.sources[0].followed, true);
+      assert.notStrictEqual(preview.fingerprint, before280(command, argv, preview), 'cp: the followed flag is part of the value');
+      const withFlag = fingerprint({ command, args: argv, options: {}, preview: { result: toPlain(preview.result), sources: preview.sources } });
+      assert.strictEqual(preview.fingerprint, withFlag, 'cp: nothing else changed');
+    }
   }
 });
 
