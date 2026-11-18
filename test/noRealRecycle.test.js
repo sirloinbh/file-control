@@ -78,3 +78,26 @@ test('ordinary PowerShell calls and the read-only Recycle Bin state check pass t
   assert.notStrictEqual(recycleBinState(os.tmpdir()).driveType, null, 'the real state check (FC_VOLUME) ran');
   assert.strictEqual(blocked(), '');
 });
+
+test('a run fails with exit 1 when a test swallows the guard error, so a blocked call cannot pass silently', { skip: optedOut }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-guard-run-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fixture = path.join(dir, 'swallow.test.js');
+  // The fixture's call is blocked before PowerShell starts, and the test catches the error and passes anyway.
+  fs.writeFileSync(fixture, [
+    "const test = require('node:test');",
+    "const childProcess = require('node:child_process');",
+    "test('swallows', () => {",
+    "  try { childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', '$x.SendToRecycleBin']); } catch {}",
+    '});',
+    '',
+  ].join('\n'));
+  // A fresh run: no log from this run, so the child run owns its own log like npm test does.
+  const env = { ...process.env };
+  delete env.FC_NO_REAL_RECYCLE_LOG;
+  delete env.NODE_TEST_CONTEXT; // otherwise node --test sees a recursive run and skips the file
+  const run = childProcess.spawnSync(process.execPath, ['--require', path.join(__dirname, 'noRealRecycle.js'), '--test', fixture], { env, encoding: 'utf8', timeout: 60_000 });
+  assert.strictEqual(run.status, 1, `stdout: ${run.stdout}\nstderr: ${run.stderr}`);
+  assert.match(run.stderr, /calls to the real Recycle Bin were blocked/);
+  assert.match(run.stdout, /pass 1/, "the test itself passed");
+});
