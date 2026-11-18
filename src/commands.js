@@ -1802,6 +1802,7 @@ module.exports = {
   rename,
   move,
   copy,
+  resolveDest,
   remove,
   recycleBinState,
   permanentDeleteReason,

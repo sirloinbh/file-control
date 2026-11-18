@@ -219,9 +219,10 @@ test('the preview page shows what each source holds, escaped, with link notes', 
     { path: 'D:\\lnk', type: 'link', count: 3, size: 10, digest: 'x', target: 'D:\\t<arget>' },
     { path: 'D:\\gone', type: 'missing', count: 0, size: 0, digest: '' },
   ];
+  // The snapshot marks a link it read through as followed (cp, and mv to another volume, #284).
   const render = (command) => String(resultPage(jobs, {
     id: 'p', argv: [command, 'D:\\a'], mode: 'preview', status: 'done', startedAt: 0, endedAt: 1, lines: [], droppedLines: 0, error: null,
-    outcome: { command, report: 'r', result: {}, fingerprint: FP, sources },
+    outcome: { command, report: 'r', result: {}, fingerprint: FP, sources: sources.map((s) => (command === 'cp' && s.type === 'link' ? { ...s, followed: true } : s)) },
   }, { specs: [{ ...spec, command }], tokenField: '' }));
   const rm = render('rm');
   for (const label of ['Source', 'Type', 'Items inside', 'Total size', 'Folder', 'File', 'Link', 'Missing']) assert.ok(rm.includes(label), label);
@@ -232,4 +233,28 @@ test('the preview page shows what each source holds, escaped, with link notes', 
   assert.ok(!rm.includes('3 items'), 'rm does not count what a link leads to');
   const cp = render('cp');
   assert.ok(cp.includes('3 items') && cp.includes('are included'));
+  assert.ok(!cp.includes('Will be overwritten'), 'no destination snapshot, no overwrite table');
+});
+
+test('the preview page of a --force run lists what will be overwritten, escaped (#284)', () => {
+  const jobs = fakeJobs();
+  const destinations = [
+    { path: 'D:\\to\\a<b>', type: 'dir', count: 2, size: 1024, digest: 'x' },
+    { path: 'D:\\to\\f.txt', type: 'file', count: 0, size: 5, digest: 'x' },
+    { path: 'D:\\to\\lnk', type: 'link', count: 0, size: 0, digest: 'x', target: 'D:\\t<arget>' },
+    { path: 'D:\\to\\new', type: 'missing', count: 0, size: 0, digest: '' },
+  ];
+  const render = (command, list) => String(resultPage(jobs, {
+    id: 'p', argv: [command, '--force', 'D:\\a', 'D:\\to'], mode: 'preview', status: 'done', startedAt: 0, endedAt: 1, lines: [], droppedLines: 0, error: null,
+    outcome: { command, report: 'r', result: {}, fingerprint: FP, sources: [], destinations: list },
+  }, { specs: [{ ...spec, command }], tokenField: '' }));
+  const mv = render('mv', destinations);
+  assert.ok(mv.includes('<h2>Will be overwritten</h2>'));
+  assert.ok(mv.includes('replaced as a whole') && mv.includes('3 existing items at the destination, 1.0KB in all'), mv);
+  assert.ok(mv.includes('D:\\to\\a&lt;b&gt;') && !mv.includes('<b>'));
+  assert.ok(mv.includes('2 items<'));
+  assert.ok(mv.includes('D:\\t&lt;arget&gt;') && mv.includes('Only the link is replaced'));
+  assert.ok(!mv.includes('D:\\to\\new'), 'a destination that does not exist yet is not listed');
+  assert.ok(render('cp', destinations).includes('a folder is merged'));
+  assert.ok(render('cp', [destinations[3]]).includes('nothing is overwritten'));
 });
