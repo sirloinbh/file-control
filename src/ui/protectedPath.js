@@ -18,15 +18,40 @@ const { protectedReason } = require('../target');
 // The most links one path may lead through before the check gives up (and refuses).
 const MAX_LINKS = 32;
 
+// The longest path and the most components the check walks. Longer paths are refused: Windows paths end at 32767 characters, and walking up a
+// path with very many missing components would block the server.
+const MAX_PATH_CHARS = 32767;
+const MAX_COMPONENTS = 1000;
+
+// A name that ends with a dot or a space (Windows tools read it as another name).
+const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
+
 class Unchecked extends Error {}
 
-// A link target as Windows may store it (\\?\C:\x or \??\C:\x) in the plain form protectedReason understands.
+// The first component of an absolute path p that ends with a dot or a space, or undefined. Only Windows reads such names differently.
+function trailingDotOrSpacePart(p) {
+  if (process.platform !== 'win32') return undefined;
+  return p.slice(path.parse(p).root.length).split(/[\\/]/).find((part) => TRAILING_DOT_OR_SPACE.test(part));
+}
+
+// A link target in a form protectedReason understands: a plain drive path (C:\x; \\?\C:\x and \??\C:\x are made plain) or a relative path,
+// which is read from the link's folder. Anything else (a UNC path such as \\localhost\C$\x, \\?\UNC\..., a volume GUID path \\?\Volume{...}\,
+// a device path \\.\..., a drive-relative C:x or a rooted \x) can lead anywhere, so it is not checked: the path is refused.
 function plainTarget(target) {
-  return target.replace(/^(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:)/, '');
+  const plain = target.replace(/^(?:\\\\\?\\|\\\?\?\\)(?=[A-Za-z]:)/, '');
+  const refuse = () => { throw new Unchecked(`a link points to a path that cannot be checked: ${target}`); };
+  // A ? or * cannot be part of a Windows name, and a : only follows the drive letter. Such a target is an NT path in disguise
+  // (for example D:\??\Volume{...}\x, which Node's symlinkSync stores for a \??\Volume{...} target).
+  const named = /^[A-Za-z]:/.test(plain) ? plain.slice(2) : plain;
+  if (/[?*:]/.test(named)) refuse();
+  if (/^[A-Za-z]:[\\/]/.test(plain)) return plain;
+  if (/^[A-Za-z]:/.test(plain) || /^[\\/]/.test(plain)) refuse();
+  return plain;
 }
 
 // Every real path p can lead to, added to out. It throws Unchecked when a path cannot be checked.
 function collectReal(p, out, budget) {
+  if (p.length > MAX_PATH_CHARS || p.split(/[\\/]/).length > MAX_COMPONENTS) throw new Unchecked('the path is too long');
   const rest = [];
   let current = p;
   let real;
@@ -37,10 +62,12 @@ function collectReal(p, out, budget) {
     } catch (err) {
       const parent = path.dirname(current);
       if ((err.code !== 'ENOENT' && err.code !== 'ENOTDIR') || parent === current) throw new Unchecked(err.code ?? err.message);
-      rest.unshift(path.basename(current));
+      rest.push(path.basename(current));
       current = parent;
     }
   }
+  // The components were collected from the end.
+  rest.reverse();
   // real is the nearest existing parent, and its child rest[0] is where realpath failed: it is missing, or it is a dangling link.
   if (rest.length > 0) {
     const next = path.join(real, rest[0]);
@@ -57,10 +84,11 @@ function collectReal(p, out, budget) {
       budget.left -= 1;
       let target;
       try {
-        target = plainTarget(fs.readlinkSync(next));
+        target = fs.readlinkSync(next);
       } catch (err) {
         throw new Unchecked(err.code ?? err.message);
       }
+      target = plainTarget(target);
       out.push(path.join(next, ...rest.slice(1)));
       collectReal(path.join(path.resolve(real, target), ...rest.slice(1)), out, budget);
       return;
@@ -96,4 +124,4 @@ function refuseProtected(p, label) {
   return p;
 }
 
-module.exports = { protectedPathReason, refuseProtected };
+module.exports = { protectedPathReason, refuseProtected, trailingDotOrSpacePart, TRAILING_DOT_OR_SPACE };

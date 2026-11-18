@@ -13,7 +13,7 @@ const { FcError } = require('../../commands');
 const { html } = require('../html');
 const { page, table, alertBox } = require('../layout');
 const { describeArchiveFormat, extractAllView, unzipDest, unzipSpace } = require('../archive');
-const { refuseProtected } = require('../protectedPath');
+const { refuseProtected, trailingDotOrSpacePart } = require('../protectedPath');
 
 const AREA = '/archive';
 
@@ -33,7 +33,10 @@ function checkedPath(text, label) {
   if (process.platform === 'win32' && /^[\\/]{2}/.test(text) && !/^\\\\\?\\[A-Za-z]:/.test(text)) {
     throw new FcError(`Network and device paths are not used: ${text}`);
   }
-  return refuseProtected(path.resolve(text), label);
+  const full = path.resolve(text);
+  const bad = trailingDotOrSpacePart(full);
+  if (bad !== undefined) throw new FcError(`${label} has a name that ends with a dot or space (${bad}): ${full}`);
+  return refuseProtected(full, label);
 }
 
 // The arguments after the command name, without the options. The spec puts -- before the paths, so everything after it is a path.

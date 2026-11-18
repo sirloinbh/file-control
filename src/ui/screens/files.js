@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { FcError, formatSize, list } = require('../../commands');
-const { protectedPathReason } = require('../protectedPath');
+const { protectedPathReason, trailingDotOrSpacePart, TRAILING_DOT_OR_SPACE } = require('../protectedPath');
 const { html } = require('../html');
 const { page, alertBox, summaryCards, table, badge } = require('../layout');
 const { pathInput } = require('../pickPage');
@@ -41,8 +41,6 @@ const COMMANDS = [
 
 // ---------- Checking what a person typed ----------
 
-const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
-
 // The checks both reading and changing share: a real, absolute, local path.
 function readablePath(value, label) {
   const text = typeof value === 'string' ? value.trim() : '';
@@ -61,10 +59,8 @@ function readablePath(value, label) {
 // A path a command will change. It also refuses protected places and names that Windows tools read as another name.
 function changeablePath(value, label) {
   const text = readablePath(value, label);
-  if (process.platform === 'win32') {
-    const bad = text.slice(path.parse(text).root.length).split(/[\\/]/).find((part) => TRAILING_DOT_OR_SPACE.test(part));
-    if (bad !== undefined) throw new FcError(`${label} has a name that ends with a dot or space (${bad}): ${text}`);
-  }
+  const bad = trailingDotOrSpacePart(text);
+  if (bad !== undefined) throw new FcError(`${label} has a name that ends with a dot or space (${bad}): ${text}`);
   const reason = protectedPathReason(text);
   if (reason) throw new FcError(`${label} is a protected place (${reason}): ${text}`);
   return text;

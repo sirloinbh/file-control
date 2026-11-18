@@ -82,6 +82,57 @@ test('a dangling file symbolic link ok\\dang -> <home>\\.ssh\\newfile is refused
   assert.strictEqual(protectedPathReason(plain), null);
 });
 
+// The volume GUID path (\\?\Volume{...}\) of the drive p is on, or null if mountvol cannot tell.
+function volumeGuidOf(p) {
+  try {
+    const out = require('node:child_process').execFileSync('mountvol', [path.parse(p).root, '/L'], { encoding: 'utf8', windowsHide: true });
+    return /\\\\\?\\Volume\{[0-9a-fA-F-]+\}\\/.exec(out)?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+test('a dangling link to a UNC, \\\\?\\UNC\\, volume GUID or device path is refused, even when it leads into a protected place (#290)', (t) => {
+  const { ssh, ok } = makeHome(t);
+  const drive = ssh.slice(0, 1);
+  const tail = ssh.slice(3);
+  const targets = [
+    `\\\\localhost\\${drive}$\\${tail}\\x`,
+    `\\\\?\\UNC\\localhost\\${drive}$\\${tail}\\x`,
+    `\\\\.\\${drive}:\\${tail}\\x`,
+    `${drive}:${tail}\\x`,
+  ];
+  const guid = volumeGuidOf(ssh);
+  if (guid) targets.push(`${guid}${tail}\\x`, `\\??\\${guid.slice(4)}${tail}\\x`);
+  let made = 0;
+  for (const [i, target] of targets.entries()) {
+    const link = path.join(ok, `l${i}`);
+    try {
+      fs.symlinkSync(target, link, 'file');
+    } catch (err) {
+      if (err.code === 'EPERM') {
+        t.skip('creating a file symbolic link needs the symlink privilege');
+        return;
+      }
+      throw err;
+    }
+    made += 1;
+    assert.match(protectedPathReason(link) ?? 'allowed', /could not be checked|user settings folder/, target);
+    assert.match(protectedPathReason(path.join(link, 'below')) ?? 'allowed', /could not be checked|user settings folder/, target);
+  }
+  assert.ok(made >= 4);
+});
+
+test('a very long path is refused without walking it (#290)', (t) => {
+  const { ok } = makeHome(t);
+  const deep = path.join(ok, ...Array.from({ length: 1500 }, () => 'a'));
+  const started = Date.now();
+  assert.match(protectedPathReason(deep), /too long/);
+  assert.match(protectedPathReason(path.join(ok, 'x'.repeat(33000))), /too long/);
+  assert.ok(Date.now() - started < 2000);
+  assert.strictEqual(protectedPathReason(path.join(ok, ...Array.from({ length: 200 }, () => 'a'))), null);
+});
+
 test('a chain of dangling links is followed to its end, and a link loop is refused', (t) => {
   const { base, ssh } = makeHome(t);
   // first -> second (a junction to a folder that does not exist) -> .ssh\newdir.

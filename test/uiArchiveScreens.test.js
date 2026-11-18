@@ -230,6 +230,9 @@ test('parseLines and the specs build the argv from the named fields only (#258)'
   assert.throws(() => zip.toArgv({ archive: 'x.zip', sources: 'D:\\a' }), /full path/);
   assert.throws(() => zip.toArgv({ archive: 'D:\\x.zip', sources: '--force' }), /full path/);
   assert.throws(() => all.toArgv({ target: '\\\\server\\share' }), /Network and device paths/);
+  // A name that ends with a dot or a space is read as another name by Windows tools.
+  assert.throws(() => zip.toArgv({ archive: 'D:\\x.zip', sources: 'D:\\dir.\\a' }), /ends with a dot or space \(dir\.\)/);
+  assert.throws(() => all.toArgv({ target: 'D:\\dl ' + '\\x' }), /ends with a dot or space/);
 });
 
 test('unzip preview warns when the extraction folder already has entries; zip strips quotes around the archive (#258)', async (t) => {
