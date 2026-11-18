@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { FcError, formatSize, list } = require('../../commands');
-const { protectedReason } = require('../../target');
+const { protectedPathReason } = require('../protectedPath');
 const { html } = require('../html');
 const { page, alertBox, summaryCards, table, badge } = require('../layout');
 const { pathInput } = require('../pickPage');
@@ -58,29 +58,6 @@ function readablePath(value, label) {
   return path.resolve(text);
 }
 
-// The real path of p with links, junctions and 8.3 short names resolved. A path that does not exist yet (a folder to create, a destination)
-// is resolved through its nearest existing parent, and the rest is added back.
-function realPathOf(p) {
-  const rest = [];
-  let current = p;
-  for (;;) {
-    try {
-      return path.join(fs.realpathSync.native(current), ...rest.reverse());
-    } catch (err) {
-      const parent = path.dirname(current);
-      if (parent === current || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) return p;
-      rest.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
-// The reason a path is protected, or null. It looks at the typed path and at its real path, so a junction, a symbolic link or a short name
-// (C:\PROGRA~1) cannot lead into a protected place.
-function protectedOf(p) {
-  return protectedReason(p) ?? protectedReason(realPathOf(p));
-}
-
 // A path a command will change. It also refuses protected places and names that Windows tools read as another name.
 function changeablePath(value, label) {
   const text = readablePath(value, label);
@@ -88,7 +65,7 @@ function changeablePath(value, label) {
     const bad = text.slice(path.parse(text).root.length).split(/[\\/]/).find((part) => TRAILING_DOT_OR_SPACE.test(part));
     if (bad !== undefined) throw new FcError(`${label} has a name that ends with a dot or space (${bad}): ${text}`);
   }
-  const reason = protectedOf(text);
+  const reason = protectedPathReason(text);
   if (reason) throw new FcError(`${label} is a protected place (${reason}): ${text}`);
   return text;
 }
@@ -352,7 +329,7 @@ function catPage(req, { available }) {
   let full;
   try {
     full = readablePath(file, 'The file');
-    const reason = protectedOf(full);
+    const reason = protectedPathReason(full);
     if (reason) throw new FcError(`This file is in a protected place (${reason}), so it is not shown: ${full}`);
     start = readStart(full);
   } catch (err) {

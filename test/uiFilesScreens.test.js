@@ -457,6 +457,29 @@ test('a junction into a protected place is refused for cat, rm, mv (source and d
   assert.match(await (await get(`/files/ls?${new URLSearchParams({ dir: link })}`)).text(), /secret\.txt/);
 });
 
+test('a dangling link into a protected place is refused for write, mkdir and mv (#290)', (t) => {
+  const { base, home } = makeHome(t);
+  const ok = path.join(base, 'ok');
+  fs.mkdirSync(ok);
+  // A junction to a folder that does not exist yet needs no privilege.
+  const dangDir = path.join(ok, 'dangdir');
+  fs.symlinkSync(path.join(home, '.ssh', 'newdir'), dangDir, 'junction');
+  assert.throws(() => argvOf('mkdir', { folder: dangDir }), /protected/);
+  assert.throws(() => argvOf('write', { file: path.join(dangDir, 'x.txt'), content: 'x' }), /protected/);
+  assert.throws(() => argvOf('mv', { sources: path.join(base, 'plain.txt'), dest: dangDir }), /protected/);
+  // A file symbolic link needs the symlink privilege (or Developer Mode).
+  const dang = path.join(ok, 'dang');
+  try {
+    fs.symlinkSync(path.join(home, '.ssh', 'newfile'), dang, 'file');
+  } catch (err) {
+    if (err.code !== 'EPERM') throw err;
+    t.skip('creating a file symbolic link needs the symlink privilege');
+    return;
+  }
+  assert.throws(() => argvOf('write', { file: dang, content: 'x' }), /protected/);
+  assert.ok(!fs.existsSync(path.join(home, '.ssh', 'newfile')));
+});
+
 test('an 8.3 short name of a protected folder is refused', { skip: !fs.existsSync('C:\\PROGRA~1') }, () => {
   assert.throws(() => argvOf('mkdir', { folder: 'C:\\PROGRA~1\\x' }), /protected/);
   assert.throws(() => argvOf('rm', { targets: 'C:\\PROGRA~1' }), /protected/);

@@ -9,6 +9,13 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+// The temp folder is inside the user folder (AppData), which is a protected place and which whole-folder commands refuse. So this process
+// (the server, which checks the path fields, #290) sees a fake home through os.homedir, and the job process gets the same fake home.
+const FAKE_HOME = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
+let currentHome = FAKE_HOME;
+test.mock.method(os, 'homedir', () => currentHome);
+
 const { startUi } = require('./uiClient');
 const { createJobs } = require('../src/ui/jobs');
 const { jobRoutes } = require('../src/ui/jobPages');
@@ -28,9 +35,6 @@ async function settled(jobs, job, timeoutMs = 60000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
-
-// The temp folder is inside the user folder, which whole-folder commands refuse. The job process gets a home folder that does not exist.
-const FAKE_HOME = path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home');
 
 async function serve(t) {
   const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME } });
@@ -218,10 +222,14 @@ test('extract-all --remove-archives: the preview names the originals to be remov
 test('parseLines and the specs build the argv from the named fields only (#258)', () => {
   assert.deepStrictEqual(archiveScreens.parseLines(' a.txt\r\n"b c.txt"\n\n  \n'), ['a.txt', 'b c.txt']);
   const zip = archiveScreens.specs.find((spec) => spec.command === 'zip');
-  // A source that looks like an option stays a path because it comes after --.
-  assert.deepStrictEqual(zip.toArgv({ archive: 'x.zip', sources: '--force', force: '' }), ['zip', '--', 'x.zip', '--force']);
+  // Paths come after --, so a value can never become an option. Paths are full paths, normalized with path.resolve.
+  assert.deepStrictEqual(zip.toArgv({ archive: 'D:/x/../x.zip', sources: 'D:\\--force', force: '' }), ['zip', '--', 'D:\\x.zip', 'D:\\--force']);
   const all = archiveScreens.specs.find((spec) => spec.command === 'extract-all');
   assert.deepStrictEqual(all.toArgv({ target: 'D:\\dl', removeArchives: '' }), ['extract-all', '--', 'D:\\dl']);
+  // A relative path (it would depend on the server's current folder), an option-like value and a network path are refused (#290).
+  assert.throws(() => zip.toArgv({ archive: 'x.zip', sources: 'D:\\a' }), /full path/);
+  assert.throws(() => zip.toArgv({ archive: 'D:\\x.zip', sources: '--force' }), /full path/);
+  assert.throws(() => all.toArgv({ target: '\\\\server\\share' }), /Network and device paths/);
 });
 
 test('unzip preview warns when the extraction folder already has entries; zip strips quotes around the archive (#258)', async (t) => {
@@ -246,4 +254,66 @@ test('unzip preview warns when the extraction folder already has entries; zip st
   const preview = await finish(await post('/archive/unzip/preview', { archive, dest }));
   assert.match(preview.body, /alert-warning[^>]*>The extraction folder already exists and has 2 entries\. Files in the archive with the same name will overwrite them/);
   assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'old', 'a preview overwrites nothing');
+});
+
+// ---------- Protected places (#290) ----------
+
+// A home folder with .ssh inside, seen by the server as the user folder, and a junction "link" next to it that leads into .ssh.
+function makeHome(t) {
+  const base = tempDir();
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.ssh', 'id.zip'), 'not really a zip');
+  fs.mkdirSync(path.join(base, 'ok'));
+  fs.writeFileSync(path.join(base, 'ok', 'a.txt'), 'aaa');
+  const link = path.join(base, 'link');
+  fs.symlinkSync(path.join(home, '.ssh'), link, 'junction');
+  currentHome = home;
+  t.after(() => { currentHome = FAKE_HOME; });
+  return { home, ssh: path.join(home, '.ssh'), link, ok: path.join(base, 'ok') };
+}
+
+const specOf = (command) => archiveScreens.specs.find((spec) => spec.command === command);
+
+test('every archive path field refuses a protected place, directly and through a junction (#290)', (t) => {
+  const { home, ssh, link, ok } = makeHome(t);
+  const okFile = path.join(ok, 'a.txt');
+  for (const place of [ssh, link]) {
+    assert.throws(() => specOf('zip').toArgv({ archive: path.join(place, 'new.zip'), sources: okFile }), /The archive is a protected place/);
+    assert.throws(() => specOf('zip').toArgv({ archive: path.join(ok, 'out.zip'), sources: `${okFile}\n${path.join(place, 'id.zip')}` }), /A source is a protected place/);
+    assert.throws(() => specOf('zip').toArgv({ archive: path.join(ok, 'out.zip'), sources: place }), /A source is a protected place/);
+    assert.throws(() => specOf('unzip').toArgv({ archive: path.join(place, 'id.zip'), dest: '' }), /The archive is a protected place/);
+    assert.throws(() => specOf('unzip').toArgv({ archive: path.join(ok, 'x.zip'), dest: path.join(place, 'out') }), /The folder to extract into is a protected place/);
+    assert.throws(() => specOf('extract-all').toArgv({ target: place }), /The folder to look in is a protected place/);
+  }
+  // The user folder contains .ssh, so a whole-folder target there is refused too.
+  assert.throws(() => specOf('extract-all').toArgv({ target: home }), /protected place/);
+  // The plain folder next to them is fine.
+  assert.deepStrictEqual(specOf('zip').toArgv({ archive: path.join(ok, 'out.zip'), sources: okFile }), ['zip', '--', path.join(ok, 'out.zip'), okFile]);
+  assert.deepStrictEqual(specOf('unzip').toArgv({ archive: path.join(ok, 'x.zip'), dest: '' }), ['unzip', '--', path.join(ok, 'x.zip')]);
+});
+
+test('a protected archive path gets a 400 page and starts no job (#290)', async (t) => {
+  const { ssh, link, ok } = makeHome(t);
+  const { jobs, post } = await serve(t);
+  const cases = [
+    ['/archive/zip/preview', { archive: path.join(link, 'new.zip'), sources: path.join(ok, 'a.txt') }],
+    ['/archive/unzip/preview', { archive: path.join(ssh, 'id.zip'), dest: '' }],
+    ['/archive/unzip/preview', { archive: path.join(ok, 'x.zip'), dest: path.join(link, 'out') }],
+    ['/archive/extract-all/preview', { target: link }],
+  ];
+  for (const [address, form] of cases) {
+    const res = await post(address, form);
+    assert.strictEqual(res.status, 400, address);
+    assert.match(await res.text(), /protected place/);
+  }
+  assert.strictEqual(jobs.running(), null);
+  assert.ok(!fs.existsSync(path.join(ssh, 'new.zip')));
+  assert.ok(!fs.existsSync(path.join(ssh, 'out')));
+});
+
+test('an 8.3 short name of a protected folder is refused on the archive screens (#290)', { skip: !fs.existsSync('C:\\PROGRA~1') }, () => {
+  assert.throws(() => specOf('zip').toArgv({ archive: 'C:\\PROGRA~1\\x.zip', sources: 'D:\\a' }), /protected place/);
+  assert.throws(() => specOf('unzip').toArgv({ archive: 'D:\\x.zip', dest: 'C:\\PROGRA~1\\out' }), /protected place/);
+  assert.throws(() => specOf('extract-all').toArgv({ target: 'C:\\PROGRA~1' }), /protected place/);
 });

@@ -5,12 +5,15 @@
 // - zip: an archive name and one source per line. The preview names the format that the extension makes.
 // - unzip: an archive and an optional folder. The preview shows the size check of #77 (it is part of unzip --dry-run) and the free space left.
 // - extract-all: a target folder and --remove-archives. The result is a table with one row per archive. Originals go to the Recycle Bin.
+// - Every path field must be a full path and is refused, before any job starts, if it or its real path is in a protected place (#290, CLAUDE.md rule 4).
 
 const fs = require('node:fs');
+const path = require('node:path');
 const { FcError } = require('../../commands');
 const { html } = require('../html');
 const { page, table, alertBox } = require('../layout');
-const { describeArchiveFormat, extractAllView, unzipSpace } = require('../archive');
+const { describeArchiveFormat, extractAllView, unzipDest, unzipSpace } = require('../archive');
+const { refuseProtected } = require('../protectedPath');
 
 const AREA = '/archive';
 
@@ -20,6 +23,17 @@ const unquote = (text) => String(text).trim().replace(/^"(.*)"$/, '$1').trim();
 
 function parseLines(text) {
   return String(text).split(/\r?\n/).map((line) => line.trim().replace(/^"(.*)"$/, '$1').trim()).filter((line) => line !== '');
+}
+
+// A path field after unquoting: a full local path, normalized, and not in a protected place. The server's own current folder means nothing to a
+// person in a browser, so a relative path is refused (as on the file screens).
+function checkedPath(text, label) {
+  if (/[\0\r\n]/.test(text)) throw new FcError(`${label} cannot contain a line break: ${JSON.stringify(text)}`);
+  if (!path.isAbsolute(text)) throw new FcError(`${label} must be a full path such as C:\\Users\\you\\Downloads\\a.zip: ${text}`);
+  if (process.platform === 'win32' && /^[\\/]{2}/.test(text) && !/^\\\\\?\\[A-Za-z]:/.test(text)) {
+    throw new FcError(`Network and device paths are not used: ${text}`);
+  }
+  return refuseProtected(path.resolve(text), label);
 }
 
 // The arguments after the command name, without the options. The spec puts -- before the paths, so everything after it is a path.
@@ -43,7 +57,7 @@ const specs = [
       const sources = parseLines(values.sources);
       if (archive === '') throw new FcError('Enter the archive file to create.');
       if (sources.length === 0) throw new FcError('Enter at least one file or folder to compress.');
-      return ['zip', ...(values.force ? ['--force'] : []), '--', archive, ...sources];
+      return ['zip', ...(values.force ? ['--force'] : []), '--', checkedPath(archive, 'The archive'), ...sources.map((source) => checkedPath(source, 'A source'))];
     },
     doneLabel: 'Compressed',
   },
@@ -57,9 +71,12 @@ const specs = [
     ],
     toArgv(values) {
       const archive = unquote(values.archive);
-      const dest = values.dest.trim();
+      const dest = unquote(values.dest);
       if (archive === '') throw new FcError('Enter the archive file to extract.');
-      return ['unzip', '--', archive, ...(dest === '' ? [] : [dest])];
+      const checked = checkedPath(archive, 'The archive');
+      // An empty folder means a folder named after the archive next to it; that folder is checked too.
+      const destination = checkedPath(unzipDest(checked, dest), 'The folder to extract into');
+      return ['unzip', '--', checked, ...(dest === '' ? [] : [destination])];
     },
     doneLabel: 'Extracted',
   },
@@ -72,9 +89,9 @@ const specs = [
       { name: 'removeArchives', label: 'Send each archive to the Recycle Bin after it was extracted and checked (--remove-archives)', kind: 'checkbox' },
     ],
     toArgv(values) {
-      const target = values.target.trim();
+      const target = unquote(values.target);
       if (target === '') throw new FcError('Enter the folder to look in.');
-      return ['extract-all', ...(values.removeArchives ? ['--remove-archives'] : []), '--', target];
+      return ['extract-all', ...(values.removeArchives ? ['--remove-archives'] : []), '--', checkedPath(target, 'The folder to look in')];
     },
     doneLabel: 'Extracted',
     runLabel: 'Extract',
