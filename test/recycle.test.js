@@ -156,11 +156,14 @@ test('실제 휴지통 스크립트는 실패하면 77로 끝나고 Windows의 �
   const real = childProcess.execFileSync;
   let seen;
   // So as not to touch the Recycle Bin, it deletes the file right before calling PowerShell so that DeleteFile fails with "file not found".
+  // The script's Recycle Bin option is also swapped for DeletePermanently (#291), so even a mistake here cannot reach the real Recycle Bin; the failure path is the same.
   t.mock.method(childProcess, 'execFileSync', (cmd, args, options) => {
     if (options?.env?.FC_TARGET === undefined) return real(cmd, args, options);
     fs.rmSync(options.env.FC_TARGET);
+    const script = args.at(-1).replaceAll("'SendToRecycleBin'", "'DeletePermanently'");
+    assert.notStrictEqual(script, args.at(-1));
     try {
-      return real(cmd, args, options);
+      return real(cmd, [...args.slice(0, -1), script], options);
     } catch (err) {
       seen = err;
       throw err;
@@ -326,7 +329,8 @@ test('rm은 폴더 안의 259자를 넘는 경로는 미리 거부하지 않는�
   assert.ok(!fs.existsSync(path.join(dir, 'box')));
 });
 
-test('실제 휴지통 이동은 안에 끝이 점인 이름이 든 폴더를 옮기지 않고 실패한다 (#190)', { skip: (!isWindows || process.env.CI) && '대화형 Windows에서만' }, (t) => {
+// It calls the real Recycle Bin, so npm test skips it (#291). Run it by hand with FC_TEST_REAL_RECYCLE=1, which also lets it past test/noRealRecycle.js.
+test('실제 휴지통 이동은 안에 끝이 점인 이름이 든 폴더를 옮기지 않고 실패한다 (#190)', { skip: (!isWindows || process.env.CI || process.env.FC_TEST_REAL_RECYCLE !== '1') && 'only on interactive Windows with FC_TEST_REAL_RECYCLE=1' }, (t) => {
   // It keeps the premise confirmed on this PC. Even if the failure changes and the folder goes to the Recycle Bin, it is a temporary folder, so no user files are lost.
   const dir = tempDir();
   fs.mkdirSync(path.join(dir, 'box'));
