@@ -148,11 +148,23 @@ function inheritedProtection(parentReason) {
 // The limit on the number of subfolders shown on the screen. It keeps the screen from getting too large and the server from stalling long on a large folder (C:\Windows\WinSxS and so on) (first review).
 const MAX_FOLDERS = 1000;
 
+// For a link to a folder: the real path (choosePath) and the protection reason of that real path. If the real path cannot be resolved or leads to a network path, it cannot be picked.
+function linkReal(full) {
+  try {
+    const real = realFolder(full);
+    return { choosePath: real, protected: protection(real) };
+  } catch (err) {
+    if (err instanceof FcError) return { choosePath: full, protected: err.message };
+    throw err;
+  }
+}
+
 // It opens one folder and returns the content for the picker screen.
 // - path: the real path (with links and short names resolved), parent: the folder above (null for a drive root)
 // - protected: the reason this folder cannot be picked (a system folder, the user folder itself, AppData, .ssh, and so on, a name ending in a dot or space) or null
-// - folders: the folders inside ({ name, path, protected }) in name order, and if there are many, the first MAX_FOLDERS. hiddenFolders: the number of folders dropped by the limit
-// - files: the number of files inside, size: the total file size (excluding subfolders)
+// - folders: the folders inside ({ name, path, protected }; links to folders also have link: true, target, and choosePath = the real path) in name order, and if there are many, the first MAX_FOLDERS. hiddenFolders: the number of folders dropped by the limit
+// - links: the links that cannot be entered ({ name, linkTo: 'file' | 'broken', target })
+// - files: the number (links are not counted) of files inside, size: the total file size (excluding subfolders)
 // A protected folder can also be looked into (it only reads). Only picking is blocked.
 function browseFolder(dir) {
   const resolved = realFolder(dir);
@@ -165,11 +177,15 @@ function browseFolder(dir) {
   }
   const own = protection(resolved);
   const inherited = inheritedProtection(own);
-  const dirs = entries.filter((entry) => entry.type === 'dir');
+  // Links to folders (junctions, directory symbolic links) are folders that can be entered (#267). Entering and picking judge them by the real path, like #254.
+  const dirs = entries.filter((entry) => entry.type === 'dir' || (entry.type === 'link' && entry.linkTo === 'dir'));
   const folders = dirs.slice(0, MAX_FOLDERS).map((entry) => {
     const full = path.join(resolved, entry.name);
-    return { name: entry.name, path: full, protected: inherited ?? protection(full) };
+    if (entry.type !== 'link') return { name: entry.name, path: full, protected: inherited ?? protection(full) };
+    return { name: entry.name, path: full, link: true, target: entry.target, ...linkReal(full) };
   });
+  // Links that cannot be entered (broken links and links to files). They are shown, but are not counted as files.
+  const links = entries.filter((entry) => entry.type === 'link' && entry.linkTo !== 'dir').map((entry) => ({ name: entry.name, linkTo: entry.linkTo, target: entry.target }));
   const files = entries.filter((entry) => entry.type === 'file');
   const parent = path.dirname(resolved);
   return {
@@ -177,6 +193,7 @@ function browseFolder(dir) {
     parent: parent === resolved ? null : parent,
     protected: own,
     folders,
+    links,
     hiddenFolders: dirs.length - folders.length,
     files: files.length,
     size: files.reduce((sum, entry) => sum + (entry.size ?? 0), 0),
