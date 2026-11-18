@@ -5,7 +5,7 @@
 const fc = require('../commands');
 const { fingerprint } = require('./flow');
 const { toPlain } = require('./serialize');
-const { snapshotSources } = require('./sourceSnapshot');
+const { snapshotDestinations, snapshotSources } = require('./sourceSnapshot');
 
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 const REMOVING = new Set(['remove-broken', 'remove-duplicates', 'remove-low-quality']);
@@ -24,10 +24,11 @@ function stripFlow(argv) {
 }
 
 // The fingerprint of a preview. The same command, arguments, preview result, and (for mv, cp and rm) source snapshot give the same value (#280).
+// For mv --force and cp --force the destination snapshot counts too (#284). Any other run has none, and an undefined key is left out, so its value stays as it was.
 function previewFingerprint(argv, outcome) {
   const args = stripFlow(argv.map(String));
   return fingerprint(
-    { command: outcome.command, args, options: {}, preview: { result: toPlain(outcome.result), sources: outcome.sources ?? null } },
+    { command: outcome.command, args, options: {}, preview: { result: toPlain(outcome.result), sources: outcome.sources ?? null, destinations: outcome.destinations } },
     { volatile: VOLATILE[outcome.command] || [] },
   );
 }
@@ -45,6 +46,9 @@ function preview(argv, execute, progress) {
   // Taken after the dry run, so a missing source is the command's own error. Too large a folder throws rather than being fingerprinted in part.
   const sources = snapshotSources(outcome.command, argv);
   if (sources) outcome = { ...outcome, sources };
+  // With --force, what is at the destination is replaced or overwritten, so the run needs it to be what the preview showed (#284).
+  const destinations = snapshotDestinations(outcome.command, argv);
+  if (destinations) outcome = { ...outcome, destinations };
   return { outcome, fingerprint: previewFingerprint(argv, outcome) };
 }
 
