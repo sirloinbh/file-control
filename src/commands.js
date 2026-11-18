@@ -177,10 +177,22 @@ function list(dir = '.') {
       const full = path.join(dir, entry.name);
       // Locked system files (C:\DumpStack.log.tmp, pagefile.sys) cannot have their information read (EPERM, EBUSY). It does not fail the whole list and only blanks the size and time (#254).
       let stat;
+      let statError;
       try {
         stat = fs.statSync(full, { throwIfNoEntry: false });
-      } catch {
+      } catch (err) {
         stat = undefined;
+        statError = err;
+      }
+      // Junctions and symbolic links are links, not files or folders (#267). linkTo says what the target is: 'dir', 'file', 'broken' (the target is missing), or 'unreadable' (the target exists but cannot be read, such as EPERM).
+      if (entry.isSymbolicLink()) {
+        let target = null;
+        try {
+          target = fs.readlinkSync(full).replace(/^\\\\\?\\(?=[A-Za-z]:)/, '');
+        } catch {
+          // The link text cannot be read. The target stays unknown.
+        }
+        return { name: entry.name, type: 'link', linkTo: stat ? (stat.isDirectory() ? 'dir' : 'file') : statError && statError.code !== 'ENOENT' && statError.code !== 'ENOTDIR' ? 'unreadable' : 'broken', target, size: null, modified: stat ? stat.mtime : null };
       }
       return {
         name: entry.name,
@@ -189,7 +201,11 @@ function list(dir = '.') {
         modified: stat ? stat.mtime : null,
       };
     })
-    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+    // Folders and links to folders come first, then files and the other links.
+    .sort((a, b) => {
+      const rank = (e) => (e.type === 'dir' || e.linkTo === 'dir' ? 0 : 1);
+      return rank(a) === rank(b) ? a.name.localeCompare(b.name) : rank(a) - rank(b);
+    });
 }
 
 function makeDir(dir, { dryRun = false } = {}) {
