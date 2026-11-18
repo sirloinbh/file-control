@@ -2,10 +2,12 @@
 
 // A snapshot of what mv, cp and rm will touch (#280). Their dry-run result names only the given paths, so a file added, removed or changed
 // inside a source folder after the preview would not change the fingerprint. The snapshot is added to what is fingerprinted.
-// A junction or symlink is recorded as a link with its target. It is walked only for cp (see snapshotSources).
+// A junction or symlink is recorded as a link with its target. It is walked only where the command reads through it (see snapshotSources).
+// With --force, mv and cp also replace or overwrite what is already at the destination, so that is snapshotted too (#284, see snapshotDestinations).
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const { FcError } = require('../commands');
+const path = require('node:path');
+const { FcError, resolveDest } = require('../commands');
 
 const MAX_ENTRIES = 200000;
 const COMMANDS = new Set(['mv', 'cp', 'rm']);
@@ -105,15 +107,80 @@ function snapshotSource(source, { maxEntries = MAX_ENTRIES, followLinks = false 
   }
   const result = { path: source, type, count, size, digest: hash.digest('hex') };
   if (target !== undefined) result.target = target;
+  if (followLinks) result.followed = true;
   return result;
 }
 
-// The snapshot of every source of argv (already without --dry-run and --yes), or null for a command that is not mv, cp or rm.
-// Only cp follows links: fs.cpSync copies what a junction holds. mv renames (a cross-drive move cannot be told apart here, and following would
-// cause false new previews) and rm deletes the link itself.
-function snapshotSources(command, argv, options) {
-  if (!COMMANDS.has(command)) return null;
-  return sourcePaths(command, argv).map((source) => snapshotSource(source, { followLinks: command === 'cp', ...options }));
+// Whether --force is among the options (before a literal --).
+function forced(argv) {
+  const end = argv.indexOf('--');
+  return (end === -1 ? argv : argv.slice(0, end)).includes('--force');
 }
 
-module.exports = { MAX_ENTRIES, snapshotSource, snapshotSources, sourcePaths };
+// The item a source of mv or cp lands on, resolved the same way as move and copy in commands.js (inside dest when it is an existing folder).
+function targetOf(command, source, dest) {
+  return resolveDest(command === 'mv' ? path.resolve(source) : source, dest);
+}
+
+// The volume a path is on, from the nearest folder that exists: its volume number and the root of its real path (a junction on the way can lead
+// to another drive). null when it cannot be told.
+function volumeOf(p) {
+  for (let current = path.resolve(p); ; current = path.dirname(current)) {
+    try {
+      const real = fs.realpathSync.native(current);
+      return `${fs.statSync(real).dev}|${path.parse(real).root.toLowerCase()}`;
+    } catch (err) {
+      if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') return null;
+    }
+    if (path.dirname(current) === current) return null;
+  }
+}
+
+// Whether mv of source to target may cross volumes. Then rename fails with EXDEV and moveOne (commands.js) copies with fs.cpSync, which on
+// Windows copies what a junction inside the source holds (#284). When it cannot be told, it counts as crossing, so the snapshot follows rather too much.
+function crossesVolumes(source, target) {
+  const from = volumeOf(path.dirname(path.resolve(source)));
+  const to = volumeOf(path.dirname(path.resolve(target)));
+  return from === null || to === null || from !== to;
+}
+
+// The snapshot of every source of argv (already without --dry-run and --yes), or null for a command that is not mv, cp or rm.
+// cp follows links: fs.cpSync copies what a junction holds. mv follows them only when it moves to another volume, because it copies then;
+// a plain rename moves the link itself, and following would cause false new previews. rm deletes the link itself.
+function snapshotSources(command, argv, options) {
+  if (!COMMANDS.has(command)) return null;
+  const dest = command === 'rm' ? undefined : positional(argv).at(-1);
+  return sourcePaths(command, argv).map((source) => {
+    const followLinks = command === 'cp' || (command === 'mv' && dest !== undefined && crossesVolumes(source, targetOf(command, source, dest)));
+    return snapshotSource(source, { followLinks, ...options });
+  });
+}
+
+// What mv --force replaces and cp --force overwrites (#284): the item each source lands on, once per path. Empty without --force,
+// because then an existing destination is an error and nothing is overwritten.
+function destinationPaths(command, argv) {
+  if ((command !== 'mv' && command !== 'cp') || !forced(argv)) return [];
+  const args = positional(argv);
+  if (args.length < 2) return [];
+  const dest = args.at(-1);
+  const seen = new Set();
+  const targets = [];
+  for (const source of args.slice(0, -1)) {
+    const target = targetOf(command, source, dest);
+    const key = path.resolve(target).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push(target);
+  }
+  return targets;
+}
+
+// The snapshot of what is at each destination of mv --force or cp --force (type 'missing' where nothing is yet), or null for any other run.
+// Links at the destination are not followed: mv --force sets the old item aside and deletes it (a link is deleted, not what it leads to), and
+// cp --force refuses to overwrite a link or to merge into a folder that holds one (checkOverwrite in commands.js).
+function snapshotDestinations(command, argv, options) {
+  const targets = destinationPaths(command, argv);
+  return targets.length === 0 ? null : targets.map((target) => snapshotSource(target, { ...options, followLinks: false }));
+}
+
+module.exports = { MAX_ENTRIES, crossesVolumes, destinationPaths, snapshotDestinations, snapshotSource, snapshotSources, sourcePaths };

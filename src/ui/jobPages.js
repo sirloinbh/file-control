@@ -125,9 +125,10 @@ function outcomeAlert(job) {
 // What the sources of a mv, cp or rm preview hold (#280): the run happens only if this still matches, so the person sees what is confirmed.
 function sourcesTable(outcome) {
   if (!Array.isArray(outcome.sources) || outcome.sources.length === 0) return '';
-  const follows = outcome.command === 'cp';
   const rows = outcome.sources.map((source) => {
     const isLink = source.type === 'link';
+    // cp, and mv to another drive, copy what a link leads to (sourceSnapshot.js marks those snapshots followed).
+    const follows = source.followed === true;
     // A link's contents are counted only when the command reads through it (cp).
     const counted = source.type === 'dir' || (isLink && follows);
     const note = !isLink ? '' : html`<br><span class="muted">Link to ${source.target ?? ''}. ${follows ? 'The contents it leads to are included.' : 'The contents it leads to are not touched.'}</span>`;
@@ -139,6 +140,31 @@ function sourcesTable(outcome) {
     ];
   });
   return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: '7em' }, { label: 'Items inside', width: '9em' }, { label: 'Total size', width: '8em' }], rows)}`;
+}
+
+// What mv --force replaces and cp --force overwrites at the destination (#284). The run happens only if this still matches too.
+// Links there are not followed (mv deletes the link itself, cp refuses one), so a link shows no count or size.
+function destinationsTable(outcome) {
+  if (!Array.isArray(outcome.destinations)) return '';
+  const present = outcome.destinations.filter((item) => item.type !== 'missing');
+  const heading = html`<h2>Will be overwritten</h2>`;
+  if (present.length === 0) return html`${heading}<p class="muted">Nothing exists at the destination yet, so nothing is overwritten.</p>`;
+  const how = outcome.command === 'mv'
+    ? 'Each item below is replaced as a whole by the item moved there.'
+    : 'Files below are overwritten by files of the same name; a folder is merged, so its other files stay.';
+  const size = present.reduce((sum, item) => sum + (item.type === 'link' ? 0 : item.size), 0);
+  const rows = present.map((item) => {
+    const isLink = item.type === 'link';
+    const note = isLink ? html`<br><span class="muted">Link to ${item.target ?? ''}. Only the link is replaced; the contents it leads to are not touched.</span>` : '';
+    return [
+      html`${item.path}${note}`,
+      item.type === 'dir' ? 'Folder' : isLink ? 'Link' : 'File',
+      item.type === 'dir' ? `${item.count} item${item.count === 1 ? '' : 's'}` : '',
+      isLink ? '' : formatSize(item.size),
+    ];
+  });
+  return html`${heading}<p>${how} ${present.length} existing item${present.length === 1 ? '' : 's'} at the destination, ${formatSize(size)} in all. Overwritten files cannot be restored.</p>
+${table([{ label: 'Destination' }, { label: 'Type', width: '7em' }, { label: 'Items inside', width: '9em' }, { label: 'Total size', width: '8em' }], rows)}`;
 }
 
 // The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.
@@ -178,7 +204,7 @@ function resultPage(jobs, job, { available, views = {}, specs = [], tokenField =
     body: html`${commandLine(job)}
 <p class="muted">Elapsed ${formatElapsed(jobs.elapsed(job))}</p>
 ${before}${content}
-${after ? sourcesTable(job.outcome) : ''}${after}
+${after ? html`${sourcesTable(job.outcome)}${destinationsTable(job.outcome)}` : ''}${after}
 ${lines}`,
   });
 }
