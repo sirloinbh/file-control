@@ -161,12 +161,13 @@ function snapshotSources(command, argv, options) {
 
 // Whether two paths are the same item on disk: the same volume and file number. Comparing the names is not enough, because NTFS folds case
 // with its own table (KELVIN SIGN and k are different names there, though toLowerCase makes them equal) and a folder can be case-sensitive (#297).
-// When either cannot be read, they do not count as the same, so the destination is still snapshotted.
+// When either cannot be read, or the file number is 0 (some file systems and drivers report no number, like isSameFile in commands.js),
+// they do not count as the same, so the destination is still snapshotted.
 function sameItem(a, b) {
   try {
     const one = fs.lstatSync(a, { bigint: true });
     const two = fs.lstatSync(b, { bigint: true });
-    return one.dev === two.dev && one.ino === two.ino;
+    return one.ino !== 0n && one.dev === two.dev && one.ino === two.ino;
   } catch {
     return false;
   }

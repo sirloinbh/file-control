@@ -457,6 +457,21 @@ test('sameItem: the same file number is the same item; different files, or a pat
   assert.deepStrictEqual(destinationPaths('rename', ['rename', a, 'A.TXT', '--force']), [path.join(dir, 'A.TXT')]);
 });
 
+test('sameItem: a file system that reports file number 0 for every file never makes two files the same item (#297)', (t) => {
+  const dir = tempDir();
+  make(dir, { 'a.txt': 'a', 'b.txt': 'b' });
+  const a = path.join(dir, 'a.txt');
+  const b = path.join(dir, 'b.txt');
+  const realLstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', function lstatSync(p, ...rest) {
+    const stat = realLstat.call(this, p, ...rest);
+    return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { dev: 7n, ino: 0n });
+  });
+  assert.strictEqual(sameItem(a, b), false);
+  assert.strictEqual(sameItem(a, a), false, 'without a file number nothing is known to be the same, so the target is still snapshotted');
+  assert.deepStrictEqual(destinationPaths('rename', ['rename', a, 'b.txt', '--force']), [b]);
+});
+
 test('every command with a destination snapshot has its own sentence in the overwrite table (#297)', () => {
   for (const command of DESTINATION_COMMANDS) assert.strictEqual(typeof OVERWRITE_HOW[command], 'string', command);
   assert.deepStrictEqual(Object.keys(OVERWRITE_HOW).sort(), [...DESTINATION_COMMANDS].sort());
