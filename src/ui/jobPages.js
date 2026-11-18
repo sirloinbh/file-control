@@ -156,7 +156,8 @@ function destinationsTable(outcome) {
   const present = outcome.destinations.filter((item) => item.type !== 'missing');
   const heading = html`<h2>Will be overwritten</h2>`;
   if (present.length === 0) return html`${heading}<p class="muted">Nothing exists at the destination yet, so nothing is overwritten.</p>`;
-  const how = OVERWRITE_HOW[outcome.command] ?? OVERWRITE_HOW.cp;
+  // Every command with a destination snapshot has its own sentence (a test checks it); this neutral one is only a safety net.
+  const how = OVERWRITE_HOW[outcome.command] ?? 'The items below are overwritten.';
   const size = present.reduce((sum, item) => sum + (item.type === 'link' ? 0 : item.size), 0);
   const rows = present.map((item) => {
     const isLink = item.type === 'link';
@@ -273,4 +274,4 @@ function runButton(jobs, label = 'Run') {
 ${alertBox('info', 'Another job is running, so this cannot run until it finishes.')}<p><a href="${statusUrl(active)}">View the running job</a></p>`;
 }
 
-module.exports = { jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH, STOP_PATH };
+module.exports = { OVERWRITE_HOW, jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH, STOP_PATH };

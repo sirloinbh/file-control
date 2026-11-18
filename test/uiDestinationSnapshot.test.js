@@ -23,10 +23,10 @@ const { FcError } = require('../src/commands');
 const { fingerprint } = require('../src/ui/flow');
 const { toPlain } = require('../src/ui/serialize');
 const { previewFingerprint, runChecked } = require('../src/ui/checkedRun');
-const { crossesVolumes, destinationPaths, snapshotDestinations } = require('../src/ui/sourceSnapshot');
+const { DESTINATION_COMMANDS, crossesVolumes, destinationPaths, sameItem, snapshotDestinations } = require('../src/ui/sourceSnapshot');
 const { startUi } = require('./uiClient');
 const { createJobs } = require('../src/ui/jobs');
-const { jobRoutes } = require('../src/ui/jobPages');
+const { OVERWRITE_HOW, jobRoutes } = require('../src/ui/jobPages');
 const { flowRoutes } = require('../src/ui/flowPages');
 
 const OLD = new Date(Date.now() - 60 * 60 * 1000);
@@ -420,6 +420,46 @@ test('rename --force that only changes the case of the name overwrites nothing, 
   assert.deepStrictEqual(destinationPaths('rename', argv), []);
   const preview = runChecked(argv, { mode: 'preview' }, { execute });
   assert.strictEqual(preview.destinations, undefined);
+});
+
+test('rename --force onto a name that only toLowerCase folds to the same is a real overwrite and is snapshotted (#297)', (t) => {
+  const dir = tempDir();
+  // KELVIN SIGN lowercases to k, but NTFS keeps K.txt and k.txt as two files.
+  make(dir, { 'K.txt': 'kelvin', 'k.txt': 'old' });
+  if (fs.readdirSync(dir).length !== 2) {
+    t.skip('this file system does not keep both names');
+    return;
+  }
+  const argv = ['rename', path.join(dir, 'K.txt'), 'k.txt', '--force'];
+  assert.deepStrictEqual(destinationPaths('rename', argv), [path.join(dir, 'k.txt')]);
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.deepStrictEqual(preview.destinations.map(({ path: p, type }) => [p, type]), [[path.join(dir, 'k.txt'), 'file']]);
+  make(dir, { 'k.txt': 'changed by someone else' });
+  const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+  assert.strictEqual(outcome.repreview, true);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'k.txt'), 'utf8'), 'changed by someone else', 'nothing was overwritten');
+});
+
+test('sameItem: the same file number is the same item; different files, or a path that cannot be read, are not (#297)', (t) => {
+  const dir = tempDir();
+  make(dir, { 'a.txt': 'a', 'b.txt': 'b' });
+  const a = path.join(dir, 'a.txt');
+  assert.strictEqual(sameItem(a, a), true);
+  assert.strictEqual(sameItem(a, path.join(dir, 'b.txt')), false);
+  assert.strictEqual(sameItem(a, path.join(dir, 'missing.txt')), false);
+  // Names that differ only in case but are two files (a case-sensitive folder): told apart by the file number, not the name.
+  const realLstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', function lstatSync(p, ...rest) {
+    const stat = realLstat.call(this, String(p) === path.join(dir, 'A.TXT') ? path.join(dir, 'b.txt') : p, ...rest);
+    return stat;
+  });
+  assert.strictEqual(sameItem(a, path.join(dir, 'A.TXT')), false);
+  assert.deepStrictEqual(destinationPaths('rename', ['rename', a, 'A.TXT', '--force']), [path.join(dir, 'A.TXT')]);
+});
+
+test('every command with a destination snapshot has its own sentence in the overwrite table (#297)', () => {
+  for (const command of DESTINATION_COMMANDS) assert.strictEqual(typeof OVERWRITE_HOW[command], 'string', command);
+  assert.deepStrictEqual(Object.keys(OVERWRITE_HOW).sort(), [...DESTINATION_COMMANDS].sort());
 });
 
 async function serveSpecs(t, specs, views = {}) {

@@ -159,10 +159,23 @@ function snapshotSources(command, argv, options) {
   });
 }
 
+// Whether two paths are the same item on disk: the same volume and file number. Comparing the names is not enough, because NTFS folds case
+// with its own table (KELVIN SIGN and k are different names there, though toLowerCase makes them equal) and a folder can be case-sensitive (#297).
+// When either cannot be read, they do not count as the same, so the destination is still snapshotted.
+function sameItem(a, b) {
+  try {
+    const one = fs.lstatSync(a, { bigint: true });
+    const two = fs.lstatSync(b, { bigint: true });
+    return one.dev === two.dev && one.ino === two.ino;
+  } catch {
+    return false;
+  }
+}
+
 // What mv --force replaces and cp --force overwrites (#284): the item each source lands on, once per path. Empty without --force,
 // because then an existing destination is an error and nothing is overwritten.
 // rename --force and zip --force overwrite one item too (#297): the new name in the same folder (as rename in commands.js joins it), and the archive.
-// A rename that only changes the case of the item's own name overwrites nothing, so it has no destination.
+// A rename whose new name leads to the item itself (only its case changes) overwrites nothing, so it has no destination.
 function destinationPaths(command, argv) {
   if (!DESTINATION_COMMANDS.has(command) || !forced(argv)) return [];
   const args = positional(argv);
@@ -170,8 +183,7 @@ function destinationPaths(command, argv) {
   if (command === 'zip') return [args[0]];
   if (command === 'rename') {
     const target = path.join(path.dirname(args[0]), args[1]);
-    const key = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
-    return key(target) === key(args[0]) ? [] : [target];
+    return sameItem(target, args[0]) ? [] : [target];
   }
   const dest = args.at(-1);
   const seen = new Set();
@@ -195,4 +207,4 @@ function snapshotDestinations(command, argv, options) {
   return targets.length === 0 ? null : targets.map((target) => snapshotSource(target, { ...options, followLinks: false }));
 }
 
-module.exports = { MAX_ENTRIES, crossesVolumes, destinationPaths, snapshotDestinations, snapshotSource, snapshotSources, sourcePaths };
+module.exports = { DESTINATION_COMMANDS, MAX_ENTRIES, crossesVolumes, destinationPaths, sameItem, snapshotDestinations, snapshotSource, snapshotSources, sourcePaths };
