@@ -212,6 +212,7 @@ function openBrowser(url) {
 const SCREENS = [
   require('./screens/archive'),
   require('./screens/cleanup'),
+  require('./screens/files'),
 ];
 
 function defaultRoutes() {
