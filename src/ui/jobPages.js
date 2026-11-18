@@ -139,7 +139,7 @@ function sourcesTable(outcome) {
       source.type === 'missing' || (isLink && !follows) ? '' : formatSize(source.size),
     ];
   });
-  return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: 'min(7em, 14%)' }, { label: 'Items inside', width: 'min(9em, 18%)' }, { label: 'Total size', width: 'min(8em, 16%)' }], rows)}`;
+  return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: '14%' }, { label: 'Items inside', width: '18%' }, { label: 'Total size', width: '16%' }], rows)}`;
 }
 
 // What mv --force replaces and cp --force overwrites at the destination (#284). The run happens only if this still matches too.
@@ -164,7 +164,7 @@ function destinationsTable(outcome) {
     ];
   });
   return html`${heading}<p>${how} ${present.length} existing item${present.length === 1 ? '' : 's'} at the destination, ${formatSize(size)} in all. Overwritten files cannot be restored.</p>
-${table([{ label: 'Destination' }, { label: 'Type', width: 'min(7em, 14%)' }, { label: 'Items inside', width: 'min(9em, 18%)' }, { label: 'Total size', width: 'min(8em, 16%)' }], rows)}`;
+${table([{ label: 'Destination' }, { label: 'Type', width: '14%' }, { label: 'Items inside', width: '18%' }, { label: 'Total size', width: '16%' }], rows)}`;
 }
 
 // The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.

@@ -231,8 +231,8 @@ test('the preview page shows what each source holds, escaped, with link notes', 
   assert.ok(rm.includes('1 item<') && rm.includes('2 items<'));
   assert.ok(rm.includes('D:\\t&lt;arget&gt;') && rm.includes('are not touched'));
   assert.ok(!rm.includes('3 items'), 'rm does not count what a link leads to');
-  // Column widths shrink with the window (min of the old em width and a percentage), so the path column keeps room in a narrow window (#260).
-  assert.ok(rm.includes('<col style="width: min(7em, 14%)"><col style="width: min(9em, 18%)"><col style="width: min(8em, 16%)">'));
+  // Column widths are percentages, so the path column keeps room in a narrow window (#260). (Chrome ignores min() in a col width, so no min() here.)
+  assert.ok(rm.includes('<col style="width: 14%"><col style="width: 18%"><col style="width: 16%">'));
   const cp = render('cp');
   assert.ok(cp.includes('3 items') && cp.includes('are included'));
   assert.ok(!cp.includes('Will be overwritten'), 'no destination snapshot, no overwrite table');
@@ -252,7 +252,7 @@ test('the preview page of a --force run lists what will be overwritten, escaped 
   }, { specs: [{ ...spec, command }], tokenField: '' }));
   const mv = render('mv', destinations);
   assert.ok(mv.includes('<h2>Will be overwritten</h2>'));
-  assert.ok(mv.includes('<col style="width: min(7em, 14%)"><col style="width: min(9em, 18%)"><col style="width: min(8em, 16%)">'), 'shrinking widths (#260)');
+  assert.ok(mv.includes('<col style="width: 14%"><col style="width: 18%"><col style="width: 16%">'), 'percentage widths (#260)');
   assert.ok(mv.includes('replaced as a whole') && mv.includes('3 existing items at the destination, 1.0KB in all'), mv);
   assert.ok(mv.includes('D:\\to\\a&lt;b&gt;') && !mv.includes('<b>'));
   assert.ok(mv.includes('2 items<'));
