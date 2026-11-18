@@ -16,6 +16,9 @@ const RESULT_PATH = '/job/result';
 const REFRESH_SECONDS = 1;
 // The number of recent progress lines shown on the status page. The result page shows all the collected lines.
 const RECENT_LINES = 200;
+const STOP_PATH = '/job/stop';
+// With no progress line for this long, the status page warns that the job may be stuck (it never stops the job by itself).
+const STALL_MS = 60_000;
 
 const statusUrl = (job) => `${STATUS_PATH}?id=${encodeURIComponent(job.id)}`;
 const resultUrl = (job) => `${RESULT_PATH}?id=${encodeURIComponent(job.id)}`;
@@ -61,15 +64,25 @@ function notFound(available) {
 }
 
 // The status page of a running job. It shows the progress lines and the elapsed time and reopens every REFRESH_SECONDS.
-function statusPage(jobs, job, { available } = {}) {
+function statusPage(jobs, job, { available, tokenField = '' } = {}) {
   const recent = job.lines.slice(-RECENT_LINES);
   const skipped = job.droppedLines + job.lines.length - recent.length;
+  const idle = typeof jobs.idle === 'function' ? jobs.idle(job) : 0;
   return page({
     title: 'Job running',
     available,
     refresh: { seconds: REFRESH_SECONDS },
-    alerts: [{ kind: 'info', message: `Running. Elapsed time ${formatElapsed(jobs.elapsed(job))}. This page refreshes every ${REFRESH_SECONDS} seconds.` }],
+    alerts: [
+      { kind: 'info', message: `Running. Elapsed time ${formatElapsed(jobs.elapsed(job))}. This page refreshes every ${REFRESH_SECONDS} seconds.` },
+      ...(job.stopRequested ? [{ kind: 'warning', message: 'Still stopping. The job process has not ended yet. This page keeps refreshing.' }] : []),
+      ...(idle >= STALL_MS ? [{ kind: 'warning', message: `No progress for ${formatElapsed(idle)}. The job may be stuck. You can stop it below.` }] : []),
+    ],
     body: html`${commandLine(job)}
+<form method="post" action="${STOP_PATH}">
+${tokenField}<input type="hidden" name="id" value="${job.id}">
+<button type="submit">Stop job</button>
+<span class="muted">Work already done, such as moved files, is not undone.</span>
+</form>
 <h2>Progress</h2>
 ${linesBlock(recent, skipped)}`,
   });
@@ -130,7 +143,9 @@ function sourcesTable(outcome) {
 
 // The result page of a finished job. If views[command](outcome, job) exists, it shows that screen (a table and so on); otherwise it shows the same report text as the CLI.
 function resultPage(jobs, job, { available, views = {}, specs = [], tokenField = '' } = {}) {
-  const alert = outcomeAlert(job);
+  const alert = job.status === 'stopped'
+    ? { kind: 'warning', message: 'Stopped. The job was stopped before it finished. Work already done (such as moved files) is not undone. Check the folder before running again.' }
+    : outcomeAlert(job);
   let content = '';
   let before = '';
   let after = '';
@@ -157,7 +172,7 @@ function resultPage(jobs, job, { available, views = {}, specs = [], tokenField =
     ? html`<details><summary>${job.lines.length + job.droppedLines} progress lines</summary>${allLinesBlock(job.lines, job.droppedLines)}</details>`
     : '';
   return page({
-    title: job.status === 'error' ? 'Job failed' : 'Job result',
+    title: job.status === 'error' ? 'Job failed' : job.status === 'stopped' ? 'Job stopped' : 'Job result',
     available,
     alerts: [alert],
     body: html`${commandLine(job)}
@@ -171,12 +186,21 @@ ${lines}`,
 // The job page addresses. views are the per-command result screens (#256 to #259).
 function jobRoutes(jobs, { views = {}, specs = [] } = {}) {
   return new Map([
-    [STATUS_PATH, (req, { available }) => {
+    [STATUS_PATH, (req, { available, tokenField }) => {
       const job = jobFromRequest(jobs, req);
       if (!job) return notFound(available);
       // If finished, it redirects to the result page. Opening it again shows the same result.
       if (job.status !== 'running') return { status: 303, headers: { Location: resultUrl(job) }, body: '' };
-      return { body: statusPage(jobs, job, { available }) };
+      return { body: statusPage(jobs, job, { available, tokenField }) };
+    }],
+    [STOP_PATH, {
+      POST: async (req, { available, form }) => {
+        const job = form && form.get('id') ? jobs.get(form.get('id')) : undefined;
+        if (!job) return notFound(available);
+        // A finished job is not touched: it just goes to its result.
+        await jobs.stop(job);
+        return { status: 303, headers: { Location: resultUrl(job) }, body: '' };
+      },
     }],
     [RESULT_PATH, (req, { available, tokenField }) => {
       const job = jobFromRequest(jobs, req);
@@ -218,4 +242,4 @@ function runButton(jobs, label = 'Run') {
 ${alertBox('info', 'Another job is running, so this cannot run until it finishes.')}<p><a href="${statusUrl(active)}">View the running job</a></p>`;
 }
 
-module.exports = { jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH };
+module.exports = { jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH, STOP_PATH };

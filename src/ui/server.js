@@ -213,6 +213,7 @@ const SCREENS = [
   require('./screens/archive'),
   require('./screens/cleanup'),
   require('./screens/files'),
+  require('./screens/organize'),
 ];
 
 function defaultRoutes() {
