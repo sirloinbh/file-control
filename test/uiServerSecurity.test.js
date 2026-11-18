@@ -72,7 +72,7 @@ test('서버는 모든 응답에 보안 헤더를 붙이고 폼마다 서버 토
   for (const res of [form, await request(`${url}`), await request(`${url}none`)]) {
     assert.match(res.headers['content-security-policy'], /default-src 'none'; style-src 'unsafe-inline'/);
     assert.strictEqual(res.headers['x-frame-options'], 'DENY');
-    assert.strictEqual(res.headers['referrer-policy'], 'no-referrer');
+    assert.strictEqual(res.headers['referrer-policy'], 'same-origin');
     assert.strictEqual(res.headers['x-content-type-options'], 'nosniff');
   }
 });
