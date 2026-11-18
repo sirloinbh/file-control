@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const childProcess = require('node:child_process');
+// Archives removed with removeArchives must not reach the real Recycle Bin (#291). It is swapped before commands.js is imported.
+const recycled = require('./fakeRecycleFiles').installFakeRecycleBin();
 const { FcError } = require('../src/commands');
 const { planExtractions, applyExtractions, extractArchives, formatExtractions } = require('../src/extract');
 const { run } = require('../bin/fctl');
@@ -487,4 +489,5 @@ test('extract-all은 풀린 크기가 남은 공간보다 큰 압축 파일을 �
   }
   // An archive that could not be extracted is not deleted, and the temporary folder is not left either.
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['huge.zip', 'ok']);
+  assert.ok(recycled.includes(path.join(dir, 'ok.zip')), 'the extracted archive went to the (fake) Recycle Bin');
 });

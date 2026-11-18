@@ -46,4 +46,54 @@ function fakeRecycleFiles(options, hook) {
   return lines.join('\r\n') + '\r\n';
 }
 
-module.exports = { fakeRecycleFiles };
+// It imitates the batch move of empty folders (recycleEmptyFolders, FC_BATCH) (#291). Like RECYCLE_FOLDERS_SCRIPT, it checks each folder right before deleting:
+// still there, still a folder, the same real path, and nothing inside but folders and the names in FC_ALLOWED. hook(folder) is called before each deletion.
+function fakeRecycleFolders(options, hook = () => {}) {
+  const allowed = new Set(String(options.env?.FC_ALLOWED ?? '').split('|').filter(Boolean));
+  const filled = (folder) => fs.readdirSync(folder, { recursive: true, withFileTypes: true })
+    .some((entry) => entry.isSymbolicLink() || (!entry.isDirectory() && !allowed.has(entry.name.toLowerCase())));
+  const lines = [];
+  for (const line of options.input.split('\n').filter(Boolean)) {
+    const folder = decode(line);
+    let status;
+    try {
+      const stat = fs.lstatSync(folder, { throwIfNoEntry: false });
+      if (!stat) status = 'gone';
+      else if (!stat.isDirectory()) status = 'notdir';
+      else if (fs.realpathSync.native(folder) !== folder) status = 'moved';
+      else if (filled(folder)) status = 'filled';
+      else {
+        hook(folder);
+        fs.rmSync(folder, { recursive: true });
+        status = 'ok';
+      }
+    } catch {
+      status = 'error';
+    }
+    lines.push(`${status} ${line}`);
+  }
+  return lines.join('\r\n') + '\r\n';
+}
+
+// It swaps child_process.execFileSync so the three Recycle Bin moves only delete inside the test's temp folder (#291):
+// FC_TARGET (one file or folder), FC_BATCH (empty folders) and FC_RECYCLE_FILES (files). Every other call, including the
+// read-only Recycle Bin state check (FC_VOLUME), goes to the real function. Call it before src/commands.js is imported,
+// because commands.js keeps the execFileSync it saw when it was loaded. It returns the list of paths "sent to the Recycle Bin".
+function installFakeRecycleBin() {
+  const test = require('node:test');
+  const childProcess = require('node:child_process');
+  const real = childProcess.execFileSync;
+  const recycled = [];
+  test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    const env = options?.env ?? {};
+    if (env.FC_BATCH !== undefined) return fakeRecycleFolders(options, (folder) => recycled.push(folder));
+    if (env.FC_RECYCLE_FILES !== undefined) return fakeRecycleFiles(options, (target) => recycled.push(target));
+    if (env.FC_TARGET === undefined) return real(file, args, options);
+    recycled.push(env.FC_TARGET);
+    fs.rmSync(env.FC_TARGET, { recursive: true, force: true });
+    return options?.encoding ? '' : Buffer.alloc(0);
+  });
+  return recycled;
+}
+
+module.exports = { fakeRecycleFiles, fakeRecycleFolders, installFakeRecycleBin };
