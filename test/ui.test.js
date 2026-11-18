@@ -98,6 +98,8 @@ test('page는 제목·알림을 이스케이프하고, 어두운 화면 CSS와 �
   assert.ok(out.includes('<div class="alert alert-warning" role="alert">a&amp;b</div>'));
   assert.ok(out.includes('<p>&lt;본문&gt;</p>'));
   assert.ok(out.includes('@media (prefers-color-scheme: dark)') && out.includes(':root {'));
+  // Inputs (size="60") must not stick out of a narrow window and cause horizontal scroll (#260).
+  assert.ok(out.includes('input, textarea, select { max-width: 100%; box-sizing: border-box; }'));
   assert.ok(out.includes('<a href="/files" aria-current="page">Basic file tasks</a>'));
   for (const category of CATEGORIES.filter((c) => c.path !== '/files')) assert.ok(out.includes(`<span title="Coming soon">${category.label}</span>`), category.label);
   // No client JS is used (#250).

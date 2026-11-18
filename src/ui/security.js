@@ -17,7 +17,9 @@ const TOKEN_FIELD = 'token';
 const SECURITY_HEADERS = Object.freeze({
   'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'no-referrer',
+  // same-origin, not no-referrer: under no-referrer Chrome sends 'Origin: null' on a same-origin form POST,
+  // which checkPostHeaders refuses, so no button would work (#299). same-origin still sends no referrer to other sites.
+  'Referrer-Policy': 'same-origin',
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
 });

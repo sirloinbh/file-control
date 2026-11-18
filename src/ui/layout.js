@@ -44,6 +44,7 @@ nav a, nav span { display: inline-block; padding: 4px 10px; border-radius: 6px; 
 nav a[aria-current="page"] { background: var(--accent); color: var(--accent-text); }
 nav span { color: var(--muted); }
 main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+input, textarea, select { max-width: 100%; box-sizing: border-box; }
 h1 { font-size: 1.4rem; margin: 0 0 16px; }
 h2 { font-size: 1.1rem; margin: 24px 0 10px; }
 .alert { border-radius: 8px; padding: 10px 14px; margin: 0 0 12px; border: 1px solid transparent; }

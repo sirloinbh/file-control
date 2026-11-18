@@ -121,7 +121,8 @@ test('보안 헤더는 스크립트를 막고 인라인 스타일만 허용하�
   assert.match(csp, /frame-ancestors 'none'/);
   assert.doesNotMatch(csp, /script-src/);
   assert.strictEqual(SECURITY_HEADERS['X-Frame-Options'], 'DENY');
-  assert.strictEqual(SECURITY_HEADERS['Referrer-Policy'], 'no-referrer');
+  // Not no-referrer: under it Chrome sends 'Origin: null' on the screen's own form POSTs, and those are refused (#299).
+  assert.strictEqual(SECURITY_HEADERS['Referrer-Policy'], 'same-origin');
   assert.strictEqual(SECURITY_HEADERS['X-Content-Type-Options'], 'nosniff');
   assert.throws(() => { SECURITY_HEADERS['X-Frame-Options'] = 'ALLOW'; });
 });
