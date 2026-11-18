@@ -193,7 +193,7 @@ The rules Claude follows are in [CLAUDE.md](CLAUDE.md).
 npm test
 ```
 
-`npm test` loads `test/noRealRecycle.js`, which makes any call to the real Recycle Bin fail the run (#291). Tests fake the Recycle Bin instead (`test/fakeRecycleFiles.js`, `test/fakeRecyclePreload.js`). The one test that checks how the real Windows Recycle Bin behaves (#190) runs only by hand: `FC_TEST_REAL_RECYCLE=1 node --test test/recycle.test.js`. It sends a small temp folder to your Recycle Bin.
+`npm test` loads `test/noRealRecycle.js`, which makes any call to the real Recycle Bin fail the run (#291). Tests fake the Recycle Bin instead (`test/fakeRecycleFiles.js`, `test/fakeRecyclePreload.js`). The one test that checks how the real Windows Recycle Bin behaves (#190) runs only by hand, with `CI` unset: `FC_TEST_REAL_RECYCLE=1 node --test test/recycle.test.js` (PowerShell: `$env:FC_TEST_REAL_RECYCLE='1'; node --test test/recycle.test.js`). It calls the real Recycle Bin on a small temp folder and expects the move to fail, so normally nothing reaches the Recycle Bin.
 
 ## Add product numbers
 
