@@ -124,4 +124,4 @@ function refuseProtected(p, label) {
   return p;
 }
 
-module.exports = { protectedPathReason, refuseProtected, trailingDotOrSpacePart, TRAILING_DOT_OR_SPACE };
+module.exports = { protectedPathReason, refuseProtected, plainTarget, trailingDotOrSpacePart, TRAILING_DOT_OR_SPACE };

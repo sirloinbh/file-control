@@ -15,7 +15,7 @@ let currentHome = FAKE_HOME;
 test.mock.method(os, 'homedir', () => currentHome);
 
 const { FcError } = require('../src/commands');
-const { protectedPathReason, refuseProtected } = require('../src/ui/protectedPath');
+const { protectedPathReason, refuseProtected, plainTarget } = require('../src/ui/protectedPath');
 
 function makeHome(t) {
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fc-protected-path-')));
@@ -99,9 +99,9 @@ test('a dangling link to a UNC, \\\\?\\UNC\\, volume GUID or device path is refu
   const targets = [
     `\\\\localhost\\${drive}$\\${tail}\\x`,
     `\\\\?\\UNC\\localhost\\${drive}$\\${tail}\\x`,
-    `\\\\.\\${drive}:\\${tail}\\x`,
-    `${drive}:${tail}\\x`,
   ];
+  // fs.symlinkSync rewrites \\.\C:\x to C:\x and resolves a drive-relative C:x against the current folder, so those forms are tested on
+  // plainTarget directly below. Node stores a \??\Volume{...} target as <current drive>:\??\Volume{...}, which is refused for its ?.
   const guid = volumeGuidOf(ssh);
   if (guid) targets.push(`${guid}${tail}\\x`, `\\??\\${guid.slice(4)}${tail}\\x`);
   let made = 0;
@@ -120,7 +120,19 @@ test('a dangling link to a UNC, \\\\?\\UNC\\, volume GUID or device path is refu
     assert.match(protectedPathReason(link) ?? 'allowed', /could not be checked|user settings folder/, target);
     assert.match(protectedPathReason(path.join(link, 'below')) ?? 'allowed', /could not be checked|user settings folder/, target);
   }
-  assert.ok(made >= 4);
+  assert.ok(made >= 2);
+});
+
+test('plainTarget accepts only a relative target or a plain drive path (#290)', () => {
+  const guid = '\\??\\Volume{0377c98a-9bae-450c-8c95-55ab3c756868}';
+  for (const target of ['C:x', '\\x', '/x', '\\\\.\\C:\\x', '\\\\?\\UNC\\h\\s\\x', '\\\\h\\s\\x', `${guid}\\x`, `\\\\?\\${guid.slice(4)}\\x`, `C:${guid}\\x`, 'C:\\a:stream', 'a*b']) {
+    assert.throws(() => plainTarget(target), /a link points to a path that cannot be checked/, target);
+  }
+  assert.strictEqual(plainTarget('..\\a'), '..\\a');
+  assert.strictEqual(plainTarget('C:\\a'), 'C:\\a');
+  assert.strictEqual(plainTarget('c:/a'), 'c:/a');
+  assert.strictEqual(plainTarget('\\\\?\\C:\\a'), 'C:\\a');
+  assert.strictEqual(plainTarget('\\??\\D:\\a'), 'D:\\a');
 });
 
 test('a very long path is refused without walking it (#290)', (t) => {
