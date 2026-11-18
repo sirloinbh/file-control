@@ -193,6 +193,8 @@ The rules Claude follows are in [CLAUDE.md](CLAUDE.md).
 npm test
 ```
 
+`npm test` loads `test/noRealRecycle.js`, which makes any call to the real Recycle Bin fail the run (#291). Tests fake the Recycle Bin instead (`test/fakeRecycleFiles.js`, `test/fakeRecyclePreload.js`). The one test that checks how the real Windows Recycle Bin behaves (#190) runs only by hand, with `CI` unset: `FC_TEST_REAL_RECYCLE=1 node --test test/recycle.test.js` (PowerShell: `$env:FC_TEST_REAL_RECYCLE='1'; node --test test/recycle.test.js`). It calls the real Recycle Bin on a small temp folder and expects the move to fail, so normally nothing reaches the Recycle Bin.
+
 ## Add product numbers
 
 `fctl product-number <target>` puts the product number in front of the names of the video files under the target. `ABC-123 Title/video.mp4` becomes `ABC-123 Title/ABC-123 video.mp4`. It does not move files. You can check first with `--dry-run`.

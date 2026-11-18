@@ -11,11 +11,14 @@ const path = require('node:path');
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
 // Keep test files out of the real Recycle Bin (same approach as removeBroken.test.js). It is swapped before commands.js is imported.
+const { fakeRecycleFolders } = require('./fakeRecycleFiles');
+
 const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_FORMAT_VOLUME !== undefined) return 'NTFS\r\n';
   if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed\r\n';
+  if (options?.env?.FC_BATCH !== undefined) return fakeRecycleFolders(options);
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     const lines = [];
     for (const line of options.input.split('\n').filter(Boolean)) {
