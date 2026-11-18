@@ -24,7 +24,7 @@ function stripFlow(argv) {
 }
 
 // The fingerprint of a preview. The same command, arguments, preview result, and (for mv, cp and rm) source snapshot give the same value (#280).
-// For mv --force and cp --force the destination snapshot counts too (#284). Any other run has none, and an undefined key is left out, so its value stays as it was.
+// For mv --force and cp --force (#284), and rename --force and zip --force (#297), the destination snapshot counts too. Any other run has none, and an undefined key is left out, so its value stays as it was.
 function previewFingerprint(argv, outcome) {
   const args = stripFlow(argv.map(String));
   return fingerprint(

@@ -142,16 +142,22 @@ function sourcesTable(outcome) {
   return html`<h2>What will be touched</h2>${table([{ label: 'Source' }, { label: 'Type', width: '14%' }, { label: 'Items inside', width: '18%' }, { label: 'Total size', width: '16%' }], rows)}`;
 }
 
-// What mv --force replaces and cp --force overwrites at the destination (#284). The run happens only if this still matches too.
-// Links there are not followed (mv deletes the link itself, cp refuses one), so a link shows no count or size.
+// What mv --force replaces and cp --force overwrites at the destination (#284), and what rename --force and zip --force overwrite (#297).
+// The run happens only if this still matches too.
+// Links there are not followed (mv, rename and zip replace the link itself, cp refuses one), so a link shows no count or size.
+const OVERWRITE_HOW = {
+  mv: 'Each item below is replaced as a whole by the item moved there.',
+  cp: 'Files below are overwritten by files of the same name; a folder is merged, so its other files stay.',
+  rename: 'The item below is replaced by the renamed item.',
+  zip: 'The file below is replaced by the new archive.',
+};
 function destinationsTable(outcome) {
   if (!Array.isArray(outcome.destinations)) return '';
   const present = outcome.destinations.filter((item) => item.type !== 'missing');
   const heading = html`<h2>Will be overwritten</h2>`;
   if (present.length === 0) return html`${heading}<p class="muted">Nothing exists at the destination yet, so nothing is overwritten.</p>`;
-  const how = outcome.command === 'mv'
-    ? 'Each item below is replaced as a whole by the item moved there.'
-    : 'Files below are overwritten by files of the same name; a folder is merged, so its other files stay.';
+  // Every command with a destination snapshot has its own sentence (a test checks it); this neutral one is only a safety net.
+  const how = OVERWRITE_HOW[outcome.command] ?? 'The items below are overwritten.';
   const size = present.reduce((sum, item) => sum + (item.type === 'link' ? 0 : item.size), 0);
   const rows = present.map((item) => {
     const isLink = item.type === 'link';
@@ -268,4 +274,4 @@ function runButton(jobs, label = 'Run') {
 ${alertBox('info', 'Another job is running, so this cannot run until it finishes.')}<p><a href="${statusUrl(active)}">View the running job</a></p>`;
 }
 
-module.exports = { jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH, STOP_PATH };
+module.exports = { OVERWRITE_HOW, jobRoutes, startJobResponse, runButton, statusPage, resultPage, STATUS_PATH, RESULT_PATH, STOP_PATH };
