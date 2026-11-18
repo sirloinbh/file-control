@@ -3,7 +3,8 @@
 // A snapshot of what mv, cp and rm will touch (#280). Their dry-run result names only the given paths, so a file added, removed or changed
 // inside a source folder after the preview would not change the fingerprint. The snapshot is added to what is fingerprinted.
 // A junction or symlink is recorded as a link with its target. It is walked only where the command reads through it (see snapshotSources).
-// With --force, mv and cp also replace or overwrite what is already at the destination, so that is snapshotted too (#284, see snapshotDestinations).
+// With --force, mv and cp also replace or overwrite what is already at the destination, so that is snapshotted too (#284, see snapshotDestinations),
+// and so are the item rename --force and zip --force overwrite (#297).
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,6 +12,8 @@ const { FcError, resolveDest } = require('../commands');
 
 const MAX_ENTRIES = 200000;
 const COMMANDS = new Set(['mv', 'cp', 'rm']);
+// The commands that overwrite what is already there when given --force (see destinationPaths).
+const DESTINATION_COMMANDS = new Set(['mv', 'cp', 'rename', 'zip']);
 
 // The positional arguments of argv (after the command name). Only what is before a literal -- can be an option.
 function positional(argv) {
@@ -158,10 +161,18 @@ function snapshotSources(command, argv, options) {
 
 // What mv --force replaces and cp --force overwrites (#284): the item each source lands on, once per path. Empty without --force,
 // because then an existing destination is an error and nothing is overwritten.
+// rename --force and zip --force overwrite one item too (#297): the new name in the same folder (as rename in commands.js joins it), and the archive.
+// A rename that only changes the case of the item's own name overwrites nothing, so it has no destination.
 function destinationPaths(command, argv) {
-  if ((command !== 'mv' && command !== 'cp') || !forced(argv)) return [];
+  if (!DESTINATION_COMMANDS.has(command) || !forced(argv)) return [];
   const args = positional(argv);
   if (args.length < 2) return [];
+  if (command === 'zip') return [args[0]];
+  if (command === 'rename') {
+    const target = path.join(path.dirname(args[0]), args[1]);
+    const key = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+    return key(target) === key(args[0]) ? [] : [target];
+  }
   const dest = args.at(-1);
   const seen = new Set();
   const targets = [];
@@ -175,9 +186,10 @@ function destinationPaths(command, argv) {
   return targets;
 }
 
-// The snapshot of what is at each destination of mv --force or cp --force (type 'missing' where nothing is yet), or null for any other run.
-// Links at the destination are not followed: mv --force sets the old item aside and deletes it (a link is deleted, not what it leads to), and
-// cp --force refuses to overwrite a link or to merge into a folder that holds one (checkOverwrite in commands.js).
+// The snapshot of what is at each destination of mv, cp, rename or zip with --force (type 'missing' where nothing is yet), or null for any other run.
+// Links at the destination are not followed: mv --force sets the old item aside and deletes it (a link is deleted, not what it leads to),
+// cp --force refuses to overwrite a link or to merge into a folder that holds one (checkOverwrite in commands.js), and rename and zip replace
+// the link itself by renaming onto it. Both refuse to overwrite a folder, so their destination is a file, a link or missing.
 function snapshotDestinations(command, argv, options) {
   const targets = destinationPaths(command, argv);
   return targets.length === 0 ? null : targets.map((target) => snapshotSource(target, { ...options, followLinks: false }));

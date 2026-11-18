@@ -3,6 +3,7 @@
 // The destination snapshot of mv --force and cp --force (#284): what is already at the destination is replaced or overwritten, so a change there
 // after the preview must give a new preview instead of overwriting something the person never saw. Also the cross-volume mv of #284's comment:
 // moving to another drive copies with fs.cpSync, which reads through a junction inside the source, so the source snapshot follows links then.
+// rename --force and zip --force overwrite one file, which is snapshotted the same way (#297).
 // mv and cp never use the Recycle Bin; the fake below (and --require for the job processes) makes sure nothing could reach the real one.
 require('./fakeRecyclePreload');
 
@@ -332,3 +333,173 @@ test('a preview without --force shows no overwrite table (#284)', async (t) => {
   assert.ok(fingerprintOf(preview.body));
   assert.doesNotMatch(preview.body, /Will be overwritten/);
 });
+
+// ---- rename --force and zip --force (#297) ----
+
+// Each case: the files, the argv (built from dir), the file that is overwritten, and a check of it after an unchanged run.
+const OVERWRITE_CASES = {
+  rename: {
+    files: { 'a.txt': 'new', 'b.txt': 'old' },
+    argv: (dir, force) => ['rename', path.join(dir, 'a.txt'), 'b.txt', ...(force ? ['--force'] : [])],
+    overwritten: 'b.txt',
+    after: (dir) => assert.strictEqual(fs.readFileSync(path.join(dir, 'b.txt'), 'utf8'), 'new'),
+  },
+  zip: {
+    files: { 'src/a.txt': 'new', 'out.zip': 'old' },
+    argv: (dir, force) => ['zip', ...(force ? ['--force'] : []), '--', path.join(dir, 'out.zip'), path.join(dir, 'src')],
+    overwritten: 'out.zip',
+    // A real zip archive starts with PK.
+    after: (dir) => assert.strictEqual(fs.readFileSync(path.join(dir, 'out.zip')).subarray(0, 2).toString('latin1'), 'PK'),
+  },
+};
+
+const OVERWRITE_CHANGES = {
+  'the overwritten file changes': (dir, c) => make(dir, { [c.overwritten]: 'changed!' }),
+  'the overwritten file changes only its modified time': (dir, c) => fs.utimesSync(path.join(dir, c.overwritten), EARLIER, EARLIER),
+  'the overwritten file is removed': (dir, c) => fs.rmSync(path.join(dir, c.overwritten)),
+};
+
+for (const [command, c] of Object.entries(OVERWRITE_CASES)) {
+  for (const [change, mutate] of Object.entries(OVERWRITE_CHANGES)) {
+    test(`${command} --force: if ${change} after the preview, the run shows a new preview and changes nothing (#297)`, () => {
+      const dir = tempDir();
+      make(dir, c.files);
+      const argv = c.argv(dir, true);
+      const preview = runChecked(argv, { mode: 'preview' }, { execute });
+      assert.deepStrictEqual(preview.destinations.map(({ path: p, type }) => [p, type]), [[path.join(dir, c.overwritten), 'file']]);
+      mutate(dir, c);
+      const before = listing(dir);
+      const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+      assert.strictEqual(outcome.repreview, true);
+      assert.strictEqual(outcome.ran, undefined);
+      assert.notStrictEqual(outcome.fingerprint, preview.fingerprint);
+      assert.strictEqual(listing(dir), before, 'nothing was renamed, written, or overwritten');
+    });
+  }
+
+  test(`${command} --force: an unchanged overwritten file runs and is overwritten (#297)`, () => {
+    const dir = tempDir();
+    make(dir, c.files);
+    const argv = c.argv(dir, true);
+    const preview = runChecked(argv, { mode: 'preview' }, { execute });
+    assert.strictEqual(runChecked(argv, { mode: 'preview' }, { execute }).fingerprint, preview.fingerprint, 'the fingerprint is stable');
+    const outcome = runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute });
+    assert.strictEqual(outcome.ran, true);
+    c.after(dir);
+  });
+
+  test(`${command} without --force: no destination snapshot and the same fingerprint as before #297`, () => {
+    const dir = tempDir();
+    make(dir, c.files);
+    fs.rmSync(path.join(dir, c.overwritten)); // without --force an existing target is an error
+    const argv = c.argv(dir, false);
+    const preview = runChecked(argv, { mode: 'preview' }, { execute });
+    assert.strictEqual(preview.destinations, undefined);
+    assert.strictEqual(preview.sources, undefined);
+    const before297 = fingerprint({ command, args: argv, options: {}, preview: { result: toPlain(preview.result), sources: null } });
+    assert.strictEqual(preview.fingerprint, before297);
+  });
+}
+
+test('destinationPaths: the new name of rename --force and the archive of zip --force (#297)', () => {
+  const dir = tempDir();
+  const a = path.join(dir, 'a.txt');
+  assert.deepStrictEqual(destinationPaths('rename', ['rename', a, 'b.txt', '--force']), [path.join(dir, 'b.txt')]);
+  assert.deepStrictEqual(destinationPaths('rename', ['rename', a, 'b.txt']), []);
+  assert.deepStrictEqual(destinationPaths('rename', ['rename', a, '--', '--force']), [], '--force after -- is a name, not the option');
+  const archive = path.join(dir, 'out.zip');
+  assert.deepStrictEqual(destinationPaths('zip', ['zip', '--force', '--', archive, a]), [archive]);
+  assert.deepStrictEqual(destinationPaths('zip', ['zip', '--', archive, a]), []);
+  assert.deepStrictEqual(destinationPaths('unzip', ['unzip', '--force', '--', archive]), []);
+});
+
+test('rename --force that only changes the case of the name overwrites nothing, so it has no destination (#297)', { skip: process.platform !== 'win32' }, () => {
+  const dir = tempDir();
+  make(dir, { 'a.txt': 'a' });
+  const argv = ['rename', path.join(dir, 'a.txt'), 'A.txt', '--force'];
+  assert.deepStrictEqual(destinationPaths('rename', argv), []);
+  const preview = runChecked(argv, { mode: 'preview' }, { execute });
+  assert.strictEqual(preview.destinations, undefined);
+});
+
+async function serveSpecs(t, specs, views = {}) {
+  const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME }, fork: forkWithFake });
+  const routes = new Map([...jobRoutes(jobs, { specs, views }), ...flowRoutes(jobs, specs)]);
+  const { server, url, get, post } = await startUi({ routes });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const finish = async (res) => {
+    assert.strictEqual(res.status, 303, await res.clone().text());
+    const id = new URL(res.headers.get('location'), url).searchParams.get('id');
+    const job = jobs.get(id);
+    await settled(jobs, job);
+    const page = await get(`/job/result?id=${id}`);
+    assert.strictEqual(page.status, 200);
+    return { job, body: await page.text() };
+  };
+  return { post, finish };
+}
+
+// The real screens' specs (and result views), so the argv is exactly what the UI builds.
+const UI_CASES = {
+  rename: {
+    screen: () => require('../src/ui/screens/files'),
+    path: '/files/rename',
+    files: OVERWRITE_CASES.rename.files,
+    form: (dir) => ({ target: path.join(dir, 'a.txt'), name: 'b.txt' }),
+    overwritten: 'b.txt',
+    how: /The item below is replaced by the renamed item\./,
+    after: OVERWRITE_CASES.rename.after,
+  },
+  zip: {
+    screen: () => require('../src/ui/screens/archive'),
+    path: '/archive/zip',
+    files: OVERWRITE_CASES.zip.files,
+    form: (dir) => ({ archive: path.join(dir, 'out.zip'), sources: path.join(dir, 'src') }),
+    overwritten: 'out.zip',
+    how: /The file below is replaced by the new archive\./,
+    after: OVERWRITE_CASES.zip.after,
+  },
+};
+
+for (const [command, c] of Object.entries(UI_CASES)) {
+  test(`${command} --force in the UI: an overwritten file changed after the preview gives a new preview, an unchanged one is overwritten (#297)`, async (t) => {
+    const dir = tempDir();
+    make(dir, c.files);
+    const { specs, views } = c.screen();
+    const { post, finish } = await serveSpecs(t, specs.filter((s) => s.command === command), views);
+    const form = { ...c.form(dir), force: 'on', 'confirm-force': 'yes' };
+
+    const preview = await finish(await post(`${c.path}/preview`, form));
+    assert.strictEqual(preview.job.status, 'done', preview.body);
+    assert.match(preview.body, /<h2>Will be overwritten<\/h2>/);
+    assert.match(preview.body, c.how);
+    assert.match(preview.body, /1 existing item at the destination, 3B in all/);
+    assert.ok(preview.body.includes(path.join(dir, c.overwritten)), 'the overwritten file is named');
+    const first = fingerprintOf(preview.body);
+    assert.ok(first);
+
+    make(dir, { [c.overwritten]: 'changed by someone else' });
+    const stale = await finish(await post(`${c.path}/run`, { ...form, fingerprint: first }));
+    assert.strictEqual(stale.job.outcome.repreview, true, stale.body);
+    assert.match(stale.body, /folder changed after the preview/);
+    assert.strictEqual(fs.readFileSync(path.join(dir, c.overwritten), 'utf8'), 'changed by someone else', 'nothing was overwritten');
+    const second = fingerprintOf(stale.body);
+    assert.ok(second && second !== first);
+
+    const run = await finish(await post(`${c.path}/run`, { ...form, fingerprint: second }));
+    assert.strictEqual(run.job.outcome.ran, true, run.body);
+    c.after(dir);
+  });
+
+  test(`${command} in the UI without Overwrite shows no overwrite table (#297)`, async (t) => {
+    const dir = tempDir();
+    make(dir, c.files);
+    fs.rmSync(path.join(dir, c.overwritten));
+    const { specs, views } = c.screen();
+    const { post, finish } = await serveSpecs(t, specs.filter((s) => s.command === command), views);
+    const preview = await finish(await post(`${c.path}/preview`, c.form(dir)));
+    assert.strictEqual(preview.job.status, 'done', preview.body);
+    assert.ok(fingerprintOf(preview.body));
+    assert.doesNotMatch(preview.body, /Will be overwritten/);
+  });
+}
