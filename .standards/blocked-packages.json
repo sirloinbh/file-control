@@ -1,0 +1,14 @@
+{
+  "description": "npm 공급망 공격(Shai-Hulud 계열) 점검 기준. 출처: 사용자 글로벌 규칙(2026-10-22). 목록은 계속 갱신한다. 버전 정보가 없는 항목은 어떤 버전이든 발견되면 사람이 확인한다.",
+  "packages": [
+    { "name": "@ctrl/tinycolor", "reason": "Shai-Hulud 침해 보고. 정상 버전도 있으므로 설치된 버전을 공지와 대조한다" },
+    { "name": "rxnt-authentication", "reason": "Shai-Hulud 침해 보고" },
+    { "name": "swc-plugin-component-annotate", "reason": "Shai-Hulud 침해 보고" }
+  ],
+  "scopes": [
+    { "scope": "@nativescript-community", "reason": "Shai-Hulud 침해 보고(스코프 전체 확인 필요)" }
+  ],
+  "exfiltrationHosts": ["webhook.site", "requestbin", "pipedream", "interactsh", "oast.me", "ngrok.io", "trycloudflare"],
+  "suspiciousWorkflowNames": ["shai-hulud"],
+  "suspiciousInstallFiles": ["bundle.js", "processor.js"]
+}

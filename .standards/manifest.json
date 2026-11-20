@@ -1,0 +1,194 @@
+{
+  "centralSha": "686734e92c60717d304d1655535b297f4c177720",
+  "profile": "utility",
+  "project": null,
+  "files": {
+    ".claude/hooks/block-forbidden-commands.mjs": {
+      "mode": "full",
+      "sha256": "f2209c4d1d703155fa794ea9f5b6be13351227c074f77ff16943adebdd1195ec",
+      "source": "templates/common/.claude/hooks/block-forbidden-commands.mjs"
+    },
+    ".claude/hooks/block-package-installs.mjs": {
+      "mode": "full",
+      "sha256": "10a3bdaa5597bde0580451adf8515b9e3997714b6fc2e82419f24ee28a5bfc19",
+      "source": "templates/common/.claude/hooks/block-package-installs.mjs"
+    },
+    ".claude/hooks/pc-setup-notice.mjs": {
+      "mode": "full",
+      "sha256": "41cb2e6fe2f2166f30932cd10896d39cb00a5e733031b45999ed1f93f3283042",
+      "source": "templates/common/.claude/hooks/pc-setup-notice.mjs"
+    },
+    ".claude/settings.json": {
+      "mode": "full",
+      "sha256": "e67554ab7dd656ab57a1690d5a0ef18df592c96c562f482f92beb78045286003",
+      "source": "templates/common/.claude/settings.json.tmpl"
+    },
+    ".claude/skills/orca-lanes/SKILL.md": {
+      "mode": "full",
+      "sha256": "c82722c8e36622482062325abb0761deb43b7d5b23bc33f5f93d27e973c2612c",
+      "source": "templates/common/skills/orca-lanes/SKILL.md"
+    },
+    ".claude/skills/std-backlog/SKILL.md": {
+      "mode": "full",
+      "sha256": "d78c85e0ab7e5cde745e013ab27d62b9cbcb8979012ee2dc5fc7b80f309fb6a4",
+      "source": "templates/common/skills/std-backlog/SKILL.md"
+    },
+    ".claude/skills/std-code-review/SKILL.md": {
+      "mode": "full",
+      "sha256": "618268c6357b19b80b1066664e1db03971dbb1ba896be5935fb906e26201d6f1",
+      "source": "templates/common/skills/std-code-review/SKILL.md"
+    },
+    ".claude/skills/std-communication/SKILL.md": {
+      "mode": "full",
+      "sha256": "a1ea728d0f38a4e5d88885831eb760480826da89d0ef970c91759ac21f4d7883",
+      "source": "templates/common/skills/std-communication/SKILL.md"
+    },
+    ".claude/skills/std-feature-overview/SKILL.md": {
+      "mode": "full",
+      "sha256": "687730f3fee3731588fc0bb4d427441fa1c34ff4a90e3786de9bf6ad44a5fbc9",
+      "source": "templates/common/skills/std-feature-overview/SKILL.md"
+    },
+    ".claude/skills/std-git-writing/SKILL.md": {
+      "mode": "full",
+      "sha256": "25fa4473adec616b1c0b2ec63963481e530d83e270d79ccd01afeee46c4b32ee",
+      "source": "templates/common/skills/std-git-writing/SKILL.md"
+    },
+    ".claude/skills/std-implementation/SKILL.md": {
+      "mode": "full",
+      "sha256": "20b145bb53c0990791147d150995a9e6fca69f6059bb7e45952f1d589f8dbabc",
+      "source": "templates/common/skills/std-implementation/SKILL.md"
+    },
+    ".claude/skills/std-session-notes/SKILL.md": {
+      "mode": "full",
+      "sha256": "c1efc6b4527fff99b63a659bfbeb484706e3ddcc1863e2c25d29814f61c46219",
+      "source": "templates/common/skills/std-session-notes/SKILL.md"
+    },
+    ".codex/hooks.json": {
+      "mode": "full",
+      "sha256": "a6d85bfb15069a89e90ceeba01ce82e5837ab2766f6e03d6459242488d8dbfbc",
+      "source": "templates/common/.codex/hooks.json.tmpl"
+    },
+    ".codex/rules/git-branch.rules": {
+      "mode": "full",
+      "sha256": "f99871fb8c23d93187972d4fe666451950678abfd302b6134472e721b1f5fd94",
+      "source": "templates/common/.codex/rules/git-branch.rules"
+    },
+    ".codex/rules/package-installs.rules": {
+      "mode": "full",
+      "sha256": "54e445ed8f356607b51e18b3b3d44520aa3e8aa19f6099a96f7ae26dd179a381",
+      "source": "templates/common/.codex/rules/package-installs.rules"
+    },
+    ".editorconfig": {
+      "mode": "full",
+      "sha256": "615b65b0043e7f6a0305fe5c744621a896dc50f3c27bca12f874b5bb514bd7af",
+      "source": "templates/common/.editorconfig.tmpl"
+    },
+    ".gitattributes": {
+      "mode": "full",
+      "sha256": "2bbd8b0637dbc8eac24d9bb8018a5bf2ebe3f4d52a3470bff9e9a7976390a544",
+      "source": "templates/common/.gitattributes.tmpl"
+    },
+    ".github/ISSUE_TEMPLATE/task.md": {
+      "mode": "full",
+      "sha256": "d59421e5e79b2ae517fc351c7dc0e3eb7001205b935addc781c458d101cdf11d",
+      "source": "templates/common/.github/ISSUE_TEMPLATE/task.md"
+    },
+    ".github/pull_request_template.md": {
+      "mode": "full",
+      "sha256": "8b53a449866dcb8d26e188a0865cdf9f0c7e0a02b72b0279e069722c8d4ec888",
+      "source": "templates/common/.github/pull_request_template.md"
+    },
+    ".gitignore": {
+      "mode": "section",
+      "sha256": "fc3607e334d58265a88f25d8f34ea1f26ee71c420f2e97bc3fc7d249ca976614",
+      "source": "templates/common/.gitignore.tmpl"
+    },
+    ".standards/blocked-packages.json": {
+      "mode": "full",
+      "sha256": "9d7815944b7d7e8aa63580c6ee3f5068389bf6f67f77de4dcd8ca0925f28c196",
+      "source": "security/blocked-packages.json"
+    },
+    ".standards/check.mjs": {
+      "mode": "full",
+      "sha256": "173364dd454da9a5a772d7a597391b2e5a760d1f3907bf73d6b1c6faa486ee6a",
+      "source": "scripts/standards-check.mjs"
+    },
+    ".standards/ioc-scan.mjs": {
+      "mode": "full",
+      "sha256": "1fdedfb197f82a9e97a6f2282d48b693f0a5bc8d20f6fb34c88075fd342b1ed0",
+      "source": "scripts/ioc-scan.mjs"
+    },
+    ".standards/lib/env-tags.mjs": {
+      "mode": "full",
+      "sha256": "fea1e12ba393d21203a1bc9a0c778f677f653e3ea4330cf2ca4f99672f00cf83",
+      "source": "scripts/lib/env-tags.mjs"
+    },
+    ".standards/lib/hash.mjs": {
+      "mode": "full",
+      "sha256": "a22ef363d077ac564ebb6a36c9e10130d3b012de074051a70a55dab2c16e8f47",
+      "source": "scripts/lib/hash.mjs"
+    },
+    ".standards/lib/manifest.mjs": {
+      "mode": "full",
+      "sha256": "cd27f8b1877953444c098a406bedef1eb455fe15403fda194ef47d76bbb85f03",
+      "source": "scripts/lib/manifest.mjs"
+    },
+    ".standards/lib/render.mjs": {
+      "mode": "full",
+      "sha256": "109f91dba8789a498bd342610e3ebda04662a74b420694efbf2beab8bdbd058d",
+      "source": "scripts/lib/render.mjs"
+    },
+    ".standards/secret-scan.mjs": {
+      "mode": "full",
+      "sha256": "951b4e75e5515818717413a0ed03e94d8224a7f89ba4af7f2399a66860cd1b9e",
+      "source": "scripts/secret-scan.mjs"
+    },
+    ".vscode/settings.json": {
+      "mode": "full",
+      "sha256": "c398cc92f1aa987cf1349cc64a35ef31e89e0104e8967ff9b2b4edc63fd42708",
+      "source": "templates/common/.vscode/settings.json.tmpl"
+    },
+    "skills/orca-lanes/SKILL.md": {
+      "mode": "full",
+      "sha256": "c82722c8e36622482062325abb0761deb43b7d5b23bc33f5f93d27e973c2612c",
+      "source": "templates/common/skills/orca-lanes/SKILL.md"
+    },
+    "skills/std-backlog/SKILL.md": {
+      "mode": "full",
+      "sha256": "d78c85e0ab7e5cde745e013ab27d62b9cbcb8979012ee2dc5fc7b80f309fb6a4",
+      "source": "templates/common/skills/std-backlog/SKILL.md"
+    },
+    "skills/std-code-review/SKILL.md": {
+      "mode": "full",
+      "sha256": "618268c6357b19b80b1066664e1db03971dbb1ba896be5935fb906e26201d6f1",
+      "source": "templates/common/skills/std-code-review/SKILL.md"
+    },
+    "skills/std-communication/SKILL.md": {
+      "mode": "full",
+      "sha256": "a1ea728d0f38a4e5d88885831eb760480826da89d0ef970c91759ac21f4d7883",
+      "source": "templates/common/skills/std-communication/SKILL.md"
+    },
+    "skills/std-feature-overview/SKILL.md": {
+      "mode": "full",
+      "sha256": "687730f3fee3731588fc0bb4d427441fa1c34ff4a90e3786de9bf6ad44a5fbc9",
+      "source": "templates/common/skills/std-feature-overview/SKILL.md"
+    },
+    "skills/std-git-writing/SKILL.md": {
+      "mode": "full",
+      "sha256": "25fa4473adec616b1c0b2ec63963481e530d83e270d79ccd01afeee46c4b32ee",
+      "source": "templates/common/skills/std-git-writing/SKILL.md"
+    },
+    "skills/std-implementation/SKILL.md": {
+      "mode": "full",
+      "sha256": "20b145bb53c0990791147d150995a9e6fca69f6059bb7e45952f1d589f8dbabc",
+      "source": "templates/common/skills/std-implementation/SKILL.md"
+    },
+    "skills/std-session-notes/SKILL.md": {
+      "mode": "full",
+      "sha256": "c1efc6b4527fff99b63a659bfbeb484706e3ddcc1863e2c25d29814f61c46219",
+      "source": "templates/common/skills/std-session-notes/SKILL.md"
+    }
+  },
+  "packages": {},
+  "registry": null
+}

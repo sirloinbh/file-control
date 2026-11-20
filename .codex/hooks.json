@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --input-type=commonjs -e \"const cp=require('node:child_process'),url=require('node:url');const root=cp.execFileSync('git',['rev-parse','--show-toplevel'],{encoding:'utf8'}).trim();import(url.pathToFileURL(root+'/.claude/hooks/block-package-installs.mjs').href).then((m)=>m.main())\"",
+            "timeout": 10,
+            "statusMessage": "Checking whether this is a package install command"
+          }
+        ]
+      }
+    ]
+  }
+}
