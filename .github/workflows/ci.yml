@@ -27,3 +27,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+      # Fails when a centrally managed file (skills, hooks, settings, templates) differs from sirloinbh/project-standards.
+      - name: Standards check
+        run: node .standards/check.mjs
