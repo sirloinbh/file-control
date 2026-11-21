@@ -111,3 +111,25 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
   // A file that does not exist is also returned as a reason.
   assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /could not be read again/);
 });
+
+test('손상된 gzip을 검사한 직후에도 파일 이름을 바꿀 수 있다 (#324)', async () => {
+  const { scanTarGz } = require('../src/tarGzScan');
+  const dir = tempDir();
+  const archive = path.join(dir, 'bad.tar.gz');
+  const good = zlib.gzipSync(Buffer.concat([header('a.txt', 3), Buffer.alloc(512), Buffer.alloc(1024)]));
+  // The first half is fine and the middle is corrupt, so gunzip fails while the input is still being read.
+  const data = Buffer.concat([good.subarray(0, 20), Buffer.alloc(200000, 0xff)]);
+  fs.writeFileSync(archive, data);
+  const result = await scanTarGz(archive);
+  assert.match(result.reason, /gzip is damaged/);
+  fs.renameSync(archive, path.join(dir, 'renamed.tar.gz'));
+  assert.ok(fs.existsSync(path.join(dir, 'renamed.tar.gz')));
+});
+
+test('시간 제한을 넘기면 확인하지 못했다는 이유를 돌려준다 (#324)', () => {
+  const dir = tempDir();
+  const archive = path.join(dir, 'a.tar.gz');
+  fs.writeFileSync(archive, zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), END])));
+  assert.match(scanTarGzSync(archive, { timeoutMs: 1 }).reason, /timed out/);
+  assert.deepStrictEqual(scanTarGzSync(archive).entries, [{ name: 'a.txt', size: 1 }]);
+});

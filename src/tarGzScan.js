@@ -10,6 +10,7 @@
 
 const fs = require('node:fs');
 const zlib = require('node:zlib');
+const { Writable, pipeline } = require('node:stream');
 const { spawnSync } = require('node:child_process');
 
 const BLOCK = 512;
@@ -189,40 +190,48 @@ function tarChecker() {
   return { push, finish };
 }
 
+// It resolves after the input file is closed, so a gzip error never leaves the handle open (on Windows an open file cannot be renamed or deleted).
 function scanTarGz(file) {
   return new Promise((resolve) => {
     const checker = tarChecker();
     const gunzip = zlib.createGunzip();
-    let done = false;
-    const end = (result) => {
-      if (done) return;
-      done = true;
-      resolve(result);
-    };
     const input = fs.createReadStream(file);
-    input.on('error', (err) => end({ reason: `Kept because the archive could not be read again. (${err.code})` }));
-    gunzip.on('error', (err) => end({ reason: `Kept because the gzip is damaged, truncated, or has other data after it. (${err.code})` }));
-    gunzip.on('data', (chunk) => checker.push(chunk));
-    // If the next byte after a member is 0x00, Node stops there without an error and discards the rest (tar.exe does not read it either, first review).
-    // So the number of bytes gzip really read must equal the file size.
-    gunzip.on('end', () => {
+    const sink = new Writable({
+      write(chunk, encoding, callback) {
+        checker.push(chunk);
+        callback();
+      },
+    });
+    const readAgain = (err) => ({ reason: `Kept because the archive could not be read again. (${err.code})` });
+    // pipeline destroys every stream, the input file included, when any of them fails.
+    pipeline(input, gunzip, sink, (err) => {
+      const settle = (result) => (input.closed ? resolve(result) : input.once('close', () => resolve(result)));
+      // A file system error has a syscall. A gunzip error (bad CRC, truncated) does not.
+      if (err) return settle(err.syscall ? readAgain(err) : { reason: `Kept because the gzip is damaged, truncated, or has other data after it. (${err.code})` });
+      // If the next byte after a member is 0x00, Node stops there without an error and discards the rest (tar.exe does not read it either, first review).
+      // So the number of bytes gzip really read must equal the file size.
       let size;
       try {
         size = fs.statSync(file).size;
-      } catch (err) {
-        end({ reason: `Kept because the archive could not be read again. (${err.code})` });
-        return;
+      } catch (statError) {
+        return settle(readAgain(statError));
       }
-      if (gunzip.bytesWritten !== size) end({ reason: 'Kept because there is other data after the end of the gzip.' });
-      else end(checker.finish());
+      return settle(gunzip.bytesWritten !== size ? { reason: 'Kept because there is other data after the end of the gzip.' } : checker.finish());
     });
-    input.pipe(gunzip);
   });
 }
 
+// A multi-GB archive must not block the caller for good, and a hung child must not hang forever.
+const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
+// The entry list comes back as one JSON string, so it is bounded. A list past this is "could not check", not a memory problem.
+const SCAN_MAX_OUTPUT = 256 * 1024 * 1024;
+
 // It runs scanTarGz in a separate node process. Even a large file is not loaded into this process's memory.
-function scanTarGzSync(file) {
-  const { error, status, stdout } = spawnSync(process.execPath, [__filename, file], { encoding: 'utf8', maxBuffer: Infinity, windowsHide: true });
+// The result is { entries } or { reason }. The entries are kept because the caller checks every extracted name (and uses entries.length as the count).
+function scanTarGzSync(file, { timeoutMs = SCAN_TIMEOUT_MS } = {}) {
+  const { error, status, stdout } = spawnSync(process.execPath, [__filename, file], { encoding: 'utf8', maxBuffer: SCAN_MAX_OUTPUT, timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true });
+  if (error?.code === 'ETIMEDOUT') return { reason: 'Kept because the tar.gz content could not be checked. The check timed out.' };
+  if (error?.code === 'ENOBUFS') return { reason: 'Kept because the tar.gz content could not be checked. The entry list is too large.' };
   if (error || status !== 0) return { reason: `Kept because the tar.gz content could not be checked. (${error?.code ?? status})` };
   try {
     return JSON.parse(stdout);
