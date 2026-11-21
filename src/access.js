@@ -172,4 +172,4 @@ function fileSizeInside(access, p) {
   return fs.statSync(readableFile(access, p)).size;
 }
 
-module.exports = { grant, readRange, fileSizeInside, rejectAmbiguousNames, resolveInside };
+module.exports = { grant, readRange, fileSizeInside, rejectAmbiguousNames };
