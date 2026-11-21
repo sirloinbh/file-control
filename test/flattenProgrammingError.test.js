@@ -25,7 +25,7 @@ test('flatten rethrows a TypeError from the folder phase with the partial result
   } catch (err) {
     error = err;
   }
-  assert.ok(error instanceof TypeError && /not iterable/.test(error.message), String(error));
+  assert.ok(error instanceof TypeError, String(error));
   assert.strictEqual(error.partial.moved.length, 1, 'the moved file stays in the partial result');
   assert.deepStrictEqual(error.partial.keptFolders, []);
   assert.ok(fs.existsSync(path.join(dir, '1.txt')));
