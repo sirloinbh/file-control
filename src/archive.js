@@ -277,9 +277,12 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = fa
     if (dryRun && force && exists(dest) && info) info.overwrites = true;
     if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? (force ? ', the destination folder already exists, so files with the same name are overwritten' : ', the destination folder already exists') : ''})`;
   }
-  if (config.isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
+  // The name listing is read once for both checks, not once per check (#326).
+  let names = null;
+  const listedNames = () => (names ??= archiveNames(archive));
+  if (config.isWindows) rejectExtractShortNameClash(listedNames(), dest);
   // tar overwrites existing files while extracting, so without --force it refuses before extracting anything (#311).
-  if (!force) rejectExtractOverwrite(archiveNames(archive), dest);
+  if (!force) rejectExtractOverwrite(listedNames(), dest);
   return perform(`Extract: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
     runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...noPassword()], { stdio: ['ignore', 'ignore', 'pipe'] });
