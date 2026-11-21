@@ -70,7 +70,7 @@ function folderBody(query, folder) {
   const link = (dir, text = dir) => html`<a href="${pickUrl({ ...query, dir })}">${text}</a>`;
   // Opening a subfolder clears the name filter (it belongs to the folder it was typed in); the other links keep it (#356).
   const enter = (dir, text = dir) => html`<a href="${pickUrl({ ...query, dir, filter: undefined })}">${text}</a>`;
-  const up = folder.parent === null ? link(undefined, 'Drive list') : link(folder.parent, 'Up');
+  const up = folder.parent === null ? html`<a href="${pickUrl({ ...query, dir: undefined, filter: undefined })}">Drive list</a>` : link(folder.parent, 'Up');
   const canReturn = query.returnTo !== null;
   const choose = folder.protected !== null
     ? html`<p>${badge('warning', 'Cannot choose')} This folder cannot be chosen (reason: ${folder.protected}). Choose another folder inside it.</p>`
