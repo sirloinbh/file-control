@@ -294,3 +294,8 @@ test('HTTP: remove-duplicates and remove-low-quality previews of a folder with n
     assert.deepStrictEqual(fs.readdirSync(dir), ['note.txt']);
   }
 });
+
+test('a network or device path is refused as a cleanup target (#329)', () => {
+  if (process.platform !== 'win32') return;
+  for (const target of ['\\\\server\\share\\x', '\\\\.\\C:\\x']) assert.throws(() => spec('remove-broken').toArgv({ target }), FcError, target);
+});

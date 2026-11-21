@@ -477,7 +477,6 @@ test('rm with several sources: a change inside any of them gives a new preview a
 
 test('the run refuses a path that became a protected place after the request, and a mismatched remove run reports ran: false (#329)', () => {
   const { runChecked } = require('../src/ui/checkedRun');
-  const preview = (argv) => ({ command: argv[0], result: { code: 'abc', mismatch: false } });
   // Fake execute: the dry run answers, the real run is never reached for a protected path.
   const calls = [];
   const execute = (argv) => {
@@ -485,11 +484,13 @@ test('the run refuses a path that became a protected place after the request, an
     return { command: argv[0], result: { code: 'abc', mismatch: argv.some((a) => a.startsWith('--yes=')) } };
   };
   const win = process.env.SystemRoot || 'C:\Windows';
+  // mv with -- before the paths is checked too.
+  const dashed = runChecked(['mv', '--', A, win], { mode: 'preview' }, { execute });
+  assert.throws(() => runChecked(['mv', '--', A, win], { mode: 'run', expect: dashed.fingerprint }, { execute }), /protected/);
   const first = runChecked(['remove-broken', '--', os.tmpdir()], { mode: 'preview' }, { execute });
   const done = runChecked(['remove-broken', '--', os.tmpdir()], { mode: 'run', expect: first.fingerprint }, { execute });
   assert.strictEqual(done.ran, false, 'a mismatch means nothing was deleted');
   const dry = runChecked(['mkdir', win], { mode: 'preview' }, { execute });
   assert.throws(() => runChecked(['mkdir', win], { mode: 'run', expect: dry.fingerprint }, { execute }), /protected/);
   assert.ok(!calls.some((argv) => argv[0] === 'mkdir' && !argv.includes('--dry-run')), 'the real mkdir never ran');
-  void preview;
 });

@@ -47,7 +47,7 @@ function checkedTarget(value) {
   if (/[\0\r\n]/.test(text)) throw new FcError(`The target folder cannot contain a line break: ${JSON.stringify(text)}`);
   if (/^[-–—]/.test(text)) throw new FcError(`The target folder cannot start with a dash: ${text}`);
   if (!path.isAbsolute(text)) throw new FcError(`The target folder must be a full path such as C:\\Users\\you\\Downloads: ${text}`);
-  if (process.platform === 'win32' && /^[\/]{2}/.test(text) && !/^\\\?\[A-Za-z]:/.test(text)) throw new FcError(`Network and device paths are not used: ${text}`);
+  if (process.platform === 'win32' && /^[\\/]{2}/.test(text) && !/^\\\\\?\\[A-Za-z]:/.test(text)) throw new FcError(`Network and device paths are not used: ${text}`);
   const full = path.resolve(text);
   const bad = trailingDotOrSpacePart(full);
   if (bad !== undefined) throw new FcError(`The target folder has a name that ends with a dot or space (${bad}): ${full}`);

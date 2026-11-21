@@ -21,7 +21,9 @@ function recheckProtected(command, argv) {
   if (count === undefined) return;
   const end = argv.indexOf('--');
   const head = (end === -1 ? argv : argv.slice(0, end)).filter((arg) => !arg.startsWith('--') && arg !== '-h').slice(1);
-  for (const p of head.slice(0, count)) refuseProtected(p, 'A path');
+  // After a literal -- mv and cp still take paths; for write and append that is the content, which is not a path.
+  const tail = end !== -1 && count === Infinity ? argv.slice(end + 1) : [];
+  for (const p of [...head, ...tail].slice(0, count)) refuseProtected(p, 'A path');
 }
 
 // Keys of the preview result that change between two dry-runs of an unchanged folder, per command.
