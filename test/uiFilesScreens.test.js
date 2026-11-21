@@ -556,7 +556,7 @@ test('mv: Replace permanently adds --permanent only when ticked together with Ov
   assert.strictEqual(unconfirmed.status, 400, 'the permanent option has its own confirmation');
   assert.strictEqual(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'A');
   const done = await previewAndRun('mv', fields, { 'confirm-force': 'yes', 'confirm-permanent': 'yes' });
-  assert.match(done.preview.body, /the items it replaces are deleted for good/);
+  assert.ok(done.preview.body.includes("Items are deleted for good without going to the Recycle Bin (for Move: the items it replaces)"));
   assert.strictEqual(done.run.job.outcome.ran, true, done.run.body);
   assert.ok(done.run.job.argv.includes('--permanent'));
   assert.strictEqual(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'NEW');
