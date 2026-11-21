@@ -2,6 +2,7 @@
 
 // The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
 const fc = require('./commands');
+const { plural } = require('./plural');
 const { flatten, formatFlatten } = require('./flatten');
 const { addProductNumbers, formatProductNumbers } = require('./productName');
 const { extractArchives, formatExtractions } = require('./extract');
@@ -222,7 +223,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       const report = format(result);
       // Even on failure, the report of the files that were moved goes to standard output. Kept or skipped items are enough as a report.
       const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
-      if (result.failed.length > 0) return fail(`${result.failed.length} files could not be sent to the Recycle Bin.`);
+      if (result.failed.length > 0) return fail(`${plural(result.failed.length, 'file')} could not be sent to the Recycle Bin.`);
       if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted. Check the new list.');
       return done(result, report);
     }
