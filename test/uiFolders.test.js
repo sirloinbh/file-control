@@ -179,3 +179,35 @@ test('browseFolder는 하위 폴더를 MAX_FOLDERS개까지만 보여 주고 나
   assert.strictEqual(result.hiddenFolders, 3);
   assert.strictEqual(result.folders[0].name, 'd00000');
 });
+
+test('the shell folder lookup runs in the background and is retried after a failure (#331)', () => {
+  const { createShellLoader } = require('../src/ui/folders');
+  const callbacks = [];
+  let clock = 0;
+  const exec = (file, args, options, done) => callbacks.push(done);
+  const shellFolders = createShellLoader({ exec, platform: 'win32', retryMs: 1000, now: () => clock });
+  assert.deepStrictEqual(shellFolders(), {});
+  assert.strictEqual(callbacks.length, 1, 'the first call starts one read and does not block');
+  assert.deepStrictEqual(shellFolders(), {});
+  assert.strictEqual(callbacks.length, 1, 'no second read while one is running');
+  callbacks.shift()(new Error('timed out'));
+  clock = 500;
+  shellFolders();
+  assert.strictEqual(callbacks.length, 0, 'no retry before the wait is over');
+  clock = 1500;
+  shellFolders();
+  assert.strictEqual(callbacks.length, 1, 'a failed read is retried');
+  const downloads = path.join(path.parse(os.tmpdir()).root, 'Dl');
+  callbacks.shift()(null, JSON.stringify({ downloads, desktop: 'relative' }));
+  assert.deepStrictEqual(shellFolders(), { downloads });
+  shellFolders();
+  assert.strictEqual(callbacks.length, 0, 'a successful read is kept');
+});
+
+test('browseFolder can filter the subfolders by name (#331)', () => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fc-filter-')));
+  test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const name of ['alpha', 'Beta', 'alphabet']) fs.mkdirSync(path.join(dir, name));
+  assert.deepStrictEqual(browseFolder(dir, { filter: 'ALPHA' }).folders.map((f) => f.name), ['alpha', 'alphabet']);
+  assert.strictEqual(browseFolder(dir).folders.length, 3);
+});

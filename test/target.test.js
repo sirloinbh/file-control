@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
+const { VERIFIED_NARROW_BUILDS } = require('../src/windowsNames');
 const { resolveTarget, isInside, readRange, fileSizeInside, walk, grant, deviceNamePattern, protectedReason } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
@@ -615,12 +616,19 @@ test('grant는 Windows 11 24H2 이상에서 점이 둘 이상이거나 장치 �
 });
 
 test('장치 이름 규칙은 Windows 빌드에 따라 고르고, 빌드를 읽지 못하면 넓은 규칙을 쓴다 (#53)', () => {
-  const narrow = deviceNamePattern('10.0.26200');
-  assert.strictEqual(deviceNamePattern('10.0.26100'), narrow);
-  const wide = deviceNamePattern('10.0.19045');
+  // An empty env object keeps a FCTL_NARROW_DEVICE_BUILDS of the machine running the tests out of the picture.
+  const narrow = deviceNamePattern('10.0.26200', {});
+  const wide = deviceNamePattern('10.0.19045', {});
   assert.notStrictEqual(narrow, wide);
+  // Only a verified build gets the narrow rule (#316): 26100 (24H2) and a future build were not measured, so they get the broad rule, even though they are newer.
+  for (const release of ['10.0.26100', '10.0.26300', '10.0.30000', '10.0.99999']) assert.strictEqual(deviceNamePattern(release, {}), wide, release);
+  // A person who verified a build adds it with FCTL_NARROW_DEVICE_BUILDS; bad entries are ignored.
+  assert.strictEqual(deviceNamePattern('10.0.30000', { FCTL_NARROW_DEVICE_BUILDS: '30000' }), narrow);
+  assert.strictEqual(deviceNamePattern('10.0.26100', { FCTL_NARROW_DEVICE_BUILDS: 'x, 26100 ,-5' }), narrow);
+  assert.strictEqual(deviceNamePattern('10.0.30001', { FCTL_NARROW_DEVICE_BUILDS: '30000,abc' }), wide);
+  assert.ok(VERIFIED_NARROW_BUILDS.has(26200));
   // Windows 11 23H2 and below (22000 to 22631) and Server 2022 (20348), which were not checked, use the broad rule.
-  for (const release of ['10.0.26099', '10.0.22631', '10.0.22000', '10.0.20348', '10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release), wide, release);
+  for (const release of ['10.0.26099', '10.0.22631', '10.0.22000', '10.0.20348', '10.0', '', 'x.y.z', '6.1.7601']) assert.strictEqual(deviceNamePattern(release, {}), wide, release);
   // [name, refused on Windows 11, refused on versions below]
   const cases = [
     ['NUL', true, true], ['nul', true, true], ['Nul.mp4', true, true], ['con.txt', true, true], ['Com1.mkv', true, true],

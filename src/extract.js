@@ -5,6 +5,7 @@ const path = require('node:path');
 const { FcError, unzip, remove, archiveEntries, freshPath, ensureRoomToExtract, MAX_TAR_DIR, TEMP_SERIAL_RESERVE } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp, rejectAmbiguousNames, stampVolumeReason } = require('./target');
 const { scanTarGzSync } = require('./tarGzScan');
+const { checkEntryNames } = require('./entryNames');
 const { readSevenZip } = require('./sevenZip');
 const { readZipEntries, ZIP_LOCAL } = require('./zip');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
@@ -20,8 +21,6 @@ const TAR_GZ = /\.(?:tar\.gz|tgz)$/i;
 const SEVEN_ZIP = /\.7z$/i;
 const SEVEN_ZIP_MAGIC = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
 const SEVEN_ZIP_HEADER = 32;
-// tar.exe turns a name with these characters into _ or drops the front part.
-const CHANGED_NAME = /[:?*<>|"\x00-\x1f]/;
 
 // The folder name of an archive name without the extension. If it is not an archive, it is null.
 function folderName(name) {
@@ -140,22 +139,6 @@ function extractOne(item, access) {
   return entries;
 }
 
-// It checks that the entry was extracted under its original name. Even if the content remains, the name may exist only in the original.
-// The preview has no extracted result, so it looks only at the name letters. If there is no size, it does not look at the size.
-function checkEntryNames(entries, dest, dryRun) {
-  for (const { name, size } of entries) {
-    if (CHANGED_NAME.test(name)) return `Kept because an item would get a different name when extracted: ${JSON.stringify(name)}`;
-    const relative = name.replaceAll('\\', '/').replace(/^(?:\.\/)+/, '');
-    const folder = relative === '' || relative.endsWith('/');
-    if (folder && size > 0) return `Kept because a folder entry has content: ${JSON.stringify(name)}`;
-    if (dryRun) continue;
-    const stat = fs.lstatSync(path.join(dest, relative), { throwIfNoEntry: false });
-    if (!stat) return `Kept because an item was not extracted under the same name: ${JSON.stringify(name)}`;
-    if (folder ? !stat.isDirectory() : size !== undefined && (!stat.isFile() || stat.size !== size)) return `Kept because the extracted size differs: ${JSON.stringify(name)}`;
-  }
-  return null;
-}
-
 // The reason the original must not be deleted. If it may be deleted, it is null.
 function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
@@ -178,10 +161,11 @@ function keepReason(access, item, entryCount, dryRun) {
   if (TAR_GZ.test(archive)) {
     if (head[0] !== 0x1f || head[1] !== 0x8b) return 'Kept because the content does not start as gzip.';
     // It checks the gzip CRC and length and the tar header checksum and end marker from start to end (#197). The entry count must equal the tar.exe list.
-    const scan = scanTarGzSync(archive);
+    // The child process also checks every name and size against the extracted result and returns only the reason or the entry count.
+    const scan = scanTarGzSync(archive, { verify: { dest, dryRun } });
     if (scan.reason !== undefined) return scan.reason;
-    if (scan.entries.length !== entryCount) return `Kept because the number of tar entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
-    return checkEntryNames(scan.entries.map(({ name, size }) => ({ name, size: size ?? undefined })), dest, dryRun);
+    if (scan.count !== entryCount) return `Kept because the number of tar entries differs from the tar.exe listing. (${scan.count}, listing ${entryCount})`;
+    return null;
   }
   return 'Kept because it cannot be confirmed that the extracted content of this format is intact.';
 }

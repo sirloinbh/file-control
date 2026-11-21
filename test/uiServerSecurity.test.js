@@ -104,7 +104,7 @@ test('다른 Origin·다른 사이트에서 보낸 POST, 토큰 없음·틀림�
     assert.match(res.body, /Requests sent from another site/);
   }
   assert.strictEqual((await post({ 'sec-fetch-site': 'cross-site' }, `token=${token}&text=x`)).status, 403);
-  const missing = await post({ origin: url.slice(0, -1) }, 'text=x');
+  const missing = await post({ origin: new URL(url).origin }, 'text=x');
   assert.strictEqual(missing.status, 403);
   assert.match(missing.body, /Reopen the page/);
   assert.strictEqual((await post({}, 'token=wrong&text=x')).status, 403);
@@ -131,7 +131,7 @@ test('GET으로 바꾸기를 시도하면 405로 거부하고 파일을 바꾸�
 
 test('같은 주소에서 토큰과 함께 보낸 POST만 처리기를 부른다 (#252)', async (t) => {
   const { url, token, target } = await serve(t);
-  const res = await request(`${url}write`, { method: 'POST', headers: { ...FORM_TYPE, origin: url.slice(0, -1), 'sec-fetch-site': 'same-origin' }, body: `token=${encodeURIComponent(token)}&text=${encodeURIComponent('한글 <ok>')}` });
+  const res = await request(`${url}write`, { method: 'POST', headers: { ...FORM_TYPE, origin: new URL(url).origin, 'sec-fetch-site': 'same-origin' }, body: `token=${encodeURIComponent(token)}&text=${encodeURIComponent('한글 <ok>')}` });
   assert.deepStrictEqual([res.status, res.body], [200, 'ok']);
   assert.strictEqual(fs.readFileSync(target, 'utf8'), '한글 <ok>');
 });
