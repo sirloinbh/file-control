@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const zlib = require('node:zlib');
 const { Writable, pipeline } = require('node:stream');
 const { spawnSync } = require('node:child_process');
+const { checkEntryNames } = require('./entryNames');
 
 const BLOCK = 512;
 
@@ -223,13 +224,15 @@ function scanTarGz(file) {
 
 // A multi-GB archive must not block the caller for good, and a hung child must not hang forever.
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
-// The entry list comes back as one JSON string, so it is bounded (the parsed list takes several times this much heap). A list past this is "could not check", not a memory problem.
+// The output is a count or a reason, so it is small. Only the test listing (entries: true) can be large, so it is bounded.
 const SCAN_MAX_OUTPUT = 64 * 1024 * 1024;
 
 // It runs scanTarGz in a separate node process. Even a large file is not loaded into this process's memory.
-// The result is { entries } or { reason }. The entries are kept because the caller checks every extracted name (and uses entries.length as the count).
-function scanTarGzSync(file, { timeoutMs = SCAN_TIMEOUT_MS } = {}) {
-  const { error, status, stdout } = spawnSync(process.execPath, [__filename, file], { encoding: 'utf8', maxBuffer: SCAN_MAX_OUTPUT, timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true });
+// With verify ({ dest, dryRun }), the child also checks every entry name and size against the extracted result, and the result is { count } or { reason }.
+// { entries: true } is for tests only: it returns { entries } or { reason }.
+function scanTarGzSync(file, { timeoutMs = SCAN_TIMEOUT_MS, verify = null, entries = false } = {}) {
+  const options = JSON.stringify({ verify, entries });
+  const { error, status, stdout } = spawnSync(process.execPath, [__filename, file, options], { encoding: 'utf8', maxBuffer: SCAN_MAX_OUTPUT, timeout: timeoutMs, killSignal: 'SIGKILL', windowsHide: true });
   if (error?.code === 'ETIMEDOUT') return { reason: 'Kept because the tar.gz content could not be checked. The check timed out.' };
   if (error?.code === 'ENOBUFS') return { reason: 'Kept because the tar.gz content could not be checked. The entry list is too large.' };
   if (error || status !== 0) return { reason: `Kept because the tar.gz content could not be checked. (${error?.code ?? status})` };
@@ -240,8 +243,20 @@ function scanTarGzSync(file, { timeoutMs = SCAN_TIMEOUT_MS } = {}) {
   }
 }
 
+// The child side: it reduces the scan result to a count and a reason unless the test listing was asked for.
+function childResult(result, { verify, entries }) {
+  if (result.reason !== undefined) return { reason: result.reason };
+  if (entries) return result;
+  if (verify) {
+    const reason = checkEntryNames(result.entries.map(({ name, size }) => ({ name, size: size ?? undefined })), verify.dest, verify.dryRun);
+    if (reason !== null) return { reason };
+  }
+  return { count: result.entries.length };
+}
+
 if (require.main === module) {
-  scanTarGz(process.argv[2]).then((result) => process.stdout.write(JSON.stringify(result)));
+  const options = JSON.parse(process.argv[3] ?? '{}');
+  scanTarGz(process.argv[2]).then((result) => process.stdout.write(JSON.stringify(childResult(result, options))));
 }
 
 module.exports = { scanTarGz, scanTarGzSync, tarChecker };
