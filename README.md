@@ -23,7 +23,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl write <file> [content]` | Create a file (reads standard input if there is no content) |
 | `fctl append <file> [content]` | Append content to the end of a file |
 | `fctl cat <file>` | Show the contents of a file |
-| `fctl rename <path> <new-name>` | Rename within the same folder. The dry run decides that a new name leads to the item itself (only its case changes) by volume and file number, not by lowercased names (#302) |
+| `fctl rename <path> <new-name>` | Rename within the same folder. A new name that leads to the item itself (only its case changes) is recognized by volume and file number, not by comparing names |
 | `fctl mv <source...> <target>` | Move (into the folder if the target is an existing folder) |
 | `fctl cp <source...> <target>` | Copy |
 | `fctl rm <path...>` | Send to the Recycle Bin |

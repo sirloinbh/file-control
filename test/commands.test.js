@@ -1514,14 +1514,14 @@ test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 
   assert.strictEqual(fs.readFileSync(p('s.7z.zip')).subarray(0, 2).toString(), 'PK');
 });
 
-test('rename --dry-run refuses an existing folder even when lowercasing makes the two names equal (#302)', () => {
+test('rename --dry-run refuses an existing folder even when lowercasing makes the two names equal (#302)', (t) => {
   const dir = tempDir();
   const kelvin = path.join(dir, '\u212Adir');
   const plain = path.join(dir, 'kdir');
   fs.mkdirSync(kelvin);
   // On NTFS these are two different names; elsewhere the second mkdir fails or the paths are one item, so the test only applies when both exist.
-  try { fs.mkdirSync(plain); } catch { return; }
-  if (fs.statSync(kelvin, { bigint: true }).ino === fs.statSync(plain, { bigint: true }).ino) return;
+  try { fs.mkdirSync(plain); } catch { return t.skip('the two names are one item on this file system'); }
+  if (fs.statSync(kelvin, { bigint: true }).ino === fs.statSync(plain, { bigint: true }).ino) return t.skip('the two names are one item on this file system');
   assert.throws(() => fc.rename(kelvin, 'kdir', { force: true, dryRun: true }), /Cannot overwrite a folder/);
 });
 
@@ -1542,6 +1542,12 @@ test('rename --dry-run treats a destination with the same file number as the ite
     return real;
   });
   assert.match(fc.rename(file, 'sub', { force: true, dryRun: true }), /Rename:/);
+});
+
+test('rename --dry-run previews a case-only rename of a folder (#302)', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'abc'));
+  assert.match(fc.rename(path.join(dir, 'abc'), 'ABC', { force: true, dryRun: true }), /Rename:/);
 });
 
 test('rename --force still changes only the case of a file (#302)', () => {
