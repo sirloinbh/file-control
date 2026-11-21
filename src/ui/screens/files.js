@@ -156,8 +156,13 @@ const specs = [
       { name: 'sources', label: 'Items to move (full paths, one per line)', kind: 'lines' },
       { name: 'dest', label: 'Destination (full path; a folder to move into)', kind: 'path' },
       FORCE('Overwrite items that already exist in the destination'),
+      { name: 'permanent', label: 'Replace permanently: delete the replaced item for good instead of sending it to the Recycle Bin (only with Overwrite)', kind: 'checkbox' },
     ],
-    toArgv: (values) => ['mv', ...forceFlag(values), ...pathLines(values.sources, 'The items to move'), changeablePath(values.dest, 'The destination')],
+    toArgv: (values) => {
+      // --permanent only decides what happens to the item that Overwrite replaces; it is never sent unless it is ticked (#349).
+      if (values.permanent && !values.force) throw new FcError('Replace permanently applies only together with Overwrite.');
+      return ['mv', ...forceFlag(values), ...(values.permanent ? ['--permanent'] : []), ...pathLines(values.sources, 'The items to move'), changeablePath(values.dest, 'The destination')];
+    },
     doneLabel: 'Moved',
   },
   {
