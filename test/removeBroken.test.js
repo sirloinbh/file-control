@@ -964,7 +964,7 @@ test('fctl remove-broken은 실패해도 옮긴 파일을 표준 출력 보고�
     if (target.endsWith('a.mp4')) throw new Error('잠김');
   };
   assert.throws(() => run(['remove-broken', dir, `--yes=${code}`]), (err) => {
-    assert.match(err.message, /1 files could not be sent to the Recycle Bin/);
+    assert.match(err.message, /1 file could not be sent to the Recycle Bin/);
     assert.doesNotMatch(err.message, /Move to the Recycle Bin/);
     assert.match(err.output, /Move to the Recycle Bin: b\.mp4/);
     assert.match(err.output, /Failed: a\.mp4/);
