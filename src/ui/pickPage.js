@@ -20,11 +20,12 @@ const RETURN_PATH = /^\/(?!\/)[A-Za-z0-9/_-]*$/;
 const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 
 // The address of the picker screen. If there is no dir, it is the first (drives) screen.
-function pickUrl({ dir, returnTo, field }) {
+function pickUrl({ dir, returnTo, field, filter }) {
   const params = new URLSearchParams();
   if (dir) params.set('dir', dir);
   if (returnTo) params.set('return', returnTo);
   if (field) params.set('field', field);
+  if (filter) params.set('filter', filter);
   const query = params.toString();
   return query ? `${PICK_PATH}?${query}` : PICK_PATH;
 }
@@ -42,13 +43,17 @@ function pathInput({ name = 'target', label = 'Target folder', value = '', retur
   return html`<p><label>${label}<br><input type="text" name="${name}" value="${value}" size="60" spellcheck="false"></label> <a href="${link}">Choose folder</a></p>`;
 }
 
-// It reads the picker values (dir, return, field) from the request address. A wrong return or field is discarded (it only browses, with no pick link).
+// The longest name filter that is accepted (#356).
+const MAX_FILTER = 255;
+
+// It reads the picker values (dir, return, field, filter) from the request address. A wrong return or field is discarded (it only browses, with no pick link).
 function readPickQuery(url) {
   const params = new URL(url, 'http://127.0.0.1').searchParams;
   const returnTo = params.get('return');
   const field = params.get('field');
   const valid = returnTo !== null && field !== null && RETURN_PATH.test(returnTo) && FIELD_NAME.test(field);
-  return { dir: params.get('dir') || null, returnTo: valid ? returnTo : null, field: valid ? field : null };
+  const filter = (params.get('filter') ?? '').trim().slice(0, MAX_FILTER);
+  return { dir: params.get('dir') || null, returnTo: valid ? returnTo : null, field: valid ? field : null, filter };
 }
 
 // First screen: the frequently used places and the drives.
@@ -63,6 +68,8 @@ ${table([{ label: 'Drive' }], drives.map((drive) => [link(drive)]), { empty: 'No
 // Folder screen: the location, go up, pick, and the subfolder list.
 function folderBody(query, folder) {
   const link = (dir, text = dir) => html`<a href="${pickUrl({ ...query, dir })}">${text}</a>`;
+  // Opening a subfolder clears the name filter (it belongs to the folder it was typed in); the other links keep it (#356).
+  const enter = (dir, text = dir) => html`<a href="${pickUrl({ ...query, dir, filter: undefined })}">${text}</a>`;
   const up = folder.parent === null ? link(undefined, 'Drive list') : link(folder.parent, 'Up');
   const canReturn = query.returnTo !== null;
   const choose = folder.protected !== null
@@ -71,7 +78,7 @@ function folderBody(query, folder) {
       ? html`<p><a href="${chosenUrl({ ...query, dir: folder.path })}"><strong>Choose this folder</strong></a></p>`
       : '';
   const rows = folder.folders.map((child) => [
-    child.link ? html`${link(child.path, child.name)} <span class="muted">link -> ${child.target ?? '?'}</span>` : link(child.path, child.name),
+    child.link ? html`${enter(child.path, child.name)} <span class="muted">link -> ${child.target ?? '?'}</span>` : enter(child.path, child.name),
     child.protected === null ? (canReturn ? html`<a href="${chosenUrl({ ...query, dir: child.choosePath ?? child.path })}">Choose</a>` : '') : html`${badge('warning', 'Cannot choose')} <span class="muted">${child.protected}</span>`,
   ]);
   const otherLinks = (folder.links ?? []).length === 0 ? '' : html`<h2>Links that cannot be entered</h2>
@@ -82,7 +89,18 @@ ${choose}
 ${summaryCards([{ label: 'Folders', value: folder.folders.length + (folder.hiddenFolders ?? 0) }, { label: 'Files', value: folder.files }, { label: 'File size', value: formatSize(folder.size) }])}
 ${table([{ label: 'Folder', width: '60%' }, { label: '' }], rows, { empty: 'No subfolders.' })}
 ${otherLinks}
-${folder.hiddenFolders > 0 ? html`<p class="muted">Too many folders, so only the first ${folder.folders.length} are shown (${folder.hiddenFolders} more).</p>` : ''}`;
+${folder.hiddenFolders > 0 ? html`<p class="muted">Too many folders, so only the first ${folder.folders.length} are shown (${folder.hiddenFolders} more).</p>` : ''}
+${filterForm(query, folder)}`;
+}
+
+// The name filter (#356): shown when the folder has more subfolders than are listed, and while a filter is active so it can be changed or cleared.
+// It is a plain GET form that keeps dir, return and field.
+function filterForm(query, folder) {
+  if (!(folder.hiddenFolders > 0) && query.filter === '') return '';
+  return html`<form method="get" action="${PICK_PATH}">
+<input type="hidden" name="dir" value="${folder.path}">${query.returnTo !== null ? html`<input type="hidden" name="return" value="${query.returnTo}"><input type="hidden" name="field" value="${query.field}">` : ''}
+<label>Show only folders whose name contains<br><input type="text" name="filter" value="${query.filter}" size="30" maxlength="${MAX_FILTER}" spellcheck="false"></label> <button type="submit">Filter</button>
+</form>`;
 }
 
 // The GET /pick handler. sources swaps in the drive, location, and folder reading in tests.
@@ -98,7 +116,7 @@ function pickPage(req, { available }, sources = { listDrives, commonPlaces, brow
   }
   if (query.dir !== null) {
     try {
-      const folder = sources.browseFolder(query.dir);
+      const folder = sources.browseFolder(query.dir, { filter: query.filter });
       return { body: page({ title: 'Choose folder', available, alerts, body: folderBody(query, folder) }) };
     } catch (err) {
       if (!(err instanceof FcError)) throw err;

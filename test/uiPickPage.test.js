@@ -18,7 +18,7 @@ test.mock.method(os, 'homedir', () => home);
 const { runUi } = require('../src/ui/server');
 const { startUi, connect } = require('./uiClient');
 const { pickRoutes, pathInput, pickUrl, readPickQuery } = require('../src/ui/pickPage');
-const { browseFolder } = require('../src/ui/folders');
+const { browseFolder, MAX_FOLDERS } = require('../src/ui/folders');
 const { escapeHtml } = require('../src/ui/html');
 
 // The drives and the frequently used places are fixed, and the folder reading uses the real function.
@@ -144,8 +144,8 @@ test('pathInput은 입력칸과 그 값에서 시작하는 고르기 링크를 �
   assert.ok(pathInput({ returnTo: '/organize' }).text.includes(href('/pick?return=%2Forganize&field=target')));
   assert.throws(() => pathInput({ name: 'a"b', returnTo: '/organize' }));
   assert.throws(() => pathInput({ returnTo: '//evil.example' }));
-  assert.deepStrictEqual(readPickQuery('/pick?dir=C%3A%5C&return=%2Forganize&field=target'), { dir: 'C:\\', returnTo: '/organize', field: 'target' });
-  assert.deepStrictEqual(readPickQuery('/pick'), { dir: null, returnTo: null, field: null });
+  assert.deepStrictEqual(readPickQuery('/pick?dir=C%3A%5C&return=%2Forganize&field=target'), { dir: 'C:\\', returnTo: '/organize', field: 'target', filter: '' });
+  assert.deepStrictEqual(readPickQuery('/pick'), { dir: null, returnTo: null, field: null, filter: '' });
 });
 
 test('fctl ui의 기본 주소에 폴더 고르기 화면이 있다 (#254)', async (t) => {
@@ -198,4 +198,44 @@ test('하위 폴더가 한도로 잘리면 요약 카드는 전체 폴더 수를
   const body = await (await get('/pick?dir=D%3A%5Cmany&return=%2Forganize&field=target')).text();
   assert.match(body, /<div class="value">5<\/div><div class="label">Folders<\/div>/);
   assert.match(body, /only the first 1 are shown \(4 more\)/);
+});
+
+test('a folder past the cap shows a name filter that lists only matching subfolders, keeps it on Up, clears it on a subfolder, and escapes it (#356)', async (t) => {
+  const dir = path.join(base, 'many');
+  fs.mkdirSync(dir);
+  for (let i = 0; i < MAX_FOLDERS + 3; i++) fs.mkdirSync(path.join(dir, `d${String(i).padStart(5, '0')}`));
+  fs.mkdirSync(path.join(dir, 'Special-One'));
+  fs.mkdirSync(path.join(dir, 'special-two'));
+  const { get } = await serve(t);
+  const ctx = { returnTo: '/organize', field: 'target' };
+
+  const plain = await get(`?${new URLSearchParams({ dir, return: '/organize', field: 'target' })}`);
+  assert.match(plain.body, /Too many folders/);
+  assert.match(plain.body, /<form method="get" action="\/pick">/);
+  assert.match(plain.body, /name="filter"/);
+  assert.match(plain.body, /name="return" value="\/organize"/);
+
+  const filtered = await get(`?${new URLSearchParams({ dir, return: '/organize', field: 'target', filter: 'SPECIAL' })}`);
+  assert.ok(filtered.body.includes('>Special-One</a>') && filtered.body.includes('>special-two</a>'));
+  assert.ok(!filtered.body.includes('>d00001</a>'), 'only the matching subfolders are listed');
+  assert.doesNotMatch(filtered.body, /Too many folders/);
+  assert.match(filtered.body, /name="filter" value="SPECIAL"/, 'the field stays while a filter is active');
+  // Up keeps the filter text; a subfolder link clears it.
+  assert.ok(filtered.body.includes(href(pickUrl({ dir: base, ...ctx, filter: 'SPECIAL' }))), 'Up keeps the filter');
+  assert.ok(filtered.body.includes(href(pickUrl({ dir: path.join(dir, 'Special-One'), ...ctx }))), 'a subfolder clears the filter');
+
+  const hostile = '"><script>alert(1)</script>';
+  const escaped = await get(`?${new URLSearchParams({ dir, return: '/organize', field: 'target', filter: hostile })}`);
+  assert.ok(!escaped.body.includes('<script>alert(1)</script>'));
+  assert.ok(escaped.body.includes(escapeHtml(hostile)));
+
+  // A small folder has no filter field.
+  const small = await get(`?${new URLSearchParams({ dir: home })}`);
+  assert.doesNotMatch(small.body, /name="filter"/);
+});
+
+test('readPickQuery trims and bounds the filter (#356)', () => {
+  assert.strictEqual(readPickQuery('/pick?dir=C%3A%5C&filter=%20ab%20').filter, 'ab');
+  assert.strictEqual(readPickQuery('/pick?dir=C%3A%5C').filter, '');
+  assert.strictEqual(readPickQuery(`/pick?filter=${'x'.repeat(400)}`).filter.length, 255);
 });
