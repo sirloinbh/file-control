@@ -149,7 +149,10 @@ function skipReason(entry) {
 // - checked: the number of files examined
 // The inside of repository folders and removal record files are left out silently. A repository has many files, and a record cannot be a removal target.
 // entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
-function findBroken(dir, { entries } = {}) {
+// onProgress(line) is called after every PROGRESS_EVERY files examined, so a long check shows that it is alive (#326).
+const PROGRESS_EVERY = 100;
+
+function findBroken(dir, { entries, onProgress } = {}) {
   const access = grant(dir, ['read']);
   const result = { target: access.target, broken: [], suspect: [], undetermined: [], skipped: [], checked: 0 };
   for (const entry of entries ?? walk(access.target)) {
@@ -166,6 +169,7 @@ function findBroken(dir, { entries } = {}) {
       continue;
     }
     result.checked += 1;
+    if (onProgress && result.checked % PROGRESS_EVERY === 0) onProgress(`Checked ${plural(result.checked, 'file')} so far...`);
     try {
       const real = access.read(entry.path);
       const stamp = fileStamp(fs.lstatSync(real, { bigint: true }));
