@@ -62,6 +62,7 @@ function notProductWords() {
     }
     return value.map((word) => word.toUpperCase());
   };
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new FcError(`The product word file (${file}) must hold an object with "add" and "remove" lists.`);
   const words = new Set(BUILT_IN_NOT_PRODUCT);
   for (const word of list('add')) words.add(word);
   for (const word of list('remove')) words.delete(word);
@@ -86,11 +87,12 @@ function extractProductNumbers(text, options) {
 function findProductNumberRanges(text, { lowercase = false } = {}) {
   if (typeof text !== 'string') return [];
   const ranges = [];
+  const skipped = notProductWords();
   for (const { 0: match, index } of halfWidth(text).matchAll(CANDIDATE)) {
     const letters = match.slice(0, match.indexOf('-'));
     const upper = letters.toUpperCase();
     if (letters !== upper && !(lowercase && letters === letters.toLowerCase())) continue;
-    if (!notProductWords().has(upper)) ranges.push({ number: match.toUpperCase(), start: index, end: index + match.length });
+    if (!skipped.has(upper)) ranges.push({ number: match.toUpperCase(), start: index, end: index + match.length });
   }
   return ranges;
 }
@@ -141,4 +143,4 @@ function findAttachedProductNumbers(text) {
   return [...new Set(numbers)];
 }
 
-module.exports = { extractProductNumbers, findProductNumberRanges, findProductNumber, findAttachedProductNumbers, halfWidth };
+module.exports = { notProductWords, extractProductNumbers, findProductNumberRanges, findProductNumber, findAttachedProductNumbers, halfWidth };

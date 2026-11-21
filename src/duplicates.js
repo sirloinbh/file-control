@@ -3,7 +3,7 @@
 const path = require('node:path');
 const { FcError, formatSize } = require('./commands');
 const { grant, walk, fileSizeInside, compareRelative } = require('./target');
-const { findProductNumberRanges, halfWidth } = require('./product');
+const { findProductNumberRanges, halfWidth, notProductWords } = require('./product');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
 const { readMp4Metadata } = require('./mp4');
@@ -36,8 +36,13 @@ const QUALITY = /^(?:\d{3,4}[pi]|\d+fps|\d+bit|\d+k|[xh]26[45]|\d+ch|aac\d*|ac3|
 const ROMAN = /^(?=[ivxlc]{2,}$)c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
 // A Roman numeral is a part mark only right after a word that calls pieces (Part II, CD iv) or as the last word of the title (Title III).
 // Anywhere else, short words made of i, v, x, l, c (ci, li, xi, mix-up pieces) are ordinary words, not parts 101, 51, 11 (#327).
-const PART_WORDS = new Set(['part', 'pt', 'cd', 'disc', 'disk', 'vol', 'volume', 'ep', 'episode', 'chapter', 'no']);
-const isPartRoman = (tokens, index) => ROMAN.test(tokens[index]) && (index === tokens.length - 1 || PART_WORDS.has(tokens[index - 1]?.toLowerCase()));
+// "The last word" does not count quality tags after it (Show III 1080p).
+const PART_WORDS = new Set(['part', 'pt', 'cd', 'disc', 'disk', 'vol', 'volume', 'ep', 'episode', 'chapter', 'no', 'season', 'side', 'act', 'book', 'tape', 'reel', 'scene', 'series']);
+function isPartRoman(tokens, index) {
+  if (!ROMAN.test(tokens[index])) return false;
+  if (PART_WORDS.has(tokens[index - 1]?.toLowerCase())) return true;
+  return tokens.slice(index + 1).every((token) => QUALITY.test(token) || TITLE_NOISE.has(token.toLowerCase()));
+}
 const ROMAN_VALUES = { i: 1, v: 5, x: 10, l: 50, c: 100 };
 const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半|[상중하]편?|[전후]편)$/;
 const KANJI_NUMBER = /^第?[一二三四五六七八九十百]+[話话巻卷部章回]?$/;
@@ -327,6 +332,8 @@ function chooseKeeper(files) {
 // - checked: the number of video files examined
 // A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
 function findDuplicateNames(dir, { entries } = {}) {
+  // A bad product word file stops the command here, not once per file as "could not read".
+  notProductWords();
   const access = grant(dir, ['read']);
   const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
   const byKey = new Map();

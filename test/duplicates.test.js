@@ -716,3 +716,27 @@ test('halfWidth keeps the length of the text, so number positions of the origina
   }
   assert.strictEqual(halfWidth('ＡＢＣ－１２３'), 'ABC-123');
 });
+
+test('a Roman numeral before quality tags or a copy tail is still the last word (#327 review)', () => {
+  assert.strictEqual(duplicateKey('ABC-123 Show III 1080p.mp4').part, '3');
+  assert.strictEqual(duplicateKey('ABC-123 Show III FHD.mp4').part, '3');
+  assert.strictEqual(duplicateKey('ABC-123 Show III (1).mp4').part, '3');
+  assert.strictEqual(duplicateKey('ABC-123 Show III - Copy.mp4').part, '3');
+  assert.strictEqual(duplicateKey('ABC-123 Season II Uncut.mp4').part, '2');
+  assert.strictEqual(duplicateKey('ABC-123 Part II 1080p.mp4').part, '2');
+  assert.strictEqual(duplicateKey('ABC-123 ci.mp4').part, '101');
+  assert.notStrictEqual(duplicateKey('ABC-123 Show II 1080p.mp4').key, duplicateKey('ABC-123 Show III 1080p.mp4').key);
+});
+
+test('findDuplicateNames stops on a bad product word file instead of reporting every file as unreadable (#327 review)', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-badcfg-'));
+  t.after(() => {
+    delete process.env.FCTL_PRODUCT_CONFIG;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(dir, 'ABC-123.mp4'), '');
+  const bad = path.join(dir, 'bad.json');
+  fs.writeFileSync(bad, '[]');
+  process.env.FCTL_PRODUCT_CONFIG = bad;
+  assert.throws(() => findDuplicateNames(dir), /must hold an object/);
+});
