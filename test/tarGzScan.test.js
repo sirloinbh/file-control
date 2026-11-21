@@ -53,7 +53,7 @@ const file = (name, data, options) => Buffer.concat([header(name, Buffer.byteLen
 function scan(dir, name, tar, { raw = false } = {}) {
   const target = path.join(dir, name);
   fs.writeFileSync(target, raw ? tar : zlib.gzipSync(tar));
-  return scanTarGzSync(target);
+  return scanTarGzSync(target, { entries: true });
 }
 
 test('정상 tar.gz는 항목 이름과 크기를 돌려준다: pax 이름·크기, ustar prefix, base-256 크기, 크기 없는 하드링크 (#197)', () => {
@@ -109,5 +109,44 @@ test('tar.exe가 그대로 풀지 않거나 풀린 결과로 확인할 수 없�
   for (const [name, data] of Object.entries(raw)) assert.ok(scan(dir, `${name}.tar.gz`, data, { raw: true }).reason, name);
   assert.match(scan(dir, 'zero-gap2.tar.gz', Buffer.concat([good, Buffer.alloc(1), good]), { raw: true }).reason, /other data after the end of the gzip/);
   // A file that does not exist is also returned as a reason.
-  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz')).reason, /could not be read again/);
+  assert.match(scanTarGzSync(path.join(dir, 'missing.tar.gz'), { entries: true }).reason, /could not be read again/);
+});
+
+test('손상된 gzip을 검사한 직후에도 파일 이름을 바꿀 수 있다 (#324)', async () => {
+  const { scanTarGz } = require('../src/tarGzScan');
+  const dir = tempDir();
+  const archive = path.join(dir, 'bad.tar.gz');
+  const good = zlib.gzipSync(Buffer.concat([header('a.txt', 3), Buffer.alloc(512), Buffer.alloc(1024)]));
+  // The first bytes are fine and the rest is corrupt. 200000 bytes is more than one 64 KiB read chunk, so gunzip fails while the input is still being read.
+  const data = Buffer.concat([good.subarray(0, 20), Buffer.alloc(200000, 0xff)]);
+  fs.writeFileSync(archive, data);
+  const result = await scanTarGz(archive);
+  assert.match(result.reason, /gzip is damaged/);
+  fs.renameSync(archive, path.join(dir, 'renamed.tar.gz'));
+  assert.ok(fs.existsSync(path.join(dir, 'renamed.tar.gz')));
+});
+
+test('시간 제한을 넘기면 확인하지 못했다는 이유를 돌려준다 (#324)', () => {
+  const dir = tempDir();
+  const archive = path.join(dir, 'a.tar.gz');
+  fs.writeFileSync(archive, zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), END])));
+  assert.match(scanTarGzSync(archive, { timeoutMs: 1, entries: true }).reason, /timed out/);
+  assert.deepStrictEqual(scanTarGzSync(archive, { entries: true }).entries, [{ name: 'a.txt', size: 1 }]);
+});
+
+test('verify mode: the child returns only a count or a reason (#324)', () => {
+  const dir = tempDir();
+  const dest = path.join(dir, 'out');
+  fs.mkdirSync(dest);
+  const bad = path.join(dir, 'bad.tar.gz');
+  fs.writeFileSync(bad, zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), file('b:.txt', 'b'), END])));
+  assert.match(scanTarGzSync(bad, { verify: { dest, dryRun: true } }).reason, /different name/);
+  const clean = path.join(dir, 'c.tar.gz');
+  fs.writeFileSync(clean, zlib.gzipSync(Buffer.concat([file('a.txt', 'a'), END])));
+  assert.deepStrictEqual(scanTarGzSync(clean, { verify: { dest, dryRun: true } }), { count: 1 });
+  assert.match(scanTarGzSync(clean, { verify: { dest, dryRun: false } }).reason, /not extracted under the same name/);
+  fs.writeFileSync(path.join(dest, 'a.txt'), 'xx');
+  assert.match(scanTarGzSync(clean, { verify: { dest, dryRun: false } }).reason, /extracted size differs/);
+  fs.writeFileSync(path.join(dest, 'a.txt'), 'a');
+  assert.deepStrictEqual(scanTarGzSync(clean, { verify: { dest, dryRun: false } }), { count: 1 });
 });
