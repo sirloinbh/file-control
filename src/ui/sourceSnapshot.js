@@ -5,6 +5,8 @@
 // A junction or symlink is recorded as a link with its target. It is walked only where the command reads through it (see snapshotSources).
 // With --force, mv and cp also replace or overwrite what is already at the destination, so that is snapshotted too (#284, see snapshotDestinations),
 // and so are the item rename --force and zip --force overwrite (#297).
+// Limit (#329): a file is recorded by size and modification time only, not by its content. A change that keeps both (for example a same-size rewrite
+// with the time set back) is not seen, so the fingerprint guards against ordinary changes, not against someone who sets out to defeat it.
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');

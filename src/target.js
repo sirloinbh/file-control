@@ -464,4 +464,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, volumeFormat, stampVolumeReason, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason, protectedInfo };
+module.exports = { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, fileStamp, volumeFormat, stampVolumeReason, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason, protectedInfo, TRAILING_DOT_OR_SPACE };
