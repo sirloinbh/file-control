@@ -15,9 +15,9 @@ const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 
+const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
+
 const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate']);
-// Options that take a value (--name=value). The value goes in values.
-const VALUE_FLAGS = new Set(['min-height', 'min-bitrate']);
 
 function parse(argv) {
   const flags = new Set();
@@ -58,17 +58,11 @@ function rejectUnknownOptions(command, args, flags) {
   if (dashed !== undefined) throw new fc.FcError(`Unknown option: ${dashed} (write names that start with - as ./${dashed} or after --)`);
 }
 
-// --force and --permanent change what a command does, so a command that does not use them refuses them instead of silently ignoring them (#314).
-// The whole-target commands refuse both in checkWholeTarget, so this table covers the basic file commands.
-const BASIC_COMMANDS = new Set(['ls', 'cat', 'mkdir', 'write', 'append', 'rename', 'mv', 'cp', 'rm', 'zip', 'unzip']);
-const FORCE_COMMANDS = ['write', 'rename', 'mv', 'cp', 'zip', 'unzip'];
-const PERMANENT_COMMANDS = ['rm', 'mv'];
-function rejectUnusedFlags(command, flags) {
-  if (!BASIC_COMMANDS.has(command)) return;
-  // mv --permanent only decides what happens to the item that --force replaces, so without --force it does nothing.
-  if (command === 'mv' && flags.has('permanent') && !flags.has('force')) throw new fc.FcError('mv --permanent only applies with --force (it deletes the replaced item permanently instead of sending it to the Recycle Bin).');
-  if (flags.has('force') && !FORCE_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`);
-  if (flags.has('permanent') && !PERMANENT_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`);
+// An option that a command does not use is refused instead of silently ignored: the rules are in the command table (#314, #362).
+// The whole-target commands refuse --force and --permanent in checkWholeTarget.
+function rejectMisplacedFlags(command, flags) {
+  const message = misplacedFlagMessage(command, flags);
+  if (message !== undefined) throw new fc.FcError(message);
 }
 
 function need(args, count, usage) {
@@ -113,15 +107,8 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
 
   rejectUnknownOptions(command, unchecked, flags);
   if (!command || flags.has('help')) return { help: true };
-  // It is an option that deletes the originals, so other commands do not silently ignore it.
-  if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives can be used only with extract-all.');
-  const removing = command === 'remove-broken' || command === 'remove-duplicates' || command === 'remove-low-quality';
-  if (flags.has('yes') && !removing) throw new fc.FcError('--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality.');
-  rejectUnusedFlags(command, flags);
-  if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase can be used only with normalize.');
-  for (const name of VALUE_FLAGS) {
-    if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name} can be used only with find-low-quality and remove-low-quality.`);
-  }
+  // --remove-archives deletes the originals, so it and the other options are refused on commands that do not use them.
+  rejectMisplacedFlags(command, flags);
 
   // The dry run of write, rename, mv, cp, zip and unzip sets info.overwrites when it would overwrite or replace something, so a screen reads the flag, not the words of the report (#361).
   const info = { overwrites: false };
