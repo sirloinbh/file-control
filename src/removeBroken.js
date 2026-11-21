@@ -14,8 +14,9 @@ const { planSafeRemovals, runConfirmedRemoval, FILE_BATCH, MAX_RECYCLE_SIZE } = 
 // Suspicious and could-not-judge files are not deleted. The keep rules (changed file, path length, 5-minute hold, download marker, hard links, volume) are in removal.js.
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['delete']);
-  rejectRepository(access.target, walk(access.target));
-  const found = findBroken(dir);
+  const entries = walk(access.target);
+  rejectRepository(access.target, entries);
+  const found = findBroken(dir, { entries });
   // The judgment can take a long time, so it measures by the time after the judgment so that a file changed in the meantime is not wrongly seen as a file with a future time.
   const safe = planSafeRemovals(found.broken, access, {
     now,
