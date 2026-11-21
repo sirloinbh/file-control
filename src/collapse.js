@@ -87,6 +87,17 @@ function foldersWithLinks(target, entries) {
   return folders;
 }
 
+// The folders whose attributes decide whether the stretches can collapse: the parent of each top folder and the stretch folders without the bottom one.
+function listedFolders(pending) {
+  const listed = new Set();
+  for (const { chain } of pending) {
+    const parent = path.dirname(chain[0].relative);
+    listed.add(parent === '.' ? '' : parent);
+    for (const item of chain.slice(0, -1)) listed.add(item.relative);
+  }
+  return [...listed];
+}
+
 // Finds stretches under the target where each folder holds only one folder. It keeps the top folder name and lifts the content of the bottom folder to that place.
 // It does not collapse the target itself. If a level has several items, it looks separately from below it. A stretch that ends in an empty folder may be a structure the user made, so it is not touched.
 // - collapses: the stretches to collapse ({ top, leaf, folders }). folders is the path from the top to the bottom. They are placed deepest first so that an earlier operation does not change a later path.
@@ -99,13 +110,14 @@ function planCollapse(dir) {
   const position = new Map(entries.map((entry, index) => [entry.relative, index]));
   const linkFolders = foldersWithLinks(access.target, entries);
   const plan = { target: access.target, collapses: [], skipped: [] };
-  // The stretches whose attributes are to be looked at. To keep the order of skipping, an empty reason is placed at that position and filled in later.
+  // The stretches whose attributes are to be looked at. Every skipped row keeps the position of its folder in the walk (order), and a stable sort at the end restores that order.
+  const skipped = [];
   const pending = [];
   for (const entry of entries) {
     if (entry.type !== 'dir') continue;
     // For leftovers, it reports only the topmost one and does not look inside. A file that could not be restored may be here.
     if (hasPart(entry, LEFTOVER)) {
-      if (LEFTOVER.test(path.basename(entry.path)) && !hasPart({ relative: path.dirname(entry.relative) }, LEFTOVER)) plan.skipped.push({ path: entry.path, reason: 'Not collapsed because it is a leftover from an earlier job.' });
+      if (LEFTOVER.test(path.basename(entry.path)) && !hasPart({ relative: path.dirname(entry.relative) }, LEFTOVER)) skipped.push({ order: position.get(entry.relative), item: { path: entry.path, reason: 'Not collapsed because it is a leftover from an earlier job.' } });
       continue;
     }
     if (!soleFolder(children, entry.relative)) continue;
@@ -117,25 +129,20 @@ function planCollapse(dir) {
     if (!children.has(chain.at(-1).relative)) continue;
     const reason = skipReason(chain, entries, position);
     if (reason !== null) {
-      plan.skipped.push({ path: entry.path, reason });
+      skipped.push({ order: position.get(entry.relative), item: { path: entry.path, reason } });
       continue;
     }
-    const slot = { path: entry.path, reason: null };
-    plan.skipped.push(slot);
-    pending.push({ chain, slot });
+    pending.push({ chain, order: position.get(entry.relative) });
   }
   // The attributes are read with one PowerShell run only when there is a stretch to collapse. To know the attributes of the stretch folders it is enough to enumerate their parents, so
   // it passes only the parent of the top folder and the stretch folders without the bottom one. Many folders unrelated to the stretch do not slow it down (first review).
-  const listed = new Set();
-  for (const { chain } of pending) {
-    const parent = path.dirname(chain[0].relative);
-    listed.add(parent === '.' ? '' : parent);
-    for (const item of chain.slice(0, -1)) listed.add(item.relative);
-  }
-  const attributes = pending.length > 0 ? hiddenOrSystemEntries(access.target, [...listed]) : new Map();
-  for (const { chain, slot } of pending) {
-    slot.reason = hiddenReason(chain, attributes);
-    if (slot.reason !== null) continue;
+  const attributes = pending.length > 0 ? hiddenOrSystemEntries(access.target, listedFolders(pending)) : new Map();
+  for (const { chain, order } of pending) {
+    const hidden = hiddenReason(chain, attributes);
+    if (hidden !== null) {
+      skipped.push({ order, item: { path: chain[0].path, reason: hidden } });
+      continue;
+    }
     try {
       const folders = chain.map((item) => item.path);
       // Stretches that cannot be handled, such as a folder that holds a link or a name ending in a dot, are reported in the plan. The results of a real run and a preview become the same.
@@ -145,11 +152,10 @@ function planCollapse(dir) {
       plan.collapses.push({ top: folders[0], leaf: folders.at(-1), folders });
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
-      slot.reason = err.message;
+      skipped.push({ order, item: { path: chain[0].path, reason: err.message } });
     }
   }
-  const slots = new Set(pending.map(({ slot }) => slot));
-  plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
+  plan.skipped = skipped.sort((a, b) => a.order - b.order).map((row) => row.item);
   plan.collapses.sort((a, b) => b.leaf.split(path.sep).length - a.leaf.split(path.sep).length);
   return plan;
 }
