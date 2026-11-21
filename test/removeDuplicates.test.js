@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -26,7 +27,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     formatProbes += 1;
     return format();
   }
-  if (options?.env?.FC_VOLUME !== undefined) return volume();
+  const state = volumeStateAnswer(options?.env, () => volume());
+  if (state !== undefined) return state;
   // It also imitates the batch Recycle Bin move (#216) so as not to touch the user's Recycle Bin.
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     batchInputs.push(options.input);

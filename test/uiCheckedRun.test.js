@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -17,7 +18,8 @@ const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_FORMAT_VOLUME !== undefined) return 'NTFS\r\n';
-  if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed\r\n';
+  const state = volumeStateAnswer(options?.env, () => 'True|Fixed\r\n');
+  if (state !== undefined) return state;
   if (options?.env?.FC_BATCH !== undefined) return fakeRecycleFolders(options);
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     const lines = [];

@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 
 const isWindows = process.platform === 'win32';
 
@@ -539,7 +540,8 @@ test('recycleFiles의 PowerShell 스크립트는 지우다 실패한 파일의 W
 function fakeVolume(t, answer) {
   const calls = [];
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
-    if (options?.env?.FC_VOLUME !== undefined) return typeof answer === 'function' ? answer(options.env.FC_VOLUME) : answer;
+    const state = volumeStateAnswer(options?.env, (p) => (typeof answer === 'function' ? answer(p) : answer));
+    if (state !== undefined) return state;
     if (options?.env?.FC_TARGET !== undefined) {
       calls.push(options.env.FC_TARGET);
       fs.rmSync(options.env.FC_TARGET, { recursive: true });
