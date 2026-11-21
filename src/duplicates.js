@@ -332,7 +332,10 @@ function chooseKeeper(files) {
 // - skipped: items that are not handled ({ path, reason })
 // - checked: the number of video files examined
 // A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
-function findDuplicateNames(dir, { entries } = {}) {
+const PROGRESS_EVERY = 100;
+
+// onProgress(line) is called after every PROGRESS_EVERY videos examined (#326).
+function findDuplicateNames(dir, { entries, onProgress } = {}) {
   // A bad product word file stops the command here, not once per file as "could not read".
   notProductWords();
   const access = grant(dir, ['read']);
@@ -363,6 +366,7 @@ function findDuplicateNames(dir, { entries } = {}) {
       }
       const real = access.read(entry.path);
       result.checked += 1;
+      if (onProgress && result.checked % PROGRESS_EVERY === 0) onProgress(`Checked ${result.checked} video ${result.checked === 1 ? 'file' : 'files'} so far...`);
       const size = fileSizeInside(access, real);
       const file = { path: real, size, ...readVideoInfo(access.target, real) };
       videos.push(file);

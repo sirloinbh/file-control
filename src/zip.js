@@ -4,6 +4,7 @@
 // - readZipEntries (used by extract.js) reads the directory and returns { entries: [{ name, size }] } or { reason }, so that the extracted result can be matched to it.
 // - checkZip (used by broken.js) judges an .zip file broken, suspect, or fine (null).
 
+const fs = require('node:fs');
 const { FcError, oemCodePage } = require('./commands');
 const { readRange, fileSizeInside } = require('./target');
 
@@ -252,17 +253,26 @@ function checkZipEnd(access, real, tail, tailOffset, at) {
   if (directoryOffset + directorySize > tailOffset + at) return broken('The zip directory runs past the end marker. The file is damaged.');
   if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`The zip directory is too large to judge: ${directorySize} bytes`);
   const directory = readRange(access, real, { offset: directoryOffset, length: directorySize });
-  let pos = 0;
-  for (let index = 0; index < total; index += 1) {
-    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('The zip directory is damaged.');
-    const offset = directory.readUInt32LE(pos + 42);
-    if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
-      const local = readRange(access, real, { offset, length: 4 });
-      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL_SIG) return broken('A zip entry header does not match the directory. The file is damaged.');
+  // The entry headers are read through one opened handle, not one open per entry (#326). access.read checks once that the path is inside the target.
+  const readable = access.read(real);
+  let fd = null;
+  try {
+    let pos = 0;
+    for (let index = 0; index < total; index += 1) {
+      if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('The zip directory is damaged.');
+      const offset = directory.readUInt32LE(pos + 42);
+      if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
+        fd ??= fs.openSync(readable, 'r');
+        const local = Buffer.alloc(4);
+        const read = fs.readSync(fd, local, 0, 4, offset);
+        if (read < 4 || local.readUInt32LE(0) !== ZIP_LOCAL_SIG) return broken('A zip entry header does not match the directory. The file is damaged.');
+      }
+      pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
     }
-    pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
-  return null;
 }
 
 // If the candidate that matches the end of the file is intact, the file is normal. If only another candidate is intact, other data is attached after it, so it is suspicious. Only when all are wrong is it broken.

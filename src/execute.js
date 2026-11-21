@@ -104,7 +104,7 @@ function formatList(entries) {
 // - Otherwise { command, result, report, failure }. result is the value the function returned as is, report is the text the CLI prints,
 //   and failure is the FcError for when part failed and the CLI must end as a failure (exit code 1) (if err.output exists, the report to print on standard output).
 // An argument error or an exception during the run is thrown as is. An unknown command is an FcError whose err.unknownCommand is true.
-// If progress(line) is given, long-running commands (flatten, remove-broken) pass on what they did, one line at a time, even before they finish (#67, #99).
+// If progress(line) is given, long-running commands (flatten, remove-broken, find-broken, find-duplicates) pass on what they did, one line at a time, even before they finish (#67, #99, #326).
 // readStdin() is called when write and append have no content.
 function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
@@ -206,7 +206,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     case 'find-broken': {
       checkWholeTarget(command, args, flags);
       // Found files are enough as a report. It does not touch files, so --dry-run gives the same result.
-      const result = findBroken(args[0]);
+      const result = findBroken(args[0], { onProgress: progress });
       return done(result, formatBroken(result));
     }
     case 'remove-broken':
@@ -233,7 +233,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     case 'find-duplicates': {
       checkWholeTarget(command, args, flags);
       // Found groups are enough as a report. It does not touch files, so --dry-run gives the same result.
-      const result = findDuplicateNames(args[0]);
+      const result = findDuplicateNames(args[0], { onProgress: progress });
       return done(result, formatDuplicateNames(result));
     }
     case 'find-low-quality': {

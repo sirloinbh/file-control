@@ -740,3 +740,21 @@ test('findDuplicateNames stops on a bad product word file instead of reporting e
   process.env.FCTL_PRODUCT_CONFIG = bad;
   assert.throws(() => findDuplicateNames(dir), /must hold an object/);
 });
+
+test('findDuplicateNames reports progress every 100 videos (#326)', () => {
+  const dir = tempDir();
+  for (let i = 0; i < 205; i += 1) put(dir, `clip-${i}.mp4`, 'x');
+  const lines = [];
+  const result = findDuplicateNames(dir, { onProgress: (line) => lines.push(line) });
+  assert.strictEqual(result.checked, 205);
+  assert.deepStrictEqual(lines, ['Checked 100 video files so far...', 'Checked 200 video files so far...']);
+  assert.deepStrictEqual(findDuplicateNames(dir).checked, 205);
+});
+
+test('find-duplicates passes progress lines to the CLI progress callback (#326)', () => {
+  const dir = tempDir();
+  for (let i = 0; i < 100; i += 1) put(dir, `v${i}.mp4`, 'x');
+  const lines = [];
+  require('../src/execute').execute(['find-duplicates', dir], { progress: (line) => lines.push(line) });
+  assert.deepStrictEqual(lines, ['Checked 100 video files so far...']);
+});

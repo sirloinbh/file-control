@@ -108,3 +108,55 @@ test('a real zip followed by a fake end record and directory in its comment is k
   fs.writeFileSync(path.join(dir, 'plain.zip'), zipWithComment('a.txt', 'abc', 'just a note'));
   assert.deepStrictEqual(readZipEntries(grant(dir, ['read']), path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
 });
+
+// The central directory size is stored in the end record (offset 12 from its start, which is 22 bytes before the end of a comment-less zip).
+const directoryLength = (zip) => zip.readUInt32LE(zip.length - 22 + 12);
+
+test('checkZip reads the entry headers through one opened handle (#326)', () => {
+  const dir = tempDir();
+  const count = 300;
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (let i = 0; i < count; i += 1) {
+    const name = Buffer.from(`f${i}.txt`);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(name.length, 26);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(name.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    parts.push(local, name);
+    central.push(entry, name);
+    offset += 30 + name.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(count, 8);
+  end.writeUInt16LE(count, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  const file = path.join(dir, 'many.zip');
+  const data = Buffer.concat([...parts, directory, end]);
+  fs.writeFileSync(file, data);
+  const open = test.mock.method(fs, 'openSync');
+  try {
+    assert.strictEqual(checkZip(grant(dir, ['read']), file, data.length), null);
+    // The tail, the directory and the one handle for the headers; not one open per entry.
+    assert.ok(open.mock.callCount() <= 5, `openSync calls: ${open.mock.callCount()}`);
+  } finally {
+    open.mock.restore();
+  }
+  // A wrong header signature at the start is still found, with the entry-header reason (not the directory one).
+  const bad = Buffer.from(data);
+  bad.writeUInt32LE(0x58585858, 0);
+  fs.writeFileSync(file, bad);
+  assert.match(checkZip(grant(dir, ['read']), file, bad.length).reason, /entry header does not match/);
+  // An entry whose offset points past the end of the file is a short read and is found too.
+  const far = Buffer.from(data);
+  far.writeUInt32LE(far.length + 1000, far.length - 22 - directoryLength(far) + 42);
+  fs.writeFileSync(file, far);
+  assert.match(checkZip(grant(dir, ['read']), file, far.length).reason, /entry header does not match/);
+});
