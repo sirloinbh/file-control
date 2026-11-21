@@ -1448,7 +1448,9 @@ function ensureRoomToExtract(dest, entries) {
 // It finds the files of the archive that already exist in the extraction folder, which tar would overwrite (#311). Folders may merge, so only file entries count.
 // Names in the list come out in the code page, so a non-ASCII letter or ? matches any non-ASCII letter or ? of an existing name (it may refuse too much, never too little).
 function rejectExtractOverwrite(names, dest) {
-  if (!fs.lstatSync(dest, { throwIfNoEntry: false })?.isDirectory()) return;
+  // A link to a folder is followed, as tar would extract through it.
+  const isDir = (full) => fs.statSync(full, { throwIfNoEntry: false })?.isDirectory() === true;
+  if (!isDir(dest)) return;
   const fold = (name) => name.replace(/[^\x00-\x7f]|\?/g, '\u0080').toUpperCase();
   const clash = (dir, parts, shown) => {
     let existing;
@@ -1458,9 +1460,9 @@ function rejectExtractOverwrite(names, dest) {
       return undefined;
     }
     const matches = existing.filter((entry) => fold(entry.name) === fold(parts[0]));
-    if (parts.length === 1) return matches.length > 0 && !matches.every((entry) => entry.isDirectory()) ? shown : undefined;
+    if (parts.length === 1) return matches.length > 0 && !matches.every((entry) => isDir(path.join(dir, entry.name))) ? shown : undefined;
     for (const entry of matches) {
-      if (!entry.isDirectory()) continue;
+      if (!isDir(path.join(dir, entry.name))) continue;
       const found = clash(path.join(dir, entry.name), parts.slice(1), shown);
       if (found !== undefined) return found;
     }

@@ -1613,3 +1613,17 @@ test('unzip refuses an existing file of the same name without --force and extrac
   fc.unzip(p('x.zip'), p('out'), { force: true });
   assert.strictEqual(fc.readFile(p('out', 'src', 'a.txt')), 'new');
 });
+
+test('unzip without --force also refuses a same-name file reached through a folder link (#311)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'a.txt'), 'new');
+  fc.zip(p('x.zip'), [p('src')]);
+  fc.writeFile(p('real', 'src', 'a.txt'), 'old');
+  fs.symlinkSync(p('real'), p('link'), 'junction');
+  assert.throws(() => fc.unzip(p('x.zip'), p('link')), /already has a file of the same name/);
+  fs.mkdirSync(p('out2', 'x'), { recursive: true });
+  fs.symlinkSync(p('real', 'src'), p('out2', 'src'), 'junction');
+  assert.throws(() => fc.unzip(p('x.zip'), p('out2')), /already has a file of the same name/);
+  assert.strictEqual(fc.readFile(p('real', 'src', 'a.txt')), 'old');
+});
