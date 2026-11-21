@@ -255,7 +255,7 @@ test('unzip preview warns when the extraction folder already has entries; zip st
   fs.writeFileSync(path.join(dest, 'src', 'b.txt'), 'old');
   fs.writeFileSync(path.join(dest, 'other.txt'), 'x');
   const preview = await finish(await post('/archive/unzip/preview', { archive, dest }));
-  assert.match(preview.body, /alert-warning[^>]*>The extraction folder already exists and has 2 entries\. Files in the archive with the same name will overwrite them/);
+  assert.match(preview.body, /alert-warning[^>]*>The extraction folder already exists and has 2 entries\. Files in the archive with the same name are not overwritten/);
   assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'b.txt'), 'utf8'), 'old', 'a preview overwrites nothing');
 });
 
@@ -319,4 +319,36 @@ test('an 8.3 short name of a protected folder is refused on the archive screens 
   assert.throws(() => specOf('zip').toArgv({ archive: 'C:\\PROGRA~1\\x.zip', sources: 'D:\\a' }), /protected place/);
   assert.throws(() => specOf('unzip').toArgv({ archive: 'D:\\x.zip', dest: 'C:\\PROGRA~1\\out' }), /protected place/);
   assert.throws(() => specOf('extract-all').toArgv({ target: 'C:\\PROGRA~1' }), /protected place/);
+});
+
+test('unzip over an existing same-name file is refused, and succeeds with Overwrite and its confirmation (#349)', async (t) => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.writeFileSync(path.join(dir, 'src', 'a.txt'), 'new');
+  const archive = path.join(dir, 'pack.zip');
+  const { post, finish } = await serve(t);
+  const made = await finish(await post('/archive/zip/preview', { archive, sources: path.join(dir, 'src') }));
+  await finish(await post('/archive/zip/run', { archive, sources: path.join(dir, 'src'), fingerprint: fingerprintOf(made.body) }));
+
+  const dest = path.join(dir, 'existing');
+  fs.mkdirSync(path.join(dest, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dest, 'src', 'a.txt'), 'old');
+
+  const refused = await finish(await post('/archive/unzip/preview', { archive, dest }));
+  assert.strictEqual(refused.job.status, 'error');
+  assert.match(refused.body, /Job failed/);
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'old');
+
+  const form = { archive, dest, force: 'on' };
+  const preview = await finish(await post('/archive/unzip/preview', form));
+  assert.deepStrictEqual(preview.job.argv.slice(0, 3), ['unzip', '--force', '--']);
+  assert.match(preview.body, /Overwrite is on: files in the archive with the same name will replace them/);
+  assert.match(preview.body, /name="confirm-force" value="yes" required/);
+  const fingerprint = fingerprintOf(preview.body);
+  const unconfirmed = await post('/archive/unzip/run', { ...form, fingerprint });
+  assert.strictEqual(unconfirmed.status, 400);
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'old');
+  const run = await finish(await post('/archive/unzip/run', { ...form, fingerprint, 'confirm-force': 'yes' }));
+  assert.strictEqual(run.job.outcome.ran, true, run.body);
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'new');
 });

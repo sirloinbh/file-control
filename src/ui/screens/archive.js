@@ -71,6 +71,7 @@ const specs = [
     fields: [
       { name: 'archive', label: 'Archive file to extract', kind: 'text' },
       { name: 'dest', label: 'Folder to extract into (empty: a folder named after the archive, next to it)', kind: 'path' },
+      { name: 'force', label: 'Overwrite files that already exist in the folder with the same name (the old content cannot be restored)', kind: 'checkbox' },
     ],
     toArgv(values) {
       const archive = unquote(values.archive);
@@ -79,7 +80,7 @@ const specs = [
       const checked = checkedPath(archive, 'The archive');
       // An empty folder means a folder named after the archive next to it; that folder is checked too.
       const destination = checkedPath(unzipDest(checked, dest), 'The folder to extract into');
-      return ['unzip', '--', checked, ...(dest === '' ? [] : [destination])];
+      return ['unzip', ...(values.force ? ['--force'] : []), '--', checked, ...(dest === '' ? [] : [destination])];
     },
     doneLabel: 'Extracted',
   },
@@ -105,8 +106,9 @@ const specs = [
 const report = (outcome) => html`<pre class="report">${outcome.report}</pre>`;
 const isPreview = (outcome, job) => job.mode === 'preview' || outcome.repreview === true;
 
-// Extracting into a folder that already has entries overwrites files with the same name, and the old content cannot be restored.
-function existingWarning(dest) {
+// Extracting into a folder that already has entries: without Overwrite a same-name file stops the extraction before anything is written (#349);
+// with Overwrite (--force) those files are replaced, and the old content cannot be restored.
+function existingWarning(dest, force) {
   let count = 0;
   try {
     count = fs.readdirSync(dest).length;
@@ -114,7 +116,9 @@ function existingWarning(dest) {
     return '';
   }
   if (count === 0) return '';
-  return alertBox('warning', `The extraction folder already exists and has ${count} ${count === 1 ? 'entry' : 'entries'}. Files in the archive with the same name will overwrite them, and the old content cannot be restored.`);
+  return alertBox('warning', `The extraction folder already exists and has ${count} ${count === 1 ? 'entry' : 'entries'}. ${force
+    ? 'Overwrite is on: files in the archive with the same name will replace them, and the old content cannot be restored.'
+    : 'Files in the archive with the same name are not overwritten: if there is one, the extraction stops before it writes anything. Tick Overwrite to replace them.'}`);
 }
 
 const views = {
@@ -127,7 +131,7 @@ ${report(outcome)}`;
     const [archive, dest] = pathsOf(job.argv);
     if (!isPreview(outcome, job)) return report(outcome);
     const space = unzipSpace(archive ?? '', dest);
-    return html`${existingWarning(space.dest)}<p>Extraction folder: <code>${space.dest}</code></p>
+    return html`${existingWarning(space.dest, job.argv.includes('--force'))}<p>Extraction folder: <code>${space.dest}</code></p>
 <p>${space.text}</p>
 ${report(outcome)}`;
   },
