@@ -1,17 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, recycleBinState, permanentDeleteReason, MAX_RECYCLE_PATH } = require('./commands');
-const { grant, walk, fileStamp, stampVolumeReason } = require('./target');
+const { grant, walk, fileStamp } = require('./target');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./flatten');
-const { writeRemovalLog } = require('./removalLog');
-const { holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE } = require('./removeBroken');
-const { markerFinder, markerReason } = require('./downloadMarker');
-
-const reasonOf = (err) => (err instanceof FcError ? err.message : `Cannot check the file. (${err.code ?? err.message})`);
+const { planSafeRemovals, runConfirmedRemoval, MAX_RECYCLE_SIZE } = require('./removal');
 
 // A file that is low quality only by bitrate is not deleted. The bitrate is the file size divided by the length, so if the length is read inflated or
 // the file was partly downloaded, even a normal video comes out low. Until the check that cross-checks the length (#179) exists, it only reports them in the list.
@@ -22,73 +16,22 @@ const BITRATE_ONLY = 'Kept because it is low quality by bitrate only, so the dur
 // - kept: files that are low quality but kept ({ path, reason, file })
 // - interactive: whether the session can send to the Recycle Bin. If there are no files to delete, it is not checked and is null.
 // The other values (criteria, unreadable, skipped, checked) are those of findLowQuality.
-// Like remove-broken, it keeps a file that changed within 5 minutes, a file that may be downloading, a file that would be deleted permanently by the Recycle Bin setting (#219), a file over the Recycle Bin path limit,
-// a file whose other name (a hard link) of the same file is already in the list to delete first, and a file on a volume that is not a fixed disk.
+// The keep rules are the same as remove-broken (removal.js).
 function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
   rejectRepository(access.target, walk(access.target));
   const found = findLowQuality(dir, { minHeight, minBitrate });
   // Reading the metadata can take time, so it measures by the time after the search.
-  const checkedAt = now ?? Date.now();
-  const plan = { ...found, removals: [], kept: [], interactive: null };
-  const markerOf = markerFinder();
-  const linked = new Map();
-  const linkKept = [];
-  for (const file of found.low) {
-    const keep = (reason) => plan.kept.push({ path: file.path, reason, file });
-    if (!file.byResolution) {
-      keep(BITRATE_ONLY);
-      continue;
-    }
-    try {
-      const real = access.delete(file.path);
-      const stat = fs.lstatSync(real, { bigint: true });
-      const hold = holdReason(stat, checkedAt);
-      const marker = hold === null ? markerReason(markerOf(real)) : null;
-      const sameFile = stat.nlink > 1n ? linked.get(`${stat.dev}:${stat.ino}`) : undefined;
-      if (real !== file.path || !stat.isFile()) keep('Kept because the file changed after the search.');
-      else if (real.length > MAX_RECYCLE_PATH) keep(`Kept because the path is ${real.length} characters, over the ${MAX_RECYCLE_PATH} that can be sent to the Recycle Bin. Shorten the name or move it to a parent folder and run again.`);
-      else if (hold !== null) keep(hold);
-      else if (marker !== null) keep(marker);
-      else if (sameFile !== undefined) linkKept.push({ file, other: sameFile });
-      else {
-        if (stat.nlink > 1n) linked.set(`${stat.dev}:${stat.ino}`, real);
-        plan.removals.push({ ...file, path: real, size: Number(stat.size), stamp: fileStamp(stat) });
-      }
-    } catch (err) {
-      keep(reasonOf(err));
-    }
-  }
-  if (plan.removals.length === 0 && linkKept.length === 0) return plan;
-  const linkReason = (item) =>
-    `Kept because another name of the same file (hard link: ${path.relative(access.target, item.other)}) is deleted first in this run, which changes the file's modification time, so it cannot be deleted together. Each time you run again after 5 minutes, one name is deleted.`;
-  // On a volume with no Recycle Bin, it may be deleted permanently, so it deletes only when it was confirmed to be a fixed disk.
-  const state = recycleBinState(access.target);
-  const { interactive, driveType } = state;
-  plan.interactive = interactive;
-  // On a volume without a change time (exFAT and so on), the confirmation value and the 5-minute protection cannot stop a swap, so it does not delete (#184).
-  const volumeReason = driveType === 'Fixed' ? stampVolumeReason(access.target) : null;
-  if (driveType !== 'Fixed' || volumeReason !== null) {
-    const reason = volumeReason ?? (driveType === null ? 'Kept because the volume type could not be checked.' : `Kept because the drive is not a fixed disk (${driveType}), so it could be permanently deleted.`);
-    plan.kept.push(...plan.removals.map((item) => ({ path: item.path, reason, file: item })), ...linkKept.map(({ file }) => ({ path: file.path, reason, file })));
-    plan.removals = [];
-    return plan;
-  }
-  // A file that would be deleted permanently by the Recycle Bin setting (remove immediately, over the maximum size, 1GB or more if the setting cannot be read) is kept (#219, the same judgment as #100).
-  // Its other names (hard links) are also kept for the same reason.
-  const dropped = new Map();
-  plan.removals = plan.removals.filter((item) => {
-    const why = permanentDeleteReason(state, item.size, maxSize);
-    if (why === null) return true;
-    plan.kept.push({ path: item.path, reason: `Kept ${why}.`, file: item });
-    dropped.set(item.path, why);
-    return false;
+  const safe = planSafeRemovals(found.low, access, {
+    now,
+    maxSize,
+    precheck: (file) => (file.byResolution ? null : BITRATE_ONLY),
+    isChanged: () => false,
+    changedReason: 'Kept because the file changed after the search.',
+    toRemoval: (file, real, stat) => ({ ...file, path: real, size: Number(stat.size), stamp: fileStamp(stat) }),
+    entry: ({ candidate, removal }, reason) => ({ path: (removal ?? candidate).path, reason, file: removal ?? candidate }),
   });
-  for (const item of linkKept) {
-    const reason = dropped.has(item.other) ? `Kept ${dropped.get(item.other)}.` : linkReason(item);
-    plan.kept.push({ path: item.file.path, reason, file: item.file });
-  }
-  return plan;
+  return { ...found, ...safe };
 }
 
 // A value that stands for the list a person saw. It changes if the standards change, the files to delete increase or decrease, or any one changes.
@@ -108,10 +51,10 @@ function removeLowQuality(dir, { minHeight, minBitrate, confirm, dryRun = false,
   if (confirm === undefined || dryRun) return result;
   if (confirm !== code) return { ...result, mismatch: true };
   if (plan.removals.length === 0) return result;
-  if (plan.interactive !== true) throw new FcError('Cannot send to the Recycle Bin because it was not confirmed that this is an interactive session. Nothing was deleted.');
-  result.confirmed = true;
-  const log = writeRemovalLog(
-    plan.target,
+  // It sends in batches like remove-broken (#216). Starting PowerShell for each file takes 0.5 to 0.6 second per file.
+  return runConfirmedRemoval(
+    plan,
+    result,
     'low-quality videos',
     plan.removals.map((item) => ({
       path: item.path,
@@ -127,14 +70,6 @@ function removeLowQuality(dir, { minHeight, minBitrate, confirm, dryRun = false,
       },
     })),
   );
-  result.log = log.path;
-  const access = grant(plan.target, ['delete']);
-  // It sends in batches like remove-broken (#216). Starting PowerShell for each file takes 0.5 to 0.6 second per file.
-  recycleInBatches(plan.removals, log, (item) => checkOne(access, item), {
-    removed: (item) => result.removed.push(item),
-    failed: (item, reason) => result.failed.push({ path: item.path, reason }),
-  });
-  return result;
 }
 
 function formatRemoveLowQuality(result) {

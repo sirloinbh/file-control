@@ -1513,3 +1513,47 @@ test('zip은 7z를 다른 압축으로 한 번 더 싸는 이름(.7z.gz 등)을 
   fc.zip(p('s.7z.zip'), [p('a.txt')]);
   assert.strictEqual(fs.readFileSync(p('s.7z.zip')).subarray(0, 2).toString(), 'PK');
 });
+
+test('rename --dry-run refuses an existing folder even when lowercasing makes the two names equal (#302)', (t) => {
+  const dir = tempDir();
+  const kelvin = path.join(dir, '\u212Adir');
+  const plain = path.join(dir, 'kdir');
+  fs.mkdirSync(kelvin);
+  // On NTFS these are two different names; elsewhere the second mkdir fails or the paths are one item, so the test only applies when both exist.
+  try { fs.mkdirSync(plain); } catch { return t.skip('the two names are one item on this file system'); }
+  if (fs.statSync(kelvin, { bigint: true }).ino === fs.statSync(plain, { bigint: true }).ino) return t.skip('the two names are one item on this file system');
+  assert.throws(() => fc.rename(kelvin, 'kdir', { force: true, dryRun: true }), /Cannot overwrite a folder/);
+});
+
+test('rename --dry-run treats a destination with the same file number as the item itself (#302)', (t) => {
+  const dir = tempDir();
+  const file = path.join(dir, 'a.txt');
+  const other = path.join(dir, 'sub');
+  fc.writeFile(file, 'x');
+  fs.mkdirSync(other);
+  // A case-only rename leads to the item itself, so it is not an overwrite of a folder: the destination reports the source's file number.
+  const lstat = fs.lstatSync;
+  t.mock.method(fs, 'lstatSync', (p, opts) => {
+    const real = lstat(p, opts);
+    if (path.resolve(p) === other) {
+      const source = lstat(file, opts);
+      return { ...real, dev: source.dev, ino: source.ino };
+    }
+    return real;
+  });
+  assert.match(fc.rename(file, 'sub', { force: true, dryRun: true }), /Rename:/);
+});
+
+test('rename --dry-run previews a case-only rename of a folder (#302)', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, 'abc'));
+  assert.match(fc.rename(path.join(dir, 'abc'), 'ABC', { force: true, dryRun: true }), /Rename:/);
+});
+
+test('rename --force still changes only the case of a file (#302)', () => {
+  const dir = tempDir();
+  fc.writeFile(path.join(dir, 'a.txt'), 'x');
+  fc.rename(path.join(dir, 'a.txt'), 'A.txt', { force: true });
+  assert.ok(fs.readdirSync(dir).includes('A.txt'));
+  assert.ok(!fs.readdirSync(dir).includes('a.txt'));
+});
