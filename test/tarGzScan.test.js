@@ -117,7 +117,7 @@ test('손상된 gzip을 검사한 직후에도 파일 이름을 바꿀 수 있�
   const dir = tempDir();
   const archive = path.join(dir, 'bad.tar.gz');
   const good = zlib.gzipSync(Buffer.concat([header('a.txt', 3), Buffer.alloc(512), Buffer.alloc(1024)]));
-  // The first half is fine and the middle is corrupt, so gunzip fails while the input is still being read.
+  // The first bytes are fine and the rest is corrupt. 200000 bytes is more than one 64 KiB read chunk, so gunzip fails while the input is still being read.
   const data = Buffer.concat([good.subarray(0, 20), Buffer.alloc(200000, 0xff)]);
   fs.writeFileSync(archive, data);
   const result = await scanTarGz(archive);

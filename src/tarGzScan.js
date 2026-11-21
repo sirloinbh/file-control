@@ -223,8 +223,8 @@ function scanTarGz(file) {
 
 // A multi-GB archive must not block the caller for good, and a hung child must not hang forever.
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
-// The entry list comes back as one JSON string, so it is bounded. A list past this is "could not check", not a memory problem.
-const SCAN_MAX_OUTPUT = 256 * 1024 * 1024;
+// The entry list comes back as one JSON string, so it is bounded (the parsed list takes several times this much heap). A list past this is "could not check", not a memory problem.
+const SCAN_MAX_OUTPUT = 64 * 1024 * 1024;
 
 // It runs scanTarGz in a separate node process. Even a large file is not loaded into this process's memory.
 // The result is { entries } or { reason }. The entries are kept because the caller checks every extracted name (and uses entries.length as the count).
