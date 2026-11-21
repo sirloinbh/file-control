@@ -7,6 +7,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { grant } = require('../src/target');
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
+test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 const { readZipEntries, checkZip } = require('../src/zip');
 const { crc32, crc32Table } = require('../src/crc32');
 const { readSevenZip } = require('../src/sevenZip');
@@ -57,19 +60,19 @@ test('a marker in the comment does not make the zip count as broken, but the del
   const comment = 'note PK\x05\x06 and more text that is long enough to hold a fake record';
   fs.writeFileSync(path.join(dir, 'c.zip'), zipWithComment('a.txt', 'abc', comment));
   // tar.exe may extract from the record inside the comment, so the delete check keeps the archive.
-  assert.match(readZipEntries(dir, path.join(dir, 'c.zip'), 1).reason, /comment contains another end marker/);
-  assert.strictEqual(checkZip(dir, path.join(dir, 'c.zip'), fs.statSync(path.join(dir, 'c.zip')).size), null);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'c.zip'), 1).reason, /comment contains another end marker/);
+  assert.strictEqual(checkZip(grant(dir, ['read']), path.join(dir, 'c.zip'), fs.statSync(path.join(dir, 'c.zip')).size), null);
 });
 
 test('readZipEntries는 끝 표시가 없거나 뒤에 데이터가 붙은 zip의 사유를 { reason }으로 돌려준다 (#325)', () => {
   const dir = tempDir();
   const good = zipWithComment('a.txt', 'abc', '');
   fs.writeFileSync(path.join(dir, 'cut.zip'), good.subarray(0, good.length - 30));
-  assert.match(readZipEntries(dir, path.join(dir, 'cut.zip'), 1).reason, /end marker is missing/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'cut.zip'), 1).reason, /end marker is missing/);
   fs.writeFileSync(path.join(dir, 'tail.zip'), Buffer.concat([good, Buffer.from('junk')]));
-  assert.match(readZipEntries(dir, path.join(dir, 'tail.zip'), 1).reason, /other data after the zip end marker/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'tail.zip'), 1).reason, /other data after the zip end marker/);
   fs.writeFileSync(path.join(dir, 'count.zip'), good);
-  assert.match(readZipEntries(dir, path.join(dir, 'count.zip'), 2).reason, /number of zip entries differs/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'count.zip'), 2).reason, /number of zip entries differs/);
 });
 
 // An empty 7z is the 32-byte start header only: NextHeaderOffset, NextHeaderSize, and NextHeaderCRC are all 0.
@@ -85,7 +88,7 @@ test('항목이 없는 7z는 정상이다 (#325)', () => {
   assert.deepStrictEqual(readSevenZip((offset, length) => data.subarray(offset, offset + length), data.length), { entries: [] });
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'empty.7z'), data);
-  assert.strictEqual(inspect(dir, path.join(dir, 'empty.7z'), data.length), null);
+  assert.strictEqual(inspect(grant(dir, ['read']), path.join(dir, 'empty.7z'), data.length), null);
 });
 
 test('crc32 대체 구현은 zlib.crc32와 같은 값을 낸다 (#325)', () => {
@@ -100,11 +103,14 @@ test('a real zip followed by a fake end record and directory in its comment is k
   const fake = zipWithComment('evil.txt', 'xyz', '');
   const real = zipWithComment('a.txt', 'abc', fake.toString('latin1'));
   fs.writeFileSync(path.join(dir, 'fake.zip'), real);
-  assert.match(readZipEntries(dir, path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
   // Without the fake record the same zip is accepted.
   fs.writeFileSync(path.join(dir, 'plain.zip'), zipWithComment('a.txt', 'abc', 'just a note'));
-  assert.deepStrictEqual(readZipEntries(dir, path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
+  assert.deepStrictEqual(readZipEntries(grant(dir, ['read']), path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
 });
+
+// The central directory size is stored in the end record (offset 12 from its start, which is 22 bytes before the end of a comment-less zip).
+const directoryLength = (zip) => zip.readUInt32LE(zip.length - 22 + 12);
 
 test('checkZip reads the entry headers through one opened handle (#326)', () => {
   const dir = tempDir();
@@ -137,14 +143,20 @@ test('checkZip reads the entry headers through one opened handle (#326)', () => 
   fs.writeFileSync(file, data);
   const open = test.mock.method(fs, 'openSync');
   try {
-    assert.strictEqual(checkZip(dir, file, data.length), null);
+    assert.strictEqual(checkZip(grant(dir, ['read']), file, data.length), null);
     // The tail, the directory and the one handle for the headers; not one open per entry.
     assert.ok(open.mock.callCount() <= 5, `openSync calls: ${open.mock.callCount()}`);
   } finally {
     open.mock.restore();
   }
-  // A wrong header signature is still found.
-  data[30 + 'f0.txt'.length + 0] = 0;
-  fs.writeFileSync(file, Buffer.concat([Buffer.from('XXXX'), data.subarray(4)]));
-  assert.match(checkZip(dir, file, data.length).reason ?? '', /header does not match|damaged/);
+  // A wrong header signature at the start is still found, with the entry-header reason (not the directory one).
+  const bad = Buffer.from(data);
+  bad.writeUInt32LE(0x58585858, 0);
+  fs.writeFileSync(file, bad);
+  assert.match(checkZip(grant(dir, ['read']), file, bad.length).reason, /entry header does not match/);
+  // An entry whose offset points past the end of the file is a short read and is found too.
+  const far = Buffer.from(data);
+  far.writeUInt32LE(far.length + 1000, far.length - 22 - directoryLength(far) + 42);
+  fs.writeFileSync(file, far);
+  assert.match(checkZip(grant(dir, ['read']), file, far.length).reason, /entry header does not match/);
 });

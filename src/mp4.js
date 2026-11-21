@@ -419,15 +419,15 @@ function firstTag(tags, sources) {
 function readMp4Metadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
-    return parseMp4(access.target, access.read(p), p, options.verifyBitrate === true);
+    return parseMp4(access, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
     if (err.syscall) throw new FcError(`Cannot read the MP4 file: ${p} (${err.code})`);
     throw err;
   }
 }
 
-function parseMp4(target, real, p, verifyBitrate) {
-  return withOpenFile(target, real, (file) => parseOpenedMp4(file, p, verifyBitrate));
+function parseMp4(access, real, p, verifyBitrate) {
+  return withOpenFile(access, real, (file) => parseOpenedMp4(file, p, verifyBitrate));
 }
 
 function parseOpenedMp4(file, p, verifyBitrate) {
@@ -575,8 +575,8 @@ const CONTENT_BOXES = new Set(['moov', 'mdat', 'moof']);
 // I/O problems and exceeding the read limit go out as exceptions.
 // It looks at the top-level boxes, mvhd and trak inside moov, and up to the track's data position table. It does not read the video data itself, so damage inside mdat is not found.
 // If the structure needed for playback is intact, padding or appended data after it is not seen as damage. A compressed moov (cmov) and a reference movie (rmra) are not judged.
-function checkMp4Structure(target, real, p) {
-  return withOpenFile(target, real, (file) => checkOpenedMp4(file, p));
+function checkMp4Structure(access, real, p) {
+  return withOpenFile(access, real, (file) => checkOpenedMp4(file, p));
 }
 
 function checkOpenedMp4(file, p) {
