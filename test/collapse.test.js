@@ -551,3 +551,31 @@ test('collapse는 타겟 바로 아래가 아닌 숨김 맨 위 폴더도 부모
   assert.deepStrictEqual(plan.collapses, []);
   assert.deepStrictEqual(plan.skipped, [{ path: path.join(dir, 'x', 'z'), reason: `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${path.join('x', 'z')}` }]);
 });
+
+test('planCollapse of a long stretch reads each folder once, not once per folder of the stretch (#326)', () => {
+  const dir = tempDir();
+  const depth = 60;
+  const folders = Array.from({ length: depth }, (_, i) => `d${i}`);
+  make(dir, [`${folders.join('/')}/f.mp4`]);
+  const readdir = test.mock.method(fs, 'readdirSync');
+  let plan;
+  try {
+    plan = planCollapse(dir);
+  } finally {
+    readdir.mock.restore();
+  }
+  assert.strictEqual(plan.collapses.length, 1);
+  assert.strictEqual(plan.collapses[0].folders.length, depth);
+  // One walk reads each folder once; the per-folder link scan used to add about depth * depth / 2 more reads.
+  assert.ok(readdir.mock.callCount() < depth * 3, `readdirSync calls: ${readdir.mock.callCount()}`);
+});
+
+test('a link below a folder of the stretch still keeps the stretch from collapsing (#326)', () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  make(dir, ['a/b/c/f.mp4']);
+  fs.symlinkSync(outside, path.join(dir, 'a', 'b', 'c', 'lnk'), 'junction');
+  const plan = planCollapse(dir);
+  assert.strictEqual(plan.collapses.length, 0);
+  assert.ok(plan.skipped.some((item) => /folder that contains a link/.test(item.reason)));
+});
