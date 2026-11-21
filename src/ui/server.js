@@ -237,7 +237,10 @@ function defaultRoutes() {
   const jobs = createJobs();
   const specs = SCREENS.flatMap((screen) => screen.specs);
   const views = Object.assign({}, ...SCREENS.map((screen) => screen.views));
-  return new Map([...jobRoutes(jobs, { specs, views }), ...flowRoutes(jobs, specs), ...SCREENS.flatMap((screen) => [...screen.routes(jobs)]), ...pickRoutes()]);
+  const routes = new Map([...jobRoutes(jobs, { specs, views }), ...flowRoutes(jobs, specs), ...SCREENS.flatMap((screen) => [...screen.routes(jobs)]), ...pickRoutes()]);
+  // The jobs object goes with the routes so the shutdown can stop the running job (#330).
+  routes.jobs = jobs;
+  return routes;
 }
 
 // The fctl ui command. out is a function that writes the guide lines.
@@ -248,7 +251,8 @@ async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
     return null;
   }
   // If per-screen addresses are not given separately, it attaches the job status and result pages (#253). The command runs in a child process.
-  const { server, launchUrl } = await startServer({ port: options.port, routes: routes ?? defaultRoutes() });
+  const usedRoutes = routes ?? defaultRoutes();
+  const { server, launchUrl } = await startServer({ port: options.port, routes: usedRoutes });
   out(`fctl UI: ${launchUrl}`);
   out('Open this address in your browser. It works only once, for the first browser that uses it. After a restart, use the newly printed address.');
   out('Press Ctrl+C to stop.');
@@ -256,7 +260,8 @@ async function runUi(argv, { out = (line) => console.log(line), routes } = {}) {
   process.once('SIGINT', () => {
     server.close();
     server.closeAllConnections();
-    out('UI server stopped.');
+    // A move or delete must not keep running unattended after Ctrl+C: stop it, wait, then say so (#330).
+    Promise.resolve(usedRoutes.jobs?.stopAll()).catch(() => {}).finally(() => out('UI server stopped.'));
   });
   return server;
 }

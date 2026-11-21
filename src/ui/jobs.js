@@ -52,7 +52,7 @@ class BusyError extends fc.FcError {
 }
 
 // fork and env can be swapped in tests (env is the worker process's environment variables). now is used for the elapsed time calculation.
-function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.now, keep = KEEP_FINISHED, env = process.env } = {}) {
+function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.now, keep = KEEP_FINISHED, env = process.env, stopWaitMs = STOP_WAIT_MS } = {}) {
   const jobs = new Map();
   let active = null;
   // The live child process and the promise of its close, per running job. Kept here (not on the job) so a job stays plain data.
@@ -90,7 +90,8 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     active = job;
     let closed;
     const done = new Promise((resolve) => { closed = resolve; });
-    children.set(job.id, { child, done, closed });
+    const entry = { child, done, closed, abandon: null };
+    children.set(job.id, entry);
     jobs.set(job.id, job);
 
     let stderr = '';
@@ -110,6 +111,7 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       else if (message.type === 'done' || message.type === 'error') reply = message;
     });
     let settled = false;
+    let abandoned = false;
     const settle = (code, signal, spawnError) => {
       if (settled) return;
       settled = true;
@@ -120,7 +122,7 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
       } else if (reply && reply.type === 'error') {
         job.status = 'error';
         job.error = reply.error;
-      } else if (job.stopRequested) {
+      } else if (job.stopRequested && !abandoned) {
         job.status = 'stopped';
       } else {
         const reason = spawnError ? spawnError.message : signal ? `signal ${signal}` : `exit code ${code}`;
@@ -129,10 +131,16 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
         job.error = { name: 'FcError', message: `The job process ended without a result (${reason}).${detail}` };
       }
       if (active === job) active = null;
-      const entry = children.get(job.id);
       children.delete(job.id);
-      if (entry) entry.closed();
+      entry.closed();
       forget();
+    };
+    // A process that ignores the kill must not keep the UI busy forever (#330): stop() calls this after its wait, which gives up on the process.
+    entry.abandon = () => {
+      if (settled) return;
+      abandoned = true;
+      childError = childError ?? new Error('the process did not end after it was told to stop');
+      settle(null, null, childError);
     };
     // Even after receiving the result message, it does not accept the next job until the process ends.
     // exit can come before messages not yet read, so it finishes at close, after the IPC channel and standard error are also closed.
@@ -157,14 +165,21 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     let timer;
     // A grandchild (tar.exe, PowerShell) can keep the piped stderr open after the worker died, so it is destroyed to let close fire.
     const killing = killTree(entry.child).then(() => { if (entry.child.stderr) entry.child.stderr.destroy(); });
-    await Promise.race([Promise.all([killing, entry.done]),new Promise((resolve) => { timer = setTimeout(resolve, STOP_WAIT_MS); })]);
+    await Promise.race([Promise.all([killing, entry.done]),new Promise((resolve) => { timer = setTimeout(resolve, stopWaitMs); })]);
     clearTimeout(timer);
+    if (job.status === 'running') entry.abandon();
     return job;
+  }
+
+  // It stops the running job, if any, and waits for it (used when the server shuts down, #330).
+  async function stopAll() {
+    if (active) await stop(active);
   }
 
   return {
     start,
     stop,
+    stopAll,
     // Milliseconds since the last progress line (or since the start if none came yet).
     idle: (job) => (job.endedAt ?? now()) - (job.lastProgressAt ?? job.startedAt),
     get: (id) => jobs.get(id),
