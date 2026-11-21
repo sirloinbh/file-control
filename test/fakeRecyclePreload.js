@@ -10,6 +10,7 @@
 // If FC_FAKE_RECYCLE_LOG is set, each folder it "sent to the Recycle Bin" is appended to that file, so a test can see that the fake was used.
 
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -49,7 +50,8 @@ function fakeBatch(options) {
 childProcess.execFileSync = function fakeExecFileSync(file, args, options) {
   const env = (options && options.env) || {};
   if (env.FC_RECYCLE_FILES !== undefined) throw new Error('fakeRecyclePreload: the batch file Recycle Bin call is not faked');
-  if (env.FC_VOLUME !== undefined) return 'True|Fixed\r\n';
+  const state = volumeStateAnswer(env, () => 'True|Fixed\r\n');
+  if (state !== undefined) return state;
   if (env.FC_BATCH !== undefined) return fakeBatch(options);
   if (env.FC_TARGET !== undefined) {
     // mv --force sets the replaced item aside under a .fctl-old-* name and sends it to the Recycle Bin (#311); it may hold files.

@@ -296,9 +296,9 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 // and if the size was set by policy (RecycleBinSize), the size is treated as unknown.
 // It decides the volume type ($type) and the Recycle Bin setting ($nuke: '0', '1', or '', $cap: MB or '') of $p. RECYCLE_STATE_SCRIPT and the Recycle Bin move script use it together (#81).
 const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
-$type = 'Unknown'; $nuke = ''; $cap = ''
+$type = 'Unknown'; $nuke = ''; $cap = ''; $k = $null
 try {
-  Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
+  if (-not ('FcVolume.Native' -as [type])) { Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern uint GetDriveTypeW(string r);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
@@ -311,7 +311,7 @@ public static bool IsLink(string p) {
     if (!GetFileInformationByHandleEx(h, 9, out t, 8)) return false;
     return (t.Attr & 0x400) != 0 && (t.ReparseTag == 0xA000000C || t.ReparseTag == 0xA0000003);
   }
-}'
+}' }
   $b = New-Object Text.StringBuilder 1024
   $root = if ([FcVolume.Native]::GetVolumePathNameW($p, $b, 1024)) { $b.ToString() } else { [IO.Path]::GetPathRoot($p) }
   $type = $names[[int][FcVolume.Native]::GetDriveTypeW($root)]
@@ -496,6 +496,13 @@ const RECYCLE_STATE_SCRIPT = `$p = $env:FC_VOLUME
 ${VOLUME_STATE_PS}
 [Environment]::UserInteractive.ToString() + '|' + $type + '|' + $nuke + '|' + $cap`;
 
+// The same answer for several paths in one run (#376): FC_VOLUMES holds the paths joined by | (a Windows name cannot contain it), and each path gets one output line, in order.
+// The type of the volume script is added once and the rest runs for each path, so one PowerShell start (about 0.5 second) serves every target of rm a b c.
+const RECYCLE_STATES_SCRIPT = String.raw`foreach ($p in ($env:FC_VOLUMES -split '\|')) {
+${VOLUME_STATE_PS}
+[Environment]::UserInteractive.ToString() + '|' + $type + '|' + $nuke + '|' + $cap
+}`;
+
 // The PowerShell script of moveToRecycleBin. In a non-interactive run (a service, a scheduled task), this API deletes permanently without going through the Recycle Bin, so it ends with 75.
 // Right before deleting, it looks at the volume's Recycle Bin setting and the size (for a folder, the total inside; links and junctions are not followed), and if it would be deleted permanently, it does not delete and
 // sends a reason marker as UTF-16 base64 and ends with 78 (#81). If it is not a fixed disk or the type is unknown, type|type; if remove-immediately, nuke;
@@ -553,8 +560,7 @@ function permanentRefusal(full, why, hint = false) {
 }
 
 // In the preview, it makes the same judgment as RECYCLE_SCRIPT (#81). If it would be deleted permanently it returns the reason, otherwise null.
-function previewRefusal(full) {
-  const state = recycleBinState(full);
+function previewRefusal(full, state = recycleBinState(full)) {
   if (state.driveType !== 'Fixed') return volumeTypeReason(state.driveType);
   if (state.nukeOnDelete === true) return permanentDeleteReason(state, 0);
   const limit = state.maxCapacity ?? UNKNOWN_RECYCLE_LIMIT - 1;
@@ -585,9 +591,21 @@ function sizeUpTo(full, limit) {
   return size;
 }
 
+const unknownState = () => ({ interactive: null, driveType: null, nukeOnDelete: null, maxCapacity: null });
+
+// One answer line of the state script -> { interactive, driveType, nukeOnDelete, maxCapacity }. A line that does not parse is the unknown state.
+function parseVolumeState(line) {
+  // It also accepts the form without a setting field (True|Fixed). Then the setting is treated as unknown.
+  const found = /^(True|False)\|(\w+)(?:\|(\d*)\|(\d*))?\s*$/.exec(line);
+  if (!found) return unknownState();
+  const driveType = found[2] === 'Unknown' ? null : found[2];
+  const nukeOnDelete = found[3] ? found[3] !== '0' : null;
+  const maxCapacity = found[4] ? Number(found[4]) * 1024 * 1024 : null;
+  return { interactive: found[1] === 'True', driveType, nukeOnDelete, maxCapacity };
+}
+
 function recycleBinState(target) {
-  const unknown = { interactive: null, driveType: null, nukeOnDelete: null, maxCapacity: null };
-  if (!config.isWindows) return unknown;
+  if (!config.isWindows) return unknownState();
   try {
     const output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATE_SCRIPT], {
       env: { ...process.env, FC_VOLUME: path.resolve(target) },
@@ -595,15 +613,31 @@ function recycleBinState(target) {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 60 * 1000,
     });
-    // It also accepts the form without a setting field (True|Fixed). Then the setting is treated as unknown.
-    const found = /^(True|False)\|(\w+)(?:\|(\d*)\|(\d*))?\s*$/.exec(output);
-    if (!found) return unknown;
-    const driveType = found[2] === 'Unknown' ? null : found[2];
-    const nukeOnDelete = found[3] ? found[3] !== '0' : null;
-    const maxCapacity = found[4] ? Number(found[4]) * 1024 * 1024 : null;
-    return { interactive: found[1] === 'True', driveType, nukeOnDelete, maxCapacity };
+    return parseVolumeState(output);
   } catch {
-    return unknown;
+    return unknownState();
+  }
+}
+
+// The state of each target, in one PowerShell run for all of them (#376). Each target still gets its own answer (a volume mount folder is another volume
+// with its own setting, which only Windows can tell), so nothing is cached by drive root. One target uses recycleBinState as before.
+// If the run fails or the answer lines do not match the targets one to one, every state is unknown, the same as when recycleBinState fails.
+function recycleBinStates(targets) {
+  if (targets.length === 1) return [recycleBinState(targets[0])];
+  if (targets.length === 0 || !config.isWindows) return targets.map(unknownState);
+  try {
+    const output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATES_SCRIPT], {
+      env: { ...process.env, FC_VOLUMES: targets.map((target) => path.resolve(target)).join('|') },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60 * 1000 + targets.length * 2000,
+    });
+    const lines = output.split(/\r?\n/).filter((line) => line.trim() !== '');
+    // If the number of lines is not the number of targets, the lines cannot be matched to targets, so every target is unknown (and refused).
+    if (lines.length !== targets.length) return targets.map(unknownState);
+    return targets.map((_, i) => parseVolumeState(lines[i]));
+  } catch {
+    return targets.map(unknownState);
   }
 }
 
@@ -633,18 +667,30 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   const planned = new Set();
   // It checks every target before deleting anything (#129). In rm a b c, if only c cannot be sent, a and b are not deleted either and the reason is reported.
   // The preview goes through the same check, so it does not show a target that would really fail as "Move to the Recycle Bin".
-  const checked = targets.map((target) => {
-    ensureItemExists(target);
-    // If deleted as is, only the current folder cannot be deleted and it fails, but before that the other items have already been deleted.
-    // Deleting a link removes only the link, so it compares by the link itself. Comparing by text catches the current folder reached through a link (rm lnk, current folder lnk/s).
-    if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
-      throw new FcError(`Cannot delete the current folder or its parents: ${target}`);
+  // Every target is validated first. An error is kept for its turn, so the first problem in target order is still the one reported (#129).
+  // The volume setting of all targets that come before the first validation error is then read in one PowerShell run (#376).
+  const validated = targets.map((target) => {
+    try {
+      ensureItemExists(target);
+      // If deleted as is, only the current folder cannot be deleted and it fails, but before that the other items have already been deleted.
+      // Deleting a link removes only the link, so it compares by the link itself. Comparing by text catches the current folder reached through a link (rm lnk, current folder lnk/s).
+      if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
+        throw new FcError(`Cannot delete the current folder or its parents: ${target}`);
+      }
+      if (!permanent) rejectBareDeviceArgs([target], 'cannot be sent to the Recycle Bin');
+      // Permanent deletion deletes with Node (fs.rmSync), so it does not run the Recycle Bin path check.
+      return { target, recycleAs: permanent ? undefined : recycleTarget(target) };
+    } catch (err) {
+      return { target, error: err };
     }
-    if (!permanent) rejectBareDeviceArgs([target], 'cannot be sent to the Recycle Bin');
-    // Permanent deletion deletes with Node (fs.rmSync), so it does not run the Recycle Bin path check.
-    const recycleAs = permanent ? undefined : recycleTarget(target);
+  });
+  const firstError = validated.findIndex((item) => item.error !== undefined);
+  const upToError = firstError === -1 ? validated : validated.slice(0, firstError);
+  const states = !permanent && checkVolume ? recycleBinStates(upToError.map((item) => item.recycleAs)) : [];
+  const checked = validated.map(({ target, recycleAs, error }, i) => {
+    if (error !== undefined) throw error;
     if (!permanent && checkVolume) {
-      const why = previewRefusal(recycleAs);
+      const why = previewRefusal(recycleAs, states[i]);
       if (why !== null) throw new FcError(permanentRefusal(recycleAs, why, permanentHint));
     }
     if (dryRun) claim(planned, target);
@@ -664,6 +710,7 @@ module.exports = {
   RECYCLE_FOLDERS_SCRIPT,
   RECYCLE_SCRIPT,
   RECYCLE_STATE_SCRIPT,
+  RECYCLE_STATES_SCRIPT,
   UNKNOWN_RECYCLE_LIMIT,
   bareDeviceInside,
   busyInside,
@@ -672,6 +719,7 @@ module.exports = {
   permanentDeleteReason,
   permanentRefusal,
   previewRefusal,
+  recycleBinStates,
   recycleBinState,
   recycleEmptyFolders,
   recycleFailureMessage,
