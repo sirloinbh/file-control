@@ -126,7 +126,8 @@ function grant(dir, kinds) {
         return check(target, p);
       } catch (err) {
         if (err instanceof FcError) throw err;
-        throw new FcError(`Cannot check the path: ${p} (${err.code})`);
+        // A programming error (TypeError and the like) has no code: show its message instead of "undefined" (#318).
+        throw new FcError(`Cannot check the path: ${p} (${err.code ?? err.message})`);
       }
     };
   }

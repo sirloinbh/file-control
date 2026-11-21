@@ -75,7 +75,8 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
     res.end(res.req.method === 'HEAD' ? undefined : prefixed(String(body ?? '')));
   };
   const fail = (res, err) => {
-    // An exception in the screen code shows only the message, without a stack. The server keeps running.
+    // An exception in the screen code shows only the message, without a stack, on the page. The stack of anything that is not an FcError goes to the console (#318). The server keeps running.
+    if (!(err instanceof FcError)) console.error(`UI error: ${err && err.stack ? err.stack : err}`);
     send(res, 500, page({ title: 'Error', available, alerts: [{ kind: 'error', message: err instanceof FcError ? err.message : `Could not build the page: ${err.message}` }] }));
   };
   const context = { available, tokenField: raw(tokenField(token)) };
