@@ -685,3 +685,34 @@ test('findDuplicateNames: 번호는 같은데 제목이 다른 묶음과 카메�
   assert.match(blockOf('Duplicate candidates (number ABC-123, 2 files):'), /^Duplicate candidates \(number ABC-123, 2 files\):\n {2}.+\n {2}.+\nDuplicate candidates/);
   assert.match(report, /10 duplicate candidate groups \(20 files, 7 need checking\)/);
 });
+
+test('duplicateKey: ci, li, xi are words, not Roman part numbers, unless after a part word or at the end (#327)', () => {
+  // In the middle of the title they are ordinary words, so the same video with and without them is the same piece.
+  assert.strictEqual(duplicateKey('ABC-123 ci show.mp4').part, null);
+  assert.strictEqual(duplicateKey('ABC-123 xi show.mp4').part, null);
+  assert.strictEqual(duplicateKey('ABC-123 li show.mp4').part, null);
+  assert.strictEqual(duplicateKey('ABC-123 ci show.mp4').key, duplicateKey('ABC-123 show.mp4').key);
+  // A number after the word still separates the pieces.
+  assert.notStrictEqual(duplicateKey('ABC-123 ci 01.mp4').key, duplicateKey('ABC-123 ci 02.mp4').key);
+  assert.strictEqual(duplicateKey('ABC-123 ci 01.mp4').part, '1');
+  // After a part word, or as the last word, a Roman numeral is a part.
+  assert.strictEqual(duplicateKey('ABC-123 part ii.mp4').part, '2');
+  assert.strictEqual(duplicateKey('ABC-123 CD IV.mp4').part, '4');
+  assert.strictEqual(duplicateKey('ABC-123 Show III.mp4').part, '3');
+  assert.notStrictEqual(duplicateKey('ABC-123 Show II.mp4').key, duplicateKey('ABC-123 Show III.mp4').key);
+});
+
+test('titleWords keeps ci as a title word when it is not a part number (#327)', () => {
+  assert.deepStrictEqual(titleWords('ABC-123 ci show.mp4'), ['ci', 'show']);
+  assert.deepStrictEqual(titleWords('ABC-123 Show III.mp4'), ['show']);
+});
+
+test('halfWidth keeps the length of the text, so number positions of the original stay valid (#327)', () => {
+  const { halfWidth } = require('../src/product');
+  for (let code = 0; code <= 0xffff; code += 1) {
+    if (code >= 0xd800 && code <= 0xdfff) continue;
+    const text = `a${String.fromCharCode(code)}b`;
+    assert.strictEqual(halfWidth(text).length, text.length, code.toString(16));
+  }
+  assert.strictEqual(halfWidth('ＡＢＣ－１２３'), 'ABC-123');
+});
