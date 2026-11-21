@@ -142,18 +142,18 @@ function extractOne(item, access) {
 // The reason the original must not be deleted. If it may be deleted, it is null.
 function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
-  const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
+  const head = readRange(access, archive, { length: SEVEN_ZIP_HEADER });
   if (ZIP.test(archive)) {
     if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'Kept because the content does not start as a zip.';
-    const scan = readZipEntries(access.target, archive, entryCount);
+    const scan = readZipEntries(access, archive, entryCount);
     return scan.reason ?? checkEntryNames(scan.entries, dest, dryRun);
   }
   if (SEVEN_ZIP.test(archive)) {
     if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return 'Kept because the content does not start as a 7z.';
     // It reads the header (including a compressed header) and checks the UTF-16 names and sizes and whether each entry has a CRC (#198). tar.exe reads only the first 7z, so
     // it also checks whether the end the header points to matches the end of the file and whether there is data between bodies that is not in the list.
-    const size = fileSizeInside(access.target, archive);
-    const scan = readSevenZip((offset, length) => readRange(access.target, archive, { offset, length }), size);
+    const size = fileSizeInside(access, archive);
+    const scan = readSevenZip((offset, length) => readRange(access, archive, { offset, length }), size);
     if (scan.reason !== undefined) return scan.reason;
     if (scan.entries.length !== entryCount) return `Kept because the number of 7z entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
     return checkEntryNames(scan.entries.map(({ name, size: entrySize, folder }) => ({ name: folder ? `${name}/` : name, size: entrySize })), dest, dryRun);

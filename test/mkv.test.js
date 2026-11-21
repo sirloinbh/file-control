@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
 const { readMkvMetadata } = require('../src/mkv');
+const { grant } = require('../src/target');
 const { addProductNumbers } = require('../src/productName');
 
 // The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
@@ -578,9 +579,9 @@ test('다른 DocType의 EBML 파일은 MKV가 아니라고 거부한다 (#323)',
   const { checkMkvStructure } = require('../src/mkv');
   const dir = tempDir();
   const file = write(dir, 'a.webm', header('other'), segment(tracks(videoTrack(640, 360)), cluster()));
-  assert.throws(() => checkMkvStructure(dir, path.join(dir, file), file), (err) => err instanceof FcError && /Not an MKV\/WebM format/.test(err.message));
+  assert.throws(() => checkMkvStructure(grant(dir, ['read']), path.join(dir, file), file), (err) => err instanceof FcError && /Not an MKV\/WebM format/.test(err.message));
   const good = write(dir, 'b.webm', header('webm'), segment(tracks(videoTrack(640, 360)), cluster()));
-  assert.strictEqual(checkMkvStructure(dir, path.join(dir, good), good), null);
+  assert.strictEqual(checkMkvStructure(grant(dir, ['read']), path.join(dir, good), good), null);
 });
 
 test('작은 요소가 25000개여도 읽기 한도에서 멈추고 앞서 찾은 값을 돌려준다 (#323)', () => {
@@ -601,9 +602,9 @@ test('크기를 모르는 Cluster와 Segment는 의심이다 (#323)', () => {
   const dir = tempDir();
   const unknown = (id) => Buffer.from(id + '01FFFFFFFFFFFFFF', 'hex');
   const liveCluster = write(dir, 'a.mkv', header(), segment(tracks(videoTrack(640, 360)), unknown('1F43B675'), Buffer.alloc(30)));
-  const result = checkMkvStructure(dir, path.join(dir, liveCluster), liveCluster);
+  const result = checkMkvStructure(grant(dir, ['read']), path.join(dir, liveCluster), liveCluster);
   assert.strictEqual(result.status, 'suspect');
   assert.match(result.reason, /unknown size/);
   const liveSegment = write(dir, 'b.mkv', header(), unknown('18538067'), tracks(videoTrack(640, 360)), cluster());
-  assert.strictEqual(checkMkvStructure(dir, path.join(dir, liveSegment), liveSegment).status, 'suspect');
+  assert.strictEqual(checkMkvStructure(grant(dir, ['read']), path.join(dir, liveSegment), liveSegment).status, 'suspect');
 });

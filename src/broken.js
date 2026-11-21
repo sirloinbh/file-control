@@ -113,7 +113,7 @@ function checkMismatch(format, head) {
 // It judges one file and returns { status, reason }. If it finds no problem, it is null. Input/output problems go out as exceptions.
 // - broken: a file judged unusable. It is truncated, structurally damaged, or has no content.
 // - suspect: suspicious but possibly normal, so it is not made a removal target. A file with only its name changed, an unknown packaging, and an empty file that may have a meaning are such cases.
-function inspect(target, real, size) {
+function inspect(access, real, size) {
   const extension = path.extname(real).slice(1).toLowerCase();
   const format = BY_EXTENSION.get(extension);
   const listed = TAR_LISTED.test(real);
@@ -122,12 +122,12 @@ function inspect(target, real, size) {
     return format || listed ? broken('The size is 0.') : suspect('The size is 0.');
   }
   if (!format && !listed) return null;
-  const head = readRange(target, real, { length: HEAD_SIZE });
+  const head = readRange(access, real, { length: HEAD_SIZE });
   if (format && !format.match(head)) return checkMismatch(format, head);
   let found = RIFF_FORMATS.has(format?.name) ? checkRiff(head, size) : null;
-  if (found === null && format === MP4) found = checkMp4Structure(target, real, real);
-  if (found === null && format === MKV) found = checkMkvStructure(target, real, real);
-  if (found === null && format === ZIP) found = checkZip(target, real, size);
+  if (found === null && format === MP4) found = checkMp4Structure(access, real, real);
+  if (found === null && format === MKV) found = checkMkvStructure(access, real, real);
+  if (found === null && format === ZIP) found = checkZip(access, real, size);
   if (found === null && format === SEVEN_ZIP) found = check7z(head, size);
   if (found !== null) return found;
   return listed ? checkTarListing(real) : null;
@@ -169,8 +169,8 @@ function findBroken(dir, { entries } = {}) {
     try {
       const real = access.read(entry.path);
       const stamp = fileStamp(fs.lstatSync(real, { bigint: true }));
-      const size = fileSizeInside(access.target, real);
-      const found = inspect(access.target, real, size);
+      const size = fileSizeInside(access, real);
+      const found = inspect(access, real, size);
       if (found) result[found.status].push({ path: real, size, reason: found.reason, stamp });
     } catch (err) {
       if (err instanceof FcError) result.undetermined.push({ path: entry.path, reason: err.message });

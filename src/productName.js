@@ -20,8 +20,8 @@ const TRANSPORT_LAYOUTS = [
 ];
 const TRANSPORT_HEAD = 4 + 2 * 192 + 1;
 
-function isTransportStream(target, relative) {
-  const head = readRange(target, relative, { length: TRANSPORT_HEAD });
+function isTransportStream(access, relative) {
+  const head = readRange(access, relative, { length: TRANSPORT_HEAD });
   return TRANSPORT_LAYOUTS.some(([start, step]) => head[start] === 0x47 && head[start + step] === 0x47 && head[start + 2 * step] === 0x47);
 }
 // Formats whose metadata can be read. For the rest, it looks only in the file name and folder names.
@@ -91,7 +91,7 @@ function planProductNames(dir) {
     try {
       const from = access.read(entry.path);
       // A .ts that is not video is not reported wherever it is. So it checks the content before deciding whether to skip it.
-      if (transport && !isTransportStream(access.target, entry.relative)) continue;
+      if (transport && !isTransportStream(access, entry.relative)) continue;
       if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('Not renamed because it is a leftover from an earlier job.');
       if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a Windows system folder.');
       if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a repository folder.');
