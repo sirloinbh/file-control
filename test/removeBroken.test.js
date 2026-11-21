@@ -947,7 +947,8 @@ test('fctl remove-broken은 확인값이 맞아야 지운다', () => {
   assert.match(run(['remove-broken', dir, '--dry-run', `--yes=${code}`]), /without --dry-run/);
   assert.match(run(['remove-broken', dir, '--dry-run', '--yes']), /Nothing has been deleted yet/);
   const isRefused = (pattern) => (err) => pattern.test(err.message) && /Nothing has been deleted yet/.test(err.output);
-  assert.throws(() => run(['remove-broken', dir, '--yes']), isRefused(/confirmation value shown in the list/));
+  // A bare --yes is refused before the remover runs (#314), so there is no list in the error; the message says how to get it.
+  assert.throws(() => run(['remove-broken', dir, '--yes']), (err) => /confirmation value shown in the list.*Nothing was deleted/.test(err.message) && err.output === undefined);
   assert.throws(() => run(['remove-broken', dir, '--yes=']), isRefused(/[Nn]othing was deleted/));
   assert.throws(() => run(['remove-broken', dir, '--yes=000000000000']), isRefused(/[Nn]othing was deleted/));
   assert.deepStrictEqual(recycled, []);
@@ -979,4 +980,50 @@ test('--yes는 remove-broken에서만 쓰고, --force와 --permanent는 거부�
   assert.throws(() => run(['remove-broken', dir, '--permanent', '--yes']), /--permanent/);
   assert.throws(() => run(['remove-broken', dir, '--force', '--yes']), /--force/);
   assert.deepStrictEqual(recycled, []);
+});
+
+test('기록 파일은 항목마다 결과를 담고, 실패한 항목은 failed와 사유로 남는다 (#309)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
+  onRecycle = (target) => {
+    if (target.endsWith('b.mp4')) throw new Error('잠겨 있음');
+  };
+  const result = confirmed(dir);
+  assert.strictEqual(result.failed.length, 1);
+  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  assert.strictEqual(log.version, 1);
+  const outcomeOf = (name) => log.items.find((item) => item.path.endsWith(name));
+  assert.strictEqual(outcomeOf('a.mp4').outcome, 'removed');
+  assert.strictEqual(outcomeOf('b.mp4').outcome, 'failed');
+  assert.ok(outcomeOf('b.mp4').error.length > 0);
+  assert.deepStrictEqual(logs(dir).length, 1, '임시 파일이 남으면 안 된다');
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
+});
+
+test('확인값을 만든 뒤 5분 기준을 넘나든 파일이 있으면 불일치 보고에 그 사유가 나온다 (#309)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': BROKEN, 'b.mp4': BROKEN });
+  const latest = Math.max(...['a.mp4', 'b.mp4'].flatMap((name) => {
+    const stat = fs.lstatSync(path.join(dir, name));
+    return [stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs];
+  }));
+  const FIVE = 5 * 60 * 1000;
+  const listed = removeBroken(dir, { now: latest + FIVE });
+  assert.strictEqual(listed.removals.length, 2);
+  // Seen again a little earlier, the newest file is inside the 5 minutes, so the list differs.
+  const result = removeBroken(dir, { confirm: listed.code, now: latest + FIVE - 1 });
+  assert.strictEqual(result.mismatch, true);
+  assert.ok(result.mismatchHints.length >= 1);
+  assert.match(formatRemoveBroken(result), /Changed: [ab]\.mp4 \(Held back now because it changed within the last 5 minutes/);
+  assert.deepStrictEqual(recycled, []);
+});
+
+test('the confirmation code is salted with a fixed id that differs per command (#309)', () => {
+  const plan = { target: 'C:\t', removals: [] };
+  const codes = new Set([
+    confirmationCode(plan),
+    require('../src/removeDuplicates').confirmationCode(plan),
+    require('../src/removeLowQuality').confirmationCode({ ...plan, criteria: {} }),
+  ]);
+  assert.strictEqual(codes.size, 3);
 });

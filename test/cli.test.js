@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+// mv --force sends the replaced item to the Recycle Bin (#311); the fake only deletes it inside the test's temp folder. It is swapped before commands.js is imported.
+require('./fakeRecycleFiles').installFakeRecycleBin();
 const fc = require('../src/commands');
 const { run } = require('../bin/fctl');
 
@@ -188,7 +190,8 @@ test('미리보기가 통과시킨 명령은 실제 실행에서도 성공하고
     ['write', 'new/n.txt', '내용'],
     ['append', 'a.txt', '내용'],
     ['unzip', 'bundle.zip'],
-    ['unzip', 'bundle.zip', 'dest'],
+    ['unzip', 'bundle.zip', 'fresh-out'],
+    ['unzip', 'bundle.zip', 'dest', '--force'],
     ['zip', 'new.zip', 'a.txt', 'tree'],
     ['zip', 'bundle.zip', 'b.txt', '--force'],
   ];
@@ -256,7 +259,7 @@ test('--dry-run은 mv의 폴더 교체와 cp의 폴더 병합을 구분해 알�
   fs.mkdirSync(p('tree'));
   fs.writeFileSync(p('tree', 'f.txt'), 'f');
   fs.mkdirSync(p('dest', 'tree'));
-  assert.match(preview(dir, ['mv', p('tree'), p('dest'), '--force']), /\(replaces the whole existing folder\)$/);
+  assert.match(preview(dir, ['mv', p('tree'), p('dest'), '--force']), /\(replaces the whole existing folder; the old one goes to the Recycle Bin\)$/);
   assert.match(preview(dir, ['cp', p('tree'), p('dest'), '--force']), /\(merged into the folder, files with the same name are overwritten\)$/);
 });
 
@@ -269,7 +272,7 @@ test('--dry-run은 덮어쓰기와 이미 있는 대상을 알려 준다', () =>
   const dir = fixture();
   const p = (...parts) => path.join(dir, ...parts);
   fc.zip(p('bundle.zip'), [p('b.txt')]);
-  assert.match(preview(dir, ['mv', p('a.txt'), p('dest'), '--force']), /\(overwrites\)$/);
+  assert.match(preview(dir, ['mv', p('a.txt'), p('dest'), '--force']), /\(overwrites; the old one goes to the Recycle Bin\)$/);
   assert.match(preview(dir, ['cp', p('a.txt'), p('dest'), '--force']), /\(overwrites\)$/);
   assert.match(preview(dir, ['write', p('a.txt'), 'x', '--force']), /\(overwrites\)$/);
   assert.match(preview(dir, ['rename', p('a.txt'), 'b.txt', '--force']), /\(overwrites\)$/);
@@ -286,7 +289,7 @@ test('--dry-run은 압축 해제 항목 수와 이미 있는 대상 폴더의 �
   const fresh = preview(dir, ['unzip', p('bundle.zip')]);
   // Two small files are rounded up in 4KB units and counted as 10KB with 1KB added per entry.
   assert.match(fresh, /2 items, extracted size about 10\.0KB\)$/);
-  assert.match(preview(dir, ['unzip', p('bundle.zip'), p('dest')]), /2 items, extracted size about 10\.0KB, the destination folder already exists, so files with the same name are overwritten\)$/);
+  assert.match(preview(dir, ['unzip', p('bundle.zip'), p('dest'), '--force']), /2 items, extracted size about 10\.0KB, the destination folder already exists, so files with the same name are overwritten\)$/);
 });
 
 test('--dry-run 뒤 같은 명령을 실제로 실행하면 미리보기가 말한 대로 바뀐다', () => {
@@ -295,7 +298,7 @@ test('--dry-run 뒤 같은 명령을 실제로 실행하면 미리보기가 말�
   const argv = ['mv', p('a.txt'), p('b.txt'), p('dest'), '--force'];
   const planned = preview(dir, argv);
   const done = run(argv);
-  assert.strictEqual(planned.replaceAll('[Preview] ', '').replaceAll(' (overwrites)', ''), done);
+  assert.strictEqual(planned.replaceAll('[Preview] ', '').replaceAll(' (overwrites; the old one goes to the Recycle Bin)', ''), done);
   assert.strictEqual(fs.readFileSync(p('dest', 'a.txt'), 'utf8'), 'A');
   assert.ok(!fs.existsSync(p('a.txt')));
 });
@@ -408,4 +411,48 @@ test('write·append의 내용은 대시로 시작해도 되지만 긴 옵션 오
 test('도움말은 --dry-run을 설명한다', () => {
   assert.match(run(['--help']), /--dry-run/);
   assert.match(run([]), /--dry-run/);
+});
+
+test('a command refuses --force and --permanent when it does not use them (#314)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'a');
+  const cases = [
+    [['mv', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], /mv --permanent only applies with --force/],
+    [['mv', '--force', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], null],
+    [['rm', '--force', p('a.txt')], /rm does not use --force/],
+    [['mkdir', '--force', p('d')], /mkdir does not use --force/],
+    [['append', '--force', p('a.txt'), 'x'], /append does not use --force/],
+    [['cat', '--permanent', p('a.txt')], /cat does not use --permanent/],
+    [['ls', '--force', dir], /ls does not use --force/],
+    [['rename', '--permanent', p('a.txt'), 'c.txt'], /rename does not use --permanent/],
+    [['cp', '--permanent', p('a.txt'), p('b.txt')], /cp does not use --permanent/],
+    [['zip', '--permanent', p('x.zip'), p('a.txt')], /zip does not use --permanent/],
+    [['unzip', '--permanent', p('x.zip')], /unzip does not use --permanent/],
+  ];
+  for (const [argv, pattern] of cases) {
+    if (pattern === null) {
+      assert.match(run(argv), /Move:/, 'mv --force --permanent is accepted');
+      continue;
+    }
+    assert.throws(() => run(argv), pattern, argv.join(' '));
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt'], 'nothing was touched');
+});
+
+test('remove-broken --yes without a value is refused before anything runs (#314)', () => {
+  const dir = tempDir();
+  const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'fctl.js'), 'remove-broken', dir, '--yes'], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 1);
+  assert.match(result.stderr, /Give --yes the confirmation value shown in the list: --yes=VALUE.*Nothing was deleted/);
+});
+
+test('rm --force exits 1 from the command line and touches nothing (#314)', () => {
+  const dir = tempDir();
+  fc.writeFile(path.join(dir, 'x.txt'), 'x');
+  const bin = path.join(__dirname, '..', 'bin', 'fctl.js');
+  const rm = spawnSync(process.execPath, [bin, 'rm', '--force', path.join(dir, 'x.txt')], { encoding: 'utf8' });
+  assert.strictEqual(rm.status, 1);
+  assert.match(rm.stderr, /rm does not use --force/);
+  assert.ok(fs.existsSync(path.join(dir, 'x.txt')));
 });

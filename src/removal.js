@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentRefusal, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, fileStamp, stampVolumeReason } = require('./target');
-const { writeRemovalLog } = require('./removalLog');
+const { writeRemovalLog, updateRemovalLog } = require('./removalLog');
 const { markerFinder, markerReason } = require('./downloadMarker');
 
 // A file changed more recently than this may be downloading, so it is kept.
@@ -59,7 +59,8 @@ const linkReason = (target, other) =>
 function planSafeRemovals(candidates, access, options = {}) {
   const { now, maxSize = MAX_RECYCLE_SIZE, sameFileId = (stat) => `${stat.dev}:${stat.ino}`, precheck, isChanged, changedReason, pathProblem = longPathReason, extraKeep, toRemoval, entry } = options;
   const checkedAt = now ?? Date.now();
-  const plan = { removals: [], kept: [], interactive: null };
+  // recent: files kept only because they changed within the last 5 minutes or have a future time. A confirmation that no longer matches may be because of them (#309).
+  const plan = { removals: [], kept: [], recent: [], interactive: null };
   const markerOf = markerFinder();
   const origin = new Map();
   // Hard-link files put into the delete list: file ID => path. Its other names get their reason decided after the volume check.
@@ -83,7 +84,10 @@ function planSafeRemovals(candidates, access, options = {}) {
       const pathReason = pathProblem(real);
       const extra = extraKeep?.(candidate, real, stat) ?? null;
       if (real !== candidate.path || !stat.isFile() || isChanged(candidate, real, stat)) keep(changedReason);
-      else if (hold !== null) keep(hold);
+      else if (hold !== null) {
+        plan.recent.push(candidate.path);
+        keep(hold);
+      }
       else if (marker !== null) keep(marker);
       else if (pathReason !== null) keep(pathReason);
       else if (extra !== null) keep(extra);
@@ -202,6 +206,7 @@ function recycleInBatches(removals, log, prepare, on) {
     } catch (err) {
       // If it could not start the batch (non-interactive and so on), nothing of this batch's files was deleted.
       for (const entry of batch) on.failed(entry.item, recycleFailure(err), entry.step);
+      on.batchEnd?.();
       continue;
     }
     batch.forEach((entry, i) => {
@@ -209,6 +214,7 @@ function recycleInBatches(removals, log, prepare, on) {
       if (reason !== undefined) on.failed(entry.item, reason, entry.step);
       else on.removed(entry.item, entry.step);
     });
+    on.batchEnd?.();
   }
 }
 
@@ -232,17 +238,42 @@ function runConfirmedRemoval(plan, result, label, logItems, hooks = {}) {
   hooks.onStart?.();
   const prepare = hooks.prepare ?? checkOne;
   const failedEntry = hooks.failedEntry ?? ((item, reason) => ({ path: item.path, reason }));
-  recycleInBatches(plan.removals, log, (item) => prepare(access, item), {
-    removed: (item, step) => {
-      result.removed.push(item);
-      hooks.onRemoved?.(item, step);
-    },
-    failed: (item, reason, step) => {
-      result.failed.push(failedEntry(item, reason));
-      hooks.onFailed?.(item, reason, step);
-    },
-  });
+  const indexOf = new Map(plan.removals.map((item, index) => [item, index]));
+  // The outcome of each item goes into the record after every batch, so the record says what happened and not only what was planned (#309).
+  let updates = new Map();
+  const flush = () => {
+    if (updates.size === 0) return;
+    try {
+      updateRemovalLog(log, updates);
+    } catch (err) {
+      result.logWarning ??= err.message;
+    }
+    updates = new Map();
+  };
+  try {
+    recycleInBatches(plan.removals, log, (item) => prepare(access, item), {
+      removed: (item, step) => {
+        result.removed.push(item);
+        updates.set(indexOf.get(item), { outcome: 'removed' });
+        hooks.onRemoved?.(item, step);
+      },
+      failed: (item, reason, step) => {
+        result.failed.push(failedEntry(item, reason));
+        updates.set(indexOf.get(item), { outcome: 'failed', error: reason });
+        hooks.onFailed?.(item, reason, step);
+      },
+      batchEnd: flush,
+    });
+  } finally {
+    // Even if a hook throws, what was already done goes into the record.
+    flush();
+  }
   return result;
 }
 
-module.exports = { planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };
+// The lines that tell a person why a confirmation value no longer matches. The old list is not kept, so it can name only the files held back by the 5-minute rule.
+function mismatchHints(plan) {
+  return plan.recent.map((file) => ({ path: file, reason: 'Held back now because it changed within the last 5 minutes (or has a future time), so it may have been in the list you saw.' }));
+}
+
+module.exports = { mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };

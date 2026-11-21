@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { crc32 } = require('../src/crc32');
 
 // The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
@@ -66,7 +67,7 @@ function zipBuffer(files, { comment = '', cut = null, unicode = false, disk = 0,
   for (const [name, data] of Object.entries(files)) {
     const body = Buffer.from(data);
     const nameBytes = Buffer.from(name);
-    const crc = zlib.crc32(body);
+    const crc = crc32(body);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -822,7 +823,7 @@ function zip64Buffer(files, { change = {} } = {}) {
   for (const [name, data] of Object.entries(files)) {
     const body = Buffer.from(data);
     const nameBytes = Buffer.from(name);
-    const crc = zlib.crc32(body);
+    const crc = crc32(body);
     const localExtra = Buffer.alloc(20);
     localExtra.writeUInt16LE(1, 0);
     localExtra.writeUInt16LE(16, 2);

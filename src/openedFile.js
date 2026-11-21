@@ -12,6 +12,7 @@ const MAX_READ = 2 ** 31 - 1;
 // It first writes down the path's file ID (dev, ino) and opens after checking the path (inside the target, a file that is not a link). If the opened handle's file ID is
 // different from the written one, the file changed or was replaced by a link or junction between the check and the open, so it does not read (first review).
 // Even if the path changes after opening, the handle keeps reading the file first confirmed. It closes when fn ends.
+// fn receives { size, read }. size is a snapshot from the moment of opening (see below).
 function withOpenFile(access, real, fn) {
   const named = fs.statSync(real, { bigint: true });
   fileSizeInside(access, real);
@@ -19,6 +20,8 @@ function withOpenFile(access, real, fn) {
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
     if (!opened.isFile() || opened.ino !== named.ino || opened.dev !== named.dev) throw new FcError(`The file changed while reading: ${real}`);
+    // The size is a snapshot taken once at open. If another process grows or truncates the file while fn runs, size does not follow it,
+    // and reads past the snapshot return nothing. Callers judge the file as it was when it was opened.
     const size = Number(opened.size);
     return fn({ size, read: (offset, length) => readAt(fd, size, offset, length) });
   } finally {

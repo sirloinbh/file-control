@@ -83,7 +83,7 @@ test('a plain old file goes to removals and the session state is read (#308)', (
 
 test('with no candidates the volume is not checked and interactive stays null (#308)', () => {
   const dir = tempDir();
-  assert.deepStrictEqual(plan(dir, []), { removals: [], kept: [], interactive: null });
+  assert.deepStrictEqual(plan(dir, []), { removals: [], kept: [], recent: [], interactive: null });
 });
 
 test('RECENT_MS is the 5-minute hold and holdReason keeps a file inside it (#308)', () => {

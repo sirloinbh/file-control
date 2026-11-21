@@ -57,6 +57,19 @@ function rejectUnknownOptions(command, args, flags) {
   if (dashed !== undefined) throw new fc.FcError(`Unknown option: ${dashed} (write names that start with - as ./${dashed} or after --)`);
 }
 
+// --force and --permanent change what a command does, so a command that does not use them refuses them instead of silently ignoring them (#314).
+// The whole-target commands refuse both in checkWholeTarget, so this table covers the basic file commands.
+const BASIC_COMMANDS = new Set(['ls', 'cat', 'mkdir', 'write', 'append', 'rename', 'mv', 'cp', 'rm', 'zip', 'unzip']);
+const FORCE_COMMANDS = ['write', 'rename', 'mv', 'cp', 'zip', 'unzip'];
+const PERMANENT_COMMANDS = ['rm', 'mv'];
+function rejectUnusedFlags(command, flags) {
+  if (!BASIC_COMMANDS.has(command)) return;
+  // mv --permanent only decides what happens to the item that --force replaces, so without --force it does nothing.
+  if (command === 'mv' && flags.has('permanent') && !flags.has('force')) throw new fc.FcError('mv --permanent only applies with --force (it deletes the replaced item permanently instead of sending it to the Recycle Bin).');
+  if (flags.has('force') && !FORCE_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`);
+  if (flags.has('permanent') && !PERMANENT_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`);
+}
+
 function need(args, count, usage) {
   if (args.length < count) throw new fc.FcError(`Usage: fctl ${usage}`);
 }
@@ -103,6 +116,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
   if (flags.has('remove-archives') && command !== 'extract-all') throw new fc.FcError('--remove-archives can be used only with extract-all.');
   const removing = command === 'remove-broken' || command === 'remove-duplicates' || command === 'remove-low-quality';
   if (flags.has('yes') && !removing) throw new fc.FcError('--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality.');
+  rejectUnusedFlags(command, flags);
   if (flags.has('include-lowercase') && command !== 'normalize') throw new fc.FcError('--include-lowercase can be used only with normalize.');
   for (const name of VALUE_FLAGS) {
     if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name} can be used only with find-low-quality and remove-low-quality.`);
@@ -137,7 +151,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       return done(fc.rename(args[0], args[1], { force, dryRun }));
     case 'mv': {
       need(args, 2, 'mv <source...> <dest>');
-      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun });
+      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent') });
       return done(lines, lines.join('\n'));
     }
     case 'cp': {
@@ -152,7 +166,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(fc.unzip(args[0], args[1], { dryRun }));
+      return done(fc.unzip(args[0], args[1], { dryRun, force }));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
       return done(fc.zip(args[0], args.slice(1), { force, dryRun }));
@@ -200,6 +214,8 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
         'remove-duplicates': [removeDuplicates, formatRemoveDuplicates],
         'remove-low-quality': [removeLowQuality, formatRemoveLowQuality],
       }[command];
+      // A bare --yes would only be reported after the remover ran, so it is refused first (the preview with --dry-run may carry it).
+      if (flags.has('yes') && confirm === undefined && !dryRun) throw new fc.FcError(`Give --yes the confirmation value shown in the list: --yes=VALUE. Run ${command} without --yes to see the list and the value. Nothing was deleted.`);
       // The low-quality standard values are passed on literally, the same as find-low-quality. Other commands were refused above.
       // Only remove-broken prints progress (#99). The other two commands do not accept it.
       const result = remover(args[0], { dryRun, confirm, minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate'), onProgress: progress });
@@ -208,7 +224,6 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
       if (result.failed.length > 0) return fail(`${result.failed.length} files could not be sent to the Recycle Bin.`);
       if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted. Check the new list.');
-      if (flags.has('yes') && confirm === undefined && !dryRun && result.removals.length > 0) return fail('Give --yes the confirmation value shown in the list. Nothing was deleted.');
       return done(result, report);
     }
     case 'find-duplicates': {

@@ -16,12 +16,22 @@ function exists(p) {
   return fs.existsSync(p);
 }
 
+// Whether the item itself is there, without following a link. A dangling link (its target is gone) exists as an item (#312).
+function lexists(p) {
+  return fs.lstatSync(p, { throwIfNoEntry: false }) !== undefined;
+}
+
 function ensureExists(p) {
   if (!exists(p)) throw new FcError(`Path does not exist: ${p}`);
 }
 
+// For the commands that act on the item itself (rename, mv, rm): a dangling link is an item they can handle.
+function ensureItemExists(p) {
+  if (!lexists(p)) throw new FcError(`Path does not exist: ${p}`);
+}
+
 function ensureFree(p, force) {
-  if (exists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
+  if (lexists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
 }
 
 // Node creates names such as nul.mp4 and con.txt literally, but PowerShell and Explorer open them as devices, so the created file cannot be opened or deleted by other programs (#135).
@@ -102,7 +112,7 @@ function perform(message, dryRun, action) {
 }
 
 function overwriteNote(p, dryRun) {
-  return dryRun && exists(p) ? ' (overwrites)' : '';
+  return dryRun && lexists(p) ? ' (overwrites)' : '';
 }
 
 function pathKey(p) {
@@ -125,15 +135,15 @@ function claim(planned, p) {
 }
 
 // For the preview: it finds items that gather into the same target and targets that already exist, and returns the text to show.
-function targetNote(planned, target, force, dirNote) {
+function targetNote(planned, target, force, dirNote, fileNote = ' (overwrites)') {
   const key = pathKey(target);
   if (planned.has(key)) {
     if (!force) throw new FcError(`Already exists: ${target} (an earlier item is handled under the same name)`);
     return ' (overwrites: earlier item)';
   }
   planned.add(key);
-  if (!exists(target)) return '';
-  return fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
+  if (!lexists(target)) return '';
+  return exists(target) && fs.statSync(target).isDirectory() ? dirNote : fileNote;
 }
 
 // For the preview: moving or copying a folder into itself, or a file onto itself, fails in a real run.
@@ -209,6 +219,7 @@ function list(dir = '.') {
 }
 
 function makeDir(dir, { dryRun = false } = {}) {
+  if (lexists(dir) && !exists(dir)) throw new FcError(`Already exists: ${dir} (a link whose target is missing)`);
   rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (already exists)' : '';
@@ -217,6 +228,8 @@ function makeDir(dir, { dryRun = false } = {}) {
 
 function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
   if (!append) ensureFree(file, force);
+  // Writing through a link would land wherever it points, even outside the intended folder, so no link is written through (#312).
+  if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) throw new FcError(`Cannot write through a link: ${file}. Remove the link first.`);
   rejectNewDeviceName(file);
   rejectHardLinkedWrite(file);
   if (dryRun) {
@@ -237,7 +250,7 @@ function readFile(file) {
 }
 
 function rename(target, newName, { force = false, dryRun = false } = {}) {
-  ensureExists(target);
+  ensureItemExists(target);
   if (newName.includes('/') || newName.includes('\\')) {
     throw new FcError('The new name cannot contain a path. Use mv to move.');
   }
@@ -249,6 +262,20 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
+// fs.cpSync keeps the times of files with preserveTimestamps but not of folders, so the folder times are set after the copy (best effort: a folder time that cannot be set is not an error) (#313).
+function copyFolderTimes(src, dest) {
+  try {
+    const stat = fs.lstatSync(src);
+    if (!stat.isDirectory()) return;
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      if (entry.isDirectory()) copyFolderTimes(path.join(src, entry.name), path.join(dest, entry.name));
+    }
+    fs.utimesSync(dest, stat.atime, stat.mtime);
+  } catch {
+    // The times are a nicety; the content was copied.
+  }
+}
+
 function moveOne(src, dest) {
   try {
     fs.renameSync(src, dest);
@@ -258,7 +285,8 @@ function moveOne(src, dest) {
     // Because it moves by copying, it first refuses links that never end, the same as cp (#142). Nothing was copied, so the source and the target stay as they were.
     rejectLoopingLinks(src, dest);
     try {
-      fs.cpSync(src, dest, { recursive: true });
+      fs.cpSync(src, dest, { recursive: true, preserveTimestamps: true });
+      copyFolderTimes(src, dest);
     } catch (copyErr) {
       fs.rmSync(dest, { recursive: true, force: true });
       throw copyErr;
@@ -283,15 +311,16 @@ function asidePath(target) {
 }
 
 // If the target is deleted first and the move fails (a file lock and so on), the target is lost, so it sets it aside and deletes it after the move finishes.
-function moveReplacing(src, target) {
-  if (!exists(target)) return moveOne(src, target);
+// The replaced destination goes to the Recycle Bin like rm, so it can be brought back; permanent deletes it for good (#311).
+function moveReplacing(src, target, { permanent = false } = {}) {
+  if (!lexists(target)) return moveOne(src, target);
   const aside = asidePath(target);
   fs.renameSync(target, aside);
   try {
     moveOne(src, target);
   } catch (err) {
     // If the copy finished and the target exists, only the cleanup of the source failed, so it does not roll back.
-    if (exists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
+    if (lexists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
     try {
       fs.renameSync(aside, target);
     } catch (restoreErr) {
@@ -300,9 +329,9 @@ function moveReplacing(src, target) {
     throw err;
   }
   try {
-    fs.rmSync(aside, { recursive: true, force: true });
+    remove([aside], { permanent, checkVolume: false });
   } catch (err) {
-    throw new FcError(`Moved, but could not delete the previous destination: ${aside} (${err.code})`);
+    throw new FcError(`Moved, but could not ${permanent ? 'delete' : 'send to the Recycle Bin'} the previous destination: ${aside} (${err.message})`);
   }
 }
 
@@ -491,13 +520,13 @@ function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
 
-function move(sources, dest, { force = false, dryRun = false } = {}) {
+function move(sources, dest, { force = false, dryRun = false, permanent = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
   // It runs after checking everything, so that if it fails, nothing has been moved.
   const items = sources.map((src) => {
-    ensureExists(src);
+    ensureItemExists(src);
     rejectStreamPath(src);
     rejectCurrentDir(src);
     // It resolves the names so that a source ending in d/. uses the same target as d.
@@ -505,6 +534,13 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     rejectStreamPath(target);
     rejectCurrentDir(target);
     ensureFree(target, force);
+    // Before anything moves, the replaced destination must be able to go to the Recycle Bin (the preview too), as rm checks (#311).
+    if (force && !permanent && lexists(target)) {
+      // The replaced item is sent under a short temporary name, so its own name length and device names do not matter; the volume setting and size do.
+      if (!isWindows) throw new FcError('Sending the replaced destination to the Recycle Bin works only on Windows. To delete it permanently instead, use --permanent');
+      const why = previewRefusal(path.resolve(target));
+      if (why !== null) throw new FcError(`${permanentRefusal(path.resolve(target), why, false)} Nothing was moved. To delete the replaced item permanently instead, use --permanent.`);
+    }
     rejectNewDeviceName(target);
     ensureParentDir(target);
     rejectMoveOverlap(src, target);
@@ -514,9 +550,10 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   const planned = new Set();
   const done = [];
   for (const { src, target } of items) {
-    const note = dryRun ? targetNote(planned, target, force, ' (replaces the whole existing folder)') : '';
+    const where = permanent ? 'it is deleted permanently' : 'the old one goes to the Recycle Bin';
+    const note = dryRun ? targetNote(planned, target, force, ` (replaces the whole existing folder; ${where})`, ` (overwrites; ${where})`) : '';
     try {
-      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
+      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target, { permanent })));
     } catch (err) {
       // The earlier items have already been moved, so just raising an error would not tell what was moved.
       if (done.length === 0) throw err;
@@ -536,7 +573,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     const earlier = new Map();
     for (const src of sources) {
       ensureExists(src);
-      const target = resolveDest(src, dest);
+      const target = resolveDest(path.resolve(src), dest);
       checkOverwrite(src, target);
       const key = pathKey(target);
       for (const before of earlier.get(key) ?? []) {
@@ -545,27 +582,39 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
-  // When copying never ends because of a link inside a source (#142), nothing is copied, even in the preview and even if only one of several sources is like that.
-  for (const src of sources) {
+  // The checks for every source run before the first copy, so that one bad source copies nothing (#313). The names are resolved first, as move does,
+  // so that a source ending in d/. uses the same target as d.
+  const items = sources.map((src) => {
     ensureExists(src);
-    rejectLoopingLinks(src, resolveDest(src, dest));
-  }
-  const planned = new Set();
-  return sources.map((src) => {
-    ensureExists(src);
-    const target = resolveDest(src, dest);
+    const target = resolveDest(path.resolve(src), dest);
+    // When copying never ends because of a link inside a source (#142), nothing is copied, even in the preview and even if only one of several sources is like that.
+    rejectLoopingLinks(src, target);
     ensureFree(target, force);
     rejectNewDeviceName(target);
     rejectCopyIntoSelf(src, target);
-    let note = '';
-    if (dryRun) {
+    return { src, target };
+  });
+  // Two sources with the same name would gather into one target, and the second would fail after the first was copied.
+  if (!force) {
+    const seen = new Map();
+    for (const { src, target } of items) {
+      const key = pathKey(target);
+      if (seen.has(key)) throw new FcError(`Several sources go to the same destination: ${target} (${seen.get(key)}, ${src})`);
+      seen.set(key, src);
+    }
+  }
+  if (dryRun) {
+    for (const { src, target } of items) {
       ensureCanMakeDir(path.dirname(target));
       ensureNotIntoSelf(src, target);
       if (exists(target) && fs.statSync(src).isDirectory() !== fs.statSync(target).isDirectory()) {
         throw new FcError(`A file and a folder cannot overwrite each other: ${src} -> ${target}`);
       }
-      note = targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)');
     }
+  }
+  const planned = new Set();
+  return items.map(({ src, target }) => {
+    const note = dryRun ? targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)') : '';
     return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
   });
 }
@@ -1188,7 +1237,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   // It checks every target before deleting anything (#129). In rm a b c, if only c cannot be sent, a and b are not deleted either and the reason is reported.
   // The preview goes through the same check, so it does not show a target that would really fail as "Move to the Recycle Bin".
   const checked = targets.map((target) => {
-    ensureExists(target);
+    ensureItemExists(target);
     // If deleted as is, only the current folder cannot be deleted and it fails, but before that the other items have already been deleted.
     // Deleting a link removes only the link, so it compares by the link itself. Comparing by text catches the current folder reached through a link (rm lnk, current folder lnk/s).
     if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
@@ -1206,7 +1255,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   });
   return checked.map(({ target, recycleAs }) => {
     // If an earlier target contained this target and it was already deleted (rm a a/b), it reports that it does not exist, as before.
-    if (!dryRun) ensureExists(target);
+    if (!dryRun) ensureItemExists(target);
     if (permanent) return perform(`Delete permanently: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`Move to the Recycle Bin: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });
@@ -1423,8 +1472,43 @@ function ensureRoomToExtract(dest, entries) {
   return need;
 }
 
+// It finds the files of the archive that already exist in the extraction folder, which tar would overwrite (#311). Folders may merge, so only file entries count.
+// Names in the list come out in the code page, so a non-ASCII letter or ? matches any non-ASCII letter or ? of an existing name (it may refuse too much, never too little).
+function rejectExtractOverwrite(names, dest) {
+  // A link to a folder is followed, as tar would extract through it.
+  const isDir = (full) => fs.statSync(full, { throwIfNoEntry: false })?.isDirectory() === true;
+  if (!isDir(dest)) return;
+  const fold = (name) => name.replace(/[^\x00-\x7f]|\?/g, '\u0080').toUpperCase();
+  const clash = (dir, parts, shown) => {
+    let existing;
+    try {
+      existing = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+    const matches = existing.filter((entry) => fold(entry.name) === fold(parts[0]));
+    if (parts.length === 1) return matches.length > 0 && !matches.every((entry) => isDir(path.join(dir, entry.name))) ? shown : undefined;
+    for (const entry of matches) {
+      if (!isDir(path.join(dir, entry.name))) continue;
+      const found = clash(path.join(dir, entry.name), parts.slice(1), shown);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  for (const raw of names) {
+    if (/[\\/]$/.test(raw)) continue;
+    const parts = raw.split(/[\\/]/).filter((part) => part !== '' && part !== '.');
+    if (parts.length === 0) continue;
+    const found = clash(dest, parts, raw);
+    if (found !== undefined) {
+      const garbled = UNRELIABLE_NAME.test(raw) ? ' (non-ASCII names in the archive listing may look garbled because of the code page, so this may be a different file)' : '';
+      throw new FcError(`The extraction folder already has a file of the same name, so nothing was extracted: ${found}${garbled}. Use --force to overwrite existing files.`);
+    }
+  }
+}
+
 // Only extract-all, which already made the same check, turns checkSpace off.
-function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
+function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
   rejectLongName(dest, 'The extraction folder');
@@ -1437,9 +1521,11 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
     const entries = archiveEntries(archive);
     const size = checkSpace ? ensureRoomToExtract(dest, entries) : null;
     const sizeNote = size === null ? '' : `, extracted size about ${formatSize(Number(size))}`;
-    if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? ', the destination folder already exists, so files with the same name are overwritten' : ''})`;
+    if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? (force ? ', the destination folder already exists, so files with the same name are overwritten' : ', the destination folder already exists') : ''})`;
   }
   if (isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
+  // tar overwrites existing files while extracting, so without --force it refuses before extracting anything (#311).
+  if (!force) rejectExtractOverwrite(archiveNames(archive), dest);
   return perform(`Extract: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
     runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });

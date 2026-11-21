@@ -252,11 +252,11 @@ test('unzip preview warns when the extraction folder already has entries; zip st
 
   const dest = path.join(dir, 'existing');
   fs.mkdirSync(path.join(dest, 'src'), { recursive: true });
-  fs.writeFileSync(path.join(dest, 'src', 'a.txt'), 'old');
+  fs.writeFileSync(path.join(dest, 'src', 'b.txt'), 'old');
   fs.writeFileSync(path.join(dest, 'other.txt'), 'x');
   const preview = await finish(await post('/archive/unzip/preview', { archive, dest }));
   assert.match(preview.body, /alert-warning[^>]*>The extraction folder already exists and has 2 entries\. Files in the archive with the same name will overwrite them/);
-  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'a.txt'), 'utf8'), 'old', 'a preview overwrites nothing');
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'src', 'b.txt'), 'utf8'), 'old', 'a preview overwrites nothing');
 });
 
 // ---------- Protected places (#290) ----------
