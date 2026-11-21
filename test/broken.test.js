@@ -114,7 +114,7 @@ function judge(name, content) {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, name), content);
   const result = findBroken(dir);
-  assert.deepStrictEqual(result.unreadable, []);
+  assert.deepStrictEqual(result.undetermined, []);
   assert.strictEqual(result.checked, 1);
   for (const status of ['broken', 'suspect']) {
     if (result[status].length > 0) return { status, reason: result[status][0].reason };
@@ -308,7 +308,7 @@ test('너무 큰 zip 목록은 메모리에 올리지 않고 판단 못함으로
   fs.closeSync(fd);
   const result = findBroken(dir);
   assert.deepStrictEqual(result.broken, []);
-  assert.match(result.unreadable[0].reason, /too large/);
+  assert.match(result.undetermined[0].reason, /too large/);
 });
 
 test('분할 zip과 Zip64는 이 방식으로 판단하지 않는다', () => {
@@ -397,8 +397,8 @@ test('외부 압축 프로그램이 없으면 판단 못함으로 두고 프로�
   process.env.PATH = savedPath;
   assert.deepStrictEqual(result.broken, []);
   assert.deepStrictEqual(result.suspect, []);
-  assert.strictEqual(result.unreadable.length, 1);
-  assert.strictEqual(result.unreadable[0].reason, 'The external program lz4 needed to extract it is missing, so it was not judged. Put lz4.exe on PATH to check it.');
+  assert.strictEqual(result.undetermined.length, 1);
+  assert.strictEqual(result.undetermined[0].reason, 'The external program lz4 needed to extract it is missing, so it was not judged. Put lz4.exe on PATH to check it.');
   assert.match(formatBroken(result), /Undetermined: a\.tar \(The external program lz4 needed to extract it is missing/);
 });
 
@@ -419,8 +419,8 @@ test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 �
     const result = findBroken(dir);
     tarResult = null;
     assert.deepStrictEqual(result.broken, [], stderr);
-    assert.strictEqual(result.unreadable.length, 1, stderr);
-    assert.match(result.unreadable[0].reason, reason, stderr);
+    assert.strictEqual(result.undetermined.length, 1, stderr);
+    assert.match(result.undetermined[0].reason, reason, stderr);
   }
   // Even if an imitation line is mixed into the output of a normal exit (0), it is not left as could not judge (first review).
   const dir = tempDir();
@@ -428,7 +428,7 @@ test('외부 압축 프로그램이 있는데 실패하면 깨짐이 아니라 �
   tarResult = { status: 0, stdout: Buffer.from('a.txt\n'), stderr: Buffer.from('tar.exe: Child process exited with status 1\n') };
   const result = findBroken(dir);
   tarResult = null;
-  assert.deepStrictEqual(result.unreadable, []);
+  assert.deepStrictEqual(result.undetermined, []);
   assert.deepStrictEqual(result.broken, []);
 });
 
@@ -456,8 +456,8 @@ test('tar.exe의 그 밖의 실패는 깨졌다고 하지 않고 판단 못함�
     const result = findBroken(dir);
     tarResult = null;
     assert.deepStrictEqual(result.broken, []);
-    assert.strictEqual(result.unreadable.length, 1);
-    assert.match(result.unreadable[0].reason, /not judged/);
+    assert.strictEqual(result.undetermined.length, 1);
+    assert.match(result.undetermined[0].reason, /not judged/);
   }
 });
 
@@ -474,7 +474,7 @@ test('파일 하나의 예상 밖 오류가 다른 파일의 결과를 지우지
   });
   const result = findBroken(dir);
   t.mock.restoreAll();
-  assert.strictEqual(result.broken.length + result.unreadable.length, 2);
+  assert.strictEqual(result.broken.length + result.undetermined.length, 2);
 });
 
 test('잘린 RIFF를 찾는다', () => {
@@ -506,8 +506,8 @@ test('잠겨서 읽지 못한 파일은 깨졌다고 하지 않는다', (t) => {
   const result = findBroken(dir);
   t.mock.restoreAll();
   assert.deepStrictEqual(result.broken, []);
-  assert.strictEqual(result.unreadable.length, 1);
-  assert.match(result.unreadable[0].reason, /EBUSY/);
+  assert.strictEqual(result.undetermined.length, 1);
+  assert.match(result.undetermined[0].reason, /EBUSY/);
 });
 
 test('파일을 건드리지 않고, 기록 파일과 저장소와 링크와 잔여물은 판별에서 뺀다', () => {
@@ -548,4 +548,17 @@ test('fctl find-broken은 보고만 하고 성공으로 끝난다', () => {
   fs.writeFileSync(path.join(dir, 'a.mp4'), '<html></html>');
   assert.match(run(['find-broken', dir]), /Broken: a\.mp4/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
+});
+
+test('the find-broken report writes "1 file" and "2 files", and the plain mismatch reason names the start bytes (#332)', () => {
+  const one = tempDir();
+  fs.writeFileSync(path.join(one, 'b.jpg'), png());
+  assert.match(formatBroken(findBroken(one)), /Checked 1 file, 0 broken/);
+  const two = tempDir();
+  fs.writeFileSync(path.join(two, 'b.jpg'), png());
+  fs.writeFileSync(path.join(two, 'c.jpg'), png());
+  assert.match(formatBroken(findBroken(two)), /Checked 2 files, 0 broken/);
+  const odd = tempDir();
+  fs.writeFileSync(path.join(odd, 'd.mp4'), Buffer.from('plain bytes that are not a video, long enough to read'));
+  assert.match(formatBroken(findBroken(odd)), /The start bytes do not match the extension \(MP4\/MOV\)/);
 });

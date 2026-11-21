@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { FcError } = require('./commands');
+const { plural } = require('./plural');
 const { grant, walk, fileSizeInside } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
@@ -116,14 +117,14 @@ function skipReason(parts) {
 // It finds low-quality files below the standard among the videos under the target. It does not touch files.
 // The formats it reads the resolution and bitrate from are MP4/MOV and MKV/WebM. Other videos are reported as could not judge. It does not look inside repository folders.
 // - low: low-quality files ({ path, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons, byResolution })
-// - unreadable: videos that could not be judged ({ path, reason })
+// - undetermined: videos that could not be judged ({ path, reason })
 // - skipped: links, leftovers, system folders ({ path, reason })
 // - checked: the number of videos read, criteria: the standards used
 // options.entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
 function findLowQuality(dir, options = {}) {
   const criteria = lowQualityCriteria(options);
   const access = grant(dir, ['read']);
-  const result = { target: access.target, criteria, low: [], unreadable: [], skipped: [], checked: 0 };
+  const result = { target: access.target, criteria, low: [], undetermined: [], skipped: [], checked: 0 };
   for (const entry of options.entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
@@ -147,19 +148,19 @@ function findLowQuality(dir, options = {}) {
       result.checked += 1;
       const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
       if (reader === null) {
-        result.unreadable.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
+        result.undetermined.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
         continue;
       }
       const size = fileSizeInside(access.target, real);
       // The bitrate is used for the judgment, so it has the length cross-checked with the sample table and the seek table (#207).
       const info = saneInfo(reader(access.target, real, { verifyBitrate: true }));
       const judged = judgeQuality(info, criteria);
-      if (judged.status === 'unknown') result.unreadable.push({ path: real, reason: judged.reasons.join(' ') });
+      if (judged.status === 'unknown') result.undetermined.push({ path: real, reason: judged.reasons.join(' ') });
       if (judged.status !== 'low') continue;
       const { width, height, displayWidth, displayHeight, duration, bitrate } = info;
       result.low.push({ path: real, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons: judged.reasons, byResolution: judged.byResolution });
     } catch (err) {
-      result.unreadable.push({ path: entry.path, reason: err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})` });
+      result.undetermined.push({ path: entry.path, reason: err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})` });
     }
   }
   return result;
@@ -181,9 +182,9 @@ function formatLowQuality(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [`Criteria: ${criteriaText(result.criteria)}`];
   for (const file of result.low) lines.push(`Low quality: ${relative(file.path)} (${describeLowQuality(file)}) [${file.reasons.join(', ')}]`);
-  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
-  lines.push(`Checked ${result.checked} videos, ${result.low.length} low quality, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`);
+  lines.push(`Checked ${plural(result.checked, 'video')}, ${result.low.length} low quality, ${result.undetermined.length} undetermined, ${result.skipped.length} skipped`);
   return lines.join('\n');
 }
 

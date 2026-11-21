@@ -62,7 +62,7 @@ function runChecked(argv, { mode, expect } = {}, { execute, progress } = {}) {
   }
   const base = stripFlow(argv.map(String));
   const first = preview(base, execute, progress);
-  if (first.fingerprint === null) throw new fc.FcError('Nothing to preview: no command was given.');
+  if (first.fingerprint === null) throw new fc.FcError('Nothing to preview: that was a help request or an empty command. Choose a command and its options from the form; the help text is for the command line (fctl <command> --help).');
   if (mode === 'preview') return { ...first.outcome, fingerprint: first.fingerprint };
   if (first.fingerprint !== expect) return { ...first.outcome, repreview: true, fingerprint: first.fingerprint };
   const runArgv = REMOVING.has(first.outcome.command) ? withOption(base, `--yes=${first.outcome.result.code}`) : base;

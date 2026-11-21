@@ -37,7 +37,7 @@ test('find-broken screen: broken and suspect in a table, undetermined and skippe
   assert.match(body, /<div class="value">1<\/div><div class="label">Suspect/);
   assert.doesNotMatch(body, /Files that were not judged/);
 
-  const synthetic = toPlain({ command: 'find-broken', result: { target: T, broken: [{ path: p('a.mp4'), size: 10, reason: 'truncated' }], suspect: [], unreadable: [{ path: p('b.zip'), reason: 'read failed' }], skipped: [{ path: p('l'), reason: 'Links are not checked.' }], checked: 2 } });
+  const synthetic = toPlain({ command: 'find-broken', result: { target: T, broken: [{ path: p('a.mp4'), size: 10, reason: 'truncated' }], suspect: [], undetermined: [{ path: p('b.zip'), reason: 'read failed' }], skipped: [{ path: p('l'), reason: 'Links are not checked.' }], checked: 2 } });
   const table = rows(findBrokenView(synthetic));
   assert.deepStrictEqual(table.map((cells) => cells[0]), ['a.mp4', 'b.zip', 'l']);
   assert.match(table[0][1], /badge-error">Broken/);
@@ -75,7 +75,7 @@ test('find-duplicates screen: each group splits the file to keep from the delete
       unknownMetadata: 1,
       metadataErrors: [],
       conflicts: [{ path: p('A-1 B-2.mp4'), numbers: ['A-1', 'B-2'] }],
-      unreadable: [],
+      undetermined: [],
       skipped: [],
       checked: 5,
     },
@@ -96,7 +96,7 @@ test('find-low-quality screen: shows the criteria and the resolution and bitrate
       target: T,
       criteria: { minHeight: 480, minBitrate: 1000 },
       low: [{ path: p('s.mp4'), size: 2048, width: 640, height: 352, displayWidth: 626, displayHeight: 352, duration: 61.4, bitrate: 812_345, reasons: ['short side 352 px', 'bitrate 812kbps'], byResolution: true }],
-      unreadable: [{ path: p('a.avi'), reason: 'Cannot read the resolution of .avi.' }],
+      undetermined: [{ path: p('a.avi'), reason: 'Cannot read the resolution of .avi.' }],
       skipped: [],
       checked: 2,
     },
@@ -111,12 +111,12 @@ test('find-low-quality screen: shows the criteria and the resolution and bitrate
 });
 
 test('remove-broken screen: the preview lists what to delete, a changed list is an error, and a finished run shows the Recycle Bin result and the log location (#259)', () => {
-  const base = { target: T, broken: [], suspect: [{ path: p('s.zip'), size: 1, reason: 'suspect' }], unreadable: [], skipped: [], checked: 3, interactive: null, code: 'abc123', confirmed: false, mismatch: false, removed: [], failed: [], log: null };
+  const base = { target: T, broken: [], suspect: [{ path: p('s.zip'), size: 1, reason: 'suspect' }], undetermined: [], skipped: [], checked: 3, interactive: null, code: 'abc123', confirmed: false, mismatch: false, removed: [], failed: [], log: null };
   const removal = { path: p('b.zip'), size: 4096, reason: 'truncated', stamp: '1' };
   const kept = { path: p('new.zip'), reason: 'Changed just now, so it may still be downloading; kept.' };
 
   const preview = String(removeView(toPlain({ command: 'remove-broken', result: { ...base, dryRun: true, removals: [removal], kept: [kept] } })));
-  assert.match(preview, /alert-info[^>]*>Nothing is deleted yet\. Check the 1 files below, then run to send them to the Recycle Bin\./);
+  assert.match(preview, /alert-info[^>]*>Nothing is deleted yet\. Check the 1 file below, then run to send them to the Recycle Bin\./);
   const table = rows(preview);
   assert.deepStrictEqual(table[0].slice(0, 1), ['b.zip']);
   assert.match(table[0][1], /To delete/);
@@ -131,7 +131,7 @@ test('remove-broken screen: the preview lists what to delete, a changed list is 
 
   const logPath = p('fctl-removed-1.json');
   const done = String(removeView(toPlain({ command: 'remove-broken', result: { ...base, removals: [removal, { ...removal, path: p('c.zip') }], kept: [], confirmed: true, removed: [removal], failed: [{ path: p('c.zip'), reason: 'in use' }], log: logPath } })));
-  assert.match(done, /alert-warning[^>]*>Sent 1 files to the Recycle Bin\. 1 failed\./);
+  assert.match(done, /alert-warning[^>]*>Sent 1 file to the Recycle Bin\. 1 failed\./);
   assert.deepStrictEqual(rows(done).map((cells) => cells[0]), ['b.zip', 'c.zip', 's.zip']);
   assert.match(rows(done)[0][1], /Sent to Recycle Bin/);
   assert.match(rows(done)[1][1], /badge-error">Failed/);
@@ -143,7 +143,7 @@ test('remove-duplicates and remove-low-quality screens: group column, kept files
   const dup = String(removeView(toPlain({
     command: 'remove-duplicates',
     result: {
-      target: T, groups: [], metadataGroups: [], conflicts: [], unreadable: [], skipped: [], checked: 3, lengthOnly: 2, interactive: null, code: 'c', dryRun: true, confirmed: false, mismatch: false, removed: [], failed: [], log: null,
+      target: T, groups: [], metadataGroups: [], conflicts: [], undetermined: [], skipped: [], checked: 3, lengthOnly: 2, interactive: null, code: 'c', dryRun: true, confirmed: false, mismatch: false, removed: [], failed: [], log: null,
       sets: [{ label: 'number ABC-123', keep: { ...film('ABC-123.mp4'), reason: 'larger resolution' }, doubt: 'The lengths differ, so these may not be the same video.' }],
       removals: [{ ...film('ABC-123 (2).mp4'), set: 0, keep: p('ABC-123.mp4'), reason: '' }],
       kept: [{ path: p('ABC-123 hard.mp4'), set: 0, reason: 'Same file as the kept one (hard link); kept.', file: film('ABC-123 hard.mp4') }],
@@ -159,7 +159,7 @@ test('remove-duplicates and remove-low-quality screens: group column, kept files
   const low = String(removeView(toPlain({
     command: 'remove-low-quality',
     result: {
-      target: T, criteria: { minHeight: 360, minBitrate: null }, low: [], unreadable: [], skipped: [], checked: 1, interactive: null, code: 'c', dryRun: false, confirmed: false, mismatch: false, removed: [], failed: [], log: null, kept: [],
+      target: T, criteria: { minHeight: 360, minBitrate: null }, low: [], undetermined: [], skipped: [], checked: 1, interactive: null, code: 'c', dryRun: false, confirmed: false, mismatch: false, removed: [], failed: [], log: null, kept: [],
       removals: [{ ...film('tiny.mp4'), width: 320, height: 240, displayWidth: 320, displayHeight: 240, bitrate: 300_000, reasons: ['short side 240 px'] }],
     },
   })));
@@ -177,7 +177,7 @@ test('an empty removal shows a notice (#259)', () => {
 });
 
 test('remove screen: a planned file that is neither removed nor failed stays in the table as not attempted (#309)', () => {
-  const base = { target: T, broken: [], suspect: [], unreadable: [], skipped: [], checked: 3, interactive: true, code: 'abc123', dryRun: false, confirmed: true, mismatch: false, log: p('fctl-removed-1.json') };
+  const base = { target: T, broken: [], suspect: [], undetermined: [], skipped: [], checked: 3, interactive: true, code: 'abc123', dryRun: false, confirmed: true, mismatch: false, log: p('fctl-removed-1.json') };
   const removal = (name) => ({ path: p(name), size: 4096, reason: 'truncated', stamp: '1' });
   const result = { ...base, removals: [removal('a.zip'), removal('b.zip'), removal('c.zip')], kept: [], removed: [removal('a.zip')], failed: [{ path: p('b.zip'), reason: 'in use' }] };
   const body = String(removeView(toPlain({ command: 'remove-broken', result })));
@@ -185,4 +185,12 @@ test('remove screen: a planned file that is neither removed nor failed stays in 
   assert.match(rows(body)[2][1], /Not attempted/);
   const mismatch = String(removeView(toPlain({ command: 'remove-broken', result: { ...base, confirmed: false, mismatch: true, removed: [], failed: [], removals: [], kept: [], mismatchHints: [{ path: p('a.zip'), reason: 'x' }] } })));
   assert.match(mismatch, /1 file is now held back because they changed within the last 5 minutes/);
+});
+
+test('plural writes the singular for 1 and the plural otherwise (#332)', () => {
+  const { plural } = require('../src/plural');
+  assert.strictEqual(plural(1, 'file'), '1 file');
+  assert.strictEqual(plural(0, 'file'), '0 files');
+  assert.strictEqual(plural(2, 'file'), '2 files');
+  assert.strictEqual(plural(2, 'entry', 'entries'), '2 entries');
 });
