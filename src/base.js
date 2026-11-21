@@ -112,8 +112,11 @@ function perform(message, dryRun, action) {
   return message;
 }
 
-function overwriteNote(p, dryRun) {
-  return dryRun && lexists(p) ? ' (overwrites)' : '';
+// info is the structured side of the preview (#361): when the note says something is overwritten or replaced, it sets info.overwrites, so a screen never has to read the words.
+function overwriteNote(p, dryRun, info) {
+  if (!(dryRun && lexists(p))) return '';
+  if (info) info.overwrites = true;
+  return ' (overwrites)';
 }
 
 function pathKey(p) {
@@ -136,14 +139,16 @@ function claim(planned, p) {
 }
 
 // For the preview: it finds items that gather into the same target and targets that already exist, and returns the text to show.
-function targetNote(planned, target, force, dirNote, fileNote = ' (overwrites)') {
+function targetNote(planned, target, force, dirNote, fileNote = ' (overwrites)', info) {
   const key = pathKey(target);
   if (planned.has(key)) {
     if (!force) throw new FcError(`Already exists: ${target} (an earlier item is handled under the same name)`);
+    if (info) info.overwrites = true;
     return ' (overwrites: earlier item)';
   }
   planned.add(key);
   if (!lexists(target)) return '';
+  if (info) info.overwrites = true;
   return exists(target) && fs.statSync(target).isDirectory() ? dirNote : fileNote;
 }
 

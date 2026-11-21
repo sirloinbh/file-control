@@ -261,7 +261,7 @@ function rejectExtractOverwrite(names, dest) {
 }
 
 // Only extract-all, which already made the same check, turns checkSpace off.
-function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = false } = {}) {
+function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = false, info } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
   rejectLongName(dest, 'The extraction folder');
@@ -274,6 +274,7 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = fa
     const entries = archiveEntries(archive);
     const size = checkSpace ? ensureRoomToExtract(dest, entries) : null;
     const sizeNote = size === null ? '' : `, extracted size about ${formatSize(Number(size))}`;
+    if (dryRun && force && exists(dest) && info) info.overwrites = true;
     if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? (force ? ', the destination folder already exists, so files with the same name are overwritten' : ', the destination folder already exists') : ''})`;
   }
   if (isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
@@ -619,7 +620,7 @@ function rejectLongTempName(archive) {
   }
 }
 
-function zip(archive, sources, { force = false, dryRun = false } = {}) {
+function zip(archive, sources, { force = false, dryRun = false, info } = {}) {
   ensureFree(archive, force);
   // Wrapping 7z in one more compression layer makes tar.exe unable to seek back and forth (Seek error), so it cannot be extracted (#164).
   if (archiveExt(archive).startsWith('.7z.')) throw new FcError(`A 7z archive cannot be wrapped in another archive. tar.exe cannot extract it: ${archive}`);
@@ -651,7 +652,7 @@ function zip(archive, sources, { force = false, dryRun = false } = {}) {
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];
   ensureTarArgs([path.resolve(archive), ...sources.map((src) => path.resolve(src))], entries, { oemEntries: !ANSI_ENTRY_EXT.has(innerEntryExt(archiveExt(archive))) });
-  return perform(`Compress: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun)}`, dryRun, () => writeArchive(archive, sources));
+  return perform(`Compress: ${sources.join(', ')} -> ${archive}${overwriteNote(archive, dryRun, info)}`, dryRun, () => writeArchive(archive, sources));
 }
 
 module.exports = {
