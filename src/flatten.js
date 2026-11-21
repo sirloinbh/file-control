@@ -724,7 +724,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       results = recycleEmptyFolders(batch, { allowedNames: FOLDER_METADATA_NAMES });
     } catch (err) {
       // The failure message of the Recycle Bin call includes the whole script, so it is not used.
-      const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status})`;
+      const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status ?? err.message})`;
       // For a reason that fails the same way in every batch, such as a non-interactive session or a locked-down environment, it does not send the rest either.
       if (err instanceof FcError) blocked = reason;
       for (const folder of batch) done(folder, reason);
