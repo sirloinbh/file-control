@@ -184,5 +184,5 @@ test('remove screen: a planned file that is neither removed nor failed stays in 
   assert.deepStrictEqual(rows(body).map((cells) => cells[0]), ['a.zip', 'b.zip', 'c.zip']);
   assert.match(rows(body)[2][1], /Not attempted/);
   const mismatch = String(removeView(toPlain({ command: 'remove-broken', result: { ...base, confirmed: false, mismatch: true, removed: [], failed: [], removals: [], kept: [], mismatchHints: [{ path: p('a.zip'), reason: 'x' }] } })));
-  assert.match(mismatch, /1 files are now held back because they changed within the last 5 minutes/);
+  assert.match(mismatch, /1 file is now held back because they changed within the last 5 minutes/);
 });

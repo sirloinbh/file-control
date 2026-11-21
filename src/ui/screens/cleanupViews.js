@@ -119,7 +119,7 @@ ${otherTable(rel, [['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipp
 // The state notice of a removal result: the preview (list to delete), a stop on a changed list, or sent to the Recycle Bin.
 function removalState(r) {
   if (r.mismatch) {
-    const why = (r.mismatchHints ?? []).length > 0 ? ` ${r.mismatchHints.length} files are now held back because they changed within the last 5 minutes.` : '';
+    const why = (r.mismatchHints ?? []).length > 0 ? ` ${r.mismatchHints.length} file${r.mismatchHints.length === 1 ? ' is' : 's are'} now held back because they changed within the last 5 minutes.` : '';
     return alertBox('error', `The list differs from the one the confirmation value was made for, so nothing was deleted. Check the new list.${why}`);
   }
   if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${r.removed.length} files to the Recycle Bin.${r.failed.length > 0 ? ` ${r.failed.length} failed.` : ''}`);

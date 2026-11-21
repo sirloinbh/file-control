@@ -51,7 +51,8 @@ function removeLowQuality(dir, { minHeight, minBitrate, confirm, dryRun = false,
   const result = { ...plan, code, dryRun, confirmed: false, mismatch: false, removed: [], failed: [], log: null };
   if (confirm === undefined || dryRun) return result;
   // With nothing to delete, a confirmation value is not a mismatch, so it is reported as an empty plan (#309).
-  if (plan.removals.length === 0) return result;
+  // The exception: files held back by the 5-minute rule may be why the list the person saw is gone, so that mismatch is still explained.
+  if (plan.removals.length === 0 && (confirm === code || plan.recent.length === 0)) return result;
   if (confirm !== code) return { ...result, mismatch: true, mismatchHints: mismatchHints(plan) };
   // It sends in batches like remove-broken (#216). Starting PowerShell for each file takes 0.5 to 0.6 second per file.
   return runConfirmedRemoval(

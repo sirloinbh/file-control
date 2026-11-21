@@ -1016,3 +1016,13 @@ test('확인값을 만든 뒤 5분 기준을 넘나든 파일이 있으면 불�
   assert.match(formatRemoveBroken(result), /Changed: [ab]\.mp4 \(Held back now because it changed within the last 5 minutes/);
   assert.deepStrictEqual(recycled, []);
 });
+
+test('the confirmation code is salted with a fixed id that differs per command (#309)', () => {
+  const plan = { target: 'C:\t', removals: [] };
+  const codes = new Set([
+    confirmationCode(plan),
+    require('../src/removeDuplicates').confirmationCode(plan),
+    require('../src/removeLowQuality').confirmationCode({ ...plan, criteria: {} }),
+  ]);
+  assert.strictEqual(codes.size, 3);
+});

@@ -250,19 +250,24 @@ function runConfirmedRemoval(plan, result, label, logItems, hooks = {}) {
     }
     updates = new Map();
   };
-  recycleInBatches(plan.removals, log, (item) => prepare(access, item), {
-    removed: (item, step) => {
-      result.removed.push(item);
-      updates.set(indexOf.get(item), { outcome: 'removed' });
-      hooks.onRemoved?.(item, step);
-    },
-    failed: (item, reason, step) => {
-      result.failed.push(failedEntry(item, reason));
-      updates.set(indexOf.get(item), { outcome: 'failed', error: reason });
-      hooks.onFailed?.(item, reason, step);
-    },
-    batchEnd: flush,
-  });
+  try {
+    recycleInBatches(plan.removals, log, (item) => prepare(access, item), {
+      removed: (item, step) => {
+        result.removed.push(item);
+        updates.set(indexOf.get(item), { outcome: 'removed' });
+        hooks.onRemoved?.(item, step);
+      },
+      failed: (item, reason, step) => {
+        result.failed.push(failedEntry(item, reason));
+        updates.set(indexOf.get(item), { outcome: 'failed', error: reason });
+        hooks.onFailed?.(item, reason, step);
+      },
+      batchEnd: flush,
+    });
+  } finally {
+    // Even if a hook throws, what was already done goes into the record.
+    flush();
+  }
   return result;
 }
 

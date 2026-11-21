@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { writeRemovalLog, REMOVAL_LOG } = require('../src/removalLog');
+const { writeRemovalLog, updateRemovalLog, REMOVAL_LOG } = require('../src/removalLog');
 
 // The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
@@ -321,4 +321,20 @@ test('기록 파일을 만들 수 없으면 FcError를 낸다', (t) => {
     return openSync(file, flags, ...rest);
   });
   assert.throws(() => writeRemovalLog(dir, 'duplicates', [{ path: 'a.mp4', reason: 'r' }], { now }), (err) => err instanceof FcError && /Could not create the log file.*EACCES/.test(err.message));
+});
+
+test('updateRemovalLog writes the outcomes, and a failed rename leaves the old log and no temp file (#309)', (t) => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': 'x', 'b.mp4': 'y' });
+  const log = writeRemovalLog(dir, 'duplicates', [{ path: 'a.mp4', reason: 'r' }, { path: 'b.mp4', reason: 'r' }], { now });
+  updateRemovalLog(log, new Map([[0, { outcome: 'removed' }], [1, { outcome: 'failed', error: 'in use' }]]));
+  assert.deepStrictEqual(readLog(log.path).items.map((item) => [item.outcome, item.error]), [['removed', undefined], ['failed', 'in use']]);
+  const before = fs.readFileSync(log.path, 'utf8');
+  t.mock.method(fs, 'renameSync', () => {
+    throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+  });
+  assert.throws(() => updateRemovalLog(log, new Map([[0, { outcome: 'failed' }]])), /Could not update the log file/);
+  t.mock.restoreAll();
+  assert.strictEqual(fs.readFileSync(log.path, 'utf8'), before);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
 });

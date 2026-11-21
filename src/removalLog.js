@@ -163,15 +163,20 @@ function updateRemovalLog(log, updates) {
   const text = serialize(log.document);
   let fd;
   try {
-    fd = fs.openSync(temp, 'w');
+    fs.rmSync(temp, { force: true });
+    fd = fs.openSync(temp, 'wx');
     fs.writeFileSync(fd, text);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;
     fs.renameSync(temp, log.path);
   } catch (err) {
-    if (fd !== undefined) fs.closeSync(fd);
-    fs.rmSync(temp, { force: true });
+    try {
+      if (fd !== undefined) fs.closeSync(fd);
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // The original error is the one to report.
+    }
     throw new FcError(`Could not update the log file: ${log.path} (${err.code ?? err.message})`);
   }
   syncDirectory(path.dirname(log.path));
