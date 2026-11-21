@@ -947,7 +947,8 @@ test('fctl remove-broken은 확인값이 맞아야 지운다', () => {
   assert.match(run(['remove-broken', dir, '--dry-run', `--yes=${code}`]), /without --dry-run/);
   assert.match(run(['remove-broken', dir, '--dry-run', '--yes']), /Nothing has been deleted yet/);
   const isRefused = (pattern) => (err) => pattern.test(err.message) && /Nothing has been deleted yet/.test(err.output);
-  assert.throws(() => run(['remove-broken', dir, '--yes']), isRefused(/confirmation value shown in the list/));
+  // A bare --yes is refused before the remover runs (#314), so there is no list in the error; the message says how to get it.
+  assert.throws(() => run(['remove-broken', dir, '--yes']), (err) => /confirmation value shown in the list.*Nothing was deleted/.test(err.message) && err.output === undefined);
   assert.throws(() => run(['remove-broken', dir, '--yes=']), isRefused(/[Nn]othing was deleted/));
   assert.throws(() => run(['remove-broken', dir, '--yes=000000000000']), isRefused(/[Nn]othing was deleted/));
   assert.deepStrictEqual(recycled, []);
