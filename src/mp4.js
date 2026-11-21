@@ -600,7 +600,7 @@ function checkOpenedMp4(file, p) {
     if (type === 'moof') moofSeen = true;
     if (type === 'moof' || (type === 'styp' && offset === 0)) fragment = true;
     offset = box.end;
-    // A fragmented file can hold tens of thousands of fragments. Once moov and one moof are seen the structure is known, so the rest is not walked.
+    // A fragmented file can hold tens of thousands of fragments. Once moov and one moof are seen the structure is known, so the rest is not walked. Trade-off: a file cut off inside a later fragment is no longer reported as truncated.
     if (moov && moofSeen) break;
   }
   // A DASH or HLS media fragment has only moof without moov. The initialization file is separate, so it cannot be judged from this file alone.
