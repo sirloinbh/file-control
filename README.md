@@ -48,7 +48,7 @@ Options
 - `--permanent`: In `rm`, delete permanently without going through the Recycle Bin. In `mv --force`, delete the replaced item permanently instead of sending it to the Recycle Bin.
 - `--dry-run`: Print only what would change, with `[Preview]` added, and do not touch anything for real.
 
-An unknown option runs nothing and reports an error. Write a name that starts with `-` as `./-name` or after `--` (`fctl rename a.txt -- "-b.txt"`). Every argument after `--` is treated as a name or content, not an option.
+A command refuses `--force` and `--permanent` when it does not use them (`--force`: `write`, `rename`, `mv`, `cp`, `zip`, `unzip`; `--permanent`: `rm`, `mv`), and a bare `--yes` without `=VALUE` on a remove command is refused before anything runs. An unknown option runs nothing and reports an error. Write a name that starts with `-` as `./-name` or after `--` (`fctl rename a.txt -- "-b.txt"`). Every argument after `--` is treated as a name or content, not an option.
 
 PowerShell splits an unquoted dash name such as `-b.txt` into `-b` and `.txt`, so use `./-name` or wrap the name in quotes. When you call a `fctl` registered by `npm link` from PowerShell, the `--` can disappear (checked with a script built like the `npm link` shim), so if you need `--`, run `node bin/fctl.js` directly.
 

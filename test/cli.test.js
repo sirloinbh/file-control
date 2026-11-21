@@ -412,3 +412,46 @@ test('도움말은 --dry-run을 설명한다', () => {
   assert.match(run(['--help']), /--dry-run/);
   assert.match(run([]), /--dry-run/);
 });
+
+test('a command refuses --force and --permanent when it does not use them (#314)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'a');
+  const cases = [
+    [['mv', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], null],
+    [['rm', '--force', p('a.txt')], /rm does not use --force/],
+    [['mkdir', '--force', p('d')], /mkdir does not use --force/],
+    [['append', '--force', p('a.txt'), 'x'], /append does not use --force/],
+    [['cat', '--permanent', p('a.txt')], /cat does not use --permanent/],
+    [['ls', '--force', dir], /ls does not use --force/],
+    [['rename', '--permanent', p('a.txt'), 'c.txt'], /rename does not use --permanent/],
+    [['cp', '--permanent', p('a.txt'), p('b.txt')], /cp does not use --permanent/],
+    [['zip', '--permanent', p('x.zip'), p('a.txt')], /zip does not use --permanent/],
+    [['unzip', '--permanent', p('x.zip')], /unzip does not use --permanent/],
+  ];
+  for (const [argv, pattern] of cases) {
+    if (pattern === null) {
+      assert.match(run(argv), /Move:/, 'mv accepts --permanent');
+      continue;
+    }
+    assert.throws(() => run(argv), pattern, argv.join(' '));
+  }
+  assert.deepStrictEqual(fs.readdirSync(dir), ['a.txt'], 'nothing was touched');
+});
+
+test('remove-broken --yes without a value is refused before anything runs (#314)', () => {
+  const dir = tempDir();
+  const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'fctl.js'), 'remove-broken', dir, '--yes'], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 1);
+  assert.match(result.stderr, /Give --yes the confirmation value shown in the list: --yes=VALUE.*Nothing was deleted/);
+});
+
+test('rm --force exits 1 from the command line and touches nothing (#314)', () => {
+  const dir = tempDir();
+  fc.writeFile(path.join(dir, 'x.txt'), 'x');
+  const bin = path.join(__dirname, '..', 'bin', 'fctl.js');
+  const rm = spawnSync(process.execPath, [bin, 'rm', '--force', path.join(dir, 'x.txt')], { encoding: 'utf8' });
+  assert.strictEqual(rm.status, 1);
+  assert.match(rm.stderr, /rm does not use --force/);
+  assert.ok(fs.existsSync(path.join(dir, 'x.txt')));
+});
