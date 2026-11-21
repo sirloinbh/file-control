@@ -19,8 +19,9 @@ const BITRATE_ONLY = 'Kept because it is low quality by bitrate only, so the dur
 // The keep rules are the same as remove-broken (removal.js).
 function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
-  rejectRepository(access.target, walk(access.target));
-  const found = findLowQuality(dir, { minHeight, minBitrate });
+  const entries = walk(access.target);
+  rejectRepository(access.target, entries);
+  const found = findLowQuality(dir, { minHeight, minBitrate, entries });
   // Reading the metadata can take time, so it measures by the time after the search.
   const safe = planSafeRemovals(found.low, access, {
     now,
