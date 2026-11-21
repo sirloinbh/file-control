@@ -17,7 +17,7 @@ const WINDOWS_DEVICE_NAME_NARROW = /^((con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹�
 const VERIFIED_NARROW_BUILDS = new Set([26200]);
 
 function narrowBuilds(env = process.env) {
-  const extra = String(env.FCTL_NARROW_DEVICE_BUILDS ?? '').split(',').map((text) => Number(text.trim())).filter((build) => Number.isInteger(build) && build > 0);
+  const extra = String(env.FCTL_NARROW_DEVICE_BUILDS ?? '').split(',').map((text) => text.trim()).filter((text) => /^\d+$/.test(text)).map(Number).filter((build) => Number.isSafeInteger(build) && build > 0);
   return new Set([...VERIFIED_NARROW_BUILDS, ...extra]);
 }
 
