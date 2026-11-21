@@ -114,7 +114,6 @@ function readBody(stream, limit = MAX_BODY, timeoutMs = BODY_TIMEOUT_MS) {
       fn(value);
     };
     timer = setTimeout(() => finish(reject, new RequestError(408, 'The request body was not received in time.'), true), timeoutMs);
-    timer.unref?.();
     stream.on('data', (chunk) => {
       if (done) return;
       size += chunk.length;
