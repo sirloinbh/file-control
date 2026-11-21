@@ -23,7 +23,7 @@ function isTaken(name, target, taken) {
   try {
     return Boolean(fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }));
   } catch (err) {
-    throw new FcError(`Cannot check the path: ${name} (${err.code})`);
+    throw new FcError(`Cannot check the path: ${name} (${err.code ?? err.message})`);
   }
 }
 
@@ -512,7 +512,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   if (folders.length === 0) return report;
   // So that the preview also keeps them for the same reason as a real run, it looks at the drive and the session first (first review).
   let blocked = recycleBlock(access.target);
-  const failure = (err) => (err instanceof FcError ? err.message : `Cannot send to the Recycle Bin. (${err.code ?? err.status})`);
+  const failure = (err) => (err instanceof FcError ? err.message : `Cannot send to the Recycle Bin. (${err.code ?? err.status ?? err.message})`);
   if (dryRun) {
     previewFolders(folders, access, blocked, done, failure);
     return report;
@@ -541,7 +541,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       results = recycleEmptyFolders(batch, { allowedNames: FOLDER_METADATA_NAMES });
     } catch (err) {
       // The failure message of the Recycle Bin call includes the whole script, so it is not used.
-      const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status})`;
+      const reason = err instanceof FcError ? err.message : `Could not send to the Recycle Bin. (${err.code ?? err.status ?? err.message})`;
       // For a reason that fails the same way in every batch, such as a non-interactive session or a locked-down environment, it does not send the rest either.
       if (err instanceof FcError) blocked = reason;
       for (const folder of batch) done(folder, reason);
@@ -599,6 +599,12 @@ function flatten(dir, { dryRun = false, onProgress } = {}) {
     result.removedFolders = removed;
     result.keptFolders = kept;
   } catch (err) {
+    // Only an expected failure (FcError) becomes a kept-folder entry. A programming error (TypeError and the like) is rethrown with the
+    // result so far attached, so the real cause shows and the moved files are not lost from the report (#318).
+    if (!(err instanceof FcError)) {
+      err.partial = result;
+      throw err;
+    }
     result.keptFolders = [{ path: plan.target, reason: err.message }];
   }
   return result;

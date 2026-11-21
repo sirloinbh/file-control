@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -29,10 +30,10 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     if (format === REAL) return realExecFileSync(file, args, options);
     return format();
   }
-  if (options?.env?.FC_VOLUME !== undefined) {
+  if (options?.env?.FC_VOLUME !== undefined || options?.env?.FC_VOLUMES !== undefined) {
     probes += 1;
     if (volume === REAL) return realExecFileSync(file, args, options);
-    return volume();
+    return volumeStateAnswer(options.env, () => volume());
   }
   // Batch Recycle Bin move (#194): for each line it receives the path (UTF-16 base64) and the fileStamp and emits the result one line at a time.
   // If onRecycle throws, only that file fails as if with a Windows reason (error). If batchHook exists, it decides the result.

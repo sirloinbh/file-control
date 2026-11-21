@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -15,7 +16,8 @@ let volume = () => 'True|Fixed\r\n';
 let format = () => 'NTFS\r\n';
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
   if (options?.env?.FC_FORMAT_VOLUME !== undefined) return format();
-  if (options?.env?.FC_VOLUME !== undefined) return volume();
+  const state = volumeStateAnswer(options?.env, () => volume());
+  if (state !== undefined) return state;
   return realExecFileSync(file, args, options);
 });
 

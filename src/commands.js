@@ -13,7 +13,7 @@ module.exports = {
     'rejectHardLinkedWrite', 'FcError', 'perform',
   ]),
   ...pick(recycle, [
-    'remove', 'recycleBinState', 'permanentDeleteReason', 'UNKNOWN_RECYCLE_LIMIT', 'RECYCLE_STATE_SCRIPT', 'RECYCLE_SCRIPT', 'previewRefusal',
+    'remove', 'recycleBinState', 'recycleBinStates', 'RECYCLE_STATES_SCRIPT', 'permanentDeleteReason', 'UNKNOWN_RECYCLE_LIMIT', 'RECYCLE_STATE_SCRIPT', 'RECYCLE_SCRIPT', 'previewRefusal',
     'sizeUpTo', 'hiddenOrSystemEntries', 'recycleEmptyFolders', 'RECYCLE_FOLDERS_SCRIPT', 'recycleFiles', 'RECYCLE_FILES_SCRIPT', 'permanentRefusal',
     'recycleFailureMessage', 'bareDeviceInside', 'MAX_RECYCLE_PATH', 'decodeReason', 'busyInside', 'recycleTarget',
   ]),

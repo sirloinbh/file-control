@@ -187,8 +187,15 @@ function resultPage(jobs, job, { available, views = {}, specs = [], tokenField =
     if (spec && outcome.repreview) before = alertBox('warning', 'The folder changed after the preview, so nothing was changed. Check the new preview below, then run again.');
     if (spec && (job.mode === 'preview' || outcome.repreview) && typeof outcome.fingerprint === 'string') after = runForm(spec, job, outcome, { tokenField, jobs });
     const view = outcome.command ? views[outcome.command] : undefined;
-    if (view) content = view(outcome, job);
-    else if (outcome.help) content = html`<p class="muted">See the help in a terminal with fctl --help.</p>`;
+    if (view) {
+      // A bug in a result view must not hide the preview and its Run form (built above): fall back to the plain report and say why (#318).
+      try {
+        content = view(outcome, job);
+      } catch (err) {
+        console.error(`UI error: the result view of ${outcome.command} failed: ${err && err.stack ? err.stack : err}`);
+        content = html`${alertBox('warning', `Could not build the result view: ${err && err.message}`)}${outcome.report ? html`<pre class="report">${outcome.report}</pre>` : ''}`;
+      }
+    } else if (outcome.help) content = html`<p class="muted">See the help in a terminal with fctl --help.</p>`;
     else if (outcome.report) content = html`<pre class="report">${outcome.report}</pre>`;
     else content = html`<p class="muted">Nothing to report.</p>`;
     if (spec && job.mode === 'run' && !outcome.repreview && typeof spec.toItems === 'function') {

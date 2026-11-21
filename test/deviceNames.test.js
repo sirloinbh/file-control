@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 const fc = require('../src/commands');
 const { BARE_DEVICE_NAME, deviceNamePart } = require('../src/windowsNames');
 
@@ -174,7 +175,8 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
   fs.writeFileSync(path.join(dir, 'plain.txt'), 'p');
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     // The volume setting check before deleting (#81) answers as a fixed disk.
-    if (options?.env?.FC_VOLUME !== undefined) return 'True|Fixed||\r\n';
+    const state = volumeStateAnswer(options?.env, () => 'True|Fixed||\r\n');
+    if (state !== undefined) return state;
     const err = new Error('DeleteDirectory failed');
     err.status = 1;
     throw err;

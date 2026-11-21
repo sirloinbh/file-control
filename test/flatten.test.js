@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
+const { volumeStateAnswer } = require('./volumeState');
 
 // So that the test does not touch the user's Recycle Bin, the Recycle Bin call is swapped for a fake before commands.js is imported.
 // It deletes only empty folder trees, so that the test fails if it is asked to delete a folder that holds a file or a link.
@@ -26,7 +27,8 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     if (result !== undefined) return result;
   }
   // The Recycle Bin state check answers as a fixed disk so it does not wait. Swapping volumeState imitates another drive.
-  if (options?.env?.FC_VOLUME !== undefined) return volumeState;
+  const state = volumeStateAnswer(options?.env, () => volumeState);
+  if (state !== undefined) return state;
   // Batch move of empty folders (#67). It imitates the check PowerShell does right before deleting (the real path, whether it is a folder, files and links inside).
   if (options?.env?.FC_BATCH !== undefined && batchOverride) return batchOverride(options, file, args);
   if (options?.env?.FC_BATCH !== undefined) {
