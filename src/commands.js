@@ -16,12 +16,22 @@ function exists(p) {
   return fs.existsSync(p);
 }
 
+// Whether the item itself is there, without following a link. A dangling link (its target is gone) exists as an item (#312).
+function lexists(p) {
+  return fs.lstatSync(p, { throwIfNoEntry: false }) !== undefined;
+}
+
 function ensureExists(p) {
   if (!exists(p)) throw new FcError(`Path does not exist: ${p}`);
 }
 
+// For the commands that act on the item itself (rename, mv, rm): a dangling link is an item they can handle.
+function ensureItemExists(p) {
+  if (!lexists(p)) throw new FcError(`Path does not exist: ${p}`);
+}
+
 function ensureFree(p, force) {
-  if (exists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
+  if (lexists(p) && !force) throw new FcError(`Already exists: ${p} (use --force to overwrite)`);
 }
 
 // Node creates names such as nul.mp4 and con.txt literally, but PowerShell and Explorer open them as devices, so the created file cannot be opened or deleted by other programs (#135).
@@ -102,7 +112,7 @@ function perform(message, dryRun, action) {
 }
 
 function overwriteNote(p, dryRun) {
-  return dryRun && exists(p) ? ' (overwrites)' : '';
+  return dryRun && lexists(p) ? ' (overwrites)' : '';
 }
 
 function pathKey(p) {
@@ -132,8 +142,8 @@ function targetNote(planned, target, force, dirNote) {
     return ' (overwrites: earlier item)';
   }
   planned.add(key);
-  if (!exists(target)) return '';
-  return fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
+  if (!lexists(target)) return '';
+  return exists(target) && fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
 }
 
 // For the preview: moving or copying a folder into itself, or a file onto itself, fails in a real run.
@@ -209,6 +219,7 @@ function list(dir = '.') {
 }
 
 function makeDir(dir, { dryRun = false } = {}) {
+  if (lexists(dir) && !exists(dir)) throw new FcError(`Already exists: ${dir} (a link whose target is missing)`);
   rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (already exists)' : '';
@@ -217,6 +228,8 @@ function makeDir(dir, { dryRun = false } = {}) {
 
 function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
   if (!append) ensureFree(file, force);
+  // Writing through a link would land wherever it points, even outside the intended folder, so no link is written through (#312).
+  if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) throw new FcError(`Cannot write through a link: ${file}. Remove the link first.`);
   rejectNewDeviceName(file);
   rejectHardLinkedWrite(file);
   if (dryRun) {
@@ -237,7 +250,7 @@ function readFile(file) {
 }
 
 function rename(target, newName, { force = false, dryRun = false } = {}) {
-  ensureExists(target);
+  ensureItemExists(target);
   if (newName.includes('/') || newName.includes('\\')) {
     throw new FcError('The new name cannot contain a path. Use mv to move.');
   }
@@ -284,14 +297,14 @@ function asidePath(target) {
 
 // If the target is deleted first and the move fails (a file lock and so on), the target is lost, so it sets it aside and deletes it after the move finishes.
 function moveReplacing(src, target) {
-  if (!exists(target)) return moveOne(src, target);
+  if (!lexists(target)) return moveOne(src, target);
   const aside = asidePath(target);
   fs.renameSync(target, aside);
   try {
     moveOne(src, target);
   } catch (err) {
     // If the copy finished and the target exists, only the cleanup of the source failed, so it does not roll back.
-    if (exists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
+    if (lexists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
     try {
       fs.renameSync(aside, target);
     } catch (restoreErr) {
@@ -497,7 +510,7 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   }
   // It runs after checking everything, so that if it fails, nothing has been moved.
   const items = sources.map((src) => {
-    ensureExists(src);
+    ensureItemExists(src);
     rejectStreamPath(src);
     rejectCurrentDir(src);
     // It resolves the names so that a source ending in d/. uses the same target as d.
@@ -1188,7 +1201,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   // It checks every target before deleting anything (#129). In rm a b c, if only c cannot be sent, a and b are not deleted either and the reason is reported.
   // The preview goes through the same check, so it does not show a target that would really fail as "Move to the Recycle Bin".
   const checked = targets.map((target) => {
-    ensureExists(target);
+    ensureItemExists(target);
     // If deleted as is, only the current folder cannot be deleted and it fails, but before that the other items have already been deleted.
     // Deleting a link removes only the link, so it compares by the link itself. Comparing by text catches the current folder reached through a link (rm lnk, current folder lnk/s).
     if (isSameOrUnder(entryKey(target), realKey(process.cwd())) || isSameOrUnder(pathKey(target), pathKey(process.cwd()))) {
@@ -1206,7 +1219,7 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   });
   return checked.map(({ target, recycleAs }) => {
     // If an earlier target contained this target and it was already deleted (rm a a/b), it reports that it does not exist, as before.
-    if (!dryRun) ensureExists(target);
+    if (!dryRun) ensureItemExists(target);
     if (permanent) return perform(`Delete permanently: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
     return perform(`Move to the Recycle Bin: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });

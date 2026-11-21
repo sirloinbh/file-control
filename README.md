@@ -26,7 +26,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl rename <path> <new-name>` | Rename within the same folder. A new name that leads to the item itself (only its case changes) is recognized by volume and file number, not by comparing names |
 | `fctl mv <source...> <target>` | Move (into the folder if the target is an existing folder) |
 | `fctl cp <source...> <target>` | Copy |
-| `fctl rm <path...>` | Send to the Recycle Bin |
+| `fctl rm <path...>` | Send to the Recycle Bin. A link whose target is gone (a dangling link) is an item too: `rm`, `mv` and `rename` handle it, and `write`, `cp` and `mv` never treat it as a free destination. `write` and `append` refuse to write through any link |
 | `fctl unzip <archive> [folder]` | Extract (default: a folder named after the archive) |
 | `fctl zip <archive> <source...>` | Compress (the extension, such as `.zip` or `.tar.gz`, decides the format) |
 | `fctl flatten <target>` | Move the files of subfolders directly under the target and send the empty folders to the Recycle Bin |
