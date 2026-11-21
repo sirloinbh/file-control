@@ -27,7 +27,7 @@ test('every command of the table is known to execute (none is refused as an unkn
   for (const { name, kind } of COMMANDS) {
     if (kind === 'ui') continue;
     try {
-      execute([name, '--dry-run']);
+      execute([name, '--dry-run'], { readStdin: () => '' });
     } catch (err) {
       assert.ok(!err.unknownCommand, `${name} is in the table but unknown to execute`);
     }
@@ -56,4 +56,13 @@ test('the option checks read the table', () => {
     assert.strictEqual(misplacedFlagMessage(name, flags('min-height')) === undefined, Boolean(lowQuality), `--min-height on ${name}`);
     assert.strictEqual(misplacedFlagMessage(name, flags('min-bitrate')) === undefined, Boolean(lowQuality), `--min-bitrate on ${name}`);
   }
+});
+
+test('the option checks keep their order when two options are wrong at once', () => {
+  const flags = (...names) => new Set(names);
+  // --remove-archives is checked before --yes, --yes before --force, --force before --include-lowercase.
+  assert.match(misplacedFlagMessage('ls', flags('yes', 'remove-archives')), /--remove-archives/);
+  assert.match(misplacedFlagMessage('ls', flags('force', 'yes')), /--yes/);
+  assert.match(misplacedFlagMessage('ls', flags('include-lowercase', 'force')), /does not use --force/);
+  assert.match(misplacedFlagMessage('mv', flags('permanent', 'include-lowercase')), /mv --permanent only applies with --force/);
 });
