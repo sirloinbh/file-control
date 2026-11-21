@@ -3,7 +3,7 @@
 const path = require('node:path');
 const { FcError, formatSize } = require('./commands');
 const { grant, walk, fileSizeInside, compareRelative } = require('./target');
-const { findProductNumberRanges, halfWidth } = require('./product');
+const { findProductNumberRanges, halfWidth, notProductWords } = require('./product');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
 const { readMp4Metadata } = require('./mp4');
@@ -34,6 +34,15 @@ const COPY_SUFFIX = /\s+-\s+(?:복사본|copy)(?:\s*\(\d+\))?$/i;
 const TOKEN_SEPARATORS = /[\s._\-–—＿\u0085[\](){}【】「」『』《》〈〉〔〕〖〗,+&~!#'"]+/;
 const QUALITY = /^(?:\d{3,4}[pi]|\d+fps|\d+bit|\d+k|[xh]26[45]|\d+ch|aac\d*|ac3|dts|ddp?\d*|mp[34]|h?vc1|av1|vp[89]|\d+kbps|\d+mbps)$/i;
 const ROMAN = /^(?=[ivxlc]{2,}$)c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
+// A Roman numeral is a part mark only right after a word that calls pieces (Part II, CD iv) or as the last word of the title (Title III).
+// Anywhere else, short words made of i, v, x, l, c (ci, li, xi, mix-up pieces) are ordinary words, not parts 101, 51, 11 (#327).
+// "The last word" does not count quality tags after it (Show III 1080p).
+const PART_WORDS = new Set(['part', 'pt', 'cd', 'disc', 'disk', 'vol', 'volume', 'ep', 'episode', 'chapter', 'no', 'season', 'side', 'act', 'book', 'tape', 'reel', 'scene', 'series']);
+function isPartRoman(tokens, index) {
+  if (!ROMAN.test(tokens[index])) return false;
+  if (PART_WORDS.has(tokens[index - 1]?.toLowerCase())) return true;
+  return tokens.slice(index + 1).every((token) => QUALITY.test(token) || TITLE_NOISE.has(token.toLowerCase()));
+}
 const ROMAN_VALUES = { i: 1, v: 5, x: 10, l: 50, c: 100 };
 const SECTION = /^(?:[前中後]編|[上中下]巻?|[前後]半|[상중하]편?|[전후]편)$/;
 const KANJI_NUMBER = /^第?[一二三四五六七八九十百]+[話话巻卷部章回]?$/;
@@ -63,9 +72,8 @@ function stripTails(text, tails) {
 }
 
 // It splits what remains after removing the number into words. It drops the trailing (1) and copy tails and turns circled digits and Roman numeral characters into numbers.
-// Changing full-width to half-width keeps the character count the same, so the number position is used as it is.
-function restTokens(original, ranges) {
-  const base = halfWidth(original);
+// Changing full-width to half-width keeps the character count the same (halfWidth is tested for that), so the number position is used as it is.
+function restTokens(base, ranges) {
   let rest = '';
   let at = 0;
   for (const { start, end } of ranges) {
@@ -77,12 +85,12 @@ function restTokens(original, ranges) {
 }
 
 // It returns the piece marks joined in the order they appeared. Digits lose their leading 0s. CD1, part 01, and -1 are all 1. If there are none, it is null.
-function findPart(original, ranges) {
+function findPart(tokens) {
   const marks = [];
-  for (const token of restTokens(original, ranges)) {
+  for (const [index, token] of tokens.entries()) {
     if (QUALITY.test(token)) continue;
     if (/^[A-Za-z]$/.test(token)) marks.push(token.toLowerCase());
-    else if (ROMAN.test(token)) marks.push(String(romanValue(token)));
+    else if (isPartRoman(tokens, index)) marks.push(String(romanValue(token)));
     else if (SECTION.test(token) || KANJI_NUMBER.test(token)) marks.push(token);
     else for (const digits of token.match(/\d+/g) ?? []) marks.push(String(Number(digits)));
   }
@@ -98,13 +106,11 @@ const TITLE_NOISE = new Set([
 // Title words for a number group. From what remains after removing the number, it returns the words left after dropping digits, piece marks, and quality and release marks, in lower case, without duplicates, in order of appearance.
 // If the name does not have exactly one upper-case product number, it is null. It is a pure function that does not touch files.
 // If the number is the same but the title differs (titlesDiffer), it may be a word wrongly recognized as a product number (WWE-2023 Raw and WWE-2023 SmackDown, #103).
-function titleWords(fileName) {
-  const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
-  const ranges = findProductNumberRanges(base);
-  if (new Set(ranges.map((range) => range.number)).size !== 1) return null;
+function titleWords(fileName, parsed = parseName(fileName)) {
+  if (parsed.numbers.length !== 1) return null;
   const words = new Set();
-  for (const token of restTokens(base, ranges)) {
-    if (QUALITY.test(token) || ROMAN.test(token) || SECTION.test(token) || KANJI_NUMBER.test(token)) continue;
+  for (const [index, token] of parsed.tokens.entries()) {
+    if (QUALITY.test(token) || isPartRoman(parsed.tokens, index) || SECTION.test(token) || KANJI_NUMBER.test(token)) continue;
     const word = token.replace(/\d+/g, '').toLowerCase();
     if (!/\p{L}/u.test(word) || /^[a-z]$/.test(word) || TITLE_NOISE.has(word)) continue;
     words.add(word);
@@ -148,6 +154,16 @@ function groupCautions(group) {
   return cautions;
 }
 
+// It parses a file name once: the name without the extension, the product numbers, and the words left after removing the numbers.
+// It first converts composed Hangul (names from macOS) to the precomposed form. The number position is also based on the converted name.
+// If the name does not have exactly one number, the words are not needed, so they are not made.
+function parseName(fileName) {
+  const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
+  const ranges = findProductNumberRanges(base);
+  const numbers = [...new Set(ranges.map((range) => range.number))];
+  return { base, ranges, numbers, tokens: numbers.length === 1 ? restTokens(halfWidth(base), ranges) : [] };
+}
+
 // The comparison value for names without a number. It removes differences of case, full-width characters, composed Hangul, and separators, and copy tails.
 function nameKey(base) {
   return stripTails(halfWidth(base), [COPY_SUFFIX]).replace(SEPARATORS, ' ').trim().toLowerCase();
@@ -158,15 +174,12 @@ function nameKey(base) {
 // - If there is no number, { kind: 'name', key }. It is the name without the extension, normalized with nameKey.
 // - If there are several different numbers, { kind: 'conflict', numbers }. It does not decide which number to group by.
 // A lowercase word (abc-123) is not seen as a number, because it is often an ordinary word such as trip-2023. If you first change it to upper case with normalize, it is grouped by number.
-function duplicateKey(fileName) {
-  // It first converts composed Hangul (names from macOS) to the precomposed form. The number position is also based on the converted name.
-  const base = fileName.slice(0, fileName.length - path.extname(fileName).length).normalize('NFC');
-  const ranges = findProductNumberRanges(base);
-  const numbers = [...new Set(ranges.map((range) => range.number))];
+function duplicateKey(fileName, parsed = parseName(fileName)) {
+  const { base, numbers } = parsed;
   if (numbers.length > 1) return { kind: 'conflict', numbers };
   if (numbers.length === 1) {
     const [number] = numbers;
-    const part = findPart(base, ranges);
+    const part = findPart(parsed.tokens);
     return { kind: 'number', key: part === null ? number : `${number} #${part}`, number, part };
   }
   const key = nameKey(base);
@@ -319,6 +332,8 @@ function chooseKeeper(files) {
 // - checked: the number of video files examined
 // A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
 function findDuplicateNames(dir, { entries } = {}) {
+  // A bad product word file stops the command here, not once per file as "could not read".
+  notProductWords();
   const access = grant(dir, ['read']);
   const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
   const byKey = new Map();
@@ -351,7 +366,8 @@ function findDuplicateNames(dir, { entries } = {}) {
       const file = { path: real, size, ...readVideoInfo(access.target, real) };
       videos.push(file);
       if (file.duration === null) result.unknownMetadata += 1;
-      const found = duplicateKey(name);
+      const parsed = parseName(name);
+      const found = duplicateKey(name, parsed);
       if (found === null) continue;
       if (found.kind === 'conflict') {
         result.conflicts.push({ path: real, numbers: found.numbers });
@@ -360,7 +376,7 @@ function findDuplicateNames(dir, { entries } = {}) {
       const id = `${found.kind}\0${found.key}`;
       if (!byKey.has(id)) byKey.set(id, { kind: found.kind, key: found.key, number: found.number ?? null, part: found.part ?? null, files: [] });
       // A file in a number group gets title words. They are used to see whether the title differs despite the same number.
-      if (found.kind === 'number') file.title = titleWords(name);
+      if (found.kind === 'number') file.title = titleWords(name, parsed);
       byKey.get(id).files.push(file);
       nameGroupOf.set(file, id);
     } catch (err) {

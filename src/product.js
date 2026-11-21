@@ -1,15 +1,27 @@
 'use strict';
 
+const fs = require('node:fs');
+const { FcError } = require('./commands');
+
 // The product number format: 2 to 6 English letters, a hyphen, 2 to 5 digits (ABC-123).
 // If alphanumerics continue before or after (1ABC-123, ABC-123A), if there is an English word and a hyphen in front (summer-trip-20), or
 // if more digit groups continue after (PIC-2024-05-01, CVE-2024-1234, ABC-123-01), it is not a product number.
 // A quality tail (ABC-123-1080p, -60fps, -10bit) is not seen as a digit group.
 // The boundary "English" is all Latin letters and the combining marks after them. It does not catch the middle of a word such as Pokémon-12 or naïve-12 (even where é is written as e plus a combining mark) as a number.
 // Hangul, Chinese characters, and kana are not seen as boundaries, so the number in "영상ABC-123" ("video ABC-123") is found. A combining mark after kana (the ド of NFD ガイド = ト + U+3099) is not a boundary either.
-const CANDIDATE = /(?<![\p{Script=Latin}0-9]\p{M}*)(?<!\p{Script=Latin}\p{M}*-)[A-Za-z]{2,6}-\d{2,5}(?![\p{Script=Latin}\p{M}0-9]|-\d{2}(?!\d*(?:[pPiI]|[fF][pP][sS]|[bB][iI][tT])(?![\p{Script=Latin}\p{M}0-9])))/gu;
+// The pieces of CANDIDATE, so each rule can be read and changed alone (#327).
+const LATIN_OR_DIGIT = String.raw`\p{Script=Latin}\p{M}0-9`;
+// Not in the middle of a word: no Latin letter or digit (and its combining marks) just before, and no English word and hyphen before (summer-trip-20).
+const BOUNDARY_BEFORE = String.raw`(?<![\p{Script=Latin}0-9]\p{M}*)(?<!\p{Script=Latin}\p{M}*-)`;
+const NUMBER_FORM = String.raw`[A-Za-z]{2,6}-\d{2,5}`;
+// A quality tail after a digit group (-1080p, -60fps, -10bit) is not another digit group.
+const QUALITY_TAIL = String.raw`[pPiI]|[fF][pP][sS]|[bB][iI][tT]`;
+// Not followed by a letter or digit, and not followed by another two-digit group (ABC-123-01) unless that group is a quality tail.
+const BOUNDARY_AFTER = String.raw`(?![${LATIN_OR_DIGIT}]|-\d{2}(?!\d*(?:${QUALITY_TAIL})(?![${LATIN_OR_DIGIT}])))`;
+const CANDIDATE = new RegExp(BOUNDARY_BEFORE + NUMBER_FORM + BOUNDARY_AFTER, 'gu');
 
 // Words that fit the format but are not product numbers. Reporting that none was found is safer than wrongly finding one and renaming the file, so it is set broadly.
-const NOT_PRODUCT = new Set([
+const BUILT_IN_NOT_PRODUCT = new Set([
   // Order and bundle
   'PART', 'PARTS', 'DISC', 'DISK', 'CD', 'DVD', 'BD', 'EP', 'VOL', 'NO', 'SEASON', 'DAY', 'WEEK', 'YEAR', 'LESSON', 'PAGE', 'TRACK', 'SCENE', 'TOP',
   // General file names
@@ -28,6 +40,36 @@ const NOT_PRODUCT = new Set([
   'JAN', 'FEB', 'MAR', 'MARCH', 'APR', 'APRIL', 'MAY', 'JUN', 'JUNE', 'JUL', 'JULY', 'AUG', 'AUGUST', 'SEP', 'SEPT', 'OCT', 'NOV', 'DEC', 'FY', 'COVID',
 ]);
 
+// The words that are not product numbers: the built-in list, plus or minus the words of an optional JSON file named by the environment variable
+// FCTL_PRODUCT_CONFIG: { "add": ["WORD"], "remove": ["MD", "PG"] } (upper-case letters, 2 to 6 of them). Without the variable, the built-in list is used as it is.
+// A real prefix such as MD, PG, TV, or CD is in the built-in list, so "remove" lets a person who uses it as a product prefix find those numbers.
+// The file is read once per path in a process, so a running server needs a restart after the file changes.
+let notProduct = { key: null, words: BUILT_IN_NOT_PRODUCT };
+function notProductWords() {
+  const file = process.env.FCTL_PRODUCT_CONFIG;
+  if (!file) return BUILT_IN_NOT_PRODUCT;
+  if (notProduct.key === file) return notProduct.words;
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new FcError(`Cannot read the product word file FCTL_PRODUCT_CONFIG (${file}): ${err.code ?? err.message}`);
+  }
+  const list = (name) => {
+    const value = config?.[name] ?? [];
+    if (!Array.isArray(value) || value.some((word) => typeof word !== 'string' || !/^[A-Za-z]{2,6}$/.test(word))) {
+      throw new FcError(`The product word file (${file}) must have "${name}" as a list of 2 to 6 English letters.`);
+    }
+    return value.map((word) => word.toUpperCase());
+  };
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new FcError(`The product word file (${file}) must hold an object with "add" and "remove" lists.`);
+  const words = new Set(BUILT_IN_NOT_PRODUCT);
+  for (const word of list('add')) words.add(word);
+  for (const word of list('remove')) words.delete(word);
+  notProduct = { key: file, words };
+  return words;
+}
+
 // It converts only full-width alphanumerics and symbols (ＡＢＣ－１２３) to half-width. NFKC would unfold characters such as ½, ², and ① into digits and change the number itself.
 function halfWidth(text) {
   return text.replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
@@ -45,11 +87,12 @@ function extractProductNumbers(text, options) {
 function findProductNumberRanges(text, { lowercase = false } = {}) {
   if (typeof text !== 'string') return [];
   const ranges = [];
+  const skipped = notProductWords();
   for (const { 0: match, index } of halfWidth(text).matchAll(CANDIDATE)) {
     const letters = match.slice(0, match.indexOf('-'));
     const upper = letters.toUpperCase();
     if (letters !== upper && !(lowercase && letters === letters.toLowerCase())) continue;
-    if (!NOT_PRODUCT.has(upper)) ranges.push({ number: match.toUpperCase(), start: index, end: index + match.length });
+    if (!skipped.has(upper)) ranges.push({ number: match.toUpperCase(), start: index, end: index + match.length });
   }
   return ranges;
 }
@@ -95,9 +138,9 @@ function findAttachedProductNumbers(text) {
   const half = halfWidth(text);
   for (const { 0: match, 1: letters, 2: digits, index } of half.matchAll(ATTACHED)) {
     if (YEAR.test(digits) && MONTH_DAY.test(half.slice(index + match.length))) continue;
-    if (!NOT_PRODUCT.has(letters)) numbers.push(`${letters}-${digits}`);
+    if (!notProductWords().has(letters)) numbers.push(`${letters}-${digits}`);
   }
   return [...new Set(numbers)];
 }
 
-module.exports = { extractProductNumbers, findProductNumberRanges, findProductNumber, findAttachedProductNumbers, halfWidth };
+module.exports = { notProductWords, extractProductNumbers, findProductNumberRanges, findProductNumber, findAttachedProductNumbers, halfWidth };
