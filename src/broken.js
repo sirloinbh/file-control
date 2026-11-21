@@ -2,13 +2,14 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const zlib = require('node:zlib');
+const { crc32 } = require('./crc32');
 const { FcError, probeArchive, missingProgram } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { REMOVAL_LOG } = require('./removalLog');
 const { checkMp4Structure, FIRST_BOXES } = require('./mp4');
 const { checkMkvStructure } = require('./mkv');
+const { checkZip } = require('./zip');
 
 const HEAD_SIZE = 1024;
 const starts = (head, ...bytes) => head.length >= bytes.length && bytes.every((byte, index) => head[index] === byte);
@@ -50,18 +51,6 @@ const SEVEN_ZIP = BY_EXTENSION.get('7z');
 // A compressed tar produces an error at the point where it is cut, but it cannot catch a changed body.
 const TAR_LISTED = /\.(?:tar|tar\.gz|tar\.bz2|tar\.xz|tgz|tbz2|txz)$/i;
 
-const ZIP_END = Buffer.from('PK\x05\x06', 'latin1');
-const ZIP_END_SIZE = 22;
-const ZIP_TAIL = ZIP_END_SIZE + 65535;
-const ZIP_CENTRAL = 0x02014b50;
-const ZIP_LOCAL = 0x04034b50;
-const ZIP_CENTRAL_SIZE = 46;
-// The limit of the check that opens a file for each entry. Entries beyond it are not examined.
-const ZIP_LOCAL_CHECKS = 5000;
-// The limit for verifying end-marker candidates. It keeps the check from being tied up by a file filled with markers.
-const ZIP_END_CANDIDATES = 16;
-// The limit of the zip list loaded into memory. Beyond it, no judgment is made.
-const MAX_ZIP_DIRECTORY = 64 * 1024 * 1024;
 // The limit for reading with tar.exe. It keeps the check from being tied up by a file with a huge number of entries or one that extracts endlessly. Beyond it, no judgment is made.
 const TAR_LIMITS = { maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60 * 1000 };
 // The case where tar.exe said the file is damaged. Errors that are not the file's fault, such as a lock (Error reading) or a name not in the code page (unreadable filename), do not fall here.
@@ -85,67 +74,10 @@ function checkRiff(head, size) {
   return declared > size ? broken('The file is smaller than the size in the RIFF header. It may be truncated.') : null;
 }
 
-// Finds end-record candidates from the back and returns them as a list of positions. The one whose comment length matches the end of the file comes first.
-// The same marker can appear inside a comment or appended data, so the first one found is not trusted as is.
-function findZipEnds(tail) {
-  const exact = [];
-  const others = [];
-  for (let at = tail.lastIndexOf(ZIP_END); at !== -1 && exact.length + others.length < ZIP_END_CANDIDATES; at = at === 0 ? -1 : tail.lastIndexOf(ZIP_END, at - 1)) {
-    if (at + ZIP_END_SIZE > tail.length) continue;
-    if (at + ZIP_END_SIZE + tail.readUInt16LE(at + 20) === tail.length) exact.push(at);
-    else others.push(at);
-  }
-  return { exact, others };
-}
-
-// Starting from one end record, it checks that the central directory and the entry headers fit together. It does not read the compressed content (CRC) of the entries.
-// Split archives and Zip64 cannot be judged this way, so they are treated as having no problem found.
-function checkZipEnd(target, real, tail, tailOffset, at) {
-  if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return null;
-  const total = tail.readUInt16LE(at + 10);
-  const directorySize = tail.readUInt32LE(at + 12);
-  const directoryOffset = tail.readUInt32LE(at + 16);
-  if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return null;
-  if (directoryOffset + directorySize > tailOffset + at) return broken('The zip directory runs past the end marker. The file is damaged.');
-  if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`The zip directory is too large to judge: ${directorySize} bytes`);
-  const directory = readRange(target, real, { offset: directoryOffset, length: directorySize });
-  let pos = 0;
-  for (let index = 0; index < total; index += 1) {
-    if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('The zip directory is damaged.');
-    const offset = directory.readUInt32LE(pos + 42);
-    if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
-      const local = readRange(target, real, { offset, length: 4 });
-      if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return broken('A zip entry header does not match the directory. The file is damaged.');
-    }
-    pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
-  }
-  return null;
-}
-
-// If the candidate that matches the end of the file is intact, the file is normal. If only another candidate is intact, other data is attached after it, so it is suspicious. Only when all are wrong is it broken.
-function checkZip(target, real, size) {
-  const tailOffset = Math.max(0, size - ZIP_TAIL);
-  const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
-  const { exact, others } = findZipEnds(tail);
-  if (exact.length === 0 && others.length === 0) return broken('The zip end marker is missing. The file may be truncated.');
-  let first = null;
-  for (const at of exact) {
-    const found = checkZipEnd(target, real, tail, tailOffset, at);
-    if (found === null) return null;
-    first ??= found;
-  }
-  for (const at of others) {
-    const found = checkZipEnd(target, real, tail, tailOffset, at);
-    if (found === null) return suspect('There is other data after the zip end marker.');
-    first ??= found;
-  }
-  return first;
-}
-
 // It checks the CRC of the 7z start header and whether the end the header points to is inside the file. It does not read the content.
 function check7z(head, size) {
   if (head.length < SEVEN_ZIP_HEADER) return broken('The 7z header is truncated.');
-  if (zlib.crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return broken('The 7z header is damaged.');
+  if (crc32(head.subarray(12, SEVEN_ZIP_HEADER)) !== head.readUInt32LE(8)) return broken('The 7z header is damaged.');
   const end = BigInt(SEVEN_ZIP_HEADER) + head.readBigUInt64LE(12) + head.readBigUInt64LE(20);
   return end > BigInt(size) ? broken('The file is smaller than the end the 7z header points to. It may be truncated.') : null;
 }
