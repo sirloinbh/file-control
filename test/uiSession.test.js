@@ -188,3 +188,15 @@ test('the cookie alone is not enough: without the secret path prefix a request i
   assert.strictEqual((await fetch(new URL('write', url), { method: 'POST', headers: { ...FORM, cookie }, body: `token=${TOKEN}` })).status, 200);
   assert.strictEqual(fs.existsSync(target), true);
 });
+
+test('a double slash after the secret prefix is a plain 404, not a crash or a foreign host (#328)', async (t) => {
+  const { url, launchUrl } = await serve(t);
+  const first = await fetch(launchUrl, { redirect: 'manual' });
+  const cookie = first.headers.get('set-cookie').split(';')[0];
+  const prefix = new URL(first.headers.get('location'), launchUrl).pathname.split('/')[1];
+  for (const p of [`/${prefix}//`, `/${prefix}//evil.com/x`]) {
+    const res = await fetch(new URL(p, url), { redirect: 'manual', headers: { cookie } });
+    assert.ok([200, 404].includes(res.status), `${p} answers ${res.status}`);
+    await res.text();
+  }
+});

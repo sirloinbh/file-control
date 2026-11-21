@@ -60,7 +60,7 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
   // Everything is therefore served under /<prefixSecret>/ and the cookie is limited to that path: a service on another port never gets the cookie
   // (its paths do not match) and cannot guess the prefix. The prefix is added to the server-made links and redirects in send().
   const prefix = `/${prefixSecret}`;
-  const prefixed = (body) => body.replace(/\b(href|action)="\//g, `$1="${prefix}/`).replace(/(; url=)\//g, `$1${prefix}/`);
+  const prefixed = (body) => body.replace(/\b(href|action)="\//g, `$1="${prefix}/`).replace(/(<meta http-equiv="refresh" content="[^"]*; url=)\//g, `$1${prefix}/`);
   const all = new Map([['/', () => ({ body: homePage(available) })], ...routes]);
   const available = new Set(all.keys());
   const send = (res, status, body, headers = {}) => {
@@ -102,7 +102,7 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
         launchValue = null;
         parsed.searchParams.delete('launch');
         // Leading slashes are collapsed so the Location can never become a protocol-relative address.
-        send(res, 303, '', { Location: `${prefix}/${parsed.pathname.replace(/^\/+/, '').replace(new RegExp(`^${prefixSecret}(/|$)`), '')}${parsed.search}`, 'Set-Cookie': sessionCookie(session, `${prefix}/`) });
+        send(res, 303, '', { Location: `${prefix}/${parsed.pathname.replace(/^\/+/, '').replace(/^[^/]*/, (first) => (first === prefixSecret ? '' : first)).replace(/^\/+/, '')}${parsed.search}`, 'Set-Cookie': sessionCookie(session, `${prefix}/`) });
         return;
       }
       if (pathname === null || !(pathname === prefix || pathname.startsWith(`${prefix}/`)) || !hasSession(req.headers.cookie, session)) {
@@ -110,7 +110,7 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
         return;
       }
       // Strip the secret prefix so the routes and handlers see their usual addresses.
-      const inner = `${pathname.slice(prefix.length) || '/'}${parsed.search}`;
+      const inner = `/${pathname.slice(prefix.length).replace(/^\/+/, '')}${parsed.search}`;
       req.url = inner;
       const route = all.get(new URL(inner, `http://${HOST}`).pathname);
       if (route === undefined) {
