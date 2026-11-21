@@ -537,3 +537,27 @@ test('cp and rename with overwrite on are refused without confirm-force and chan
   assert.strictEqual(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'NEW');
   assert.strictEqual(fs.readFileSync(path.join(dir, 'b.txt'), 'utf8'), 'B');
 });
+
+test('mv: Replace permanently adds --permanent only when ticked together with Overwrite, and needs its confirmation (#349)', async (t) => {
+  const dir = tempDir();
+  const dest = path.join(dir, 'to');
+  fs.mkdirSync(dest);
+  fs.writeFileSync(path.join(dest, 'a.txt'), 'A');
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'NEW');
+  const { post, previewAndRun } = await serve(t);
+  const mv = spec('mv');
+  const base = { sources: path.join(dir, 'a.txt'), dest };
+  assert.ok(!mv.toArgv({ ...base, force: 'on' }).includes('--permanent'), 'not sent unless ticked');
+  assert.ok(mv.toArgv({ ...base, force: 'on', permanent: 'on' }).includes('--permanent'));
+  assert.throws(() => mv.toArgv({ ...base, permanent: 'on' }), /only together with Overwrite/);
+
+  const fields = { ...base, force: 'on', permanent: 'on' };
+  const unconfirmed = await post('/files/mv/run', { ...fields, fingerprint: 'd'.repeat(64), 'confirm-force': 'yes' });
+  assert.strictEqual(unconfirmed.status, 400, 'the permanent option has its own confirmation');
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'A');
+  const done = await previewAndRun('mv', fields, { 'confirm-force': 'yes', 'confirm-permanent': 'yes' });
+  assert.match(done.preview.body, /the items it replaces are deleted for good/);
+  assert.strictEqual(done.run.job.outcome.ran, true, done.run.body);
+  assert.ok(done.run.job.argv.includes('--permanent'));
+  assert.strictEqual(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'NEW');
+});
