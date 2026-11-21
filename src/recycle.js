@@ -183,10 +183,24 @@ function decodeReason(stdout) {
 // script is passed only when a test replaces DeleteDirectory and runs the checking part with real PowerShell.
 const FOLDER_BATCH_STATUS = new Set(['ok', 'moved', 'notdir', 'filled', 'gone', 'error']);
 
-const RECYCLE_FOLDERS_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
+// The parts that the batch scripts (empty folders, files) share (#362): the start (a non-interactive session exits 75, a missing Visual Basic assembly exits 76)
+// and the two functions that turn a path into the long path form and back. Each script keeps its own C# type and the rest.
+const PS_START = String.raw`$ErrorActionPreference = 'Stop'
 if (-not [Environment]::UserInteractive) { exit 75 }
 try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { exit 76 }
-try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+`;
+const PS_PATH_FUNCTIONS = String.raw`function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
+function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
+`;
+
+// The start failures of the batch scripts, the same for every runner. checks says what the script checks, notSent what was not sent.
+function scriptStartFailure(err, checks, notSent) {
+  if (err.status === 75) return new FcError('Cannot send to the Recycle Bin outside an interactive session.');
+  if (err.status === 76) return new FcError(`PowerShell could not create the type used to check ${checks} (locked-down environment, etc.), so ${notSent} not sent to the Recycle Bin.`);
+  return undefined;
+}
+
+const RECYCLE_FOLDERS_SCRIPT = String.raw`${PS_START}try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
 public static class FcFinalPath {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder b, uint l, uint f);
@@ -200,9 +214,7 @@ public static class FcFinalPath {
 }' } catch { exit 76 }
 $u = [Text.Encoding]::Unicode
 $allowed = @(($env:FC_ALLOWED -split '\|') | Where-Object { $_ })
-function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
-function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
-function Same([string]$p) { $f = [FcFinalPath]::Get((Long $p)); return ($f -ne $null) -and [string]::Equals((Plain $f), $p, [StringComparison]::OrdinalIgnoreCase) }
+${PS_PATH_FUNCTIONS}function Same([string]$p) { $f = [FcFinalPath]::Get((Long $p)); return ($f -ne $null) -and [string]::Equals((Plain $f), $p, [StringComparison]::OrdinalIgnoreCase) }
 function Check([string]$p) {
   $stack = [Collections.Stack]::new(); $stack.Push($p)
   while ($stack.Count -gt 0) {
@@ -249,9 +261,9 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
     // In a locked-down environment (Constrained Language Mode, AppLocker), a C# type cannot be created (first review).
-    if (err.status === 76) throw new FcError('PowerShell could not create the type used to check paths (locked-down environment, etc.), so the empty folder was not sent to the Recycle Bin.');
+    const startFailure = scriptStartFailure(err, 'paths', 'the empty folder was');
+    if (startFailure) throw startFailure;
     // Even on a time limit (such as when it stalls at an error dialog) or a mid-run failure, it uses the results of the folders already reported.
     timedOut = err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM';
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
@@ -332,10 +344,7 @@ public static bool IsLink(string p) {
 // Even if "remove immediately" is turned on or the maximum size is reduced after the judgment at the planning stage and before running, it does not delete. The setting is read once, the first time each volume is met in a batch.
 const FILE_BATCH_STATUS = new Set(['ok', 'moved', 'notfile', 'changed', 'gone', 'keepchanged', 'permanent', 'error']);
 
-const RECYCLE_FILES_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
-if (-not [Environment]::UserInteractive) { exit 75 }
-try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { exit 76 }
-try { Add-Type -ReferencedAssemblies System.Numerics -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
+const RECYCLE_FILES_SCRIPT = String.raw`${PS_START}try { Add-Type -ReferencedAssemblies System.Numerics -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
 public static class FcFileCheck {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder b, uint l, uint f);
@@ -371,9 +380,7 @@ public static class FcFileCheck {
   }
 }' } catch { exit 76 }
 $u = [Text.Encoding]::Unicode
-function Long([string]$p) { if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }; return '\\?\' + $p }
-function Plain([string]$p) { if ($p.StartsWith('\\?\UNC\')) { return '\\' + $p.Substring(8) }; if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
-function Same([string]$k, [string]$stamp) {
+${PS_PATH_FUNCTIONS}function Same([string]$k, [string]$stamp) {
   $kl = Long $k
   if (-not [IO.File]::Exists($kl)) { return $false }
   $f = [FcFileCheck]::Final($kl)
@@ -447,8 +454,8 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    if (err.status === 75) throw new FcError('Cannot send to the Recycle Bin outside an interactive session.');
-    if (err.status === 76) throw new FcError('PowerShell could not create the type used to check files (locked-down environment, etc.), so they were not sent to the Recycle Bin.');
+    const startFailure = scriptStartFailure(err, 'files', 'they were');
+    if (startFailure) throw startFailure;
     // Even if it ended midway, it uses the results of files already reported. For files not reported, the result is not known.
     output = typeof err.stdout === 'string' ? err.stdout : String(err.stdout ?? '');
     failure = err.status == null && err.signal ? `PowerShell ended with ${err.signal}` : `PowerShell exit code ${err.status ?? err.code}`;

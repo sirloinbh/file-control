@@ -704,3 +704,23 @@ test('mv --force refuses before moving when the replaced item would be deleted p
   fresh.move([path.join(dir, 'a.txt')], path.join(dir, 'target.txt'), { force: true, permanent: true });
   assert.strictEqual(fs.readFileSync(path.join(dir, 'target.txt'), 'utf8'), 'new');
 });
+
+test('the batch runners report a start failure of the script the same way (exit 75 and 76) (#362)', { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+  let status = 75;
+  t.mock.method(childProcess, 'execFileSync', () => {
+    throw Object.assign(new Error('exit'), { status });
+  });
+  const fresh = reload();
+  const dir = tempDir();
+  const folder = path.join(dir, 'empty');
+  fs.mkdirSync(folder);
+  const item = { path: path.join(dir, 'f.txt'), stamp: '1:2:3:4' };
+  for (const [code, pattern] of [[75, /outside an interactive session/], [76, /could not create the type used to check/]]) {
+    status = code;
+    assert.throws(() => fresh.recycleEmptyFolders([folder]), pattern);
+    assert.throws(() => fresh.recycleFiles([item]), pattern);
+  }
+  status = 76;
+  assert.throws(() => fresh.recycleEmptyFolders([folder]), /check paths.*the empty folder was not sent to the Recycle Bin\.$/);
+  assert.throws(() => fresh.recycleFiles([item]), /check files.*so they were not sent to the Recycle Bin\.$/);
+});
