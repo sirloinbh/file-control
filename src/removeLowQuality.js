@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { plural } = require('./plural');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
-const { rejectRepository } = require('./flatten');
+const { rejectRepository } = require('./guards');
 const { planSafeRemovals, runConfirmedRemoval, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
 
 // A file that is low quality only by bitrate is not deleted. The bitrate is the file size divided by the length, so if the length is read inflated or

@@ -3,27 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError } = require('./commands');
-const { grant, walk, readRange } = require('./target');
+const { grant, walk } = require('./target');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
 const { extractProductNumbers, findProductNumber, findAttachedProductNumbers, halfWidth } = require('./product');
-const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote } = require('./flatten');
+const { MAX_NAME, REPOSITORY_FOLDER, leftoverNote } = require('./guards');
+const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream, containsNumber } = require('./video');
+const { skipReason, applyRenames } = require('./rename');
 
-// It handles only video files. It does not rename even the subtitles or notes inside an ABC-123 folder.
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.m2ts', '.mpg', '.mpeg']);
-// A format whose extension is the same as TypeScript source. It is seen as video only after checking the content.
-const TRANSPORT_EXTENSIONS = new Set(['.ts', '.mts']);
-// MPEG-TS starts with 0x47 every 188 bytes, and AVCHD, with 4 extra bytes in front, every 192 bytes.
-const TRANSPORT_LAYOUTS = [
-  [0, 188],
-  [4, 192],
-];
-const TRANSPORT_HEAD = 4 + 2 * 192 + 1;
-
-function isTransportStream(access, relative) {
-  const head = readRange(access, relative, { length: TRANSPORT_HEAD });
-  return TRANSPORT_LAYOUTS.some(([start, step]) => head[start] === 0x47 && head[start + step] === 0x47 && head[start + 2 * step] === 0x47);
-}
 // Formats whose metadata can be read. For the rest, it looks only in the file name and folder names.
 const MP4_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp']);
 const MKV_EXTENSIONS = new Set(['.mkv', '.webm']);
@@ -38,12 +25,6 @@ function readTags(target, entry, ext) {
     if (!(err instanceof FcError)) throw err;
     return { metadataError: err.message };
   }
-}
-
-// Even if letters are attached to the number (ABC-123-01, ABC-123A, 1ABC-123), it is seen as already present. ABC-1234 is not ABC-123.
-function containsNumber(name, number) {
-  // number is only English upper-case letters, a hyphen, and digits, so it can go into a regular expression as is.
-  return new RegExp(`(?<!\\p{Script=Latin}\\p{M}*)${number}(?!\\d)`, 'u').test(halfWidth(name).toUpperCase());
 }
 
 // It checks whether the number was written in the name without a hyphen (ABC123, ABC_123, ABC 123, abc123). If a Latin letter is attached in front or digits continue after, it is a different word.
@@ -92,14 +73,26 @@ function planProductNames(dir) {
       const from = access.read(entry.path);
       // A .ts that is not video is not reported wherever it is. So it checks the content before deciding whether to skip it.
       if (transport && !isTransportStream(access, entry.relative)) continue;
-      if (parts.some((part) => LEFTOVER.test(part))) throw new FcError('Not renamed because it is a leftover from an earlier job.');
-      if (parts.some((part) => SYSTEM_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a Windows system folder.');
-      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) throw new FcError('Not renamed because it is inside a repository folder.');
-      if (name.startsWith('.')) throw new FcError('Not renamed because adding the number in front of a name that starts with a dot would make it no longer a hidden name.');
+      const placed = skipReason(entry);
+      if (placed) {
+        skip(placed);
+        continue;
+      }
+      if (parts.some((part) => REPOSITORY_FOLDER.test(part))) {
+        skip('Not renamed because it is inside a repository folder.');
+        continue;
+      }
+      if (name.startsWith('.')) {
+        skip('Not renamed because adding the number in front of a name that starts with a dot would make it no longer a hidden name.');
+        continue;
+      }
       const inName = extractProductNumbers(name);
       if (inName.length > 0) {
         // If a move of the old method stopped midway, an empty file with the numbered name was left (#73). It is not counted as an already-changed video and is reported separately.
-        if (fs.lstatSync(from).size === 0) throw new FcError('The file is empty. It may be a placeholder left when an earlier run stopped midway; check it and delete it.');
+        if (fs.lstatSync(from).size === 0) {
+          skip('The file is empty. It may be a placeholder left when an earlier run stopped midway; check it and delete it.');
+          continue;
+        }
         plan.already.push({ path: entry.path, number: inName[0] });
         continue;
       }
@@ -131,9 +124,15 @@ function planProductNames(dir) {
       }
       // It does not use text inside the file and puts only a number that passed the format into the name, so path and control characters from the title do not enter the name.
       const desired = `${chosen.number} ${base}${ext}`;
-      if (desired.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${desired}`);
+      if (desired.length > MAX_NAME) {
+        skip(`The name is too long once the number is added: ${desired}`);
+        continue;
+      }
       const to = path.join(path.dirname(from), desired);
-      if (fs.lstatSync(to, { throwIfNoEntry: false })) throw new FcError(`Not renamed because the name already exists: ${desired}${leftoverNote(from, to)}`);
+      if (fs.lstatSync(to, { throwIfNoEntry: false })) {
+        skip(`Not renamed because the name already exists: ${desired}${leftoverNote(from, to)}`);
+        continue;
+      }
       plan.renames.push({ from, to: access.write(to), name: desired, number: chosen.number, source: chosen.source, note: metadataError ?? null });
     } catch (err) {
       if (err instanceof FcError) skip(err.message);
@@ -144,19 +143,6 @@ function planProductNames(dir) {
   return plan;
 }
 
-// If the source was replaced by a link or the name got filled between the plan and the run, it does not change it. It does not overwrite and does not avoid it by adding a number.
-function applyRename(rename, access) {
-  const from = access.delete(rename.from);
-  if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
-  if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
-  // It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to.
-  const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
-  if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
-  const to = access.write(rename.to);
-  if (to !== rename.to) throw new FcError(`The path changed after planning: ${rename.to} -> ${to}`);
-  if (!moveWithoutOverwrite(from, to)) throw taken();
-}
-
 // It puts the product number in front of the names of the video files under the target. It does not overwrite, and even if one file fails, it continues with the rest.
 // The returned value is { target, dryRun, renamed, already, notFound, conflicts, skipped, failed }. failed is a list of { from, reason }.
 function addProductNumbers(dir, { dryRun = false } = {}) {
@@ -164,19 +150,7 @@ function addProductNumbers(dir, { dryRun = false } = {}) {
 }
 
 function applyProductNames(plan, { dryRun = false } = {}) {
-  const { renames, target, ...rest } = plan;
-  const result = { target, dryRun, renamed: [], ...rest, failed: [] };
-  if (dryRun) return { ...result, renamed: renames };
-  const access = grant(target, ['write', 'delete']);
-  for (const rename of renames) {
-    try {
-      applyRename(rename, access);
-      result.renamed.push(rename);
-    } catch (err) {
-      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `Could not rename. (${err.code})` });
-    }
-  }
-  return result;
+  return applyRenames(plan, { dryRun });
 }
 
 const SOURCE_NAMES = { title: 'title', comment: 'comment', folder: 'folder name' };
@@ -197,4 +171,4 @@ function formatProductNumbers(result) {
   return lines.join('\n');
 }
 
-module.exports = { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers, containsNumber, isTransportStream, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS };
+module.exports = { planProductNames, applyProductNames, addProductNumbers, formatProductNumbers };

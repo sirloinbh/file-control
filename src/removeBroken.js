@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
-const { rejectRepository } = require('./flatten');
+const { rejectRepository } = require('./guards');
 const { planSafeRemovals, runConfirmedRemoval, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
 
 // It chooses the files to delete among those judged broken. It does not touch files.

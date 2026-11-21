@@ -71,7 +71,9 @@ test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
 });
 
 const { FcError, hiddenOrSystemEntries, recycleEmptyFolders, RECYCLE_FOLDERS_SCRIPT } = require('../src/commands');
-const { planFlatten, withOuterFolder, detailedName, prefixedName, flatten, formatFlatten, moveWithoutOverwrite, leftoverNote } = require('../src/flatten');
+const { planFlatten, withOuterFolder, detailedName, prefixedName, flatten, formatFlatten } = require('../src/flatten');
+const { leftoverNote } = require('../src/guards');
+const { moveWithoutOverwrite } = require('../src/safeMove');
 const { deviceNamePattern } = require('../src/target');
 const { run } = require('../bin/fctl');
 const { spawnSync } = require('node:child_process');
