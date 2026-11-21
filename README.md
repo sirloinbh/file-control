@@ -44,8 +44,8 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 
 Options
 
-- `--force`: Overwrite a file that already exists. Without it, the command stops with an error instead of overwriting.
-- `--permanent`: In `rm`, delete permanently without going through the Recycle Bin.
+- `--force`: Overwrite a file that already exists. Without it, the command stops with an error instead of overwriting. `unzip` also stops when a file of the archive already exists in the extraction folder (folders merge); `--force` extracts over it.
+- `--permanent`: In `rm`, delete permanently without going through the Recycle Bin. In `mv --force`, delete the replaced item permanently instead of sending it to the Recycle Bin.
 - `--dry-run`: Print only what would change, with `[Preview]` added, and do not touch anything for real.
 
 An unknown option runs nothing and reports an error. Write a name that starts with `-` as `./-name` or after `--` (`fctl rename a.txt -- "-b.txt"`). Every argument after `--` is treated as a name or content, not an option.
@@ -75,7 +75,7 @@ The content of `write` and `append` may start with a single `-`, as in `- item`,
 - Writing, renaming, moving, copying, and compressing do not overwrite an existing target without `--force`.
 - When moving to another drive, the source is deleted after the copy finishes.
 - `mv` checks everything first, and if a source and a target overlap, several sources gather into the same target, or it tries to move the current folder, it moves nothing and reports an error.
-- `mv --force` does not delete the existing target; it sets it aside for a moment and deletes it after the move finishes. If the move fails, it restores it.
+- `mv --force` does not delete the existing target; it sets it aside for a moment and sends it to the Recycle Bin after the move finishes (it shows there under a `.fctl-old-...` name). If the move fails, it restores it. Before moving anything, it checks (also in the preview) that the replaced item would really go to the Recycle Bin, with the same volume and size rules as `rm` (#81); if not, nothing is moved and `--permanent` is the explicit way to delete it for good. On a drive without a Recycle Bin or off Windows, only `--permanent` works.
 - When `cp --force` merges folders (#140), in the following cases it checks all sources first and, without copying anything, reports an error. In the past, Node finished without an error, copied only part, or wrote past a link.
   - A file and a folder mismatch inside (the source is a folder but the target is a file, or the reverse)
   - A link or junction exists at the same position in the target (including the top)
@@ -105,7 +105,7 @@ The content of `write` and `append` may start with a single `-`, as in `- item`,
   - Earlier versions (Windows 10, Windows 11 23H2 or earlier, Windows Server 2022): it could not check, so it refuses every name that starts with a device name (including `Con.Air.1997.mkv`).
 - **Hard links** (#48): for a file with a link count of 2 or more, you cannot tell from the path alone whether it is the same file as one outside the target. Changing the content also changes the content under the other name, so only writing content is refused.
   - Refused: `write` (overwriting, `--append`), `cp --force` that overwrites a hard link (including a file in the folder being merged), and the write permission of `grant`
-  - Allowed: reading, `rename`, the replacement by `mv --force`, `rm`, and `unzip` replacing an existing file. On build 26200, these operations were confirmed to only rename or delete, leaving the content under the other name as it was.
+  - Allowed: reading, `rename`, the replacement by `mv --force`, `rm`, and `unzip --force` replacing an existing file. On build 26200, these operations were confirmed to only rename or delete, leaving the content under the other name as it was.
 - `zip` and `unzip` do not run and report an error if the path or the name to bundle has a character that is not in the system ANSI code page (an emoji, `é` on Korean Windows, Hangul jamo that came from macOS, and so on) or if a name ends in a dot or a space. This is because `tar.exe` takes arguments in ANSI and may change such a character into another letter and handle a different file. Also, when bundling into zip or cpio (including `.tar.zip` and `.tar.cpio`) or into a format that has not been confirmed not to go through OEM, the entry names (the source names and the names inside the folder to bundle) are written in the OEM code page, so it also refuses a character that is not in OEM (`¹` and `€` on English Windows (ANSI 1252, OEM 437)) (`COM¹` -> `COM1`). The archive path, the parent folder of a source, the extraction folder, and the entry names of the confirmed formats (`.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.gz`, `.taZ`, `.7z`, `.jar`, `.iso`, `.xar`, `.mtree`, `.warc`) do not go through OEM, so they are not refused. On Korean Windows, ANSI and OEM are both 949.
 - While the cleanup commands walk under the target, if a subfolder is replaced by a link or junction (whether outside the target or another folder inside it), they notice it by checking the real path after reading the folder, and report an error instead of continuing with a partial list (#46).
 - `--dry-run` tells you in advance about operations that would fail, such as a path that does not exist, an overwrite conflict, and moving into itself. However, permissions, disk space, file locks, names that cannot be used on Windows, paths that go through links or junctions, conflicts inside a folder being copied, renaming the current folder or one above it, and damage or conflicts in archive content can be known only by really running.

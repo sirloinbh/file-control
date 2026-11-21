@@ -41,7 +41,10 @@ async function settled(jobs, job, timeoutMs = 30000) {
 }
 
 async function serve(t) {
-  const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME } });
+  // The job process gets the fake Recycle Bin, because mv --force sends the replaced item to the Recycle Bin (#311).
+  const PRELOAD = path.join(__dirname, 'fakeRecyclePreload.js');
+  const fork = (workerPath, args, options) => require('node:child_process').fork(workerPath, args, { ...options, execArgv: [...process.execArgv, '--require', PRELOAD] });
+  const jobs = createJobs({ env: { ...process.env, USERPROFILE: FAKE_HOME }, fork });
   const routes = new Map([
     ...jobRoutes(jobs, { specs: files.specs, views: files.views }),
     ...flowRoutes(jobs, files.specs),

@@ -32,8 +32,8 @@ Usage: fctl <command> [args] [options]
   ui [--port=NUMBER] [--no-open]  start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)
 
 Options:
-  --force       overwrite existing files
-  --permanent   with rm, delete permanently instead of using the Recycle Bin
+  --force       overwrite existing files (unzip: extract over existing files)
+  --permanent   with rm, delete permanently instead of using the Recycle Bin; with mv --force, delete the replaced item permanently
   --dry-run     print what would change without touching anything
   --remove-archives  with extract-all, send successfully extracted archives to the Recycle Bin
   --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, send to the Recycle Bin only if the list is unchanged

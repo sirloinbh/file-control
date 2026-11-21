@@ -135,7 +135,7 @@ function claim(planned, p) {
 }
 
 // For the preview: it finds items that gather into the same target and targets that already exist, and returns the text to show.
-function targetNote(planned, target, force, dirNote) {
+function targetNote(planned, target, force, dirNote, fileNote = ' (overwrites)') {
   const key = pathKey(target);
   if (planned.has(key)) {
     if (!force) throw new FcError(`Already exists: ${target} (an earlier item is handled under the same name)`);
@@ -143,7 +143,7 @@ function targetNote(planned, target, force, dirNote) {
   }
   planned.add(key);
   if (!lexists(target)) return '';
-  return exists(target) && fs.statSync(target).isDirectory() ? dirNote : ' (overwrites)';
+  return exists(target) && fs.statSync(target).isDirectory() ? dirNote : fileNote;
 }
 
 // For the preview: moving or copying a folder into itself, or a file onto itself, fails in a real run.
@@ -296,7 +296,8 @@ function asidePath(target) {
 }
 
 // If the target is deleted first and the move fails (a file lock and so on), the target is lost, so it sets it aside and deletes it after the move finishes.
-function moveReplacing(src, target) {
+// The replaced destination goes to the Recycle Bin like rm, so it can be brought back; permanent deletes it for good (#311).
+function moveReplacing(src, target, { permanent = false } = {}) {
   if (!lexists(target)) return moveOne(src, target);
   const aside = asidePath(target);
   fs.renameSync(target, aside);
@@ -313,9 +314,9 @@ function moveReplacing(src, target) {
     throw err;
   }
   try {
-    fs.rmSync(aside, { recursive: true, force: true });
+    remove([aside], { permanent, checkVolume: false });
   } catch (err) {
-    throw new FcError(`Moved, but could not delete the previous destination: ${aside} (${err.code})`);
+    throw new FcError(`Moved, but could not ${permanent ? 'delete' : 'send to the Recycle Bin'} the previous destination: ${aside} (${err.message})`);
   }
 }
 
@@ -504,7 +505,7 @@ function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
 
-function move(sources, dest, { force = false, dryRun = false } = {}) {
+function move(sources, dest, { force = false, dryRun = false, permanent = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
@@ -518,6 +519,13 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
     rejectStreamPath(target);
     rejectCurrentDir(target);
     ensureFree(target, force);
+    // Before anything moves, the replaced destination must be able to go to the Recycle Bin (the preview too), as rm checks (#311).
+    if (force && !permanent && lexists(target)) {
+      // The replaced item is sent under a short temporary name, so its own name length and device names do not matter; the volume setting and size do.
+      if (!isWindows) throw new FcError('Sending the replaced destination to the Recycle Bin works only on Windows. To delete it permanently instead, use --permanent');
+      const why = previewRefusal(path.resolve(target));
+      if (why !== null) throw new FcError(`${permanentRefusal(path.resolve(target), why, false)} Nothing was moved. To delete the replaced item permanently instead, use --permanent.`);
+    }
     rejectNewDeviceName(target);
     ensureParentDir(target);
     rejectMoveOverlap(src, target);
@@ -527,9 +535,10 @@ function move(sources, dest, { force = false, dryRun = false } = {}) {
   const planned = new Set();
   const done = [];
   for (const { src, target } of items) {
-    const note = dryRun ? targetNote(planned, target, force, ' (replaces the whole existing folder)') : '';
+    const where = permanent ? 'it is deleted permanently' : 'the old one goes to the Recycle Bin';
+    const note = dryRun ? targetNote(planned, target, force, ` (replaces the whole existing folder; ${where})`, ` (overwrites; ${where})`) : '';
     try {
-      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target)));
+      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target, { permanent })));
     } catch (err) {
       // The earlier items have already been moved, so just raising an error would not tell what was moved.
       if (done.length === 0) throw err;
@@ -1436,8 +1445,43 @@ function ensureRoomToExtract(dest, entries) {
   return need;
 }
 
+// It finds the files of the archive that already exist in the extraction folder, which tar would overwrite (#311). Folders may merge, so only file entries count.
+// Names in the list come out in the code page, so a non-ASCII letter or ? matches any non-ASCII letter or ? of an existing name (it may refuse too much, never too little).
+function rejectExtractOverwrite(names, dest) {
+  // A link to a folder is followed, as tar would extract through it.
+  const isDir = (full) => fs.statSync(full, { throwIfNoEntry: false })?.isDirectory() === true;
+  if (!isDir(dest)) return;
+  const fold = (name) => name.replace(/[^\x00-\x7f]|\?/g, '\u0080').toUpperCase();
+  const clash = (dir, parts, shown) => {
+    let existing;
+    try {
+      existing = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+    const matches = existing.filter((entry) => fold(entry.name) === fold(parts[0]));
+    if (parts.length === 1) return matches.length > 0 && !matches.every((entry) => isDir(path.join(dir, entry.name))) ? shown : undefined;
+    for (const entry of matches) {
+      if (!isDir(path.join(dir, entry.name))) continue;
+      const found = clash(path.join(dir, entry.name), parts.slice(1), shown);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  for (const raw of names) {
+    if (/[\\/]$/.test(raw)) continue;
+    const parts = raw.split(/[\\/]/).filter((part) => part !== '' && part !== '.');
+    if (parts.length === 0) continue;
+    const found = clash(dest, parts, raw);
+    if (found !== undefined) {
+      const garbled = UNRELIABLE_NAME.test(raw) ? ' (non-ASCII names in the archive listing may look garbled because of the code page, so this may be a different file)' : '';
+      throw new FcError(`The extraction folder already has a file of the same name, so nothing was extracted: ${found}${garbled}. Use --force to overwrite existing files.`);
+    }
+  }
+}
+
 // Only extract-all, which already made the same check, turns checkSpace off.
-function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
+function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = false } = {}) {
   ensureExists(archive);
   const dest = destDir || path.join(path.dirname(archive), path.parse(archive).name);
   rejectLongName(dest, 'The extraction folder');
@@ -1450,9 +1494,11 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true } = {}) {
     const entries = archiveEntries(archive);
     const size = checkSpace ? ensureRoomToExtract(dest, entries) : null;
     const sizeNote = size === null ? '' : `, extracted size about ${formatSize(Number(size))}`;
-    if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? ', the destination folder already exists, so files with the same name are overwritten' : ''})`;
+    if (dryRun) note = ` (${entries.length} items${sizeNote}${exists(dest) ? (force ? ', the destination folder already exists, so files with the same name are overwritten' : ', the destination folder already exists') : ''})`;
   }
   if (isWindows) rejectExtractShortNameClash(archiveNames(archive), dest);
+  // tar overwrites existing files while extracting, so without --force it refuses before extracting anything (#311).
+  if (!force) rejectExtractOverwrite(archiveNames(archive), dest);
   return perform(`Extract: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
     runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });
