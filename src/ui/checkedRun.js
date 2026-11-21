@@ -6,9 +6,25 @@ const fc = require('../commands');
 const { fingerprint } = require('./flow');
 const { toPlain } = require('./serialize');
 const { snapshotDestinations, snapshotSources } = require('./sourceSnapshot');
+const { refuseProtected } = require('./protectedPath');
 
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 const REMOVING = new Set(['remove-broken', 'remove-duplicates', 'remove-low-quality']);
+// The commands whose path arguments are checked again against the protected places right before the real run (#329), with how many leading
+// positional arguments are paths (Infinity: all of them; mv and cp end with the destination, rename's second argument is a name, not a path).
+const PATH_ARGS = { mv: Infinity, cp: Infinity, mkdir: 1, write: 1, append: 1, rename: 1 };
+
+// The check on the screen happened when the request arrived, but a junction can be retargeted before the job runs, so the worker repeats it
+// on the paths as they are now. It throws FcError, and nothing has changed yet.
+function recheckProtected(command, argv) {
+  const count = PATH_ARGS[command];
+  if (count === undefined) return;
+  const end = argv.indexOf('--');
+  const head = (end === -1 ? argv : argv.slice(0, end)).filter((arg) => !arg.startsWith('--') && arg !== '-h').slice(1);
+  // After a literal -- mv and cp still take paths; for write and append that is the content, which is not a path.
+  const tail = end !== -1 && count === Infinity ? argv.slice(end + 1) : [];
+  for (const p of [...head, ...tail].slice(0, count)) refuseProtected(p, 'A path');
+}
 
 // Keys of the preview result that change between two dry-runs of an unchanged folder, per command.
 // Checked empirically (test/uiCheckedRun.test.js runs every file-changing command twice on an unchanged folder). No command needs an entry today:
@@ -54,7 +70,10 @@ function preview(argv, execute, progress) {
 
 // mode 'preview': the dry-run outcome plus its fingerprint.
 // mode 'run': preview again; if the fingerprint differs from expect, change nothing and return the fresh preview with repreview: true;
-//   if it matches, run for real (the remove-* commands get the fresh confirmation code) and return the outcome with ran: true.
+//   if it matches, the protected places are checked again and it runs for real (the remove-* commands get the fresh confirmation code).
+//   The outcome carries ran: true, or ran: false when a remove-* run found the list changed after the second preview and deleted nothing.
+//   A window remains: the folder can still change between the second preview and the real run. The remove-* commands close it with the confirmation
+//   code; mv, cp and the like only have the fingerprint compared before it, so a change inside that short window is not caught.
 function runChecked(argv, { mode, expect } = {}, { execute, progress } = {}) {
   if (mode !== 'preview' && mode !== 'run') throw new fc.FcError('Unknown run mode.');
   if (mode === 'run' && !(typeof expect === 'string' && FINGERPRINT.test(expect))) {
@@ -66,7 +85,9 @@ function runChecked(argv, { mode, expect } = {}, { execute, progress } = {}) {
   if (mode === 'preview') return { ...first.outcome, fingerprint: first.fingerprint };
   if (first.fingerprint !== expect) return { ...first.outcome, repreview: true, fingerprint: first.fingerprint };
   const runArgv = REMOVING.has(first.outcome.command) ? withOption(base, `--yes=${first.outcome.result.code}`) : base;
-  return { ...execute(runArgv, { progress }), ran: true };
+  recheckProtected(first.outcome.command, base);
+  const outcome = execute(runArgv, { progress });
+  return { ...outcome, ran: !(outcome.result && outcome.result.mismatch) };
 }
 
 module.exports = { previewFingerprint, runChecked, stripFlow, VOLATILE };

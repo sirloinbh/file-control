@@ -6,9 +6,9 @@
 // - walk.js: listing a tree
 // - stamp.js: change stamps and volume checks
 const { deviceNamePattern } = require('./windowsNames');
-const { resolveTarget, isInside, protectedReason, protectedInfo } = require('./protectedPaths');
+const { resolveTarget, isInside, protectedReason, protectedInfo, TRAILING_DOT_OR_SPACE } = require('./protectedPaths');
 const { grant, readRange, fileSizeInside, rejectAmbiguousNames } = require('./access');
 const { walk, compareRelative } = require('./walk');
 const { fileStamp, volumeFormat, stampVolumeReason } = require('./stamp');
 
-module.exports = { resolveTarget, isInside, readRange, fileSizeInside, fileStamp, volumeFormat, stampVolumeReason, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason, protectedInfo };
+module.exports = { resolveTarget, isInside, readRange, fileSizeInside, fileStamp, volumeFormat, stampVolumeReason, walk, grant, rejectAmbiguousNames, compareRelative, deviceNamePattern, protectedReason, protectedInfo, TRAILING_DOT_OR_SPACE };

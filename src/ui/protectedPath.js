@@ -13,7 +13,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError } = require('../commands');
-const { protectedReason } = require('../target');
+const { protectedReason, TRAILING_DOT_OR_SPACE } = require('../target');
 
 // The most links one path may lead through before the check gives up (and refuses).
 const MAX_LINKS = 32;
@@ -22,9 +22,6 @@ const MAX_LINKS = 32;
 // path with very many missing components would block the server.
 const MAX_PATH_CHARS = 32767;
 const MAX_COMPONENTS = 1000;
-
-// A name that ends with a dot or a space (Windows tools read it as another name).
-const TRAILING_DOT_OR_SPACE = /[\s\u0085.]$/;
 
 class Unchecked extends Error {}
 
