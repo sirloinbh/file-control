@@ -8,6 +8,7 @@ const path = require('node:path');
 const { formatSize } = require('../../commands');
 const { describeVideo, groupLabel, groupCautions } = require('../../duplicates');
 const { criteriaText } = require('../../lowQuality');
+const { plural } = require('../../plural');
 const { html } = require('../html');
 const { summaryCards, badge, table, alertBox } = require('../layout');
 
@@ -55,11 +56,11 @@ ${summaryCards([
     { label: 'Files checked', value: r.checked },
     { label: 'Broken', value: r.broken.length, tone: r.broken.length > 0 ? 'error' : 'ok' },
     { label: 'Suspect', value: r.suspect.length, tone: r.suspect.length > 0 ? 'warning' : undefined },
-    { label: 'Undetermined', value: r.unreadable.length },
+    { label: 'Undetermined', value: r.undetermined.length },
     { label: 'Skipped', value: r.skipped.length },
   ])}
 ${table([{ label: 'File', width: '40%' }, { label: 'Verdict', width: '10%' }, { label: 'Size', width: '12%' }, { label: 'Reason' }], rows, { empty: 'No broken or suspect files.' })}
-${otherTable(rel, [['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipped', r.skipped]])}`;
+${otherTable(rel, [['Undetermined', 'warning', r.undetermined], ['Skipped', 'skipped', r.skipped]])}`;
 }
 
 // One video group: the file to keep and the candidates to delete are shown apart.
@@ -78,10 +79,10 @@ function findDuplicatesView(outcome) {
   const r = outcome.result;
   const rel = relativeTo(r.target);
   const byLength = r.metadataGroups.filter((group) => !group.alsoNamed);
-  const named = r.groups.map((group) => groupSection(rel, `Duplicate candidates: ${groupLabel(group)} (${group.files.length} files)`, group, groupCautions(group)));
+  const named = r.groups.map((group) => groupSection(rel, `Duplicate candidates: ${groupLabel(group)} (${plural(group.files.length, 'file')})`, group, groupCautions(group)));
   const lengths = byLength.map((group) => groupSection(
     rel,
-    `Same length: ${duration(group.duration)}, aspect ratio ${group.aspect}${group.sameSize ? ', same size' : ''} (${group.files.length} files)`,
+    `Same length: ${duration(group.duration)}, aspect ratio ${group.aspect}${group.sameSize ? ', same size' : ''} (${plural(group.files.length, 'file')})`,
     group,
     group.keep.doubt == null ? [] : [group.keep.doubt],
   ));
@@ -96,7 +97,7 @@ ${summaryCards([
 ${r.groups.length === 0 && byLength.length === 0 ? html`<p class="muted">No duplicate candidates.</p>` : ''}
 ${named}
 ${lengths.length > 0 ? html`<h2>Different names, same length</h2><p class="muted">These may be different videos, so remove-duplicates does not delete these groups.</p>${lengths}` : ''}
-${otherTable(rel, [['Several numbers', 'skipped', conflicts], ['Length or resolution unreadable', 'warning', r.metadataErrors], ['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipped', r.skipped]])}`;
+${otherTable(rel, [['Several numbers', 'skipped', conflicts], ['Length or resolution undetermined', 'warning', r.metadataErrors], ['Undetermined', 'warning', r.undetermined], ['Skipped', 'skipped', r.skipped]])}`;
 }
 
 // find-low-quality
@@ -109,11 +110,11 @@ function findLowQualityView(outcome) {
 ${summaryCards([
     { label: 'Videos checked', value: r.checked },
     { label: 'Low quality', value: r.low.length, tone: r.low.length > 0 ? 'warning' : 'ok' },
-    { label: 'Undetermined', value: r.unreadable.length },
+    { label: 'Undetermined', value: r.undetermined.length },
     { label: 'Skipped', value: r.skipped.length },
   ])}
 ${table([{ label: 'File', width: '30%' }, { label: 'Resolution', width: '18%' }, { label: 'Bitrate', width: '11%' }, { label: 'Length', width: '9%' }, { label: 'Size', width: '10%' }, { label: 'Reason' }], rows, { empty: 'No videos below the limit.' })}
-${otherTable(rel, [['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipped', r.skipped]])}`;
+${otherTable(rel, [['Undetermined', 'warning', r.undetermined], ['Skipped', 'skipped', r.skipped]])}`;
 }
 
 // The state notice of a removal result: the preview (list to delete), a stop on a changed list, or sent to the Recycle Bin.
@@ -122,9 +123,9 @@ function removalState(r) {
     const why = (r.mismatchHints ?? []).length > 0 ? ` ${r.mismatchHints.length} file${r.mismatchHints.length === 1 ? ' is' : 's are'} now held back because they changed within the last 5 minutes.` : '';
     return alertBox('error', `The list differs from the one the confirmation value was made for, so nothing was deleted. Check the new list.${why}`);
   }
-  if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${r.removed.length} files to the Recycle Bin.${r.failed.length > 0 ? ` ${r.failed.length} failed.` : ''}`);
+  if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${plural(r.removed.length, 'file')} to the Recycle Bin.${r.failed.length > 0 ? ` ${r.failed.length} failed.` : ''}`);
   if (r.removals.length === 0) return alertBox('info', 'There is nothing to delete.');
-  return alertBox('info', `Nothing is deleted yet. Check the ${r.removals.length} files below, then run to send them to the Recycle Bin.`);
+  return alertBox('info', `Nothing is deleted yet. Check the ${plural(r.removals.length, 'file')} below, then run to send them to the Recycle Bin.`);
 }
 
 // The description columns of one file to delete (or deleted). They differ per command.
@@ -157,7 +158,7 @@ function removeView(outcome) {
   const columns = [{ label: 'File', width: '30%' }, { label: 'Role', width: '13%' }, { label: 'Details', width: '20%' }, { label: 'Reason' }];
   if (duplicates) columns.push({ label: 'Group', width: '20%' });
   const cells = duplicates ? rows : rows.map((row) => row.slice(0, 4));
-  const others = [['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipped', r.skipped]];
+  const others = [['Undetermined', 'warning', r.undetermined], ['Skipped', 'skipped', r.skipped]];
   if (r.suspect) others.unshift(['Suspect (not deleted)', 'warning', r.suspect]);
   if (r.conflicts) others.unshift(['Several numbers', 'skipped', r.conflicts.map((item) => ({ path: item.path, reason: item.numbers.join(', ') }))]);
   return html`${targetLine(r)}
