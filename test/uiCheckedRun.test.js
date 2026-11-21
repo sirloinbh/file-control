@@ -110,11 +110,15 @@ test('the fingerprint depends on the argv and on the preview result but not on -
   assert.notStrictEqual(previewFingerprint(['mv', 'a', 'b'], { ...outcome, result: ['a', 'b'] }), base);
 });
 
+// Absolute paths: the run checks them against the protected places again (#329).
+const A = path.join(os.tmpdir(), 'fc-checked-a');
+const B = path.join(os.tmpdir(), 'fc-checked-b');
+
 test('run mode with a matching fingerprint runs for real and marks ran', () => {
-  const first = runChecked(['mv', 'a', 'b'], { mode: 'preview' }, { execute: fakeExecute([{ n: 1 }]) });
+  const first = runChecked(['mv', A, B], { mode: 'preview' }, { execute: fakeExecute([{ n: 1 }]) });
   const exec = fakeExecute([{ n: 1 }]);
-  const outcome = runChecked(['mv', 'a', 'b'], { mode: 'run', expect: first.fingerprint }, { execute: exec });
-  assert.deepStrictEqual(exec.calls, [['mv', 'a', 'b', '--dry-run'], ['mv', 'a', 'b']]);
+  const outcome = runChecked(['mv', A, B], { mode: 'run', expect: first.fingerprint }, { execute: exec });
+  assert.deepStrictEqual(exec.calls, [['mv', A, B, '--dry-run'], ['mv', A, B]]);
   assert.strictEqual(outcome.ran, true);
   assert.deepStrictEqual(outcome.result, { changed: true });
 });
@@ -147,10 +151,10 @@ test('run mode never passes a user-supplied --dry-run or --yes to the real run, 
   runChecked(argv, { mode: 'run', expect: preview.fingerprint }, { execute: exec });
   assert.deepStrictEqual(exec.calls, [['remove-broken', 'dir', '--dry-run'], ['remove-broken', 'dir', '--yes=fresh1234567']]);
   // other commands do not get --yes
-  const mv = runChecked(['mv', 'a', 'b', '--yes=x'], { mode: 'preview' }, { execute: fakeExecute([{}]) });
+  const mv = runChecked(['mv', A, B, '--yes=x'], { mode: 'preview' }, { execute: fakeExecute([{}]) });
   const exec2 = fakeExecute([{}]);
-  runChecked(['mv', 'a', 'b', '--yes=x'], { mode: 'run', expect: mv.fingerprint }, { execute: exec2 });
-  assert.deepStrictEqual(exec2.calls[1], ['mv', 'a', 'b']);
+  runChecked(['mv', A, B, '--yes=x'], { mode: 'run', expect: mv.fingerprint }, { execute: exec2 });
+  assert.deepStrictEqual(exec2.calls[1], ['mv', A, B]);
 });
 
 test('runOnce without mode runs the command as before, with mode it uses the checked flow', () => {
@@ -469,4 +473,24 @@ test('rm with several sources: a change inside any of them gives a new preview a
   assert.strictEqual(outcome.repreview, true);
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(path.join(dir, 'one', 'a.txt')) && fs.existsSync(path.join(dir, 'two', 'b.txt')) && fs.existsSync(path.join(dir, 'three.txt')));
+});
+
+test('the run refuses a path that became a protected place after the request, and a mismatched remove run reports ran: false (#329)', () => {
+  const { runChecked } = require('../src/ui/checkedRun');
+  // Fake execute: the dry run answers, the real run is never reached for a protected path.
+  const calls = [];
+  const execute = (argv) => {
+    calls.push(argv);
+    return { command: argv[0], result: { code: 'abc', mismatch: argv.some((a) => a.startsWith('--yes=')) } };
+  };
+  const win = process.env.SystemRoot || 'C:\Windows';
+  // mv with -- before the paths is checked too.
+  const dashed = runChecked(['mv', '--', A, win], { mode: 'preview' }, { execute });
+  assert.throws(() => runChecked(['mv', '--', A, win], { mode: 'run', expect: dashed.fingerprint }, { execute }), /protected/);
+  const first = runChecked(['remove-broken', '--', os.tmpdir()], { mode: 'preview' }, { execute });
+  const done = runChecked(['remove-broken', '--', os.tmpdir()], { mode: 'run', expect: first.fingerprint }, { execute });
+  assert.strictEqual(done.ran, false, 'a mismatch means nothing was deleted');
+  const dry = runChecked(['mkdir', win], { mode: 'preview' }, { execute });
+  assert.throws(() => runChecked(['mkdir', win], { mode: 'run', expect: dry.fingerprint }, { execute }), /protected/);
+  assert.ok(!calls.some((argv) => argv[0] === 'mkdir' && !argv.includes('--dry-run')), 'the real mkdir never ran');
 });

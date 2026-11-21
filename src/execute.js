@@ -2,6 +2,7 @@
 
 // The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
 const fc = require('./commands');
+const { plural } = require('./plural');
 const { flatten, formatFlatten } = require('./flatten');
 const { addProductNumbers, formatProductNumbers } = require('./productName');
 const { extractArchives, formatExtractions } = require('./extract');
@@ -122,7 +123,9 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     if (flags.has(name) && command !== 'find-low-quality' && command !== 'remove-low-quality') throw new fc.FcError(`--${name} can be used only with find-low-quality and remove-low-quality.`);
   }
 
-  const done = (result, report = result, failure = undefined) => ({ command, result, report, failure });
+  // The dry run of write, rename, mv, cp, zip and unzip sets info.overwrites when it would overwrite or replace something, so a screen reads the flag, not the words of the report (#361).
+  const info = { overwrites: false };
+  const done = (result, report = result, failure = undefined) => ({ command, result, report, failure, ...(info.overwrites ? { overwrites: true } : {}) });
   // If part fails, it shows what was done and ends as a failure.
   const failIf = (failed, result, report) => done(result, report, failed ? new fc.FcError(report) : undefined);
 
@@ -142,21 +145,22 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
         append: command === 'append',
         force,
         dryRun,
+        info,
       }));
     case 'cat':
       need(args, 1, 'cat <file>');
       return done(fc.readFile(args[0]));
     case 'rename':
       need(args, 2, 'rename <path> <new-name>');
-      return done(fc.rename(args[0], args[1], { force, dryRun }));
+      return done(fc.rename(args[0], args[1], { force, dryRun, info }));
     case 'mv': {
       need(args, 2, 'mv <source...> <dest>');
-      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent') });
+      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent'), info });
       return done(lines, lines.join('\n'));
     }
     case 'cp': {
       need(args, 2, 'cp <source...> <dest>');
-      const lines = fc.copy(args.slice(0, -1), args[args.length - 1], { force, dryRun });
+      const lines = fc.copy(args.slice(0, -1), args[args.length - 1], { force, dryRun, info });
       return done(lines, lines.join('\n'));
     }
     case 'rm': {
@@ -166,10 +170,10 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(fc.unzip(args[0], args[1], { dryRun, force }));
+      return done(fc.unzip(args[0], args[1], { dryRun, force, info }));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
-      return done(fc.zip(args[0], args.slice(1), { force, dryRun }));
+      return done(fc.zip(args[0], args.slice(1), { force, dryRun, info }));
     case 'flatten': {
       checkWholeTarget(command, args, flags);
       const result = flatten(args[0], { dryRun, onProgress: progress });
@@ -222,7 +226,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       const report = format(result);
       // Even on failure, the report of the files that were moved goes to standard output. Kept or skipped items are enough as a report.
       const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
-      if (result.failed.length > 0) return fail(`${result.failed.length} files could not be sent to the Recycle Bin.`);
+      if (result.failed.length > 0) return fail(`${plural(result.failed.length, 'file')} could not be sent to the Recycle Bin.`);
       if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted. Check the new list.');
       return done(result, report);
     }

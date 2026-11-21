@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError, list } = require('../commands');
-const { protectedReason } = require('../target');
+const { protectedInfo } = require('../target');
 
 // True if it is a folder. False if it does not exist or cannot be read.
 function isDirectory(p) {
@@ -113,19 +113,23 @@ function commonPlaces({ home = os.homedir(), env = process.env, exists = isDirec
   return places;
 }
 
-// If it is a protected folder, that reason; otherwise null. If the reason cannot be known (the user folder is unknown and so on), it returns a reason so that it cannot be picked.
+// If it is a protected folder, { reason, kind } (kind as in target.js protectedInfo); otherwise null. If the reason cannot be known (the user folder is unknown and so on), it returns a reason so that it cannot be picked.
 // A name ending in a dot or a space also returns a reason so that it cannot be picked. PowerShell and .NET remove those characters and read it as another folder (AppData. -> AppData) (first review).
-function protection(dir) {
+function protectionInfo(dir) {
   if (process.platform === 'win32') {
     const name = dir.slice(path.parse(dir).root.length).split(path.sep).find((part) => TRAILING_DOT_OR_SPACE.test(part));
-    if (name !== undefined) return `name ending with a dot or space (${name})`;
+    if (name !== undefined) return { kind: 'inside', reason: `name ending with a dot or space (${name})` };
   }
   try {
-    return protectedReason(dir);
+    return protectedInfo(dir);
   } catch (err) {
-    if (err instanceof FcError) return err.message;
+    if (err instanceof FcError) return { kind: 'unknown', reason: err.message };
     throw err;
   }
+}
+
+function protection(dir) {
+  return protectionInfo(dir)?.reason ?? null;
 }
 
 // A name ending in a dot or a space (the same criterion as target.js)
@@ -154,11 +158,10 @@ function realFolder(dir) {
 }
 
 // If a child inherits the parent's protection reason, it returns that reason (first review, so as not to judge each child in a large folder).
-// If the parent is "inside" a protected folder (a system folder, a settings folder, and so on), the child is the same. If the parent is blocked because it "contains" a protected folder (a drive root, the user folder itself) or
-// the reason could not be known, it differs for each child, so it is null.
-function inheritedProtection(parentReason) {
-  if (parentReason === null || parentReason.startsWith('contains ')) return null;
-  return /^(?:system folder|user settings folder|another user's settings folder|default user profile|name ending with a dot or space)/.test(parentReason) ? parentReason : null;
+// Only a parent that is "inside" a protected folder (a system folder, a settings folder, and so on) passes it down. A parent that "contains" a protected folder (a drive root, the user folder itself),
+// is the protected folder itself, or whose reason could not be known differs for each child, so it is null.
+function inheritedProtection(info) {
+  return info !== null && info.kind === 'inside' ? info.reason : null;
 }
 
 // The limit on the number of subfolders shown on the screen. It keeps the screen from getting too large and the server from stalling long on a large folder (C:\Windows\WinSxS and so on) (first review).
@@ -191,7 +194,7 @@ function browseFolder(dir, { filter = '' } = {}) {
     if (err instanceof FcError) throw err;
     throw new FcError(`Cannot read the folder: ${resolved} (${err.code ?? err.message})`);
   }
-  const own = protection(resolved);
+  const own = protectionInfo(resolved);
   const inherited = inheritedProtection(own);
   // Links to folders (junctions, directory symbolic links) are folders that can be entered (#267). Entering and picking judge them by the real path, like #254.
   // filter: only the folders whose name contains this text (case-insensitive), for a folder with more than MAX_FOLDERS subfolders (#331).
@@ -209,7 +212,7 @@ function browseFolder(dir, { filter = '' } = {}) {
   return {
     path: resolved,
     parent: parent === resolved ? null : parent,
-    protected: own,
+    protected: own?.reason ?? null,
     folders,
     links,
     hiddenFolders: dirs.length - folders.length,

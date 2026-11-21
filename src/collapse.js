@@ -179,15 +179,18 @@ function collapseOne(item, access) {
   return emptied;
 }
 
+// The failure of removeEmptied when the emptied folder still has files. emptiedFailure tells it from other errors by this class, not by its text (#317).
+class EmptiedHasFiles extends FcError {}
+
 // It sends only empty folders to the Recycle Bin. If there are files, it does not delete.
 function removeEmptied(emptied) {
   const filled = fs.readdirSync(emptied, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
-  if (filled) throw new FcError(`Collapsed, but not deleted because the emptied folder contains files: ${emptied}`);
+  if (filled) throw new EmptiedHasFiles(`Collapsed, but not deleted because the emptied folder contains files: ${emptied}`);
   remove([emptied]);
 }
 
 function emptiedFailure(emptied, err) {
-  if (err instanceof FcError && err.message.startsWith('Collapsed, but')) return err.message;
+  if (err instanceof EmptiedHasFiles) return err.message;
   return `Collapsed, but could not send the empty folder to the Recycle Bin: ${emptied} (${err instanceof FcError ? err.message : err.code ?? err.status})`;
 }
 

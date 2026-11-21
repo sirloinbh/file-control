@@ -31,7 +31,9 @@ function runOnce(argv, send, { mode, expect, executeFn = execute } = {}) {
 if (require.main === module) {
   process.once('message', (message) => {
     const argv = message && Array.isArray(message.argv) ? message.argv.map(String) : null;
-    const finish = () => process.disconnect();
+    const finish = () => { if (process.connected) process.disconnect(); };
+    // The server went away: nothing is listening for the result any more, so end instead of throwing on the closed channel (#330).
+    process.once('disconnect', () => process.exit(0));
     if (!argv) {
       process.send({ type: 'error', error: { name: 'FcError', message: 'No command to run.' } }, finish);
       return;
@@ -41,9 +43,9 @@ if (require.main === module) {
     const expect = typeof message.expect === 'string' ? message.expect : undefined;
     runOnce(argv, (msg) => {
       last = msg;
-      if (msg.type === 'progress') process.send(msg);
+      if (msg.type === 'progress' && process.connected) process.send(msg);
     }, { mode, expect });
-    process.send(last, finish);
+    if (process.connected) process.send(last, finish);
   });
 }
 
