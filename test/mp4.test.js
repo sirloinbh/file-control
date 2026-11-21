@@ -739,7 +739,7 @@ test('MP4 메타데이터와 구조 확인은 파일을 한 번만 열어 읽는
   const open = t.mock.method(fs, 'openSync');
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').width, 1920);
   assert.strictEqual(open.mock.callCount(), 1);
-  checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4');
+  checkMp4Structure(require('../src/target').grant(dir, ['read']), path.join(dir, 'v.mp4'), 'v.mp4');
   assert.strictEqual(open.mock.callCount(), 2);
 });
 
@@ -920,7 +920,7 @@ test('긴 조각난 MP4는 읽기 한도에 걸리지 않고 정상으로 돌아
   const fragments = [];
   for (let i = 0; i < 15000; i += 1) fragments.push(box('moof', box('mfhd', u32(0), u32(i + 1))), box('mdat', Buffer.alloc(4)));
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), checkedTrak(), box('mvex')), ...fragments]));
-  assert.strictEqual(checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4'), null);
+  assert.strictEqual(checkMp4Structure(require('../src/target').grant(dir, ['read']), path.join(dir, 'v.mp4'), 'v.mp4'), null);
 });
 
 test('두 번째 트랙이 손상돼도 길이와 해상도를 돌려준다 (#322)', () => {

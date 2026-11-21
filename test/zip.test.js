@@ -7,6 +7,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { grant } = require('../src/target');
+// The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
+test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 const { readZipEntries, checkZip } = require('../src/zip');
 const { crc32, crc32Table } = require('../src/crc32');
 const { readSevenZip } = require('../src/sevenZip');
@@ -57,19 +60,19 @@ test('a marker in the comment does not make the zip count as broken, but the del
   const comment = 'note PK\x05\x06 and more text that is long enough to hold a fake record';
   fs.writeFileSync(path.join(dir, 'c.zip'), zipWithComment('a.txt', 'abc', comment));
   // tar.exe may extract from the record inside the comment, so the delete check keeps the archive.
-  assert.match(readZipEntries(dir, path.join(dir, 'c.zip'), 1).reason, /comment contains another end marker/);
-  assert.strictEqual(checkZip(dir, path.join(dir, 'c.zip'), fs.statSync(path.join(dir, 'c.zip')).size), null);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'c.zip'), 1).reason, /comment contains another end marker/);
+  assert.strictEqual(checkZip(grant(dir, ['read']), path.join(dir, 'c.zip'), fs.statSync(path.join(dir, 'c.zip')).size), null);
 });
 
 test('readZipEntries는 끝 표시가 없거나 뒤에 데이터가 붙은 zip의 사유를 { reason }으로 돌려준다 (#325)', () => {
   const dir = tempDir();
   const good = zipWithComment('a.txt', 'abc', '');
   fs.writeFileSync(path.join(dir, 'cut.zip'), good.subarray(0, good.length - 30));
-  assert.match(readZipEntries(dir, path.join(dir, 'cut.zip'), 1).reason, /end marker is missing/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'cut.zip'), 1).reason, /end marker is missing/);
   fs.writeFileSync(path.join(dir, 'tail.zip'), Buffer.concat([good, Buffer.from('junk')]));
-  assert.match(readZipEntries(dir, path.join(dir, 'tail.zip'), 1).reason, /other data after the zip end marker/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'tail.zip'), 1).reason, /other data after the zip end marker/);
   fs.writeFileSync(path.join(dir, 'count.zip'), good);
-  assert.match(readZipEntries(dir, path.join(dir, 'count.zip'), 2).reason, /number of zip entries differs/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'count.zip'), 2).reason, /number of zip entries differs/);
 });
 
 // An empty 7z is the 32-byte start header only: NextHeaderOffset, NextHeaderSize, and NextHeaderCRC are all 0.
@@ -85,7 +88,7 @@ test('항목이 없는 7z는 정상이다 (#325)', () => {
   assert.deepStrictEqual(readSevenZip((offset, length) => data.subarray(offset, offset + length), data.length), { entries: [] });
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'empty.7z'), data);
-  assert.strictEqual(inspect(dir, path.join(dir, 'empty.7z'), data.length), null);
+  assert.strictEqual(inspect(grant(dir, ['read']), path.join(dir, 'empty.7z'), data.length), null);
 });
 
 test('crc32 대체 구현은 zlib.crc32와 같은 값을 낸다 (#325)', () => {
@@ -100,8 +103,8 @@ test('a real zip followed by a fake end record and directory in its comment is k
   const fake = zipWithComment('evil.txt', 'xyz', '');
   const real = zipWithComment('a.txt', 'abc', fake.toString('latin1'));
   fs.writeFileSync(path.join(dir, 'fake.zip'), real);
-  assert.match(readZipEntries(dir, path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
   // Without the fake record the same zip is accepted.
   fs.writeFileSync(path.join(dir, 'plain.zip'), zipWithComment('a.txt', 'abc', 'just a note'));
-  assert.deepStrictEqual(readZipEntries(dir, path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
+  assert.deepStrictEqual(readZipEntries(grant(dir, ['read']), path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
 });

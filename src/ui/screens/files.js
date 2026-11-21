@@ -197,10 +197,10 @@ for (const spec of specs) {
 
 // ---------- The preview view ----------
 
-// The preview is what the command would do, one row per line. A line that says it overwrites or replaces something gets a warning.
+// The preview is what the command would do, one row per line. The warning comes from the structured flag of the dry run (#361), not from the words of the lines.
 function previewView(outcome) {
   const lines = linesOf(outcome).map((line) => line.replace(/^\[Preview\] /, ''));
-  const risky = lines.some((line) => /\((?:overwrites|replaces)\b|overwritten/i.test(line));
+  const risky = Boolean(outcome && outcome.overwrites === true);
   return html`${risky ? alertBox('warning', 'Existing items would be overwritten or replaced. This is done only with the confirmation below.') : ''}
 <h2>What will happen</h2>
 ${table([{ label: 'Action' }], lines.map((line) => [line]), { empty: 'Nothing would change.' })}`;

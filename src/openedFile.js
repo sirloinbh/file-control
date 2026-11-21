@@ -13,9 +13,9 @@ const MAX_READ = 2 ** 31 - 1;
 // different from the written one, the file changed or was replaced by a link or junction between the check and the open, so it does not read (first review).
 // Even if the path changes after opening, the handle keeps reading the file first confirmed. It closes when fn ends.
 // fn receives { size, read }. size is a snapshot from the moment of opening (see below).
-function withOpenFile(target, real, fn) {
+function withOpenFile(access, real, fn) {
   const named = fs.statSync(real, { bigint: true });
-  fileSizeInside(target, real);
+  fileSizeInside(access, real);
   const fd = fs.openSync(real, 'r');
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
