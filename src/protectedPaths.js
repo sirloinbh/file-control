@@ -91,8 +91,8 @@ function driveSystemReason(target) {
   if (process.platform !== 'win32') return null;
   const { root } = path.parse(target);
   const [first] = target.slice(root.length).split(path.sep);
-  if (!first) return `drive root ${root} (holds or will hold the Recycle Bin and System Volume Information)`;
-  if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return `system folder ${path.join(root, first)}`;
+  if (!first) return { kind: 'contains', reason: `drive root ${root} (holds or will hold the Recycle Bin and System Volume Information)` };
+  if (DRIVE_SYSTEM_FOLDERS.includes(first.toLowerCase())) return { kind: 'inside', reason: `system folder ${path.join(root, first)}` };
   return null;
 }
 
@@ -118,9 +118,9 @@ function otherProfileReason(target, home) {
   const lower = name.toLowerCase();
   if (lower === 'public') return null;
   const profile = path.join(profiles, name);
-  if (lower === 'default' || lower === 'default user') return `default user profile ${profile}`;
-  if (sub === undefined) return `another user's folder ${profile}`;
-  if (isHiddenSettings(sub)) return `another user's settings folder ${path.join(profile, sub)}`;
+  if (lower === 'default' || lower === 'default user') return { kind: 'inside', reason: `default user profile ${profile}` };
+  if (sub === undefined) return { kind: 'itself', reason: `another user's folder ${profile}` };
+  if (isHiddenSettings(sub)) return { kind: 'inside', reason: `another user's settings folder ${path.join(profile, sub)}` };
   return null;
 }
 
@@ -140,19 +140,21 @@ function isHiddenSettings(name) {
   return name.startsWith('.') || name.toLowerCase() === 'appdata';
 }
 
-// If the target overlaps a protected path, it returns the reason; otherwise null.
-function protectedReason(target) {
+// If the target overlaps a protected path, it returns { reason, kind }; otherwise null. kind says how the target relates to the protected path, so callers do not read the reason text (#317):
+// 'inside' (the target is inside a protected folder, so every folder under it is protected too), 'contains' (the target holds a protected folder, so each child differs),
+// and 'itself' (the target is the protected folder, and its children are not protected by that).
+function protectedInfo(target) {
   for (const root of systemRoots()) {
-    if (isInside(root, target)) return `system folder ${root}`;
-    if (isInside(target, root)) return `contains system folder ${root}`;
+    if (isInside(root, target)) return { kind: 'inside', reason: `system folder ${root}` };
+    if (isInside(target, root)) return { kind: 'contains', reason: `contains system folder ${root}` };
   }
   const drive = driveSystemReason(target);
   if (drive) return drive;
   const home = homeDir();
-  if (isInside(target, home)) return `contains user folder ${home}`;
+  if (isInside(target, home)) return { kind: 'contains', reason: `contains user folder ${home}` };
   if (isInside(home, target)) {
     const [first] = path.relative(home, target).split(path.sep);
-    if (isHiddenSettings(first)) return `user settings folder ${path.join(home, first)}`;
+    if (isHiddenSettings(first)) return { kind: 'inside', reason: `user settings folder ${path.join(home, first)}` };
     return null;
   }
   return otherProfileReason(target, home);
@@ -167,4 +169,9 @@ function isInside(target, p) {
   return rel !== '..' && !rel.startsWith(`..${path.sep}`);
 }
 
-module.exports = { resolveTarget, isInside, protectedReason, TRAILING_DOT_OR_SPACE };
+// If the target overlaps a protected path, it returns the reason; otherwise null.
+function protectedReason(target) {
+  return protectedInfo(target)?.reason ?? null;
+}
+
+module.exports = { resolveTarget, isInside, protectedReason, protectedInfo, TRAILING_DOT_OR_SPACE };

@@ -77,7 +77,7 @@ function formatRemoveBroken(result) {
   for (const item of result.kept) lines.push(`Kept: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
   for (const item of result.suspect) lines.push(`Suspect, not deleted: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
@@ -85,7 +85,7 @@ function formatRemoveBroken(result) {
   }
   if (result.logWarning) lines.push(`Warning: ${result.logWarning}`);
   if (result.log) lines.push(`Removal log: ${result.log}`);
-  const counts = `kept ${result.kept.length}, suspect ${result.suspect.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
+  const counts = `kept ${result.kept.length}, suspect ${result.suspect.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
     lines.push(`Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
   } else {

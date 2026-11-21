@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { FcError } = require('./commands');
+const { plural } = require('./plural');
 const { grant, walk, fileSizeInside } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
@@ -50,6 +51,8 @@ function lowQualityCriteria({ minHeight = DEFAULT_MIN_HEIGHT, minBitrate = null 
 // A value out of range is left null and the reason is written in notes. It is a pure function.
 function saneInfo(info) {
   const notes = [];
+  // True once a note already explains why the duration or bitrate is unusable, so the generic bitrate note below is not added a second time (#317).
+  let explained = false;
   const number = (value) => (Number.isFinite(value) && value > 0 ? value : null);
   let width = number(info.width);
   let height = number(info.height);
@@ -74,19 +77,22 @@ function saneInfo(info) {
   let duration = number(info.duration);
   if (duration !== null && duration > MAX_DURATION) {
     notes.push(`The duration value (${Math.round(duration)} s) is over 7 days and may be corrupt.`);
+    explained = true;
     duration = null;
   }
   let bitrate = duration === null || duration < MIN_BITRATE_DURATION ? null : number(info.bitrate);
   // The case where, in reading, the length was cross-checked against the tracks and the real data and could not be trusted (a partly downloaded file, a broken length, #179)
   if (duration !== null && typeof info.bitrateNote === 'string') {
     notes.push(info.bitrateNote);
+    explained = true;
     bitrate = null;
   }
   if (bitrate !== null && bitrate < MIN_BITRATE) {
     notes.push(`The bitrate value (${bitrate} bps) is too small and may be corrupt.`);
+    explained = true;
     bitrate = null;
   }
-  if (bitrate === null && !notes.some((note) => /duration|bitrate/i.test(note))) notes.push(duration === null ? 'There is no duration information, so the bitrate is unknown.' : duration < MIN_BITRATE_DURATION ? 'The duration is under 1 second, so the bitrate cannot be trusted.' : 'There is no bitrate information.');
+  if (bitrate === null && !explained) notes.push(duration === null ? 'There is no duration information, so the bitrate is unknown.' : duration < MIN_BITRATE_DURATION ? 'The duration is under 1 second, so the bitrate cannot be trusted.' : 'There is no bitrate information.');
   return { width, height, displayWidth, displayHeight, shortSide, duration, bitrate, notes };
 }
 
@@ -116,14 +122,14 @@ function skipReason(parts) {
 // It finds low-quality files below the standard among the videos under the target. It does not touch files.
 // The formats it reads the resolution and bitrate from are MP4/MOV and MKV/WebM. Other videos are reported as could not judge. It does not look inside repository folders.
 // - low: low-quality files ({ path, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons, byResolution })
-// - unreadable: videos that could not be judged ({ path, reason })
+// - undetermined: videos that could not be judged ({ path, reason })
 // - skipped: links, leftovers, system folders ({ path, reason })
 // - checked: the number of videos read, criteria: the standards used
 // options.entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
 function findLowQuality(dir, options = {}) {
   const criteria = lowQualityCriteria(options);
   const access = grant(dir, ['read']);
-  const result = { target: access.target, criteria, low: [], unreadable: [], skipped: [], checked: 0 };
+  const result = { target: access.target, criteria, low: [], undetermined: [], skipped: [], checked: 0 };
   for (const entry of options.entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
@@ -147,19 +153,19 @@ function findLowQuality(dir, options = {}) {
       result.checked += 1;
       const reader = MP4_EXTENSIONS.has(extension) ? readMp4Metadata : MKV_EXTENSIONS.has(extension) ? readMkvMetadata : null;
       if (reader === null) {
-        result.unreadable.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
+        result.undetermined.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
         continue;
       }
       const size = fileSizeInside(access, real);
       // The bitrate is used for the judgment, so it has the length cross-checked with the sample table and the seek table (#207).
       const info = saneInfo(reader(access.target, real, { verifyBitrate: true }));
       const judged = judgeQuality(info, criteria);
-      if (judged.status === 'unknown') result.unreadable.push({ path: real, reason: judged.reasons.join(' ') });
+      if (judged.status === 'unknown') result.undetermined.push({ path: real, reason: judged.reasons.join(' ') });
       if (judged.status !== 'low') continue;
       const { width, height, displayWidth, displayHeight, duration, bitrate } = info;
       result.low.push({ path: real, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons: judged.reasons, byResolution: judged.byResolution });
     } catch (err) {
-      result.unreadable.push({ path: entry.path, reason: err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})` });
+      result.undetermined.push({ path: entry.path, reason: err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})` });
     }
   }
   return result;
@@ -181,9 +187,9 @@ function formatLowQuality(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const lines = [`Criteria: ${criteriaText(result.criteria)}`];
   for (const file of result.low) lines.push(`Low quality: ${relative(file.path)} (${describeLowQuality(file)}) [${file.reasons.join(', ')}]`);
-  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
-  lines.push(`Checked ${result.checked} videos, ${result.low.length} low quality, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`);
+  lines.push(`Checked ${plural(result.checked, 'video')}, ${result.low.length} low quality, ${result.undetermined.length} undetermined, ${result.skipped.length} skipped`);
   return lines.join('\n');
 }
 

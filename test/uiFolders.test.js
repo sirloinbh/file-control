@@ -211,3 +211,11 @@ test('browseFolder can filter the subfolders by name (#331)', () => {
   assert.deepStrictEqual(browseFolder(dir, { filter: 'ALPHA' }).folders.map((f) => f.name), ['alpha', 'alphabet']);
   assert.strictEqual(browseFolder(dir).folders.length, 3);
 });
+
+test('protectedInfo gives a kind next to the reason, and only a folder inside a protected one passes protection to its children (#317)', () => {
+  const { protectedInfo } = require('../src/target');
+  const home = os.homedir();
+  assert.strictEqual(protectedInfo(path.join(home, '.ssh'))?.kind, 'inside');
+  assert.strictEqual(protectedInfo(home)?.kind, 'contains');
+  assert.strictEqual(protectedInfo(path.join(home, 'plain-folder')), null);
+});

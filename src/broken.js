@@ -7,6 +7,7 @@ const { FcError, probeArchive, missingProgram } = require('./commands');
 const { grant, walk, readRange, fileSizeInside, fileStamp } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { REMOVAL_LOG } = require('./removalLog');
+const { plural } = require('./plural');
 const { checkMp4Structure, FIRST_BOXES } = require('./mp4');
 const { checkMkvStructure } = require('./mkv');
 const { checkZip } = require('./zip');
@@ -106,7 +107,7 @@ function checkMismatch(format, head) {
   if (actual) return suspect(`The extension says ${format.name} but the content is ${actual.name}. It may only have been renamed.`);
   if (head.every((byte) => byte === 0)) return broken('The beginning is all zeros. The file may be empty or its download stopped midway.');
   if (/^\s*<(?:!doctype html|html)/i.test(text(head, 0, head.length))) return broken(`This is a web page, not a ${format.name} file. The download may have gone wrong.`);
-  return suspect(`The content does not start in ${format.name} format. It may be encrypted or wrapped in something else.`);
+  return suspect(`The start bytes do not match the extension (${format.name}).`);
 }
 
 // It judges one file and returns { status, reason }. If it finds no problem, it is null. Input/output problems go out as exceptions.
@@ -143,14 +144,14 @@ function skipReason(entry) {
 // - broken: broken files ({ path, size, reason, stamp })
 // - suspect: files that are suspicious but possibly normal ({ path, size, reason, stamp })
 //   stamp is the file identification value taken before reading. It is used to compare whether the file changed while it was being judged.
-// - unreadable: files that could not be judged because they were locked or unreadable ({ path, reason }). They are not broken files.
+// - undetermined: files that could not be judged because they were locked or undetermined ({ path, reason }). They are not broken files.
 // - skipped: items that are not handled ({ path, reason })
 // - checked: the number of files examined
 // The inside of repository folders and removal record files are left out silently. A repository has many files, and a record cannot be a removal target.
 // entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
 function findBroken(dir, { entries } = {}) {
   const access = grant(dir, ['read']);
-  const result = { target: access.target, broken: [], suspect: [], unreadable: [], skipped: [], checked: 0 };
+  const result = { target: access.target, broken: [], suspect: [], undetermined: [], skipped: [], checked: 0 };
   for (const entry of entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
@@ -172,9 +173,9 @@ function findBroken(dir, { entries } = {}) {
       const found = inspect(access, real, size);
       if (found) result[found.status].push({ path: real, size, reason: found.reason, stamp });
     } catch (err) {
-      if (err instanceof FcError) result.unreadable.push({ path: entry.path, reason: err.message });
+      if (err instanceof FcError) result.undetermined.push({ path: entry.path, reason: err.message });
       // So that one file's problem does not lose the results of other files, any exception makes only that file could not judge.
-      else result.unreadable.push({ path: entry.path, reason: `Cannot read the file. (${err.code ?? err.message})` });
+      else result.undetermined.push({ path: entry.path, reason: `Cannot read the file. (${err.code ?? err.message})` });
     }
   }
   return result;
@@ -185,9 +186,9 @@ function formatBroken(result) {
   const lines = [];
   for (const item of result.broken) lines.push(`Broken: ${relative(item.path)} (${item.reason})`);
   for (const item of result.suspect) lines.push(`Suspect: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
-  lines.push(`Checked ${result.checked} files, ${result.broken.length} broken, ${result.suspect.length} suspect, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`);
+  lines.push(`Checked ${plural(result.checked, 'file')}, ${result.broken.length} broken, ${result.suspect.length} suspect, ${result.undetermined.length} undetermined, ${result.skipped.length} skipped`);
   return lines.join('\n');
 }
 

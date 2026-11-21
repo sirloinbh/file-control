@@ -194,14 +194,14 @@ test('extractProductNumbers의 결과는 그대로다', () => {
 
 test('비ASCII 라틴 문자가 붙은 단어 중간은 번호로 보지 않고, 가나 결합 부호 뒤 번호는 찾는다 (#92)', () => {
   for (const input of ['Pokémon-12.mp4', 'POKÉMON-12.mp4', 'Résumer-12.pdf', 'naïve-12.txt']) {
-    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: null }, input);
+    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: null, kind: null }, input);
   }
   assert.strictEqual(normalizeName('ガイドABC-123.mp4'.normalize('NFD')).number, 'ABC-123');
 });
 
 test('~로 시작하는 이름은 임시 파일로 보고 바꾸지 않는다 (#94)', () => {
   for (const input of ['~abc-123.mp4', '~ABC-123.mp4', '~WRL0001 ABC-123.tmp']) {
-    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: 'Hidden and temporary file names are not changed.' }, input);
+    assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: 'Hidden and temporary file names are not changed.', kind: null }, input);
   }
 });
 
@@ -217,4 +217,10 @@ test('하이픈 없는 번호 보고는 해상도·카메라 이름과 하이픈
   for (const plain of ['HD720.mp4', 'Movie.MP480.mp4', 'IMG1234.JPG', 'DSC0123.jpg', 'abc123.mp4']) assert.strictEqual(normalizeName(plain).reason, null, plain);
   assert.strictEqual(normalizeName('ABC123 DEF-456.mp4').name, 'DEF-456 ABC123.mp4');
   assert.strictEqual(normalizeName('ABC123 DEF-456.mp4').reason, null);
+});
+
+test('a name with several numbers reports kind several-numbers, so callers need not read the text (#317)', () => {
+  assert.strictEqual(normalizeName('ABC-123 XYZ-999.MP4').kind, 'several-numbers');
+  assert.strictEqual(normalizeName('abc-123.mp4').kind, null);
+  assert.strictEqual(normalizeName('Movie.ABC123.mp4').kind, null);
 });

@@ -144,3 +144,61 @@ test('the status page warns when there has been no progress for a long time', ()
   const fresh = statusPage({ elapsed: () => 90_000, idle: () => 1_000 }, job).toString();
   assert.doesNotMatch(fresh, /No progress for/);
 });
+
+// ---- shutdown and a process that ignores the kill (#330) ----
+
+function stubbornFork() {
+  // A child that never closes, whatever it is told.
+  const child = new EventEmitter();
+  Object.assign(child, { pid: undefined, exitCode: null, signalCode: null, stderr: null, send() {}, kill() {} });
+  return child;
+}
+
+test('a process that ignores the kill is given up after the wait, and the UI can start a new job (#330)', async () => {
+  const dir = tempDir();
+  let first = true;
+  const fork = (...args) => {
+    if (!first) return require('node:child_process').fork(...args);
+    first = false;
+    return stubbornFork();
+  };
+  const jobs = createJobs({ workerPath: FAKE_WORKER, fork, stopWaitMs: 50 });
+  const job = jobs.start(['wait', path.join(dir, 'never')]);
+  await jobs.stop(job);
+  assert.strictEqual(job.status, 'error');
+  assert.match(job.error.message, /did not end/);
+  assert.ok(!jobs.running());
+  const next = jobs.start(['progress', '1']);
+  await settled(jobs, next);
+  assert.strictEqual(next.status, 'done');
+});
+
+test('stopAll stops the running job and does nothing when there is none (#330)', async () => {
+  const dir = tempDir();
+  const jobs = createJobs({ workerPath: FAKE_WORKER });
+  await jobs.stopAll();
+  const job = jobs.start(['wait', path.join(dir, 'never')]);
+  await jobs.stopAll();
+  assert.strictEqual(job.status, 'stopped');
+  assert.ok(!jobs.running());
+});
+
+test('SIGINT in runUi stops the running job before it reports the server stopped (#330)', async () => {
+  const { runUi } = require('../src/ui/server');
+  const dir = tempDir();
+  const jobs = createJobs({ workerPath: FAKE_WORKER });
+  const routes = new Map([...jobRoutes(jobs)]);
+  routes.jobs = jobs;
+  const lines = [];
+  const before = process.listeners('SIGINT');
+  const server = await runUi(['--no-open', '--port=0'], { out: (line) => lines.push(line), routes });
+  const job = jobs.start(['wait', path.join(dir, 'never')]);
+  const handler = process.listeners('SIGINT').find((fn) => !before.includes(fn));
+  handler();
+  const until = Date.now() + 10000;
+  while (!lines.includes('UI server stopped.') && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(lines.includes('UI server stopped.'));
+  assert.strictEqual(job.status, 'stopped');
+  process.removeListener('SIGINT', handler);
+  server.close();
+});

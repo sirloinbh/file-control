@@ -154,7 +154,7 @@ test('읽기에서 길이를 믿지 못한 파일은 비트레이트로 저화�
   put(dir, 'stretched.mkv', mkv({ seconds: 60000, cueTimes: [0, 30000, 58000], padding: 40_000_000 }));
   const result = findLowQuality(dir, { minBitrate: 500 });
   assert.deepStrictEqual(names(dir, result.low), ['starved.mp4']);
-  assert.deepStrictEqual(names(dir, result.unreadable), ['partial.mp4', 'stretched.mkv', 'stretched.mp4']);
+  assert.deepStrictEqual(names(dir, result.undetermined), ['partial.mp4', 'stretched.mkv', 'stretched.mp4']);
   const report = formatLowQuality(result);
   assert.match(report, /^Undetermined: stretched\.mp4 \(Could not judge because the bitrate could not be determined\. The duration value \(60000 s\) is much longer than the sample table duration \(60 s\)/m);
   assert.match(report, /^Undetermined: partial\.mp4 \(.*may be a partial download/m);
@@ -180,7 +180,7 @@ test('findLowQuality는 MP4·MKV의 해상도와 비트레이트를 읽어 기�
 
   const byHeight = findLowQuality(dir);
   assert.deepStrictEqual(names(dir, byHeight.low), ['sub/small.mp4', 'tiny.mkv']);
-  assert.deepStrictEqual(names(dir, byHeight.unreadable), ['old.avi', 'record.ts']);
+  assert.deepStrictEqual(names(dir, byHeight.undetermined), ['old.avi', 'record.ts']);
   assert.strictEqual(byHeight.checked, 7);
   const small = byHeight.low.find((file) => file.path.endsWith('small.mp4'));
   assert.deepStrictEqual([small.width, small.height, small.duration], [480, 270, 60]);
@@ -211,4 +211,14 @@ test('find-low-quality 명령은 기준 옵션을 받고, 잘못된 값과 다�
   assert.throws(() => run(['find-low-quality', dir, '--', '--min-height=720']), /Only one target is accepted/);
   assert.throws(() => run(['find-low-quality', dir, '--min-height']), /Attach a value to --min-height/);
   assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height can be used only with find-low-quality and remove-low-quality/);
+});
+
+test('saneInfo adds the generic bitrate note only when no earlier note already explains the duration or bitrate (#317)', () => {
+  const base = { width: 1280, height: 720, displayWidth: 1280, displayHeight: 720 };
+  const explained = saneInfo({ ...base, duration: 60, bitrate: 1e6, bitrateNote: 'x' });
+  assert.deepStrictEqual(explained.notes, ['x']);
+  const plain = saneInfo({ ...base, duration: 60 });
+  assert.deepStrictEqual(plain.notes, ['There is no bitrate information.']);
+  const tooLong = saneInfo({ ...base, duration: 8 * 24 * 3600, bitrate: 1e6 });
+  assert.strictEqual(tooLong.notes.length, 1);
 });

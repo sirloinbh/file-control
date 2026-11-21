@@ -8,6 +8,7 @@ const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
+const { plural } = require('./plural');
 
 // The condition for grouping by length. It is kept narrow so that different videos are not put in one group.
 // - The length differs by 1 second or less. Moving the same video to another format changes the length by under 1 second.
@@ -327,7 +328,7 @@ function chooseKeeper(files) {
 // - unknownMetadata: the number of videos whose length is unknown. It includes formats that cannot be read (avi, wmv, and so on) and files that could not be read.
 // - metadataErrors: files in a readable format whose length or resolution could not be read ({ path, reason })
 // - conflicts: files not grouped by name because they have several numbers ({ path, numbers }). They can still be grouped by length.
-// - unreadable: files not grouped because the size or content could not be read ({ path, reason })
+// - undetermined: files not grouped because the size or content could not be read ({ path, reason })
 // - skipped: items that are not handled ({ path, reason })
 // - checked: the number of video files examined
 // A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
@@ -335,7 +336,7 @@ function findDuplicateNames(dir, { entries } = {}) {
   // A bad product word file stops the command here, not once per file as "could not read".
   notProductWords();
   const access = grant(dir, ['read']);
-  const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
+  const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], undetermined: [], skipped: [], checked: 0 };
   const byKey = new Map();
   const videos = [];
   const nameGroupOf = new Map();
@@ -381,7 +382,7 @@ function findDuplicateNames(dir, { entries } = {}) {
       nameGroupOf.set(file, id);
     } catch (err) {
       const message = err instanceof FcError ? err.message : `Cannot read the file. (${err.code ?? err.message})`;
-      result.unreadable.push({ path: entry.path, reason: message });
+      result.undetermined.push({ path: entry.path, reason: message });
     }
   }
   const order = (a, b) => (a.kind === b.kind ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) : a.kind === 'number' ? -1 : 1);
@@ -440,26 +441,26 @@ function formatDuplicateNames(result) {
   // For a name group, it adds, as caution lines, the reasons it may not be the same video (different length, common name, different title) (#103).
   for (const group of result.groups) {
     const label = groupLabel(group);
-    lines.push(`Duplicate candidates (${label}, ${group.files.length} files):`);
+    lines.push(`Duplicate candidates (${label}, ${plural(group.files.length, 'file')}):`);
     pushFiles(group);
     for (const caution of groupCautions(group)) lines.push(`  Caution: ${caution}`);
   }
   const metadataGroups = result.metadataGroups.filter((group) => !group.alsoNamed);
   for (const group of metadataGroups) {
     const same = group.sameSize ? ', same size too' : '';
-    lines.push(`Videos with the same duration (${formatDuration(group.duration)}, aspect ratio ${group.aspect}${same}, ${group.files.length} files):`);
+    lines.push(`Videos with the same duration (${formatDuration(group.duration)}, aspect ratio ${group.aspect}${same}, ${plural(group.files.length, 'file')}):`);
     pushFiles(group);
     if (group.keep.doubt !== null) lines.push(`  Caution: ${group.keep.doubt}`);
   }
   for (const item of result.conflicts) lines.push(`Several numbers: ${relative(item.path)} (${item.numbers.join(', ')})`);
   for (const item of result.metadataErrors) lines.push(`Could not read duration/resolution: ${relative(item.path)} (${item.reason})`);
-  for (const item of result.unreadable) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   const files = result.groups.reduce((sum, group) => sum + group.files.length, 0);
   const cautious = result.groups.filter((group) => groupCautions(group).length > 0).length;
   const metadataFiles = metadataGroups.reduce((sum, group) => sum + group.files.length, 0);
   lines.push(
-    `Checked ${result.checked} videos, ${result.groups.length} duplicate candidate groups (${files} files, ${cautious} need checking), ${metadataGroups.length} same-duration groups (${metadataFiles} files), ${result.unknownMetadata} with unknown duration, ${result.conflicts.length} with several numbers, ${result.unreadable.length} undetermined, ${result.skipped.length} skipped`,
+    `Checked ${plural(result.checked, 'video')}, ${result.groups.length} duplicate candidate groups (${plural(files, 'file')}, ${cautious} need checking), ${metadataGroups.length} same-duration groups (${plural(metadataFiles, 'file')}), ${result.unknownMetadata} with unknown duration, ${result.conflicts.length} with several numbers, ${result.undetermined.length} undetermined, ${result.skipped.length} skipped`,
   );
   return lines.join('\n');
 }

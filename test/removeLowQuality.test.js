@@ -110,7 +110,7 @@ test('remove-low-quality는 확인값 없이는 목록만 보이고, 확인값�
   assert.deepStrictEqual(names(dir, preview.removals), ['small.mp4', 'sub/tiny.mp4']);
   // A file caught only by bitrate may have a broken length, so it is kept (#179).
   assert.deepStrictEqual(preview.kept.map((item) => [path.basename(item.path), /low quality by bitrate only/.test(item.reason)]), [['starved.mp4', true]]);
-  assert.deepStrictEqual(names(dir, preview.unreadable), ['old.avi']);
+  assert.deepStrictEqual(names(dir, preview.undetermined), ['old.avi']);
   assert.strictEqual(recycled.length, 0);
   assert.deepStrictEqual(logs(dir), []);
   const report = formatRemoveLowQuality(preview);
