@@ -244,8 +244,8 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   const dest = path.join(path.dirname(target), newName);
   ensureFree(dest, force);
   rejectNewDeviceName(dest);
-  // Changing only the case of itself is not an overwrite.
-  if (dryRun && pathKey(dest) !== pathKey(target) && exists(dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
+  // Changing only the case of itself is not an overwrite. "Itself" is decided by volume and file number, not by lowercased names (#302).
+  if (dryRun && exists(dest) && !isSameItem(target, dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
   return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
@@ -331,6 +331,18 @@ function isSameFile(a, b) {
   const statA = fs.statSync(a, { bigint: true, throwIfNoEntry: false });
   const statB = fs.statSync(b, { bigint: true, throwIfNoEntry: false });
   return Boolean(statA && statB) && statA.ino !== 0n && statA.dev === statB.dev && statA.ino === statB.ino;
+}
+
+// Whether two paths are the same item itself (not what a link leads to): the same volume and file number, refusing file number 0 as isSameFile does.
+// Names are not enough, because NTFS folds case with its own table (KELVIN SIGN and k are two names) and a folder can be case-sensitive (#302).
+function isSameItem(a, b) {
+  try {
+    const one = fs.lstatSync(a, { bigint: true });
+    const two = fs.lstatSync(b, { bigint: true });
+    return one.ino !== 0n && one.dev === two.dev && one.ino === two.ino;
+  } catch {
+    return false;
+  }
 }
 
 // It checks by file ID whether one of the parent folders of p is the same folder as dir.
