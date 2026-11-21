@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { crc32 } = require('../src/crc32');
 
 // commands.js takes spawnSync when it is imported, so it is swapped before the require.
 const realSpawnSync = childProcess.spawnSync;
@@ -85,7 +86,7 @@ function sevenZip({ nextOffset = 0, nextSize = 0, extra = 0 } = {}) {
   const start = Buffer.alloc(20);
   start.writeBigUInt64LE(BigInt(nextOffset), 0);
   start.writeBigUInt64LE(BigInt(nextSize), 8);
-  return Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4]), u32le(zlib.crc32(start)), start, Buffer.alloc(extra)]);
+  return Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4]), u32le(crc32(start)), start, Buffer.alloc(extra)]);
 }
 
 function tar() {
