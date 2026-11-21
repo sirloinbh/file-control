@@ -210,8 +210,10 @@ test('5분 기준은 가장 늦은 시각에서 잰다', () => {
   const stat = fs.lstatSync(path.join(dir, 'a.mp4'));
   const latest = Math.max(stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs);
   const FIVE = 5 * 60 * 1000;
-  assert.strictEqual(removeBroken(dir, { now: latest + FIVE - 1 }).removals.length, 0);
-  assert.strictEqual(removeBroken(dir, { now: latest + FIVE }).removals.length, 1);
+  // The two sides are a whole second away from the 5-minute mark, so a file time that reads back a millisecond or less differently (rounding, a metadata update) cannot flip them (#380).
+  // The exact edge (now - latest < RECENT_MS) is tested with a made-up stat in test/removal.test.js.
+  assert.strictEqual(removeBroken(dir, { now: latest + FIVE - 1000 }).removals.length, 0);
+  assert.strictEqual(removeBroken(dir, { now: latest + FIVE + 1000 }).removals.length, 1);
 });
 
 test('받기 도구의 표시 파일이 옆에 있으면 오래된 파일도 남기고 표시 파일 이름을 보고한다', () => {
@@ -1009,10 +1011,11 @@ test('확인값을 만든 뒤 5분 기준을 넘나든 파일이 있으면 불�
     return [stat.mtimeMs, stat.birthtimeMs, stat.ctimeMs];
   }));
   const FIVE = 5 * 60 * 1000;
-  const listed = removeBroken(dir, { now: latest + FIVE });
+  // A whole second on each side of the 5-minute mark, not a millisecond, so a file time that reads back slightly differently cannot flip the result (#380).
+  const listed = removeBroken(dir, { now: latest + FIVE + 1000 });
   assert.strictEqual(listed.removals.length, 2);
   // Seen again a little earlier, the newest file is inside the 5 minutes, so the list differs.
-  const result = removeBroken(dir, { confirm: listed.code, now: latest + FIVE - 1 });
+  const result = removeBroken(dir, { confirm: listed.code, now: latest + FIVE - 1000 });
   assert.strictEqual(result.mismatch, true);
   assert.ok(result.mismatchHints.length >= 1);
   assert.match(formatRemoveBroken(result), /Changed: [ab]\.mp4 \(Held back now because it changed within the last 5 minutes/);
