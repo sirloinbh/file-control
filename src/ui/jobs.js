@@ -139,6 +139,14 @@ function createJobs({ workerPath = WORKER, fork = childProcess.fork, now = Date.
     entry.abandon = () => {
       if (settled) return;
       abandoned = true;
+      // Let go of the stuck process so its pipes do not keep this process alive after shutdown.
+      try {
+        if (child.connected) child.disconnect();
+        if (child.stderr) child.stderr.destroy();
+        child.unref?.();
+      } catch {
+        // Already gone.
+      }
       childError = childError ?? new Error('the process did not end after it was told to stop');
       settle(null, null, childError);
     };
