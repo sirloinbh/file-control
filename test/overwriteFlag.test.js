@@ -55,3 +55,18 @@ test('the files preview warns from the flag, not from the words of the lines (#3
   assert.ok(!warned({ command: 'mv', result: ['[Preview] Move: a -> b (overwrites)', 'x (replaces the whole folder)', 'y overwritten'] }));
   assert.ok(!warned({ command: 'mv', result: ['[Preview] Move: a -> b'], overwrites: false }));
 });
+
+test('the flag survives toPlain and the earlier-item case of cp sets it (#361)', () => {
+  const { toPlain } = require('../src/ui/serialize');
+  assert.strictEqual(toPlain({ command: 'mv', result: ['x'], overwrites: true }).overwrites, true);
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fs.mkdirSync(p('x'));
+  fs.mkdirSync(p('y'));
+  fs.mkdirSync(p('d'));
+  fs.writeFileSync(p('x', 'same.txt'), '1');
+  fs.writeFileSync(p('y', 'same.txt'), '2');
+  const outcome = execute(['cp', p('x', 'same.txt'), p('y', 'same.txt'), p('d'), '--force', '--dry-run']);
+  assert.strictEqual(outcome.overwrites, true);
+  assert.match(outcome.result[1], /overwrites: earlier item/);
+});
