@@ -82,6 +82,11 @@ test('write --force, append and cp/mv --force never write through a link (#312)'
   }
 });
 
+test('mkdir on a dangling link path says Already exists, not a raw error (#312)', () => {
+  const { links } = build();
+  for (const link of links) assert.throws(() => fc.makeDir(link), /Already exists/);
+});
+
 test('a path that does not exist at all is still refused by rm, mv and rename (#312)', () => {
   const dir = fs.mkdtempSync(path.join(base, 'n-'));
   const missing = path.join(dir, 'nope');

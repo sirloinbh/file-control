@@ -219,6 +219,7 @@ function list(dir = '.') {
 }
 
 function makeDir(dir, { dryRun = false } = {}) {
+  if (lexists(dir) && !exists(dir)) throw new FcError(`Already exists: ${dir} (a link whose target is missing)`);
   rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (already exists)' : '';
