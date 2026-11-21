@@ -51,13 +51,19 @@ test('the tar program comes from config.tar, and unzip runs it from its own fold
     return '';
   });
   withConfig(t, { isWindows: true, tar: path.join('X:', 'tools', 'faketar.exe') });
-  try {
-    fc.archiveEntries(archive);
-  } catch {
-    // the fake prints nothing; only the call matters
-  }
+  // The fake tar prints nothing, so the listing is empty; only the call matters.
+  assert.deepStrictEqual(fc.archiveEntries(archive), []);
   assert.ok(calls.length > 0);
   assert.strictEqual(calls[0].file, path.join('X:', 'tools', 'faketar.exe'));
   assert.strictEqual(calls[0].cwd, path.join('X:', 'tools'));
   assert.ok(calls[0].args.includes('--passphrase'));
+});
+
+test('withConfig called twice in one test restores the values from before the first call', async (t) => {
+  const before = { ...base.config };
+  await t.test('inside', (inner) => {
+    withConfig(inner, { isWindows: false });
+    withConfig(inner, { isWindows: true, tar: 'second' });
+  });
+  assert.deepStrictEqual({ ...base.config }, before);
 });
