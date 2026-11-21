@@ -119,21 +119,23 @@ function skipReason(parts) {
 // - unreadable: videos that could not be judged ({ path, reason })
 // - skipped: links, leftovers, system folders ({ path, reason })
 // - checked: the number of videos read, criteria: the standards used
+// options.entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
 function findLowQuality(dir, options = {}) {
   const criteria = lowQualityCriteria(options);
   const access = grant(dir, ['read']);
   const result = { target: access.target, criteria, low: [], unreadable: [], skipped: [], checked: 0 };
-  for (const entry of walk(access.target)) {
+  for (const entry of options.entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;
+    // A link is reported only if it would be a video by its name. Any other link is not a video and is not listed.
+    const extension = path.extname(entry.path).toLowerCase();
+    const transport = TRANSPORT_EXTENSIONS.has(extension);
+    if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     if (entry.type === 'link') {
       result.skipped.push({ path: entry.path, reason: 'Links are not checked.' });
       continue;
     }
-    const extension = path.extname(entry.path).toLowerCase();
-    const transport = TRANSPORT_EXTENSIONS.has(extension);
-    if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
       if (transport && !isTransportStream(access, entry.relative)) continue;
       const skip = skipReason(parts);

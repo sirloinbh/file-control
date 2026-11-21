@@ -215,10 +215,11 @@ function skipReason(entry) {
 // - skipped: items that are not handled ({ path, reason })
 // - checked: the number of files examined
 // The inside of repository folders and removal record files are left out silently. A repository has many files, and a record cannot be a removal target.
-function findBroken(dir) {
+// entries: the result of walk(target) when the caller already walked the tree, so the target is scanned once (#310).
+function findBroken(dir, { entries } = {}) {
   const access = grant(dir, ['read']);
   const result = { target: access.target, broken: [], suspect: [], unreadable: [], skipped: [], checked: 0 };
-  for (const entry of walk(access.target)) {
+  for (const entry of entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part)) || REMOVAL_LOG.test(path.basename(entry.path))) continue;

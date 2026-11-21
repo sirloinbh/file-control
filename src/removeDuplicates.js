@@ -91,8 +91,9 @@ function keeperStamp(access, keeper, now, markerOf) {
 // - A copy that is the same file as another copy to be deleted this time. If one name is deleted, this name's change time changes and it looks different from the judged file (the same as remove-broken).
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
-  rejectRepository(access.target, walk(access.target));
-  const found = findDuplicateNames(dir);
+  const entries = walk(access.target);
+  rejectRepository(access.target, entries);
+  const found = findDuplicateNames(dir, { entries });
   // Reading the length can take time, so it measures by the time after the search.
   const checkedAt = now ?? Date.now();
   const plan = { ...found, sets: [], removals: [], kept: [], lengthOnly: found.metadataGroups.filter((group) => !group.alsoNamed).length, interactive: null };
