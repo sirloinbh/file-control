@@ -18,13 +18,15 @@ test('flatten rethrows a TypeError from the folder phase with the partial result
   let moved = false;
   const real = fs.readdirSync;
   // After the move has been reported, the folder listing returns a broken value: walk() hits a TypeError (not iterable), which is a bug, not a read failure.
-  t.mock.method(fs, 'readdirSync', (...args) => (moved ? null : real(...args)));
+  const listing = t.mock.method(fs, 'readdirSync', (...args) => (moved ? null : real(...args)));
   let error = null;
   try {
     flatten(dir, { onProgress: (line) => { if (line.startsWith('Move: ')) moved = true; } });
   } catch (err) {
     error = err;
   }
+  // Restore at once: the cleanup below (rmSync) lists folders too, and on Node 22 it would hit the broken listing.
+  listing.mock.restore();
   assert.ok(error instanceof TypeError, String(error));
   assert.strictEqual(error.partial.moved.length, 1, 'the moved file stays in the partial result');
   assert.deepStrictEqual(error.partial.keptFolders, []);
