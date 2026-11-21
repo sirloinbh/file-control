@@ -106,7 +106,7 @@ test('rule: a file changed after it was judged is kept with the changed reason (
 test('rule: a file that changed within 5 minutes is kept (#308)', () => {
   const dir = tempDir();
   const file = make(dir, 'a.bin');
-  const result = plan(dir, [candidate(file)], { now: Date.now() - HOUR });
+  const result = plan(dir, [candidate(file)], { now: realNow() + 30 * 1000 });
   assert.deepStrictEqual(result.removals, []);
   assert.match(keptReasons(result)[0], /changed just now and may still be downloading/);
 });
@@ -219,11 +219,11 @@ test('the ladder order is changed, hold, marker, path, extra rule (#308)', () =>
   const dir = tempDir();
   const file = make(dir, 'a.mp4');
   make(dir, 'a.mp4.part');
-  const both = plan(dir, [candidate(file)], { now: Date.now() - HOUR, extraKeep: () => 'EXTRA' });
+  const both = plan(dir, [candidate(file)], { now: realNow() + 30 * 1000, extraKeep: () => 'EXTRA' });
   assert.match(keptReasons(both)[0], /changed just now/);
   const marker = plan(dir, [candidate(file)], { extraKeep: () => 'EXTRA' });
   assert.match(keptReasons(marker)[0], /marker file/);
-  const changed = plan(dir, [{ path: file, stamp: 'other' }], { now: Date.now() - HOUR });
+  const changed = plan(dir, [{ path: file, stamp: 'other' }], { now: realNow() + 30 * 1000 });
   assert.deepStrictEqual(keptReasons(changed), ['CHANGED']);
 });
 
