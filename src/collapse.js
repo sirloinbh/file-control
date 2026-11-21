@@ -5,8 +5,9 @@ const path = require('node:path');
 const { FcError, remove, freshPath, hiddenOrSystemEntries } = require('./commands');
 const { grant, walk } = require('./target');
 const { extractProductNumbers } = require('./product');
-const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
-const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository } = require('./flatten');
+const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./video');
+const { LEFTOVER, SYSTEM_FOLDER, rejectRepository } = require('./guards');
+const { moveWithoutOverwrite } = require('./safeMove');
 
 // It collects the items directly under each folder. The key of the target itself is ''.
 function childrenOf(entries) {

@@ -6,18 +6,13 @@ const commands = require('./commands');
 const { FcError, freshPath } = commands;
 const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
-const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor } = require('./flatten');
+const { PROGRAM_FOLDER, PROJECT_FILE, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor } = require('./guards');
+const { moveWithoutOverwrite } = require('./safeMove');
+const { skipReason, applyRenames } = require('./rename');
 const { DOWNLOAD_MARKER, markerFinder } = require('./downloadMarker');
 
 // NTFS is case-insensitive, so names are compared in upper case. toLowerCase makes ΑΣ and ασ, which are the same name on NTFS, different.
 const nameKey = (p) => p.toUpperCase();
-
-function skipReason(entry) {
-  const parts = entry.relative.split(path.sep);
-  if (parts.some((part) => LEFTOVER.test(part))) return 'Not renamed because it is a leftover from an earlier job.';
-  if (parts.some((part) => SYSTEM_FOLDER.test(part))) return 'Not renamed because it is inside a Windows system folder.';
-  return null;
-}
 
 // A saved web page (page.html) and the folder that holds its pictures and scripts (page_files). The page finds the files inside by the folder name.
 const WEB_PAGE = /^(.+)\.(?:html?|xhtml|shtml)$/i;
@@ -235,21 +230,11 @@ function restoreCaseOnly(middle, from, cause) {
   if (!restored) throw new FcError(`Could not rename and could not restore it either. The file is at ${middle}. (${cause.code ?? cause.message}, ${reason})`);
 }
 
-// If the source was replaced by a link or the name got filled between the plan and the run, it does not change it. It does not overwrite.
-function applyRename(rename, access) {
-  const from = access.delete(rename.from);
-  if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
-  if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
-  if (nameKey(rename.from) === nameKey(rename.to)) {
-    renameCaseOnly(from, rename.to, rename.name);
-    return;
-  }
-  const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
-  // It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to.
-  if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
-  const to = access.write(rename.to);
-  if (to !== rename.to) throw new FcError(`The path changed after planning: ${rename.to} -> ${to}`);
-  if (!moveWithoutOverwrite(from, to)) throw taken();
+// A rename that changes only the case of the name cannot go through moveWithoutOverwrite (the name already exists), so it is handled separately.
+function caseOnly(rename, from) {
+  if (nameKey(rename.from) !== nameKey(rename.to)) return false;
+  renameCaseOnly(from, rename.to, rename.name);
+  return true;
 }
 
 // It normalizes the file names under the target. It does not overwrite, and even if one file fails, it continues with the rest.
@@ -259,19 +244,7 @@ function normalizeFiles(dir, { dryRun = false, includeLowercase = false } = {}) 
 }
 
 function applyNormalize(plan, { dryRun = false } = {}) {
-  const { renames, target, ...rest } = plan;
-  const result = { target, dryRun, renamed: [], ...rest, failed: [] };
-  if (dryRun) return { ...result, renamed: renames };
-  const access = grant(target, ['write', 'delete']);
-  for (const rename of renames) {
-    try {
-      applyRename(rename, access);
-      result.renamed.push(rename);
-    } catch (err) {
-      result.failed.push({ from: rename.from, reason: err instanceof FcError ? err.message : `Could not rename. (${err.code})` });
-    }
-  }
-  return result;
+  return applyRenames(plan, { dryRun, caseOnly });
 }
 
 function formatNormalize(result) {

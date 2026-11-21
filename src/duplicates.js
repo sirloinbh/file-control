@@ -4,8 +4,8 @@ const path = require('node:path');
 const { FcError, formatSize } = require('./commands');
 const { grant, walk, fileSizeInside, compareRelative } = require('./target');
 const { findProductNumberRanges, halfWidth, notProductWords } = require('./product');
-const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
-const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
+const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./guards');
+const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream, formatDuration, describeVideo } = require('./video');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
 const { plural } = require('./plural');
@@ -404,28 +404,9 @@ function findDuplicateNames(dir, { entries } = {}) {
   return result;
 }
 
-// It writes seconds as h:mm:ss or m:ss.
-function formatDuration(seconds) {
-  const total = Math.round(seconds);
-  const [h, m, s] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
-  const pad = (value) => String(value).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
-
 // The name of a name group. number ABC-123, number ABC-123 piece 2, name "trip"
 function groupLabel(group) {
   return group.kind === 'number' ? `number ${group.number}${group.part === null ? '' : ` part ${group.part}`}` : `name "${group.key}"`;
-}
-
-function describe(file) {
-  const parts = [formatSize(file.size)];
-  if (file.width !== null && file.height !== null) {
-    // If the visible size differs because of rotation or pixel aspect ratio, it writes both. 1920x1080 (displayed size 1080x1920)
-    const shown = file.displayWidth != null && file.displayHeight != null && (file.displayWidth !== file.width || file.displayHeight !== file.height);
-    parts.push(shown ? `${file.width}x${file.height} (displayed size ${file.displayWidth}x${file.displayHeight})` : `${file.width}x${file.height}`);
-  }
-  if (file.duration !== null) parts.push(formatDuration(file.duration));
-  return parts.join(', ');
 }
 
 function formatDuplicateNames(result) {
@@ -435,7 +416,7 @@ function formatDuplicateNames(result) {
   const pushFiles = (group) => {
     for (const file of group.files) {
       const keep = file.path === group.keep.path ? ` [kept: ${group.keep.reason}]` : '';
-      lines.push(`  ${relative(file.path)} (${describe(file)})${keep}`);
+      lines.push(`  ${relative(file.path)} (${describeVideo(file)})${keep}`);
     }
   };
   // For a name group, it adds, as caution lines, the reasons it may not be the same video (different length, common name, different title) (#103).
@@ -465,4 +446,4 @@ function formatDuplicateNames(result) {
   return lines.join('\n');
 }
 
-module.exports = { duplicateKey, titleWords, titlesDiffer, isGenericGroup, groupCautions, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo: describe, DURATION_TOLERANCE, MIN_DURATION };
+module.exports = { duplicateKey, titleWords, titlesDiffer, isGenericGroup, groupCautions, groupByMetadata, chooseKeeper, findDuplicateNames, formatDuplicateNames, aspectKey, aspectsMatch, groupLabel, DURATION_TOLERANCE, MIN_DURATION };

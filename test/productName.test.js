@@ -558,7 +558,7 @@ test('제목이 영상 기술 용어(REMUX-2160 등)면 엇갈림으로 보지 �
 });
 
 test('containsNumber는 비ASCII 라틴 문자가 붙은 단어 중간을 같은 번호로 보지 않는다 (#92)', () => {
-  const { containsNumber } = require('../src/productName');
+  const { containsNumber } = require('../src/video');
   assert.strictEqual(containsNumber('POKÉMON-12.mp4', 'MON-12'), false);
   assert.strictEqual(containsNumber('Pokémon-12.mp4', 'MON-12'), false);
   assert.strictEqual(containsNumber('영상mon-12.mp4', 'MON-12'), true);
@@ -566,7 +566,7 @@ test('containsNumber는 비ASCII 라틴 문자가 붙은 단어 중간을 같은
 });
 
 test('containsNumber는 가나 결합 부호 뒤의 번호를 같은 번호로 본다 (1차 리뷰, #92)', () => {
-  const { containsNumber } = require('../src/productName');
+  const { containsNumber } = require('../src/video');
   assert.strictEqual(containsNumber('ガイドABC-123.mp4'.normalize('NFD'), 'ABC-123'), true);
 });
 

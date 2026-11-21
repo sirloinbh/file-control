@@ -8,7 +8,8 @@ const { scanTarGzSync } = require('./tarGzScan');
 const { checkEntryNames } = require('./entryNames');
 const { readSevenZip } = require('./sevenZip');
 const { readZipEntries, ZIP_LOCAL } = require('./zip');
-const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite } = require('./flatten');
+const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./guards');
+const { moveWithoutOverwrite } = require('./safeMove');
 
 // Formats read with tar.exe. Layered extensions are looked at first.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;

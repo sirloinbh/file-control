@@ -6,7 +6,8 @@
 
 const path = require('node:path');
 const { formatSize } = require('../../commands');
-const { describeVideo, groupLabel, groupCautions } = require('../../duplicates');
+const { groupLabel, groupCautions } = require('../../duplicates');
+const { describeVideo } = require('../../video');
 const { criteriaText } = require('../../lowQuality');
 const { plural } = require('../../plural');
 const { html } = require('../html');
