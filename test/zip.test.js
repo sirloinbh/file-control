@@ -60,8 +60,8 @@ test('a marker in the comment does not make the zip count as broken, but the del
   const comment = 'note PK\x05\x06 and more text that is long enough to hold a fake record';
   fs.writeFileSync(path.join(dir, 'c.zip'), zipWithComment('a.txt', 'abc', comment));
   // tar.exe may extract from the record inside the comment, so the delete check keeps the archive.
-  assert.match(readZipEntries(grant(dir, ['read']), path.join(grant(dir, ['read']), 'c.zip'), 1).reason, /comment contains another end marker/);
-  assert.strictEqual(checkZip(grant(dir, ['read']), path.join(grant(dir, ['read']), 'c.zip'), fs.statSync(path.join(grant(dir, ['read']), 'c.zip')).size), null);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'c.zip'), 1).reason, /comment contains another end marker/);
+  assert.strictEqual(checkZip(grant(dir, ['read']), path.join(dir, 'c.zip'), fs.statSync(path.join(dir, 'c.zip')).size), null);
 });
 
 test('readZipEntries는 끝 표시가 없거나 뒤에 데이터가 붙은 zip의 사유를 { reason }으로 돌려준다 (#325)', () => {
@@ -103,8 +103,8 @@ test('a real zip followed by a fake end record and directory in its comment is k
   const fake = zipWithComment('evil.txt', 'xyz', '');
   const real = zipWithComment('a.txt', 'abc', fake.toString('latin1'));
   fs.writeFileSync(path.join(dir, 'fake.zip'), real);
-  assert.match(readZipEntries(dir, path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
+  assert.match(readZipEntries(grant(dir, ['read']), path.join(dir, 'fake.zip'), 1).reason, /comment contains another end marker/);
   // Without the fake record the same zip is accepted.
   fs.writeFileSync(path.join(dir, 'plain.zip'), zipWithComment('a.txt', 'abc', 'just a note'));
-  assert.deepStrictEqual(readZipEntries(dir, path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
+  assert.deepStrictEqual(readZipEntries(grant(dir, ['read']), path.join(dir, 'plain.zip'), 1), { entries: [{ name: 'a.txt', size: 3 }] });
 });
