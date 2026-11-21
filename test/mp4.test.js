@@ -385,17 +385,20 @@ test('길이가 정해지지 않은 트랙보다 길이가 있는 트랙을 고�
   assert.strictEqual(write(dir, ftyp(), box('moov', unknown, main)).width, 640);
 });
 
-test('트랙과 조각 구조의 어느 층이든 틀린 크기는 손상이다', () => {
+test('moov와 mvex의 틀린 크기는 손상이고, 트랙 안의 틀린 크기는 찾은 값을 남긴다 (#322)', () => {
   const dir = tempDir();
   const bad = Buffer.concat([u32(4), latin('free')]);
-  for (const moov of [
-    box('moov', box('trak', bad)),
-    box('moov', box('trak', box('mdia', bad))),
-    box('moov', box('trak', box('mdia', box('minf', bad)))),
-    box('moov', box('trak', box('mdia', box('minf', box('stbl', bad))))),
-    box('moov', box('mvex', bad)),
+  assert.throws(() => write(dir, ftyp(), box('moov', box('mvex', bad))), /structure is damaged/);
+  assert.throws(() => write(dir, ftyp(), box('moov', bad)), /structure is damaged/);
+  for (const track of [
+    box('trak', bad),
+    box('trak', box('mdia', bad)),
+    box('trak', box('mdia', box('minf', bad))),
+    box('trak', box('mdia', box('minf', box('stbl', bad)))),
   ]) {
-    assert.throws(() => write(dir, ftyp(), moov), /structure is damaged/);
+    const result = write(dir, ftyp(), box('moov', mvhd(), track));
+    assert.strictEqual(result.duration, 10);
+    assert.strictEqual(result.width, null);
   }
 });
 
@@ -906,4 +909,25 @@ test('mdhd 버전 1, co64, 읽지 않는 stts에서도 길이를 맞춰 본다 (
   const odd = write(dir, ftyp(), box('moov', mvhd({ duration: 60000 }), dataTrak({ seconds: 1, entries: 5 })), box('mdat', Buffer.alloc(1000)));
   assert.ok(odd.bitrate > 0);
   assert.strictEqual(odd.bitrateNote, null);
+});
+
+// A track whose stbl has an empty chunk offset table, which checkMp4Structure accepts as intact.
+const checkedTrak = () => box('trak', tkhd({ width: 1920, height: 1080, duration: 10000 }), box('mdia', hdlr('vide'), box('minf', box('stbl', stsd(1920, 1080), box('stco', u32(0), u32(0))))));
+
+test('긴 조각난 MP4는 읽기 한도에 걸리지 않고 정상으로 돌아온다 (#322)', () => {
+  const { checkMp4Structure } = require('../src/mp4');
+  const dir = tempDir();
+  const fragments = [];
+  for (let i = 0; i < 15000; i += 1) fragments.push(box('moof', box('mfhd', u32(0), u32(i + 1))), box('mdat', Buffer.alloc(4)));
+  fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), checkedTrak(), box('mvex')), ...fragments]));
+  assert.strictEqual(checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4'), null);
+});
+
+test('두 번째 트랙이 손상돼도 길이와 해상도를 돌려준다 (#322)', () => {
+  const dir = tempDir();
+  const damaged = box('trak', tkhd({ width: 640, height: 480 }), box('mdia', hdlr('vide'), Buffer.concat([u32(9999), latin('minf'), Buffer.alloc(8)])));
+  const result = write(dir, ftyp(), box('moov', mvhd(), trak(), damaged));
+  assert.strictEqual(result.duration, 10);
+  assert.strictEqual(result.width, 1920);
+  assert.strictEqual(result.height, 1080);
 });

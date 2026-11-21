@@ -118,7 +118,10 @@ ${otherTable(rel, [['Undetermined', 'warning', r.unreadable], ['Skipped', 'skipp
 
 // The state notice of a removal result: the preview (list to delete), a stop on a changed list, or sent to the Recycle Bin.
 function removalState(r) {
-  if (r.mismatch) return alertBox('error', 'The list differs from the one the confirmation value was made for, so nothing was deleted. Check the new list.');
+  if (r.mismatch) {
+    const why = (r.mismatchHints ?? []).length > 0 ? ` ${r.mismatchHints.length} file${r.mismatchHints.length === 1 ? ' is' : 's are'} now held back because they changed within the last 5 minutes.` : '';
+    return alertBox('error', `The list differs from the one the confirmation value was made for, so nothing was deleted. Check the new list.${why}`);
+  }
   if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${r.removed.length} files to the Recycle Bin.${r.failed.length > 0 ? ` ${r.failed.length} failed.` : ''}`);
   if (r.removals.length === 0) return alertBox('info', 'There is nothing to delete.');
   return alertBox('info', `Nothing is deleted yet. Check the ${r.removals.length} files below, then run to send them to the Recycle Bin.`);
@@ -139,11 +142,15 @@ function removeView(outcome) {
   const duplicates = outcome.command === 'remove-duplicates';
   const setLabel = (item) => (duplicates && r.sets[item.set] ? `${r.sets[item.set].label} (keeping ${rel(r.sets[item.set].keep.path)})` : '');
   const removedPaths = new Set(r.removed.map((item) => item.path));
+  const failedPaths = new Set(r.failed.map((item) => item.path));
   const listed = r.confirmed ? r.removals.filter((item) => removedPaths.has(item.path)) : r.removals;
+  // A planned file that is neither removed nor failed was not attempted. It stays in the table instead of disappearing (#309).
+  const notAttempted = r.confirmed ? r.removals.filter((item) => !removedPaths.has(item.path) && !failedPaths.has(item.path)) : [];
   const doneLabel = r.confirmed ? 'Sent to Recycle Bin' : 'To delete';
   const rows = [
     ...listed.map((item) => [rel(item.path), badge(r.confirmed ? 'done' : 'warning', doneLabel), ...describe(item), setLabel(item)]),
     ...r.failed.map((item) => [rel(item.path), badge('failed'), '', item.reason, setLabel(item)]),
+    ...notAttempted.map((item) => [rel(item.path), badge('skipped', 'Not attempted'), ...describe(item), setLabel(item)]),
     // Kept files show their reason (size that would be deleted permanently, Recycle Bin settings, just changed, and so on).
     ...r.kept.map((item) => [rel(item.path), badge('kept'), item.file ? describe(item.file)[0] : '', item.reason, setLabel(item)]),
   ];

@@ -7,6 +7,8 @@ const { grant } = require('./target');
 
 // The number of attempts to find a name by adding a number after it so that an existing record is not overwritten even if run several times in the same second
 const MAX_NAME_ATTEMPTS = 1000;
+// The version of the record layout. 1: every item has an `outcome` (pending, removed, failed) and a failed item has `error`.
+const LOG_VERSION = 1;
 // The record file name. It is also used to leave record files out of the broken-file and duplicate judgments.
 const REMOVAL_LOG = /^fctl-removed-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.json$/i;
 
@@ -40,7 +42,7 @@ function describeItem(access, item) {
   }
   if (!stat.isFile()) throw new FcError(`Cannot record it because it is not a file: ${label}`);
   if (REMOVAL_LOG.test(path.basename(real))) throw new FcError(`A removal log cannot be a removal target: ${label}`);
-  return { path: real, size: stat.size, reason: item.reason, ...(item.details === undefined ? {} : { details: item.details }) };
+  return { path: real, size: stat.size, reason: item.reason, outcome: 'pending', ...(item.details === undefined ? {} : { details: item.details }) };
 }
 
 function describeItems(access, items) {
@@ -110,10 +112,11 @@ function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } 
   const access = grant(dir, ['write', 'delete']);
   if (items.length === 0) return null;
   const described = describeItems(access, items);
-  const text = serialize({ kind, createdAt: localTime(now), target: access.target, count: described.length, items: described });
+  const text = serialize({ version: LOG_VERSION, kind, createdAt: localTime(now), target: access.target, count: described.length, items: described });
   const { file, fd } = claimName(access, nameStamp(now), dryRun);
   // So that the returned items do not diverge from the record, it restores them from the serialized content.
-  const result = { path: file, count: described.length, items: JSON.parse(text).items, dryRun };
+  const document = JSON.parse(text);
+  const result = { path: file, count: described.length, items: document.items, dryRun, document };
   if (dryRun) return result;
   let failure;
   try {
@@ -129,7 +132,54 @@ function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } 
     failure ??= err;
   }
   if (failure) removePartial(file, failure);
+  syncDirectory(path.dirname(file));
   return result;
 }
 
-module.exports = { writeRemovalLog, REMOVAL_LOG };
+// It flushes the folder entry of a new file so the record is not lost with the file's name after a crash. Windows cannot open a folder this way, so a failure is ignored there.
+function syncDirectory(dir) {
+  let fd;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    // The folder cannot be flushed on this system. The record file itself was already flushed.
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Nothing more to do.
+      }
+    }
+  }
+}
+
+// It writes the outcome of items into a record that writeRemovalLog made. updates is a Map of item index => { outcome, error? }.
+// It writes a new file and renames it over the record, so a crash leaves either the old record or the new one, never half of one.
+function updateRemovalLog(log, updates) {
+  for (const [index, update] of updates) Object.assign(log.items[index], update);
+  const temp = `${log.path}.tmp`;
+  const text = serialize(log.document);
+  let fd;
+  try {
+    fs.rmSync(temp, { force: true });
+    fd = fs.openSync(temp, 'wx');
+    fs.writeFileSync(fd, text);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(temp, log.path);
+  } catch (err) {
+    try {
+      if (fd !== undefined) fs.closeSync(fd);
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // The original error is the one to report.
+    }
+    throw new FcError(`Could not update the log file: ${log.path} (${err.code ?? err.message})`);
+  }
+  syncDirectory(path.dirname(log.path));
+}
+
+module.exports = { writeRemovalLog, updateRemovalLog, REMOVAL_LOG, LOG_VERSION };

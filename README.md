@@ -23,10 +23,10 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl write <file> [content]` | Create a file (reads standard input if there is no content) |
 | `fctl append <file> [content]` | Append content to the end of a file |
 | `fctl cat <file>` | Show the contents of a file |
-| `fctl rename <path> <new-name>` | Rename within the same folder |
+| `fctl rename <path> <new-name>` | Rename within the same folder. A new name that leads to the item itself (only its case changes) is recognized by volume and file number, not by comparing names |
 | `fctl mv <source...> <target>` | Move (into the folder if the target is an existing folder) |
 | `fctl cp <source...> <target>` | Copy |
-| `fctl rm <path...>` | Send to the Recycle Bin |
+| `fctl rm <path...>` | Send to the Recycle Bin. A link whose target is gone (a dangling link) is an item too: `rm`, `mv` and `rename` handle it, and `write`, `cp` and `mv` never treat it as a free destination. `write` and `append` refuse to write through any link |
 | `fctl unzip <archive> [folder]` | Extract (default: a folder named after the archive) |
 | `fctl zip <archive> <source...>` | Compress (the extension, such as `.zip` or `.tar.gz`, decides the format) |
 | `fctl flatten <target>` | Move the files of subfolders directly under the target and send the empty folders to the Recycle Bin |
@@ -44,8 +44,8 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 
 Options
 
-- `--force`: Overwrite a file that already exists. Without it, the command stops with an error instead of overwriting.
-- `--permanent`: In `rm`, delete permanently without going through the Recycle Bin.
+- `--force`: Overwrite a file that already exists. Without it, the command stops with an error instead of overwriting. `unzip` also stops when a file of the archive already exists in the extraction folder (folders merge); `--force` extracts over it.
+- `--permanent`: In `rm`, delete permanently without going through the Recycle Bin. In `mv --force`, delete the replaced item permanently instead of sending it to the Recycle Bin.
 - `--dry-run`: Print only what would change, with `[Preview]` added, and do not touch anything for real.
 
 An unknown option runs nothing and reports an error. Write a name that starts with `-` as `./-name` or after `--` (`fctl rename a.txt -- "-b.txt"`). Every argument after `--` is treated as a name or content, not an option.
@@ -73,9 +73,10 @@ The content of `write` and `append` may start with a single `-`, as in `- item`,
   - If an earlier target contains a later one (`rm a a/b`), a real run deletes a and then stops with "Path does not exist", and `--dry-run` reports "Overlaps an earlier item".
 - **Files in use** (#97): sending a file that another program has open, or a folder that contains such a file, to the Recycle Bin fails without an error dialog (build 26200, checked in an interactive session; the other files in the folder were not moved either). It reports that reason in Windows' own wording, and if it finds a file that another program opened while blocking writes, it reports that name too. There is no time limit on the Recycle Bin move. The move takes time in proportion to the number of files (15 to 25 seconds for a 50,000-file folder), and interrupting it midway left some files in the folder in neither the original place nor the Recycle Bin.
 - Writing, renaming, moving, copying, and compressing do not overwrite an existing target without `--force`.
-- When moving to another drive, the source is deleted after the copy finishes.
+- When moving to another drive, the source is deleted after the copy finishes. The modified times of files and folders are kept.
+- `cp` checks every source before it copies any (an existing destination, a device name, a copy into itself, two sources with the same name), so one bad source copies nothing. A source ending in `/.` goes to the same destination as the plain folder name, as with `mv`.
 - `mv` checks everything first, and if a source and a target overlap, several sources gather into the same target, or it tries to move the current folder, it moves nothing and reports an error.
-- `mv --force` does not delete the existing target; it sets it aside for a moment and deletes it after the move finishes. If the move fails, it restores it.
+- `mv --force` does not delete the existing target; it sets it aside for a moment and sends it to the Recycle Bin after the move finishes (it shows there under a `.fctl-old-...` name). If the move fails, it restores it. Before moving anything, it checks (also in the preview) that the replaced item would really go to the Recycle Bin, with the same volume and size rules as `rm` (#81); if not, nothing is moved and `--permanent` is the explicit way to delete it for good. On a drive without a Recycle Bin or off Windows, only `--permanent` works.
 - When `cp --force` merges folders (#140), in the following cases it checks all sources first and, without copying anything, reports an error. In the past, Node finished without an error, copied only part, or wrote past a link.
   - A file and a folder mismatch inside (the source is a folder but the target is a file, or the reverse)
   - A link or junction exists at the same position in the target (including the top)
@@ -105,7 +106,7 @@ The content of `write` and `append` may start with a single `-`, as in `- item`,
   - Earlier versions (Windows 10, Windows 11 23H2 or earlier, Windows Server 2022): it could not check, so it refuses every name that starts with a device name (including `Con.Air.1997.mkv`).
 - **Hard links** (#48): for a file with a link count of 2 or more, you cannot tell from the path alone whether it is the same file as one outside the target. Changing the content also changes the content under the other name, so only writing content is refused.
   - Refused: `write` (overwriting, `--append`), `cp --force` that overwrites a hard link (including a file in the folder being merged), and the write permission of `grant`
-  - Allowed: reading, `rename`, the replacement by `mv --force`, `rm`, and `unzip` replacing an existing file. On build 26200, these operations were confirmed to only rename or delete, leaving the content under the other name as it was.
+  - Allowed: reading, `rename`, the replacement by `mv --force`, `rm`, and `unzip --force` replacing an existing file. On build 26200, these operations were confirmed to only rename or delete, leaving the content under the other name as it was.
 - `zip` and `unzip` do not run and report an error if the path or the name to bundle has a character that is not in the system ANSI code page (an emoji, `é` on Korean Windows, Hangul jamo that came from macOS, and so on) or if a name ends in a dot or a space. This is because `tar.exe` takes arguments in ANSI and may change such a character into another letter and handle a different file. Also, when bundling into zip or cpio (including `.tar.zip` and `.tar.cpio`) or into a format that has not been confirmed not to go through OEM, the entry names (the source names and the names inside the folder to bundle) are written in the OEM code page, so it also refuses a character that is not in OEM (`¹` and `€` on English Windows (ANSI 1252, OEM 437)) (`COM¹` -> `COM1`). The archive path, the parent folder of a source, the extraction folder, and the entry names of the confirmed formats (`.tar`, `.tgz`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.gz`, `.taZ`, `.7z`, `.jar`, `.iso`, `.xar`, `.mtree`, `.warc`) do not go through OEM, so they are not refused. On Korean Windows, ANSI and OEM are both 949.
 - While the cleanup commands walk under the target, if a subfolder is replaced by a link or junction (whether outside the target or another folder inside it), they notice it by checking the real path after reading the folder, and report an error instead of continuing with a partial list (#46).
 - `--dry-run` tells you in advance about operations that would fail, such as a path that does not exist, an overwrite conflict, and moving into itself. However, permissions, disk space, file locks, names that cannot be used on Windows, paths that go through links or junctions, conflicts inside a folder being copied, renaming the current folder or one above it, and damage or conflicts in archive content can be known only by really running.

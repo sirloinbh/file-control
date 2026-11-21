@@ -688,3 +688,19 @@ test('실제 휴지통 이동 스크립트는 지우기 직전에 설정과 크�
   assert.ok(state.status === 0 || state.status === 78, JSON.stringify(state));
   assert.ok(fs.existsSync(path.join(dir, 'box', 'a.bin')) && fs.existsSync(path.join(dir, 'big', 'x.bin')));
 });
+
+test('mv --force refuses before moving when the replaced item would be deleted permanently by the Recycle Bin (#311)', { skip: !isWindows && 'Windows 휴지통' }, (t) => {
+  const dir = tempDir();
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'new');
+  fs.writeFileSync(path.join(dir, 'target.txt'), 'old');
+  const { fresh, calls } = fakeVolume(t, 'True|Fixed|1|26427\r\n');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fresh.move([path.join(dir, 'a.txt')], path.join(dir, 'target.txt'), { force: true, dryRun }), /Not sent to the Recycle Bin.*Nothing was moved\..*--permanent/s);
+  }
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'new');
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'target.txt'), 'utf8'), 'old');
+  assert.deepStrictEqual(calls, []);
+  // --permanent is the explicit opt-in.
+  fresh.move([path.join(dir, 'a.txt')], path.join(dir, 'target.txt'), { force: true, permanent: true });
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'target.txt'), 'utf8'), 'new');
+});

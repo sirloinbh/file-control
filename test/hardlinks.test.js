@@ -7,6 +7,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+// mv --force sends the replaced item to the Recycle Bin (#311); the fake only deletes it inside the test's temp folder. It is swapped before commands.js is imported.
+require('./fakeRecycleFiles').installFakeRecycleBin();
 const fc = require('../src/commands');
 const { grant } = require('../src/target');
 
@@ -102,7 +104,7 @@ test('unzip은 기존 하드링크를 새 파일로 바꾸고 다른 이름의 �
   fs.mkdirSync(path.join(root, 'pack'));
   fs.writeFileSync(path.join(root, 'pack', 'hard.txt'), 'ZIP');
   fc.zip(path.join(root, 'a.zip'), [path.join(root, 'pack', 'hard.txt')]);
-  fc.unzip(path.join(root, 'a.zip'), target);
+  fc.unzip(path.join(root, 'a.zip'), target, { force: true });
   assert.strictEqual(fs.readFileSync(path.join(target, 'hard.txt'), 'utf8'), 'ZIP');
   assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET');
 });

@@ -247,9 +247,10 @@ test('remove-low-quality 명령은 기준 옵션과 --yes를 받고, 실패나 �
   assert.match(run(['remove-low-quality', dir]), /to delete 0/);
   const listed = run(['remove-low-quality', dir, '--min-height=720']);
   const code = /--yes=([0-9a-f]{12})/.exec(listed)[1];
-  assert.throws(() => run(['remove-low-quality', dir, '--yes=000000000000']), /differs from when the confirmation value was made/);
-  // If it drops the standards and gives only the confirmation value, it is a different list, so it does not delete.
-  assert.throws(() => run(['remove-low-quality', dir, `--yes=${code}`]), /differs from when the confirmation value was made/);
+  assert.throws(() => run(['remove-low-quality', dir, '--min-height=720', '--yes=000000000000']), /differs from when the confirmation value was made/);
+  // If it drops the standards and gives only the confirmation value, the list is empty, so it reports nothing to delete and deletes nothing (#309).
+  assert.match(run(['remove-low-quality', dir, `--yes=${code}`]), /to delete 0/);
+  assert.match(run(['remove-low-quality', dir, '--yes=000000000000']), /to delete 0/);
   assert.throws(() => run(['remove-low-quality', dir, '--min-height=720', '--yes']), /Give --yes the confirmation value shown in the list/);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
   assert.match(run(['remove-low-quality', dir, '--min-height=720', `--yes=${code}`]), /^Move to the Recycle Bin: a\.mp4 /m);
