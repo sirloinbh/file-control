@@ -1,14 +1,13 @@
 'use strict';
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { FcError, remove, hiddenOrSystemEntries, recycleEmptyFolders, recycleBinState, bareDeviceInside, MAX_RECYCLE_PATH } = require('./commands');
 const { extractProductNumbers } = require('./product');
-const { grant, walk, isInside } = require('./target');
-
-// The NTFS file name limit (in UTF-16 characters)
-const MAX_NAME = 255;
+const { grant, walk } = require('./target');
+const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, leftoverNote, rejectRepository, rejectProjectAncestor } = require('./guards');
+const { moveWithoutOverwrite } = require('./safeMove');
+const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./video');
 
 // toLowerCase looks at context and makes ΑΣ and ασ, which are the same name on NTFS, different, so it uses upper case.
 function nameKey(name) {
@@ -275,24 +274,12 @@ function prefixedName(fileName, folders) {
 // The number of characters left after the first dot (the extension and a language mark such as .en.forced) when choosing a prefix (#178).
 const PAIR_RESERVE = 30;
 
-// Leftovers left when mv or zip failed. They must stay at the location the error message told in order to be recovered, so they are not moved.
-const LEFTOVER = /^\.fctl-(?:old|new)-\d+-\d+-\d+(?:\.|$)/;
-
-// A folder Windows manages. Taking out the files inside breaks them together with the restore information.
-const SYSTEM_FOLDER = /^(?:\$RECYCLE\.BIN|System Volume Information)$/i;
-
 // Files that decorate a folder or hold previews. They mean something only in that folder, so moving them piles them up right under the target like desktop (2).ini (#65).
 // They are not moved and are not counted in the file count, and if the folder becomes empty they go to the Recycle Bin with the folder.
 const FOLDER_METADATA = /^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i;
 const FOLDER_METADATA_NAMES = ['desktop.ini', 'thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', '.ds_store'];
 
 const isFolderMetadata = (entry) => entry.type === 'file' && FOLDER_METADATA.test(path.basename(entry.relative));
-
-// What is seen as a folder a program uses by name alone. A program finds files by the inner structure and names, so it does not work if scattered (#65).
-const PROGRAM_FOLDER = /^(?:node_modules|bower_components|__pycache__|site-packages)$/i;
-
-// Files that, if present, make the folder a project or Python virtual environment folder.
-const PROJECT_FILE = /^(?:package\.json|pyvenv\.cfg|pyproject\.toml|setup\.py|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|CMakeLists\.txt|composer\.json|Gemfile|.+\.(?:sln|csproj|vcxproj|fsproj|vbproj))$/i;
 
 // It returns the folders to leave whole without moving, as { relative path -> reason } (#65). Program folders, project folders, folders that hold an executable and a DLL together,
 // and folders with the hidden attribute. Even if only the inside is kept and the files beside it are taken out, the program breaks, so everything under that folder is kept.
@@ -334,64 +321,6 @@ function guardedFolders(target, entries, attributes) {
   return guarded;
 }
 
-// It checks whether it is a place where a project marker file or an executable and DLL easily land by accident (#148). A drive root, the user folder and above,
-// directly under the user folder (Downloads, Desktop, Documents, and so on), and directly under the OneDrive folder (OneDrive\Desktop and so on) are not seen as a project even if a downloaded package.json or
-// an installer is there. From the folder below that (Downloads\myproj), it looks.
-// A folder the user made (user-folder\myproj) is the terminal's default location where projects often appear, so only the fixed names are skipped (first review).
-function isCommonPlace(dir, home) {
-  if (dir === path.dirname(dir)) return true;
-  if (!home) return false;
-  if (isInside(dir, home)) return true;
-  const name = path.basename(dir);
-  const parent = path.dirname(dir);
-  if (path.relative(home, parent) === '') return HOME_FOLDER.test(name) || ONEDRIVE.test(name);
-  return path.relative(home, path.dirname(parent)) === '' && ONEDRIVE.test(path.basename(parent)) && ONEDRIVE_FOLDER.test(name);
-}
-
-// The default folders directly under the user folder. The disk names are English even on Korean Windows.
-const HOME_FOLDER = /^(?:Downloads|Desktop|Documents|Pictures|Videos|Music|Favorites|Links|Saved Games|Searches|Contacts|3D Objects)$/i;
-// The OneDrive folder (OneDrive, OneDrive - Company) and the default folders it syncs directly under it. The OneDrive side is made with display language names.
-const ONEDRIVE = /^OneDrive(?:$| - )/i;
-const ONEDRIVE_FOLDER = /^(?:Desktop|Documents|Pictures|Videos|Music|Attachments|바탕 화면|문서|사진|동영상|음악|첨부 파일)$/i;
-
-// The real path of the user folder. If unknown, it returns an empty string, and then it skips only drive roots (the side that blocks more).
-function realHome() {
-  let home;
-  try {
-    home = os.homedir();
-  } catch {
-    return '';
-  }
-  if (!home || !path.isAbsolute(home)) return '';
-  try {
-    return fs.realpathSync.native(home);
-  } catch {
-    return path.resolve(home);
-  }
-}
-
-// If a folder above the target is a project folder (a marker file directly inside) or a program folder (an executable and a DLL together), it refuses (#148).
-// If myproj/src is scattered when myproj/package.json exists, the project breaks, and without a repository it cannot be undone.
-// It looks at all folders above but skips the ones where isCommonPlace is true. It does not cut by number of levels (myproj/src/a/b is also blocked).
-function rejectProjectAncestor(target) {
-  const home = realHome();
-  for (let dir = path.dirname(target); ; dir = path.dirname(dir)) {
-    if (!isCommonPlace(dir, home)) {
-      let names;
-      try {
-        names = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name);
-      } catch (err) {
-        throw new FcError(`Cannot check whether a parent folder is a project folder: ${dir} (${err.code})`);
-      }
-      const marker = names.find((name) => PROJECT_FILE.test(name));
-      if (marker) throw new FcError(`Not handled because a parent folder looks like a project folder (contains ${marker}): ${dir}`);
-      const exts = new Set(names.map((name) => path.extname(name).toLowerCase()));
-      if (exts.has('.exe') && exts.has('.dll')) throw new FcError(`Not handled because a parent folder holds both executables and DLLs, so it is treated as a program folder: ${dir}`);
-    }
-    if (dir === path.dirname(dir)) break;
-  }
-}
-
 // If the path is under a folder to leave, it returns the relative path of the outermost such folder; otherwise undefined.
 function guardOf(relative, guarded) {
   const parts = relative.split(path.sep);
@@ -423,8 +352,6 @@ const SUBTITLE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.sub', '.idx', '.v
 
 // The key of a folder that holds video files, including below, and a Map of that folder's real names (#233). A language folder that holds video (Show/English/video.mp4) is seen as a dubbed-version folder, not a subtitle folder.
 function videoFolders(entries) {
-  // productName imports this module, so it is imported when used.
-  const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
   const folders = new Map();
   for (const entry of entries) {
     if (entry.type !== 'file') continue;
@@ -485,32 +412,6 @@ function countFiles(entries, placeOf) {
     }
   }
   return counts;
-}
-
-// A version control folder. The inner structure is the content, so if scattered it cannot be recovered.
-const REPOSITORY_FOLDER = /^\.(?:git|hg|svn|jj)$/i;
-
-// If HEAD, objects, and refs are together, it is a Git repository folder. A bare repository (backup.git) is caught even when the name is not .git.
-function looksLikeGitDir(dir) {
-  const stat = (name) => fs.statSync(path.join(dir, name), { throwIfNoEntry: false });
-  try {
-    return Boolean(stat('HEAD')?.isFile() && stat('objects')?.isDirectory() && stat('refs')?.isDirectory());
-  } catch (err) {
-    throw new FcError(`Cannot check whether it is a repository: ${dir} (${err.code})`);
-  }
-}
-
-// In a repository the folder structure itself is the content, so even skipping only the inside of .git would scatter the working files and make them unrecoverable. It refuses instead of moving only part.
-// If the target is an ordinary subfolder of a repository (r/src), the repository is not broken and can be restored with git, so it is not blocked.
-function rejectRepository(target, entries) {
-  for (let dir = target; ; dir = path.dirname(dir)) {
-    if (REPOSITORY_FOLDER.test(path.basename(dir)) || looksLikeGitDir(dir)) throw new FcError(`Not handled because it is inside a repository: ${dir}`);
-    if (dir === path.dirname(dir)) break;
-  }
-  const folder = entries.find((entry) => entry.relative.split(path.sep).some((part) => REPOSITORY_FOLDER.test(part)));
-  if (folder) throw new FcError(`Not handled because it contains a repository: ${folder.path}`);
-  const bare = entries.find((entry) => entry.type === 'file' && path.basename(entry.path) === 'HEAD' && looksLikeGitDir(path.dirname(entry.path)));
-  if (bare) throw new FcError(`Not handled because it contains a repository: ${path.dirname(bare.path)}`);
 }
 
 // It makes a plan to move all files under the target directly under the target. It does not touch files.
@@ -669,55 +570,6 @@ function planFlatten(dir) {
   return plan;
 }
 
-// It moves without overwriting. If it already exists (including an 8.3 short name or case), it changes nothing and returns false.
-// renameSync overwrites the target (a folder also overwrites a file of the same name, confirmed on build 26200), so it is not used as is.
-// For a file, it creates a hard link under the new name and then deletes the original name (#73). linkSync fails with EEXIST if the name exists, so it does not overwrite a file that slipped in,
-// and even if the power goes off midway, only two names with the same content remain, with no empty file left. If the source is locked and the original name cannot be deleted, it deletes the new name and rolls back.
-// When a hard link cannot be made (FAT32, exFAT, cloud-only files, and so on) and for folders, it first creates an empty placeholder file and then moves over it.
-function moveWithoutOverwrite(from, to) {
-  if (fs.lstatSync(from).isFile()) {
-    try {
-      fs.linkSync(from, to);
-    } catch (err) {
-      if (err.code === 'EEXIST') return false;
-      // Even if it reported failure, the link may have been made (a lost network response and so on). Then it is a name I made, so it goes on to delete the original name.
-      if (!sameFile(from, to)) return moveOverPlaceholder(from, to);
-    }
-    try {
-      fs.unlinkSync(from);
-    } catch (err) {
-      removeNewName(from, to, err);
-      throw err;
-    }
-    return true;
-  }
-  return moveOverPlaceholder(from, to);
-}
-
-function moveOverPlaceholder(from, to) {
-  try {
-    fs.closeSync(fs.openSync(to, 'wx'));
-  } catch (err) {
-    if (err.code === 'EEXIST') return false;
-    throw err;
-  }
-  try {
-    fs.renameSync(from, to);
-  } catch (err) {
-    removePlaceholder(to, err);
-    throw err;
-  }
-  return true;
-}
-
-// It checks by file ID whether it is the same file. Windows file IDs are 64 bits, so it reads them as bigint.
-// On a file system that reports the file ID as 0 (some network drives), it is seen as not the same, so that different files are not seen as the same.
-function sameFile(a, b) {
-  const sa = fs.lstatSync(a, { bigint: true, throwIfNoEntry: false });
-  const sb = fs.lstatSync(b, { bigint: true, throwIfNoEntry: false });
-  return Boolean(sa && sb && sa.ino !== 0n && sa.ino === sb.ino && sa.dev === sb.dev);
-}
-
 // The key for finding the same file (volume:file ID). If it cannot be confirmed or the file ID is 0, it is null. The reason it could not be confirmed is reported by the name choosing later.
 function fileKey(p) {
   try {
@@ -725,56 +577,6 @@ function fileKey(p) {
     return stat && stat.ino !== 0n ? `${stat.dev}:${stat.ino}` : null;
   } catch {
     return null;
-  }
-}
-
-// If it could not delete the original name, it deletes the hard link it made and rolls back. If the new name was replaced by another file in the meantime, it does not delete.
-function removeNewName(from, to, cause) {
-  let ours;
-  try {
-    ours = sameFile(from, to);
-  } catch (err) {
-    throw new FcError(`Could not move, and could not check the new name either: ${to} (${cause.code}, ${err.code})`);
-  }
-  if (!ours) {
-    if (!fs.lstatSync(to, { throwIfNoEntry: false })) return;
-    throw new FcError(`Could not move, and the new name was turned into a different file in the meantime, so it was not deleted: ${to} (${cause.code})`);
-  }
-  try {
-    fs.unlinkSync(to);
-  } catch (err) {
-    throw new FcError(`Could not move, and could not delete the new name either, so the same file remains under two names: ${from}, ${to} (${cause.code}, ${err.code})`);
-  }
-}
-
-// When the target name already exists and it looks like something an earlier run left by stopping midway, it returns a message that says so (#73).
-function leftoverNote(from, to) {
-  try {
-    if (sameFile(from, to)) return ' (another name of the same file as the source (a hard link). It may be a trace of an earlier run that stopped midway; delete one of the names)';
-    const target = fs.lstatSync(to, { throwIfNoEntry: false });
-    if (target?.isFile() && target.size === 0 && fs.lstatSync(from).size > 0) {
-      return ' (that name is an empty file. It may be a placeholder left when an earlier run stopped midway; check it, delete it, and run again)';
-    }
-  } catch {
-    // Only the notice message is left out.
-  }
-  return '';
-}
-
-// If another program wrote content in the meantime, it is not my placeholder, so it does not delete it.
-function removePlaceholder(to, cause) {
-  let stat;
-  try {
-    stat = fs.lstatSync(to, { throwIfNoEntry: false });
-  } catch (err) {
-    throw new FcError(`Could not move, and could not check the placeholder file either: ${to} (${cause.code}, ${err.code})`);
-  }
-  if (!stat) return;
-  if (!stat.isFile() || stat.size !== 0) throw new FcError(`Could not move, and the placeholder file now has other content, so it was not deleted: ${to} (${cause.code})`);
-  try {
-    fs.rmSync(to, { force: true, maxRetries: 3 });
-  } catch (err) {
-    throw new FcError(`Could not move, and could not delete the empty placeholder file either: ${to} (${cause.code}, ${err.code})`);
   }
 }
 
@@ -1019,4 +821,4 @@ function formatFlatten(result) {
   return lines.join('\n');
 }
 
-module.exports = { withOuterFolder, FOLDER_METADATA, PROGRAM_FOLDER, PROJECT_FILE, planFlatten, detailedName, prefixedName, flatten, formatFlatten, MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER, moveWithoutOverwrite, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor };
+module.exports = { withOuterFolder, FOLDER_METADATA, planFlatten, detailedName, prefixedName, flatten, formatFlatten };

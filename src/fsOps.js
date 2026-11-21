@@ -4,7 +4,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, checkOverwrite, ensureCanMakeDir, ensureExists, ensureFree, ensureItemExists, ensureNotIntoSelf, ensureParentDir, entryKey, exists, isSameOrUnder, isWindows, lexists, overwriteNote, pathKey, perform, realKey, rejectHardLinkedWrite, rejectNewDeviceName, targetNote } = require('./base');
+const { config, FcError, checkOverwrite, ensureCanMakeDir, ensureExists, ensureFree, ensureItemExists, ensureNotIntoSelf, ensureParentDir, entryKey, exists, isSameOrUnder, lexists, overwriteNote, pathKey, perform, realKey, rejectHardLinkedWrite, rejectNewDeviceName, targetNote } = require('./base');
 const { permanentRefusal, previewRefusal, remove } = require('./recycle');
 
 function formatSize(bytes) {
@@ -294,7 +294,7 @@ function rejectCopyIntoSelf(src, target) {
 
 // A Windows alternate data stream (a.txt:st) is part of the file, so when the target file is cleared, the source moves along with it.
 function rejectStreamPath(p) {
-  if (!isWindows) return;
+  if (!config.isWindows) return;
   const full = path.resolve(p);
   if (full.slice(path.parse(full).root.length).includes(':')) throw new FcError(`Alternate data streams are not supported: ${p}`);
 }
@@ -356,7 +356,7 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false,
     // Before anything moves, the replaced destination must be able to go to the Recycle Bin (the preview too), as rm checks (#311).
     if (force && !permanent && lexists(target)) {
       // The replaced item is sent under a short temporary name, so its own name length and device names do not matter; the volume setting and size do.
-      if (!isWindows) throw new FcError('Sending the replaced destination to the Recycle Bin works only on Windows. To delete it permanently instead, use --permanent');
+      if (!config.isWindows) throw new FcError('Sending the replaced destination to the Recycle Bin works only on Windows. To delete it permanently instead, use --permanent');
       const why = previewRefusal(path.resolve(target));
       if (why !== null) throw new FcError(`${permanentRefusal(path.resolve(target), why, false)} Nothing was moved. To delete the replaced item permanently instead, use --permanent.`);
     }

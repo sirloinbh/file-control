@@ -5,8 +5,9 @@ const path = require('node:path');
 const { FcError, remove, freshPath, hiddenOrSystemEntries } = require('./commands');
 const { grant, walk } = require('./target');
 const { extractProductNumbers } = require('./product');
-const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./productName');
-const { LEFTOVER, SYSTEM_FOLDER, moveWithoutOverwrite, rejectRepository } = require('./flatten');
+const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./video');
+const { LEFTOVER, SYSTEM_FOLDER, rejectRepository } = require('./guards');
+const { moveWithoutOverwrite } = require('./safeMove');
 
 // It collects the items directly under each folder. The key of the target itself is ''.
 function childrenOf(entries) {
@@ -36,9 +37,16 @@ function isVideoName(name) {
 }
 
 // The reason it cannot be collapsed. If it may be collapsed, it is null.
-function skipReason(chain, entries) {
+// entries are sorted by path segments, so everything inside a folder follows it directly. position maps a relative path to its index in entries (#326).
+function insideOf(entries, position, folder) {
+  const inside = [];
+  for (let i = position.get(folder.relative) + 1; i < entries.length && under(entries[i], folder); i += 1) inside.push(entries[i]);
+  return inside;
+}
+
+function skipReason(chain, entries, position) {
   const leaf = chain.at(-1);
-  const inside = entries.filter((entry) => under(entry, leaf));
+  const inside = insideOf(entries, position, leaf);
   // The bottom folder is moved as a whole, so the leftovers and system folders inside it go along. They must be at the location the message told in order to be recovered.
   if (inside.some((entry) => hasPart(entry, LEFTOVER))) return 'Not collapsed because there is a leftover from an earlier job inside.';
   if (inside.some((entry) => hasPart(entry, SYSTEM_FOLDER))) return 'Not collapsed because a Windows system folder is involved.';
@@ -65,6 +73,20 @@ function hiddenReason(chain, attributes) {
   return `Not collapsed because a folder has the hidden attribute (collapsing would give the folder attributes of the bottom folder): ${hidden.map((entry) => entry.relative).join(', ')}`;
 }
 
+// The folders that hold a link at any depth, from the entries walk already returned: { folder real path -> one link path below it } (#326).
+// access.delete(folder) uses it, so each folder of a long stretch does not read its whole subtree again. applyCollapse still checks each folder afresh.
+function foldersWithLinks(target, entries) {
+  const folders = new Map();
+  for (const entry of entries) {
+    if (entry.type !== 'link') continue;
+    for (let folder = path.dirname(entry.path); folder.length >= target.length && !folders.has(folder); folder = path.dirname(folder)) {
+      folders.set(folder, entry.path);
+      if (folder === target) break;
+    }
+  }
+  return folders;
+}
+
 // Finds stretches under the target where each folder holds only one folder. It keeps the top folder name and lifts the content of the bottom folder to that place.
 // It does not collapse the target itself. If a level has several items, it looks separately from below it. A stretch that ends in an empty folder may be a structure the user made, so it is not touched.
 // - collapses: the stretches to collapse ({ top, leaf, folders }). folders is the path from the top to the bottom. They are placed deepest first so that an earlier operation does not change a later path.
@@ -74,6 +96,8 @@ function planCollapse(dir) {
   const entries = walk(access.target);
   rejectRepository(access.target, entries);
   const children = childrenOf(entries);
+  const position = new Map(entries.map((entry, index) => [entry.relative, index]));
+  const linkFolders = foldersWithLinks(access.target, entries);
   const plan = { target: access.target, collapses: [], skipped: [] };
   // The stretches whose attributes are to be looked at. To keep the order of skipping, an empty reason is placed at that position and filled in later.
   const pending = [];
@@ -91,7 +115,7 @@ function planCollapse(dir) {
     const chain = [entry];
     for (let next = soleFolder(children, entry.relative); next; next = soleFolder(children, next.relative)) chain.push(next);
     if (!children.has(chain.at(-1).relative)) continue;
-    const reason = skipReason(chain, entries);
+    const reason = skipReason(chain, entries, position);
     if (reason !== null) {
       plan.skipped.push({ path: entry.path, reason });
       continue;
@@ -116,7 +140,7 @@ function planCollapse(dir) {
       const folders = chain.map((item) => item.path);
       // Stretches that cannot be handled, such as a folder that holds a link or a name ending in a dot, are reported in the plan. The results of a real run and a preview become the same.
       for (const folder of folders) {
-        if (access.delete(folder) !== folder) throw new FcError(`The path goes through a link: ${folder}`);
+        if (access.delete(folder, { linkFolders }) !== folder) throw new FcError(`The path goes through a link: ${folder}`);
       }
       plan.collapses.push({ top: folders[0], leaf: folders.at(-1), folders });
     } catch (err) {

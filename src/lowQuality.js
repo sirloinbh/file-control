@@ -4,9 +4,8 @@ const path = require('node:path');
 const { FcError } = require('./commands');
 const { plural } = require('./plural');
 const { grant, walk, fileSizeInside } = require('./target');
-const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./flatten');
-const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream } = require('./productName');
-const { describeVideo } = require('./duplicates');
+const { LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./guards');
+const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS, isTransportStream, describeVideo } = require('./video');
 const { readMp4Metadata } = require('./mp4');
 const { readMkvMetadata } = require('./mkv');
 

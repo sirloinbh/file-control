@@ -6,8 +6,9 @@ const path = require('node:path');
 const { FcError, recycleTarget } = require('./commands');
 const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
-const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
-const { rejectRepository } = require('./flatten');
+const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
+const { rejectRepository } = require('./guards');
+const { describeVideo } = require('./video');
 const { markerFinder, markerReason } = require('./downloadMarker');
 const { planSafeRemovals, runConfirmedRemoval, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 

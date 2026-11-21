@@ -491,3 +491,18 @@ test('extract-all은 풀린 크기가 남은 공간보다 큰 압축 파일을 �
   assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['huge.zip', 'ok']);
   assert.ok(recycled.includes(path.join(dir, 'ok.zip')), 'the extracted archive went to the (fake) Recycle Bin');
 });
+
+test('an extraction lists the archive with tar twice (details and names), not once per check (#326)', () => {
+  const dir = tempDir();
+  makeZip(dir, 'a.zip', { 'video.mp4': 'A', 'sub/b.txt': 'B' });
+  const exec = test.mock.method(childProcess, 'execFileSync');
+  try {
+    const result = extractArchives(dir);
+    assert.strictEqual(result.failed.length, 0);
+    const listings = exec.mock.calls.map((call) => call.arguments[1]).filter((args) => args.some((arg) => arg === '-tvf' || arg === '-tf'));
+    assert.deepStrictEqual(listings.map((args) => args[0]).sort(), ['-tf', '-tvf']);
+  } finally {
+    exec.mock.restore();
+  }
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'a', 'video.mp4'), 'utf8'), 'A');
+});
