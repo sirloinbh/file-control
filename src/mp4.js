@@ -64,18 +64,21 @@ function readBoxHeader(read, offset, end, topLevel) {
 
 // It returns the child boxes within start to end in order.
 // Less than 8 leftover bytes at the end are ignored. On meeting a wrong header, it is an error only when strict, and otherwise it ends there.
+// The generator's return value is `complete`: false when a wrong header ended the walk early (a size 0 end marker counts as complete).
 function* boxes(read, p, start, end, strict) {
   let offset = start;
   while (end - offset >= 8) {
     const box = readBoxHeader(read, offset, end, false);
     if (!box) {
       // Size 0 is an end marker, not damage.
-      if (strict && read(offset, 4).readUInt32BE(0) !== 0) throw new FcError(`The MP4 structure is damaged: ${p} (at byte ${offset})`);
-      return;
+      const marker = read(offset, 4).readUInt32BE(0) === 0;
+      if (strict && !marker) throw new FcError(`The MP4 structure is damaged: ${p} (at byte ${offset})`);
+      return marker;
     }
     yield box;
     offset = box.end;
   }
+  return true;
 }
 
 // It scans the top-level boxes to find moov. It skips mdat without reading its content.
@@ -132,9 +135,10 @@ function isQuarterTurn(body, offset) {
 function readMvhd(read, box) {
   const version = readVersion(read, box);
   if (version === null) return null;
-  const body = readPayload(read, box, version === 1 ? 32 : 20);
-  if (!body) return null;
+  // One read covers the header values and the matrix. A box too short for the matrix still gives the header values.
   const matrix = readPayload(read, box, version === 1 ? 84 : 72);
+  const body = matrix || readPayload(read, box, version === 1 ? 32 : 20);
+  if (!body) return null;
   const quarterTurn = matrix ? isQuarterTurn(matrix, version === 1 ? 48 : 36) : false;
   return version === 1
     ? { timescale: body.readUInt32BE(20), duration: durationValue(body, 24, 1), quarterTurn }
@@ -222,23 +226,24 @@ function unrotatedSize(sample, header, turned) {
   return [width, height];
 }
 
+// A track is read leniently: a damaged box inside it ends that part of the walk and keeps what was found.
 // movieTurn is the rotation of the mvhd matrix. It is applied together with the track matrix, so if only one of the two is 90 or 270 degrees, the width and height are swapped.
 function readTrack(read, p, trak, movieTurn) {
   let header = null;
   let handler = null;
   let sample = null;
-  for (const box of boxes(read, p, trak.start, trak.end, true)) {
+  for (const box of boxes(read, p, trak.start, trak.end, false)) {
     if (box.type === 'tkhd') header = readTkhd(read, box);
     if (box.type !== 'mdia') continue;
-    for (const part of boxes(read, p, box.start, box.end, true)) {
+    for (const part of boxes(read, p, box.start, box.end, false)) {
       if (part.type === 'hdlr') {
         const body = readPayload(read, part, 12);
         if (body) handler = fourcc(body, 8);
       }
       if (part.type !== 'minf') continue;
-      for (const inner of boxes(read, p, part.start, part.end, true)) {
+      for (const inner of boxes(read, p, part.start, part.end, false)) {
         if (inner.type !== 'stbl') continue;
-        for (const table of boxes(read, p, inner.start, inner.end, true)) {
+        for (const table of boxes(read, p, inner.start, inner.end, false)) {
           if (table.type === 'stsd') sample = readStsd(read, p, table);
         }
       }
@@ -471,14 +476,23 @@ function parseOpenedMp4(file, p, verifyBitrate) {
 // It gathers the child boxes of start to end and returns { list, complete }. If complete is false, a wrong header was met midway. Size 0 is an end marker, not a wrong one.
 function childBoxes(read, start, end) {
   const list = [];
-  let offset = start;
-  while (end - offset >= 8) {
-    const box = readBoxHeader(read, offset, end, false);
-    if (!box) return { list, complete: read(offset, 4).readUInt32BE(0) === 0 };
-    list.push(box);
-    offset = box.end;
+  const walk = boxes(read, '', start, end, false);
+  for (;;) {
+    const step = walk.next();
+    if (step.done) return { list, complete: step.value };
+    list.push(step.value);
   }
-  return { list, complete: true };
+}
+
+// The children of one parent box are walked once per parent (the box objects live for one check), so repeated lookups do not re-read the file.
+const childCache = new WeakMap();
+function childrenOf(read, parent) {
+  let found = childCache.get(parent);
+  if (!found) {
+    found = childBoxes(read, parent.start, parent.end);
+    childCache.set(parent, found);
+  }
+  return found;
 }
 
 // It checks whether the track's data is in another file. If the last flag bit of a dref entry is 1, it is inside this file. If there is no location string, there is no file to point to, so it is seen as this file.
@@ -490,7 +504,7 @@ function isExternalTrack(read, minf) {
 }
 
 function findChild(read, parent, type) {
-  return childBoxes(read, parent.start, parent.end).list.find((box) => box.type === type);
+  return childrenOf(read, parent).list.find((box) => box.type === type);
 }
 
 // It looks at the track's data position table (stco, co64). If there is no problem, it returns null; if there is, { outside, reason }.
@@ -502,7 +516,7 @@ function checkTrack(read, trak, size) {
   const stbl = minf && findChild(read, minf, 'stbl');
   if (!stbl) return unsound('The mdia, minf, and stbl boxes of the track are not intact.');
   if (isExternalTrack(read, minf)) return null;
-  const table = childBoxes(read, stbl.start, stbl.end).list.find((box) => box.type === 'stco' || box.type === 'co64');
+  const table = childrenOf(read, stbl).list.find((box) => box.type === 'stco' || box.type === 'co64');
   if (!table) return unsound('The track has no data location table (stco, co64).');
   if (table.end - table.start < 8) return unsound('The data location table is truncated.');
   const count = read(table.start + 4, 4).readUInt32BE(0);
@@ -571,6 +585,7 @@ function checkOpenedMp4(file, p) {
   const read = makeReader(file, p);
   let moov = null;
   let fragment = false;
+  let moofSeen = false;
   let trailing = false;
   let offset = 0;
   while (size - offset >= 8) {
@@ -582,13 +597,16 @@ function checkOpenedMp4(file, p) {
       break;
     }
     if (type === 'moov' && !moov) moov = box;
+    if (type === 'moof') moofSeen = true;
     if (type === 'moof' || (type === 'styp' && offset === 0)) fragment = true;
     offset = box.end;
+    // A fragmented file can hold tens of thousands of fragments. Once moov and one moof are seen the structure is known, so the rest is not walked.
+    if (moov && moofSeen) break;
   }
   // A DASH or HLS media fragment has only moof without moov. The initialization file is separate, so it cannot be judged from this file alone.
   if (!moov && fragment) return { status: 'suspect', reason: 'The file has only fragments (moof) and no moov. It may be a streaming fragment.' };
   if (!moov) return broken('The moov box is missing. The file may not be fully downloaded or may be damaged.');
-  const { list, complete } = childBoxes(read, moov.start, moov.end);
+  const { list, complete } = childrenOf(read, moov);
   if (list.some((box) => box.type === 'cmov' || box.type === 'rmra')) return null;
   if (!list.some((box) => box.type === 'mvhd')) return broken('The moov box has no mvhd.');
   const tracks = list.filter((box) => box.type === 'trak');
