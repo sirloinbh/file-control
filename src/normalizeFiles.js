@@ -98,20 +98,8 @@ function guardOf(relative, guarded) {
   return null;
 }
 
-// It makes a plan to normalize the file names under the target. It does not touch files.
-// - renames: files to rename ({ from, to, name, number })
-// - inferred: files whose number was guessed from a lowercase word and that were not changed ({ path, name }). If includeLowercase is given, they go to renames.
-// - conflicts: files not changed because the result name overlaps an existing item or another result ({ path, name, reason })
-// - skipped: items that are not handled ({ path, reason })
-function planNormalize(dir, { includeLowercase = false } = {}) {
-  const access = grant(dir, ['read', 'write']);
-  const plan = { target: access.target, renames: [], inferred: [], conflicts: [], skipped: [] };
-  const entries = walk(access.target);
-  // The ref and object names are the content, so renaming breaks the repository. A bare repository whose name is not .git is the same.
-  rejectRepository(access.target, entries);
-  const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
-  if (bare) throw new FcError(`Not handled because it contains a repository: ${bare.path}`);
-  const existing = new Set(entries.map((entry) => nameKey(entry.path)));
+// It goes through the entries, records the ones that are skipped, left as they are, or only reported in plan, and returns the files whose name changes as [{ entry, result }].
+function collectWanted(access, entries, plan, includeLowercase) {
   const guards = guardedFolders(access.target, entries);
   const { guarded, pages } = guards;
   let hiddenChecked = false;
@@ -169,6 +157,49 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     }
     wanted.push({ entry, result });
   }
+  return wanted;
+}
+
+// It plans the rename of one file. If the name overlaps an existing item or the 8.3 short name of another file, it is a conflict.
+function planRename(entry, result, access, plan, existing, targets) {
+  const to = path.join(path.dirname(entry.path), result.name);
+  const key = nameKey(to);
+  const conflict = (reason) => plan.conflicts.push({ path: entry.path, name: result.name, reason });
+  if (targets.get(key) > 1) {
+    conflict('Another file would get the same name.');
+  } else if (key !== nameKey(entry.path) && existing.has(key)) {
+    // If it is a trace of an earlier run that stopped midway (another name of the same file, an empty file), it adds that fact (#73).
+    conflict(`The name already exists.${leftoverNote(entry.path, to)}`);
+  } else {
+    try {
+      const from = access.read(entry.path);
+      // If only the case changes, access.write returns the real spelling of the current file, so it writes the new name onto the source folder.
+      const dest = key === nameKey(entry.path) ? path.join(path.dirname(from), result.name) : access.write(to);
+      // If it overlaps with the 8.3 short name of another file, access.write returns the long path of that file.
+      if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('The name already exists.');
+      else plan.renames.push({ from, to: dest, name: result.name, number: result.number });
+    } catch (err) {
+      if (!(err instanceof FcError)) throw err;
+      plan.skipped.push({ path: entry.path, reason: err.message });
+    }
+  }
+}
+
+// It makes a plan to normalize the file names under the target. It does not touch files.
+// - renames: files to rename ({ from, to, name, number })
+// - inferred: files whose number was guessed from a lowercase word and that were not changed ({ path, name }). If includeLowercase is given, they go to renames.
+// - conflicts: files not changed because the result name overlaps an existing item or another result ({ path, name, reason })
+// - skipped: items that are not handled ({ path, reason })
+function planNormalize(dir, { includeLowercase = false } = {}) {
+  const access = grant(dir, ['read', 'write']);
+  const plan = { target: access.target, renames: [], inferred: [], conflicts: [], skipped: [] };
+  const entries = walk(access.target);
+  // The ref and object names are the content, so renaming breaks the repository. A bare repository whose name is not .git is the same.
+  rejectRepository(access.target, entries);
+  const bare = entries.find((entry) => entry.type === 'dir' && looksLikeGitDir(entry.path));
+  if (bare) throw new FcError(`Not handled because it contains a repository: ${bare.path}`);
+  const existing = new Set(entries.map((entry) => nameKey(entry.path)));
+  const wanted = collectWanted(access, entries, plan, includeLowercase);
 
   // If the results overlap, it cannot decide which one to keep, so it changes none of them.
   const targets = new Map();
@@ -176,29 +207,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     const key = nameKey(path.join(path.dirname(item.entry.path), item.result.name));
     targets.set(key, (targets.get(key) ?? 0) + 1);
   }
-  for (const { entry, result } of wanted) {
-    const to = path.join(path.dirname(entry.path), result.name);
-    const key = nameKey(to);
-    const conflict = (reason) => plan.conflicts.push({ path: entry.path, name: result.name, reason });
-    if (targets.get(key) > 1) {
-      conflict('Another file would get the same name.');
-    } else if (key !== nameKey(entry.path) && existing.has(key)) {
-      // If it is a trace of an earlier run that stopped midway (another name of the same file, an empty file), it adds that fact (#73).
-      conflict(`The name already exists.${leftoverNote(entry.path, to)}`);
-    } else {
-      try {
-        const from = access.read(entry.path);
-        // If only the case changes, access.write returns the real spelling of the current file, so it writes the new name onto the source folder.
-        const dest = key === nameKey(entry.path) ? path.join(path.dirname(from), result.name) : access.write(to);
-        // If it overlaps with the 8.3 short name of another file, access.write returns the long path of that file.
-        if (nameKey(path.basename(dest)) !== nameKey(result.name)) conflict('The name already exists.');
-        else plan.renames.push({ from, to: dest, name: result.name, number: result.number });
-      } catch (err) {
-        if (!(err instanceof FcError)) throw err;
-        plan.skipped.push({ path: entry.path, reason: err.message });
-      }
-    }
-  }
+  for (const { entry, result } of wanted) planRename(entry, result, access, plan, existing, targets);
   return plan;
 }
 

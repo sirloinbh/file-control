@@ -8,6 +8,7 @@ const { grant, walk } = require('./target');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, PROJECT_FILE, leftoverNote, rejectRepository, rejectProjectAncestor } = require('./guards');
 const { moveWithoutOverwrite } = require('./safeMove');
 const { VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./video');
+const { informativeFolder, containerFolder, subtitleFolder, languageFolder, titleStart, withOuterFolder, outerFolders, detailedName, prefixedName, withTags } = require('./flattenNames');
 
 // toLowerCase looks at context and makes ΑΣ and ασ, which are the same name on NTFS, different, so it uses upper case.
 function nameKey(name) {
@@ -40,239 +41,6 @@ function freeName(name, target, taken, nextNumber) {
     }
   }
 }
-
-// It checks whether the end of a folder name looks like an extension. An end that starts with digits, such as Movie.2021.1080p, is not seen as an extension.
-const EXTENSION_LIKE = /\.(?:[A-Za-z][A-Za-z0-9]{0,9}|7z)$/;
-
-// File names with no information. Only such files are changed to the product-number folder name. Names such as "계약서" (Korean for "contract") and ko would lose information if removed.
-const GENERIC_NAME = /^(?:[A-Z]|VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
-
-// GENERIC_NAME without the one-letter names. A one-letter name such as a or o may be an abbreviation, so it is not changed to a folder name that is not a product number (#71).
-const GENERIC_WORD = /^(?:VIDEO|MOVIE|FILM|CLIP|FILE|IMAGE|PHOTO|AUDIO|SAMPLE|UNTITLED|영상|동영상|파일)$/;
-
-// If a folder name has only these, it is seen as having no information. Words such as video kind, quality, and codec, and common folder names.
-const PLAIN_FOLDER_WORD = /^(?:VIDEOS?|MOVIES?|FILMS?|CLIPS?|FILES?|IMAGES?|PHOTOS?|AUDIO|SAMPLES?|UNTITLED|영상|동영상|파일|DOWNLOADS?|SUBS?|SUBTITLES?|자막|NEW|FOLDER|TEMP|TMP|새|폴더|[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
-
-// The words in PLAIN_FOLDER_WORD that show only quality or codec. Alone they cannot be a name, but they tell versions of the same video apart (#150).
-const QUALITY_WORD = /^(?:[HX]\.?26[45]|HEVC|AVC|AV1|\d{3,4}[PI]|[248]K|UHD|FHD|HD|SD|BD\d*|BDRIP|BLURAY|WEB|WEBRIP|DL|DVD|DVDRIP|HDR|SDR|AAC|AC3|DTS)$/;
-
-// The name Windows gives a new folder ("새 폴더", Korean for "New folder"). Even with a number attached, it has no information.
-const DEFAULT_FOLDER = /^(?:새 폴더|New folder)(?: \(\d+\))?$/i;
-
-// True if it is a usable folder name to use instead of a file name with no information (#71). It is enough that there is a product number or at least one word that is not one of the common words above.
-// Full-width letters are normalized with NFKC, and the number and copy marks Explorer adds (Downloads (2), "새 폴더 - 복사본", "New folder - copy") are stripped before looking (first review).
-// A folder name of only one letter (a/) may be an abbreviation, so it is not used.
-function informativeFolder(folder) {
-  if (extractProductNumbers(folder).length > 0) return true;
-  const plain = folder.normalize('NFKC').trim().replace(/(?:\s*\(\d+\)|\s+-\s+(?:복사본|Copy))+$/i, '');
-  if (DEFAULT_FOLDER.test(plain)) return false;
-  const folderWords = words(plain);
-  if (folderWords.join('').length < 2) return false;
-  return folderWords.some((word) => !PLAIN_FOLDER_WORD.test(word));
-}
-
-// It checks whether a folder is one to pick by name (#211). Even a usable name, a subtitle folder (English Subs/, Eng Sub/) holds only subtitles, so it is not picked.
-// A folder with other words together (Movie [Eng Sub]/) may be the title of a hard-subbed video, so it is picked (second review).
-// A folder with only a language name (English/) is picked here (#233). A language folder that holds only subtitles is removed in advance by planFlatten from the subtitle's folder list.
-function titleFolder(folder) {
-  return informativeFolder(folder) && !subtitleFolder(folder);
-}
-
-// It checks whether it is a nearby folder to attach together between prefixes (#150). It is enough that it is a usable name or a name with only quality or codec (1080p, WEB-DL).
-// Container folder names such as Subs, "자막" (subtitles), Videos, and "새 폴더" (new folder) are not attached. If attached, ABC-123/Subs/video.en.srt would lose its pair with ABC-123/video.mp4.
-function distinguishingFolder(folder) {
-  if (informativeFolder(folder)) return true;
-  const folderWords = words(folder.normalize('NFKC'));
-  return folderWords.length > 0 && folderWords.every((word) => QUALITY_WORD.test(word));
-}
-
-// When a file name with no information received the nearby folder name (CD1), it prepends the product number or the title of an outer folder that is not the only file (#150).
-// ABC-123/CD1/video.mp4 and ABC-123/CD2/video.mp4 become ABC-123 CD1.mp4 and ABC-123 CD2.mp4. If the received name has a product number,
-// the outer name is already in it, or attaching would exceed the length limit, it returns the received name as is.
-// outer is the folders outside the folder of the received name (from the nearest). An outer folder that holds only one file (Show of Show/CD1/video.mp4) is included too (#168).
-function withOuterFolder(fileName, detailed, outer) {
-  const { name: base, ext } = path.parse(fileName);
-  if (!GENERIC_WORD.test(words(base).join(''))) return detailed;
-  const chosen = detailed.slice(0, detailed.length - ext.length);
-  if (extractProductNumbers(chosen).length > 0) return detailed;
-  // An outer folder with an extension attached (ABC-123.mp4/) is also used with that extension stripped (first review).
-  const stems = folderStems(outer, ext);
-  const pick = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? outerTitle(stems);
-  if (pick === undefined || containsWords(words(chosen), words(pick).join(''))) return detailed;
-  // If the outer name already contains the received name (Show CD1/CD1/video.mp4), it uses only the outer name and the in-between folders so they do not overlap (#178).
-  if (containsWords(words(pick), words(chosen).join(''))) {
-    const merged = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)}${ext}`;
-    return merged.length <= MAX_NAME ? merged : detailed;
-  }
-  // Quality folders and the like between the outer folder and the received name are also attached like a prefix (first review). Show/1080p/CD1/video.mp4 -> Show 1080p CD1.mp4
-  const full = `${joinBetween(pick, stems.slice(0, stems.indexOf(pick)), chosen)} ${detailed}`;
-  if (full.length <= MAX_NAME) return full;
-  const short = `${pick.normalize('NFC')} ${detailed}`;
-  return short.length <= MAX_NAME ? short : detailed;
-}
-
-// It returns the folders outside the folder detailedName chose, from the nearest (#168). Before, it passed only an outer folder that was not the only file, so
-// a lone Show/CD1/video.mp4 became CD1.mp4 and lost Show, and the result differed from when the same Show had a CD2 (Show CD1.mp4).
-// If it cannot find the chosen folder, it returns only the outer folder that is not the only file, as before.
-function outerFolders(fileName, detailed, ancestors, soleCount) {
-  const ext = path.extname(fileName);
-  const chosen = detailed.slice(0, detailed.length - ext.length);
-  const stemOf = (folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder).normalize('NFC');
-  const index = ancestors.slice(0, soleCount).findIndex((folder) => stemOf(folder) === chosen);
-  return ancestors.slice(index === -1 ? soleCount : index + 1);
-}
-
-// For a folder name that ends with the same extension as the file, it strips that extension, and it leaves out names that are empty, dot folders, or look like another extension.
-function folderStems(folders, ext) {
-  return folders
-    .map((folder) => (folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder))
-    .filter((stem) => stem.trim() !== '' && !stem.startsWith('.') && !EXTENSION_LIKE.test(stem));
-}
-
-// Words that go in subtitle folder names. Even together with other words, as in English Subs/, it is seen as a subtitle folder.
-const SUBTITLE_WORD = /^(?:SUBS?|SUBTITLES?|자막)$/;
-
-// Language names. A folder with only these words and no video (English/, "한국어/" Korean) is seen as a folder that holds subtitles split by language and is handled like a subtitle folder (second review, #233).
-const LANGUAGE_WORD = /^(?:ENGLISH|ENG|EN|KOREAN|KOR|KO|JAPANESE|JPN|JA|CHINESE|CHS|CHT|CHI|ZH|SPANISH|SPA|ES|FRENCH|FRE|FRA|FR|GERMAN|GER|DEU|DE|한국어|한글|영어|일본어|중국어)$/;
-
-// True if it is a folder with subtitle words (Subs/, English Subs/, "자막/" subtitles). This folder and the folders inside it are seen as holding only subtitles.
-function hasSubtitleWord(folder) {
-  return words(folder.normalize('NFKC')).some((word) => SUBTITLE_WORD.test(word));
-}
-
-// True if it is a folder with only a language name (English/, "한국어/" Korean). It is a folder that holds subtitles split by language or a folder of videos by language (dubbed versions).
-function languageFolder(folder) {
-  const folderWords = words(folder.normalize('NFKC'));
-  return folderWords.length > 0 && folderWords.every((word) => LANGUAGE_WORD.test(word));
-}
-
-// True if it is a folder made only of subtitle words and language names (Subs/, Eng Sub/, English/).
-function containerFolder(folder) {
-  const folderWords = words(folder.normalize('NFKC'));
-  return folderWords.length > 0 && folderWords.every((word) => SUBTITLE_WORD.test(word) || LANGUAGE_WORD.test(word));
-}
-
-// True if it has subtitle words and is made only of subtitle and language words (Subs/, English Subs/, "자막/" subtitles). A folder that holds a title, such as Movie [Eng Sub]/, is not seen as a subtitle folder (second review).
-function subtitleFolder(folder) {
-  return hasSubtitleWord(folder) && containerFolder(folder);
-}
-
-// It looks, from the nearest, for the title folder to attach from outside the chosen folder (#211). A folder with only a language name and a subtitle folder (English Subs/) are used only when there is no other title.
-// Show/English/CD1/video.mp4 picks Show, and the English in between is attached by joinBetween, making Show English CD1 (#233). English/CD1/video.mp4 attaches English.
-function outerTitle(stems) {
-  return stems.find((stem) => titleFolder(stem) && !languageFolder(stem)) ?? stems.find(titleFolder) ?? stems.find(informativeFolder);
-}
-
-// The position after the outermost one that is a subtitle folder among folders (from the nearest) (#211). Folders nearer than that are inside a subtitle folder, so they are not picked as a title.
-// For a subtitle file, planFlatten removes the subtitle folder in advance, so this position is used for other files inside a subtitle folder (Subs/Fonts/font.ttf).
-function titleStart(folders) {
-  return folders.findLastIndex(subtitleFolder) + 1;
-}
-
-// After chosen, it attaches, from the outside, the names to attach among the in-between folders (between, from the nearest) (#150). Names already in it (including also) are not attached again.
-// Folders with subtitle words and the folders below them (Subs/English/) are not attached. If attached, ABC-123/Subs/English/video.en.srt would get a different prefix from the video (first review).
-// A folder with only a language name (Show/English/CD1/) may be a folder of videos by language, so it is attached (#233). A language folder that holds only subtitles is removed in advance by planFlatten.
-function joinBetween(chosen, between, also = '') {
-  let prefix = chosen.normalize('NFC');
-  for (const stem of [...between].reverse()) {
-    const stemWords = words(stem);
-    if (hasSubtitleWord(stem)) break;
-    if (!distinguishingFolder(stem) || containsWords(words(`${prefix} ${also}`), stemWords.join(''))) continue;
-    prefix = `${prefix} ${stem.normalize('NFC')}`;
-  }
-  return prefix;
-}
-
-// It drops differences of spaces, symbols, and case and splits into words.
-function words(name) {
-  return name.normalize('NFC').toUpperCase().split(/[\s\-_.()[\]]+/).filter(Boolean);
-}
-
-// True if the folder's consecutive words joined together equal the file name. Searching by character would overlap by chance, as with v and movie, or 2 and 2021.
-function containsWords(folderWords, fileText) {
-  return folderWords.some((_, start) => {
-    let joined = '';
-    for (let i = start; i < folderWords.length && joined.length < fileText.length; i++) joined += folderWords[i];
-    return joined === fileText;
-  });
-}
-
-// True if the folder name is more detailed than the file name. If it cannot decide, it returns false so that the file name is kept.
-// It does not choose by length alone. The information in a file name (date, quality, language, number) cannot be restored once removed.
-// If loose is true, even a folder name that is not a product number is used for a file name with no information (#71).
-function isMoreDetailed(folder, base, loose = false) {
-  const folderWords = words(folder);
-  const baseWords = words(base);
-  const f = folderWords.join('');
-  const b = baseWords.join('');
-  if (f === '' || b === '') return false;
-  if (f.length > b.length && containsWords(folderWords, b)) return true;
-  if (b.includes(f)) return false;
-  if (extractProductNumbers(folder).length > 0 && GENERIC_NAME.test(b)) return true;
-  // A file name with no information, such as video.mp4, uses even a folder name not accepted as a product number (PART-01, BD-123). If left as is, the folder is deleted and the information is lost (#71).
-  return loose && GENERIC_WORD.test(b) && titleFolder(folder);
-}
-
-// It returns the most detailed name among the file name and the folder names (from the nearest folder), keeping the extension.
-// Folders nearer than start (folders inside a subtitle folder) are not picked as the new name for a file name with no information (#211). A product-number folder is still picked.
-function detailedName(fileName, folders, start = 0) {
-  const { name: base, ext } = path.parse(fileName);
-  // If there is no extension, the end of the folder name could become the extension (data + data.zip/), and for a dot file such as .env.local the name is the identity.
-  // For .tar.gz, attaching the folder name leaves only .gz and loses the format. The ". Strange" of Dr. Strange is not an extension.
-  if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
-  const pick = (loose) => {
-    let best = base;
-    for (const [index, folder] of folders.entries()) {
-      if (loose && index < start) continue;
-      // If the folder name contains the same extension (ABC-123.mp4/), it is removed so they do not overlap, and a different extension would make a double extension, so it is not used.
-      const stem = folder.toUpperCase().endsWith(ext.toUpperCase()) ? folder.slice(0, -ext.length) : folder;
-      // Using a dot folder name such as .trash-1000 would make a hidden file.
-      if (!stem.startsWith('.') && !EXTENSION_LIKE.test(stem) && isMoreDetailed(stem, best, loose)) best = stem.normalize('NFC');
-    }
-    return best;
-  };
-  // It looks for a product-number folder first. Only when there is none does it use another folder name for a file name with no information, so a nearer summer-2023/ does not push out an outer ABC-123/.
-  const strict = pick(false);
-  return (strict === base ? pick(true) : strict) + ext;
-}
-
-// When a file name with no information is not the only file in the folder and cannot be changed to the folder name, it returns a name with the nearest folder name prepended (#71).
-// ABC-123/video.mp4 and ABC-123/sample.mp4 become ABC-123 video.mp4 and ABC-123 sample.mp4. The original name is kept so they can be told apart,
-// and the main feature and the sample do not fight over the same name. If it cannot attach, it returns the original name.
-// folders is in order from the nearest folder to the outer folders. If the nearest folder has no information, like 1080p/, it goes up and attaches the first usable folder name it meets (first review).
-// Whether it has no information is judged by the part before the first dot. video.en.srt also gets the same prefix as video.mp4, so the subtitle pair is kept. It only prepends, so no information is lost.
-function prefixedName(fileName, folders) {
-  const { name: base, ext } = path.parse(fileName);
-  if (ext === '' || /\s/.test(ext) || fileName.startsWith('.') || /\.tar$/i.test(base)) return fileName;
-  const b = words(base.split('.')[0]).join('');
-  if (!GENERIC_NAME.test(b)) return fileName;
-  // It also accepts a single folder (a string) or a missing value.
-  const stems = folderStems([folders].flat().filter((folder) => folder !== undefined), ext);
-  // Like detailedName, it looks for a product-number folder first, so that ABC-123/Extras/video.mp4 attaches ABC-123 instead of Extras (second review).
-  // The title folder is picked only outside a folder with subtitle words (#211). If Show/Subs/Forced/video.en.srt received Forced, it would lose its pair with the video.
-  const titles = stems.slice(titleStart(stems));
-  const chosen = stems.find((stem) => extractProductNumbers(stem).length > 0) ?? (GENERIC_WORD.test(b) ? titles.find(titleFolder) : undefined);
-  if (chosen === undefined) return fileName;
-  // The nearby folder names between the chosen folder and the file (1080p, CD1) are also attached together from the outside (#150). So that Show/1080p/video.mp4 and Show/720p/video.mp4
-  // do not become Show video.mp4 and Show video (2).mp4 and lose the quality distinction. Names already in it are not attached again.
-  const inner = joinBetween(chosen, stems.slice(0, stems.indexOf(chosen)));
-  const prefixes = [inner, chosen.normalize('NFC')];
-  // If the chosen folder is not a product-number folder, the outer title folder is also prepended like withOuterFolder (#178). So that Show/CD1/video.mp4 and video.en.srt
-  // become Show CD1 video.mp4 and Show CD1 video.en.srt and do not lose Show, as with a lone video.mp4 (Show CD1.mp4).
-  // The chosen folder is also attached with joinBetween like the in-between folders, and if the outer name already contains it (Show CD1/CD1/1080p/), it is not attached again (first review).
-  if (extractProductNumbers(chosen).length === 0) {
-    const pick = outerTitle(titles.slice(titles.indexOf(chosen) + 1));
-    if (pick !== undefined && !containsWords(words(inner), words(pick).join(''))) prefixes.unshift(joinBetween(pick, stems.slice(0, stems.indexOf(pick))));
-  }
-  // The length limit is judged not by the whole file name but by the prefix and the part before the first dot (first review). Because if video.mp4 and video.en.srt received
-  // different prefixes because of a length difference, the pair would break. It leaves PAIR_RESERVE characters for the extension and the language mark.
-  const stem = fileName.split('.')[0];
-  const prefix = prefixes.find((candidate) => candidate.length + 1 + stem.length + PAIR_RESERVE <= MAX_NAME) ?? prefixes.at(-1);
-  return `${prefix} ${fileName}`;
-}
-
-// The number of characters left after the first dot (the extension and a language mark such as .en.forced) when choosing a prefix (#178).
-const PAIR_RESERVE = 30;
 
 // Files that decorate a folder or hold previews. They mean something only in that folder, so moving them piles them up right under the target like desktop (2).ini (#65).
 // They are not moved and are not counted in the file count, and if the folder becomes empty they go to the Recycle Bin with the folder.
@@ -387,18 +155,6 @@ function subtitlePlacement(parts, videos) {
   return { parts: [...mirrored, ...products], tags };
 }
 
-// It attaches the distinguishing folder name (tags) to the chosen name with a dot after the part before the first dot (#233). Show video.en.srt -> Show video.Forced.en.srt
-// A name changed to the folder name (Show Season 1.srt) gets it before the extension.
-function withTags(detailed, original, tags) {
-  const label = tags.map((tag) => tag.normalize('NFC')).join('.');
-  if (detailed.endsWith(original)) {
-    const dot = original.indexOf('.');
-    return `${detailed.slice(0, detailed.length - original.length)}${original.slice(0, dot)}.${label}${original.slice(dot)}`;
-  }
-  const ext = path.extname(original);
-  return `${detailed.slice(0, detailed.length - ext.length)}.${label}${ext}`;
-}
-
 // For each folder, it counts the files and links inside, including below. It does not count folder settings and preview files (desktop.ini and so on).
 // placeOf returns the folders (from the outer folder) in which to count an item. A subtitle is counted in the video-side folder, so it is seen as a file in the same folder as its paired video (#233).
 function countFiles(entries, placeOf) {
@@ -412,6 +168,151 @@ function countFiles(entries, placeOf) {
     }
   }
   return counts;
+}
+
+const isTop = (entry) => !entry.relative.includes(path.sep);
+
+// The files already directly under the target, keyed by file ID. If a previous run stopped after making a hard link, another name of the same file (possibly with a number) exists directly under the target (#73).
+function topLevelFiles(entries) {
+  const topFiles = new Map();
+  for (const entry of entries) {
+    if (!isTop(entry) || entry.type !== 'file') continue;
+    const key = fileKey(entry.path);
+    if (key) topFiles.set(key, entry.path);
+  }
+  return topFiles;
+}
+
+// It decides what happens to one item below the top level, without looking at its name: { skip: reason }, { guard: folder left whole }, { file: true } for a file to move, or {} for a folder to ignore.
+function classifyEntry(entry, guarded, attributes) {
+  const isDir = entry.type === 'dir';
+  const parts = entry.relative.split(path.sep);
+  if (!isDir && parts.some((part) => LEFTOVER.test(part))) return { skip: 'Not moved because it is a leftover from an earlier job.' };
+  if (!isDir && parts.some((part) => SYSTEM_FOLDER.test(part))) return { skip: 'Not moved because it is inside a Windows system folder.' };
+  const guard = guardOf(entry.relative, guarded);
+  if (guard !== undefined) return isDir ? {} : { guard };
+  if (isDir) return {};
+  if (entry.type === 'link') return { skip: 'Links are not moved.' };
+  if (isFolderMetadata(entry)) return { skip: 'Not moved because it is a folder settings or preview file. If the folder becomes empty, it goes to the Recycle Bin with the folder.' };
+  if (attributes.has(entry.relative)) return { skip: 'Not moved because it has the hidden or system attribute.' };
+  return { file: true };
+}
+
+// It sorts every item into stay (directly under the target), skipped, or files to move. Each skipped row carries the position of the entry it came from, so the report keeps the walk order
+// even when later steps add reasons. A folder left whole is reported once, as an item that counts the files inside it.
+function classifyEntries(entries, target, guarded, attributes) {
+  const result = { stay: [], skipped: [], guardItems: new Map(), files: [] };
+  entries.forEach((entry, order) => {
+    if (isTop(entry)) {
+      if (entry.type !== 'dir') result.stay.push(entry.path);
+      return;
+    }
+    const verdict = classifyEntry(entry, guarded, attributes);
+    if (verdict.skip !== undefined) result.skipped.push({ order, item: { path: entry.path, reason: verdict.skip } });
+    else if (verdict.guard !== undefined) {
+      let item = result.guardItems.get(verdict.guard);
+      if (!item) {
+        item = { path: path.join(target, verdict.guard), label: guarded.get(verdict.guard), count: 0 };
+        result.guardItems.set(verdict.guard, item);
+        result.skipped.push({ order, item });
+      }
+      item.count += 1;
+    } else if (verdict.file) result.files.push({ entry, order });
+  });
+  return result;
+}
+
+// The name a file takes from its folders: the folder name, the folder name prepended, or the original name (#71, #168).
+function folderBasedName(original, place, fileCounts) {
+  const sole = soleFolders(place.parts, fileCounts);
+  const ancestors = [...place.parts].reverse();
+  const detailed = detailedName(original, sole, titleStart(ancestors));
+  if (detailed === original) return prefixedName(original, ancestors);
+  return withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
+}
+
+// It chooses the name wanted for one file before numbers are added. It throws an FcError if the file cannot be planned.
+function proposeName(entry, order, access, naming) {
+  const original = path.basename(entry.path);
+  const from = access.read(entry.path);
+  // Attaching an extension to a folder name can exceed the length limit. It does not skip the file and goes back to the original name.
+  const place = naming.placementOf(entry);
+  let detailed = folderBasedName(original, place, naming.fileCounts);
+  // It does not leave that name and add a number to make a third name.
+  const twin = naming.topFiles.get(fileKey(from));
+  if (twin) throw new FcError(`Not moved because the name already exists directly under the target: ${path.basename(twin)}${leftoverNote(from, twin)}`);
+  if (detailed.length > MAX_NAME) detailed = original;
+  // If the name with the distinguishing folder name attached exceeds the limit, it is not attached. The pair is tied by the name before attaching.
+  const tagged = place.tags.length > 0 && detailed !== original ? withTags(detailed, original, place.tags) : detailed;
+  return { entry, order, from, original, desired: tagged.length > MAX_NAME ? detailed : tagged, pairName: detailed };
+}
+
+// It first assigns names to the files that keep their original name (#63). So that a folder-name candidate (ABC-123 Title/x.mp4 -> ABC-123 Title.mp4)
+// does not take the name of the file that originally has that name (z/ABC-123 Title.mp4) first and force a number on it. The order of equal ranks is the item order as it is.
+// Pairs that received the same prefix in the same folder (ABC-123/video.mp4, video.en.srt -> ABC-123 video.*) are assigned even before that,
+// so that even if they overlap with a file of the original name (z/ABC-123 video.mp4), a number is added to only one of the pair and the pair does not break (first review).
+// The key is the attached prefix plus the part before the first dot of the original name. It does not cut at a dot in the prefix folder name (ABC-123 v1.5),
+// and it also ties pairs split across subfolders (ABC-123/video.mp4, ABC-123/Subs/video.en.srt) (second review).
+// A subtitle with the distinguishing folder name attached (Show video.Forced.srt) is tied to the video by the name before attaching (pairName) (#233).
+function assignmentOrder(candidates) {
+  const pairKey = (c) => {
+    if (!c.pairName.endsWith(c.original)) return nameKey(c.pairName);
+    return nameKey(c.pairName.slice(0, c.pairName.length - c.original.length) + c.original.split('.')[0]);
+  };
+  const pairSizes = new Map();
+  for (const c of candidates) if (c.desired !== c.original) pairSizes.set(pairKey(c), (pairSizes.get(pairKey(c)) ?? 0) + 1);
+  const rank = (c) => {
+    if (c.desired === c.original) return 1;
+    return pairSizes.get(pairKey(c)) > 1 ? 0 : 2;
+  };
+  const ranks = new Map(candidates.map((c) => [c, rank(c)]));
+  return [...candidates].sort((a, b) => ranks.get(a) - ranks.get(b));
+}
+
+// It picks the free name for one candidate and returns the move. It throws an FcError if no name works.
+function planMove(candidate, access, taken, nextNumber) {
+  const { from, original } = candidate;
+  let desired = candidate.desired;
+  let name = freeName(desired, access.target, taken, nextNumber);
+  if (name.length > MAX_NAME && desired !== original) {
+    desired = original;
+    name = freeName(desired, access.target, taken, nextNumber);
+  }
+  if (name.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${name}`);
+  const move = { from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired };
+  taken.add(nameKey(name));
+  return move;
+}
+
+// It assigns names to all candidates at once. It returns the moves in item order and the skipped rows of the files whose name could not be assigned.
+function assignNames(candidates, access, taken) {
+  const nextNumber = new Map();
+  const moves = new Map();
+  const failed = [];
+  for (const candidate of assignmentOrder(candidates)) {
+    try {
+      moves.set(candidate, planMove(candidate, access, taken, nextNumber));
+    } catch (err) {
+      if (!(err instanceof FcError)) throw err;
+      failed.push({ order: candidate.order, item: { path: candidate.entry.path, reason: err.message } });
+    }
+  }
+  return { moves: candidates.filter((c) => moves.has(c)).map((c) => moves.get(c)), failed };
+}
+
+// It fills in the reasons of the folders left whole. It also returns rows for the folders to keep that have no files, which are reported as not deleted.
+// Those inside another folder to keep were already reported by the outer folder.
+function guardedReasons(classified, guarded, target, firstOrder) {
+  for (const item of classified.guardItems.values()) {
+    item.reason = `Not moving the ${item.count} items inside; the folder is left whole because it is a ${item.label}.`;
+    delete item.label;
+    delete item.count;
+  }
+  const rows = [];
+  for (const [relative, label] of guarded) {
+    if (!classified.guardItems.has(relative) && guardOf(relative, guarded) === relative) rows.push({ order: firstOrder + rows.length, item: { path: path.join(target, relative), reason: `Folder left whole because it is a ${label}.` } });
+  }
+  return rows;
 }
 
 // It makes a plan to move all files under the target directly under the target. It does not touch files.
@@ -429,10 +330,7 @@ function planFlatten(dir) {
   const folders = [''].concat(entries.filter((entry) => entry.type === 'dir' && !entry.relative.split(path.sep).some((part) => PROGRAM_FOLDER.test(part))).map((entry) => entry.relative));
   const attributes = hiddenOrSystemEntries(access.target, folders);
   const guarded = guardedFolders(access.target, entries, attributes);
-  const guardItems = new Map();
-  const isTop = (entry) => !entry.relative.includes(path.sep);
-  const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
-  const nextNumber = new Map();
+  const classified = classifyEntries(entries, access.target, guarded, attributes);
   // For a subtitle file, it chooses and counts its name by the video-side folder without the subtitle folder (#233).
   const videos = videoFolders(entries);
   const placements = new Map();
@@ -445,129 +343,23 @@ function planFlatten(dir) {
     }
     return place;
   };
-  const fileCounts = countFiles(entries, (entry) => placementOf(entry).parts);
-  const plan = { target: access.target, moves: [], stay: [], skipped: [], guarded: new Set(guarded.keys()) };
-  // If a previous run stopped after making a hard link, another name of the same file (possibly with a number) exists directly under the target (#73).
-  const topFiles = new Map();
-  // The files to assign names to ({ from, original, desired, slot, move })
+  const naming = { placementOf, fileCounts: countFiles(entries, (entry) => placementOf(entry).parts), topFiles: topLevelFiles(entries) };
+  const skipped = classified.skipped;
   const candidates = [];
-  for (const entry of entries) {
-    if (!isTop(entry) || entry.type !== 'file') continue;
-    const key = fileKey(entry.path);
-    if (key) topFiles.set(key, entry.path);
-  }
-  for (const entry of entries) {
-    if (isTop(entry)) {
-      if (entry.type !== 'dir') plan.stay.push(entry.path);
-      continue;
-    }
-    const parts = entry.relative.split(path.sep);
-    if (entry.type !== 'dir' && parts.some((part) => LEFTOVER.test(part))) {
-      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is a leftover from an earlier job.' });
-      continue;
-    }
-    if (entry.type !== 'dir' && parts.some((part) => SYSTEM_FOLDER.test(part))) {
-      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is inside a Windows system folder.' });
-      continue;
-    }
-    const guard = guardOf(entry.relative, guarded);
-    if (guard !== undefined) {
-      if (entry.type === 'dir') continue;
-      let item = guardItems.get(guard);
-      if (!item) {
-        item = { path: path.join(access.target, guard), label: guarded.get(guard), count: 0 };
-        guardItems.set(guard, item);
-        plan.skipped.push(item);
-      }
-      item.count += 1;
-      continue;
-    }
-    if (entry.type === 'dir') continue;
-    if (entry.type === 'link') {
-      plan.skipped.push({ path: entry.path, reason: 'Links are not moved.' });
-      continue;
-    }
-    if (isFolderMetadata(entry)) {
-      plan.skipped.push({ path: entry.path, reason: 'Not moved because it is a folder settings or preview file. If the folder becomes empty, it goes to the Recycle Bin with the folder.' });
-      continue;
-    }
-    if (attributes.has(entry.relative)) {
-      plan.skipped.push({ path: entry.path, reason: 'Not moved because it has the hidden or system attribute.' });
-      continue;
-    }
-    const original = path.basename(entry.path);
+  for (const { entry, order } of classified.files) {
     try {
-      const from = access.read(entry.path);
-      // Attaching an extension to a folder name can exceed the length limit. It does not skip the file and goes back to the original name.
-      const place = placementOf(entry);
-      const sole = soleFolders(place.parts, fileCounts);
-      const ancestors = [...place.parts].reverse();
-      let detailed = detailedName(original, sole, titleStart(ancestors));
-      if (detailed === original) detailed = prefixedName(original, ancestors);
-      else detailed = withOuterFolder(original, detailed, outerFolders(original, detailed, ancestors, sole.length));
-      // It does not leave that name and add a number to make a third name.
-      const twin = topFiles.get(fileKey(from));
-      if (twin) throw new FcError(`Not moved because the name already exists directly under the target: ${path.basename(twin)}${leftoverNote(from, twin)}`);
-      // Names are assigned all at once below. On failure, the reason is filled into this place to keep the skipped order.
-      const slot = { path: entry.path, reason: null };
-      plan.skipped.push(slot);
-      if (detailed.length > MAX_NAME) detailed = original;
-      // If the name with the distinguishing folder name attached exceeds the limit, it is not attached. The pair is tied by the name before attaching.
-      const tagged = place.tags.length > 0 && detailed !== original ? withTags(detailed, original, place.tags) : detailed;
-      candidates.push({ from, original, desired: tagged.length > MAX_NAME ? detailed : tagged, pairName: detailed, slot });
+      candidates.push(proposeName(entry, order, access, naming));
     } catch (err) {
       if (!(err instanceof FcError)) throw err;
-      plan.skipped.push({ path: entry.path, reason: err.message });
+      skipped.push({ order, item: { path: entry.path, reason: err.message } });
     }
   }
-  // It first assigns names to the files that keep their original name (#63). So that a folder-name candidate (ABC-123 Title/x.mp4 -> ABC-123 Title.mp4)
-  // does not take the name of the file that originally has that name (z/ABC-123 Title.mp4) first and force a number on it. The move order is the item order as it is.
-  // Pairs that received the same prefix in the same folder (ABC-123/video.mp4, video.en.srt -> ABC-123 video.*) are assigned even before that,
-  // so that even if they overlap with a file of the original name (z/ABC-123 video.mp4), a number is added to only one of the pair and the pair does not break (first review).
-  // The key is the attached prefix plus the part before the first dot of the original name. It does not cut at a dot in the prefix folder name (ABC-123 v1.5),
-  // and it also ties pairs split across subfolders (ABC-123/video.mp4, ABC-123/Subs/video.en.srt) (second review).
-  // A subtitle with the distinguishing folder name attached (Show video.Forced.srt) is tied to the video by the name before attaching (pairName) (#233).
-  const pairKey = (c) => {
-    if (!c.pairName.endsWith(c.original)) return nameKey(c.pairName);
-    return nameKey(c.pairName.slice(0, c.pairName.length - c.original.length) + c.original.split('.')[0]);
-  };
-  const pairSizes = new Map();
-  for (const c of candidates) if (c.desired !== c.original) pairSizes.set(pairKey(c), (pairSizes.get(pairKey(c)) ?? 0) + 1);
-  const rank = (c) => {
-    if (c.desired === c.original) return 1;
-    return pairSizes.get(pairKey(c)) > 1 ? 0 : 2;
-  };
-  const order = [0, 1, 2].flatMap((r) => candidates.filter((c) => rank(c) === r));
-  for (const candidate of order) {
-    const { from, original } = candidate;
-    try {
-      let desired = candidate.desired;
-      let name = freeName(desired, access.target, taken, nextNumber);
-      if (name.length > MAX_NAME && desired !== original) {
-        desired = original;
-        name = freeName(desired, access.target, taken, nextNumber);
-      }
-      if (name.length > MAX_NAME) throw new FcError(`The name is too long once the number is added: ${name}`);
-      candidate.move = { from, to: access.write(name), name, desired, fromFolder: desired !== original, numbered: name !== desired };
-      taken.add(nameKey(name));
-    } catch (err) {
-      if (!(err instanceof FcError)) throw err;
-      candidate.slot.reason = err.message;
-    }
-  }
-  plan.moves = candidates.filter((c) => c.move).map((c) => c.move);
-  const slots = new Set(candidates.map((c) => c.slot));
-  plan.skipped = plan.skipped.filter((item) => !slots.has(item) || item.reason !== null);
-  for (const item of guardItems.values()) {
-    item.reason = `Not moving the ${item.count} items inside; the folder is left whole because it is a ${item.label}.`;
-    delete item.label;
-    delete item.count;
-  }
-  // It reports that a folder to keep that has no files is also not deleted. Those inside another folder to keep were already reported by the outer folder.
-  for (const [relative, label] of guarded) {
-    if (!guardItems.has(relative) && guardOf(relative, guarded) === relative) plan.skipped.push({ path: path.join(access.target, relative), reason: `Folder left whole because it is a ${label}.` });
-  }
-  return plan;
+  const taken = new Set(entries.filter(isTop).map((entry) => nameKey(entry.relative)));
+  const { moves, failed } = assignNames(candidates, access, taken);
+  skipped.push(...failed, ...guardedReasons(classified, guarded, access.target, entries.length));
+  // Every row keeps the position of the entry it came from, so a stable sort restores the walk order.
+  skipped.sort((a, b) => a.order - b.order);
+  return { target: access.target, moves, stay: classified.stay, skipped: skipped.map((row) => row.item), guarded: new Set(guarded.keys()) };
 }
 
 // The key for finding the same file (volume:file ID). If it cannot be confirmed or the file ID is 0, it is null. The reason it could not be confirmed is reported by the name choosing later.
@@ -665,6 +457,47 @@ function checkFolder(folder, access, { dryRun }) {
   return real;
 }
 
+// The reason the Recycle Bin cannot be used for this target (a non-interactive session, a drive that is not fixed, "remove immediately"), or undefined if it can.
+function recycleBlock(target) {
+  const state = recycleBinState(target);
+  if (state.interactive === false) return 'Cannot send to the Recycle Bin outside an interactive session.';
+  if (state.driveType !== 'Fixed') return `Empty folders were not deleted because the drive (${state.driveType ?? 'unknown type'}) may have no Recycle Bin and they could be permanently deleted.`;
+  // It is an empty folder so the size does not matter, but if the Recycle Bin setting is "remove immediately", it is deleted permanently (#81, confirmed on build 26200).
+  if (state.nukeOnDelete === true) return 'Empty folders were not deleted because this volume is set to remove files immediately, so they would be permanently deleted without using the Recycle Bin.';
+  return undefined;
+}
+
+// The preview of removeFolders: it runs the same checks as a real run for each folder and reports the result without deleting.
+function previewFolders(folders, access, blocked, done, failure) {
+  for (const folder of folders) {
+    if (blocked) {
+      done(folder, blocked);
+      continue;
+    }
+    try {
+      remove([checkFolder(folder, access, { dryRun: true })], { dryRun: true, checkVolume: false });
+      done(folder);
+    } catch (err) {
+      done(folder, failure(err));
+    }
+  }
+}
+
+// It reports the per-folder results of one Recycle Bin batch through done and returns the folders left untouched (pending) to queue up again.
+function settleBatch(results, done) {
+  const pending = [];
+  for (const { path: folder, status } of results) {
+    if (status === 'pending') pending.push(folder);
+    else if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
+    else if (status === 'error') {
+      // If a folder holds an item that is exactly a device name, the Recycle Bin move fails for the whole folder (#135).
+      const inside = bareDeviceInside(folder);
+      done(folder, inside === undefined ? 'Could not send to the Recycle Bin.' : `Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}). Rename that item with fctl rename and delete again.`);
+    } else done(folder, FOLDER_STATUS_REASON[status]);
+  }
+  return pending;
+}
+
 // It sends empty folders to the Recycle Bin. Folders that failed stay in kept. onFolder(folder, reason) is called as each folder finishes (if there is no reason, it was sent).
 // Starting PowerShell for each folder takes hours at thousands of folders, so it sends FOLDER_BATCH at a time (#67). Node checks again for each batch, and
 // PowerShell also checks again, for each folder right before deleting, the real path, whether it is a folder, and the files inside (recycleEmptyFolders).
@@ -678,26 +511,10 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
   };
   if (folders.length === 0) return report;
   // So that the preview also keeps them for the same reason as a real run, it looks at the drive and the session first (first review).
-  const state = recycleBinState(access.target);
-  let blocked;
-  if (state.interactive === false) blocked = 'Cannot send to the Recycle Bin outside an interactive session.';
-  else if (state.driveType !== 'Fixed') blocked = `Empty folders were not deleted because the drive (${state.driveType ?? 'unknown type'}) may have no Recycle Bin and they could be permanently deleted.`;
-  // It is an empty folder so the size does not matter, but if the Recycle Bin setting is "remove immediately", it is deleted permanently (#81, confirmed on build 26200).
-  else if (state.nukeOnDelete === true) blocked = 'Empty folders were not deleted because this volume is set to remove files immediately, so they would be permanently deleted without using the Recycle Bin.';
+  let blocked = recycleBlock(access.target);
   const failure = (err) => (err instanceof FcError ? err.message : `Cannot send to the Recycle Bin. (${err.code ?? err.status})`);
   if (dryRun) {
-    for (const folder of folders) {
-      if (blocked) {
-        done(folder, blocked);
-        continue;
-      }
-      try {
-        remove([checkFolder(folder, access, { dryRun })], { dryRun, checkVolume: false });
-        done(folder);
-      } catch (err) {
-        done(folder, failure(err));
-      }
-    }
+    previewFolders(folders, access, blocked, done, failure);
     return report;
   }
   // For folders left untouched in a batch that hit the time limit (pending), it queues them up again. At least one finishes each time, so it eventually stops.
@@ -730,16 +547,7 @@ function removeFolders(folders, access, { dryRun, onFolder = () => {} }) {
       for (const folder of batch) done(folder, reason);
       continue;
     }
-    const pending = [];
-    for (const { path: folder, status } of results) {
-      if (status === 'pending') pending.push(folder);
-      else if (status === 'ok' || (status === 'timeout' && !fs.existsSync(folder))) done(folder);
-      else if (status === 'error') {
-        // If a folder holds an item that is exactly a device name, the Recycle Bin move fails for the whole folder (#135).
-        const inside = bareDeviceInside(folder);
-        done(folder, inside === undefined ? 'Could not send to the Recycle Bin.' : `Could not send to the Recycle Bin. It may have failed because of an item with a device name inside (${inside}). Rename that item with fctl rename and delete again.`);
-      } else done(folder, FOLDER_STATUS_REASON[status]);
-    }
+    const pending = settleBatch(results, done);
     queue.unshift(...pending);
     if (results[0]?.status === 'timeout') stalls += 1;
     else stalls = 0;
