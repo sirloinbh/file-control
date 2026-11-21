@@ -2,34 +2,13 @@
 'use strict';
 
 const { execute } = require('../src/execute');
+const { helpCommandLines } = require('../src/commandTable');
 
-const HELP = `fctl - File Control
+const help = () => `fctl - File Control
 
 Usage: fctl <command> [args] [options]
 
-  ls [folder]                    list folder contents (default: current folder)
-  mkdir <folder>                 create a folder (parent folders too)
-  write <file> [content]         create a file (reads standard input if no content)
-  append <file> [content]        append content to a file
-  cat <file>                     show file contents
-  rename <path> <new-name>       rename within the same folder
-  mv <source...> <dest>          move (into the destination if it is a folder)
-  cp <source...> <dest>          copy
-  rm <path...>                   send to the Recycle Bin
-  unzip <archive> [folder]       extract (default: a folder named after the archive)
-  zip <archive> <source...>      compress (format set by the extension: .zip, .tar.gz, ...)
-  flatten <target>               move files from subfolders directly under the target and send empty folders to the Recycle Bin (no overwriting)
-  product-number <target>        prefix video file names with the product number (no overwriting)
-  normalize <target>             put the product number in file names first, in uppercase (no overwriting)
-  collapse <target>              collapse single-folder chains (a/b/c/file) into the top folder
-  extract-all <target>           extract each archive into a new folder (with --remove-archives, send successfully extracted originals to the Recycle Bin)
-  find-broken <target>           find broken files (does not touch files)
-  remove-broken <target>         show broken files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)
-  find-duplicates <target>       group videos with the same name, product number, or length (does not touch files)
-  remove-duplicates <target>     show duplicate videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)
-  find-low-quality <target>      find low-quality videos below the resolution or bitrate limit (does not touch files)
-  remove-low-quality <target>    show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)
-  ui [--port=NUMBER] [--no-open]  start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)
+${helpCommandLines().join('\n')}
 
 Options:
   --force       overwrite existing files (unzip: extract over existing files)
@@ -50,10 +29,10 @@ function run(argv, { progress } = {}) {
   try {
     outcome = execute(argv, { progress });
   } catch (err) {
-    if (err.unknownCommand) err.message += `\n\n${HELP}`;
+    if (err.unknownCommand) err.message += `\n\n${help()}`;
     throw err;
   }
-  if (outcome.help) return HELP;
+  if (outcome.help) return help();
   if (outcome.failure) throw outcome.failure;
   return outcome.report;
 }
