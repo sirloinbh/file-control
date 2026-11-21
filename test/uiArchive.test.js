@@ -118,3 +118,22 @@ test('unzipDest and unzipSpace give the extraction folder and the free space of 
   const real = unzipSpace(path.join(__dirname, 'none.zip'));
   assert.ok(real.free > 0, real.text);
 });
+
+test('a new extension added to the archive tables of src/archive.js shows in the UI preview (#362)', () => {
+  const archive = require('../src/archive');
+  const commands = require('../src/commands');
+  // The UI uses the very tables of src/archive.js, not copies.
+  assert.strictEqual(commands.FORMAT_LABELS, archive.FORMAT_LABELS);
+  assert.strictEqual(commands.COMPRESS_LABELS, archive.COMPRESS_LABELS);
+  assert.strictEqual(commands.TAR_COMPRESS, archive.TAR_COMPRESS);
+  // Every table extension is described without the "is not read as a format" note, and its first label shows up.
+  for (const [ext, label] of Object.entries(archive.FORMAT_LABELS)) assert.strictEqual(describeArchiveFormat(`x.${ext}`).format, label === 'tar' ? 'tar' : label, ext);
+  for (const [ext, label] of Object.entries(archive.TAR_COMPRESS)) assert.deepStrictEqual(describeArchiveFormat(`x.${ext}`).layers, [label], ext);
+  // A scratch extension added to the table (and removed again) appears in the preview of a name that uses it.
+  archive.FORMAT_LABELS.fctltest = 'Scratch';
+  try {
+    assert.strictEqual(describeArchiveFormat('x.fctltest').format, 'Scratch');
+  } finally {
+    delete archive.FORMAT_LABELS.fctltest;
+  }
+});

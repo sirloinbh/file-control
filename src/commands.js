@@ -21,7 +21,7 @@ module.exports = {
     'formatSize', 'list', 'makeDir', 'writeFile', 'readFile', 'rename', 'move', 'copy', 'resolveDest', 'freshPath',
   ]),
   ...pick(archive, [
-    'unzip', 'archiveEntries', 'archiveNames', 'probeArchive', 'archiveExt', 'unsupportedChars', 'oemCodePage', 'couldBeShortNameOf',
+    'unzip', 'archiveEntries', 'archiveNames', 'probeArchive', 'archiveExt', 'FORMAT_LABELS', 'COMPRESS_LABELS', 'TAR_COMPRESS', 'unsupportedChars', 'oemCodePage', 'couldBeShortNameOf',
     'rejectExtractShortNameClash', 'ensureRoomToExtract', 'freeSpace', 'SPACE_RESERVE', 'MAX_TAR_DIR', 'TEMP_SERIAL_RESERVE', 'missingProgram', 'zip',
   ]),
 };
