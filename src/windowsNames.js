@@ -7,11 +7,19 @@ const path = require('node:path');
 // is seen as a device by PowerShell. Names with two or more dots (Con.Air.1997.mkv, nul.tar.gz, COM¹.tar.gz), a name with a space before the dot (Nul .mp4), and COM0 and LPT0 are
 // handled as the same file by PowerShell, tar.exe, and the Recycle Bin move. The Recycle Bin move script looks at whether it is a folder with Test-Path, so it follows the Test-Path criterion.
 // CONIN$ and CONOUT$ are refused only when it is exactly that name.
-// The narrow rule is used from 24H2 (build 26100, including Server 2025), which has the same base as 26200. On versions below that, which were not checked, if it opens as a device,
-// a copy would vanish into the device and a move across drives would delete the original, so it refuses every name that starts with a device name, as before.
+// The narrow rule is used only on builds that were measured to behave that way (VERIFIED_NARROW_BUILDS). On every other build, including a newer one that was not checked,
+// if a name such as nul.tar.gz opens as a device, a copy would vanish into the device and a move across drives would delete the original,
+// so it refuses every name that starts with a device name, as before (#316). To add a build, see "Device names on a new Windows build" in the README.
 const WINDOWS_DEVICE_NAME_WIDE = /^(con|prn|aux|nul|com[\d¹²³]|lpt[\d¹²³]|conin\$|conout\$) *(\.|$)/i;
 const WINDOWS_DEVICE_NAME_NARROW = /^((con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(\.[^.]*)?|conin\$|conout\$)$/i;
-const NARROW_DEVICE_BUILD = 26100;
+// The builds where the narrow rule was measured: 26200 (Windows 11 25H2). FCTL_NARROW_DEVICE_BUILDS (comma separated build numbers) adds builds the person verified
+// themselves, and is how the tests try an unknown build. It is read when the pattern is chosen, so a process sets it before it starts.
+const VERIFIED_NARROW_BUILDS = new Set([26200]);
+
+function narrowBuilds(env = process.env) {
+  const extra = String(env.FCTL_NARROW_DEVICE_BUILDS ?? '').split(',').map((text) => text.trim()).filter((text) => /^\d+$/.test(text)).map(Number).filter((build) => Number.isSafeInteger(build) && build > 0);
+  return new Set([...VERIFIED_NARROW_BUILDS, ...extra]);
+}
 
 // A device name exactly with no extension (nul, CON, Com1, lpt¹, CONIN$). Windows removes a trailing dot and space, so nul. and "com1 " are the same (#135).
 // On build 26200, tar.exe failed by opening a device when it received such a name as an argument (nul, CON), and the Recycle Bin move also failed
@@ -19,10 +27,10 @@ const NARROW_DEVICE_BUILD = 26100;
 // Such a name inside a folder is bundled and extracted by tar.exe as a file.
 const BARE_DEVICE_NAME = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)[. ]*$/i;
 
-// os.release() puts the build number third, as in "10.0.26200". If it cannot read it, it uses the broad rule.
-function deviceNamePattern(release = os.release()) {
+// os.release() puts the build number third, as in "10.0.26200". If it cannot read it, or the build is not a verified one, it uses the broad rule.
+function deviceNamePattern(release = os.release(), env = process.env) {
   const build = Number(String(release).split('.')[2]);
-  return Number.isInteger(build) && build >= NARROW_DEVICE_BUILD ? WINDOWS_DEVICE_NAME_NARROW : WINDOWS_DEVICE_NAME_WIDE;
+  return Number.isInteger(build) && narrowBuilds(env).has(build) ? WINDOWS_DEVICE_NAME_NARROW : WINDOWS_DEVICE_NAME_WIDE;
 }
 
 const WINDOWS_DEVICE_NAME = deviceNamePattern();
@@ -40,4 +48,4 @@ function deviceNamePart(p, pattern = WINDOWS_DEVICE_NAME) {
   return full.slice(path.parse(full).root.length).split(path.sep).find((part) => isDeviceName(part, pattern));
 }
 
-module.exports = { WINDOWS_DEVICE_NAME, BARE_DEVICE_NAME, deviceNamePattern, deviceNamePart, isDeviceName };
+module.exports = { VERIFIED_NARROW_BUILDS, WINDOWS_DEVICE_NAME, BARE_DEVICE_NAME, deviceNamePattern, deviceNamePart, isDeviceName };
