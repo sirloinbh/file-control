@@ -920,7 +920,7 @@ test('긴 조각난 MP4는 읽기 한도에 걸리지 않고 정상으로 돌아
   const fragments = [];
   for (let i = 0; i < 15000; i += 1) fragments.push(box('moof', box('mfhd', u32(0), u32(i + 1))), box('mdat', Buffer.alloc(4)));
   fs.writeFileSync(path.join(dir, 'v.mp4'), Buffer.concat([ftyp(), box('moov', mvhd(), checkedTrak(), box('mvex')), ...fragments]));
-  assert.strictEqual(checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4'), null);
+  assert.strictEqual(checkMp4Structure(require('../src/target').grant(dir, ['read']), path.join(dir, 'v.mp4'), 'v.mp4'), null);
 });
 
 test('두 번째 트랙이 손상돼도 길이와 해상도를 돌려준다 (#322)', () => {
