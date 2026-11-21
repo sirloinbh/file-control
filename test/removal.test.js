@@ -95,6 +95,9 @@ test('RECENT_MS is the 5-minute hold and holdReason keeps a file inside it (#308
   assert.match(holdReason(stat, now), /changed just now/);
   assert.match(holdReason({ ...stat, mtimeMs: now + 1000 }, now), /in the future/);
   assert.strictEqual(holdReason({ ...stat, mtimeMs: now - RECENT_MS - 1 }, now), null);
+  // The exact edge, with made-up times that cannot drift: exactly 5 minutes old is no longer held, one millisecond less still is (#380).
+  assert.strictEqual(holdReason({ ...stat, mtimeMs: now - RECENT_MS }, now), null);
+  assert.match(holdReason({ ...stat, mtimeMs: now - RECENT_MS + 1 }, now), /changed just now/);
 });
 
 test('rule: a file changed after it was judged is kept with the changed reason (#308)', () => {
