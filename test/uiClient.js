@@ -34,11 +34,21 @@ async function closeServer(server) {
 
 // It does the launch step against launchUrl and returns get/post functions that carry the session cookie (and post carries the token).
 async function connect(launchUrl, { token = TOKEN } = {}) {
-  const base = new URL('/', launchUrl);
   const res = await fetch(launchUrl, { redirect: 'manual' });
   assert.strictEqual(res.status, 303, 'the launch step answers 303');
   const cookie = res.headers.get('set-cookie').split(';')[0];
-  const get = (p, init = {}) => fetch(new URL(p, base), { redirect: 'manual', ...init, headers: { cookie, ...init.headers } });
+  // The server serves everything under a secret path prefix (#328). The helper keeps tests prefix-agnostic: requests are sent under the prefix,
+  // and the prefix is removed from the response body and Location, so tests keep using plain addresses like /form.
+  const base = new URL(`/${new URL(res.headers.get('location'), launchUrl).pathname.split('/')[1]}/`, launchUrl);
+  const prefix = base.pathname.replace(/\/$/, '');
+  const strip = async (r) => {
+    const headers = new Headers(r.headers);
+    const location = headers.get('location');
+    if (location !== null && location.startsWith(`${prefix}/`)) headers.set('location', location.slice(prefix.length));
+    const body = [101, 204, 205, 304].includes(r.status) ? null : (await r.text()).split(`${prefix}/`).join('/');
+    return new Response(body, { status: r.status, statusText: r.statusText, headers });
+  };
+  const get = async (p, init = {}) => strip(await fetch(new URL(p.replace(/^\//, ''), base), { redirect: 'manual', ...init, headers: { cookie, ...init.headers } }));
   const post = (p, fields = {}, init = {}) => get(p, {
     method: 'POST',
     body: new URLSearchParams({ token, ...fields }).toString(),

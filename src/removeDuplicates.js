@@ -83,7 +83,7 @@ function keeperStamp(access, keeper, now, markerOf) {
 // - kept: files that are in a group but kept ({ path, set, reason, file })
 // - lengthOnly: the number of groups matching only by length that were not deleted
 // - interactive: whether the session can send to the Recycle Bin. If there are no files to delete, it is not checked and is null.
-// The other values (conflicts, unreadable, skipped, and so on) are those of findDuplicateNames.
+// The other values (conflicts, undetermined, skipped, and so on) are those of findDuplicateNames.
 // Copies that are certain to fail when sent to the Recycle Bin, or that are useless to delete, are kept in advance (#127).
 // - A path that cannot be sent to the Recycle Bin (over 259 characters, a name ending in a dot or space). It is the same check as rm (recycleTarget).
 // - Another name of the same file (a hard link) as the file to keep. Deleting it does not reduce space, and deleting it changes the change time of the file to keep, so
@@ -239,7 +239,7 @@ function formatRemoveDuplicates(result) {
   });
   if (result.lengthOnly > 0) lines.push(`${result.lengthOnly} same-duration groups are not deleted because their names differ and they may be different videos. Check them with find-duplicates.`);
   for (const item of result.conflicts) lines.push(`Several numbers, not deleted: ${relative(item.path)} (${item.numbers.join(', ')})`);
-  for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
@@ -247,7 +247,7 @@ function formatRemoveDuplicates(result) {
   }
   if (result.logWarning) lines.push(`Warning: ${result.logWarning}`);
   if (result.log) lines.push(`Removal log: ${result.log}`);
-  const counts = `kept ${result.kept.length}, same-duration-only groups ${result.lengthOnly}, several numbers ${result.conflicts.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
+  const counts = `kept ${result.kept.length}, same-duration-only groups ${result.lengthOnly}, several numbers ${result.conflicts.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
     lines.push(`Groups ${result.sets.length}, Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
   } else {

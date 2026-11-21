@@ -897,7 +897,7 @@ test('판단 못함은 지우지 않고 나머지만 지운다', (t) => {
   assert.notStrictEqual(preview.code, code);
   const result = removeBroken(dir, { confirm: preview.code });
   t.mock.restoreAll();
-  assert.strictEqual(result.unreadable.length, 1);
+  assert.strictEqual(result.undetermined.length, 1);
   assert.deepStrictEqual(recycled, [path.join(dir, 'b.mp4')]);
   assert.ok(fs.existsSync(path.join(dir, 'locked.mp4')));
   assert.match(formatRemoveBroken(result), /Undetermined, not deleted: locked\.mp4/);

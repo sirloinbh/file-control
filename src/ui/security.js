@@ -94,30 +94,39 @@ function checkToken(form, token) {
   if (values.length !== 1 || !isValidToken(values[0], token)) throw new RequestError(403, 'The page is out of date or the request came from elsewhere. Reopen the page and try again.');
 }
 
-// It reads the request body up to the limit and returns a string. If the limit is exceeded, it reads no more and refuses with RequestError (413).
-// stream is a read stream that emits data, end, and error events, like http.IncomingMessage.
-function readBody(stream, limit = MAX_BODY) {
+// A form body is tiny, so a client that has not finished sending it within this time is cut off (#328).
+const BODY_TIMEOUT_MS = 10 * 1000;
+
+// It reads the request body up to the limit and returns a string. If the limit is exceeded, it stops reading and refuses with RequestError (413),
+// and it stops reading; the caller destroys the request after it has sent the refusal (destroying first would drop the response). A client that disconnects or does not finish within timeoutMs is refused too (408/400).
+// stream is a read stream that emits data, end, error, close and aborted events, like http.IncomingMessage.
+function readBody(stream, limit = MAX_BODY, timeoutMs = BODY_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     let done = false;
-    const finish = (fn, value) => {
+    let timer = null;
+    const finish = (fn, value, pause = false) => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
+      if (pause && typeof stream.pause === 'function') stream.pause();
       fn(value);
     };
+    timer = setTimeout(() => finish(reject, new RequestError(408, 'The request body was not received in time.'), true), timeoutMs);
     stream.on('data', (chunk) => {
       if (done) return;
       size += chunk.length;
       if (size > limit) {
-        stream.pause();
-        finish(reject, new RequestError(413, `The request is too large (max ${limit} bytes).`));
+        finish(reject, new RequestError(413, `The request is too large (max ${limit} bytes).`), true);
         return;
       }
       chunks.push(chunk);
     });
     stream.on('end', () => finish(resolve, Buffer.concat(chunks).toString('utf8')));
     stream.on('error', (err) => finish(reject, err));
+    stream.on('aborted', () => finish(reject, new RequestError(400, 'The request was closed before it was fully sent.')));
+    stream.on('close', () => finish(reject, new RequestError(400, 'The request was closed before it was fully sent.')));
   });
 }
 
@@ -141,8 +150,9 @@ function tokenField(token) {
 // with the one-time launch address printed in the terminal gets. The cookie is HttpOnly and SameSite=Strict.
 const SESSION_COOKIE = 'fctl_session';
 
-function sessionCookie(value) {
-  return `${SESSION_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/`;
+// path limits where the browser sends the cookie (#328): the secret path prefix of this server, so another port on 127.0.0.1 never gets it.
+function sessionCookie(value, path = '/') {
+  return `${SESSION_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=${path}`;
 }
 
 // True if the Cookie header carries the session value. Compared with timingSafeEqual. A cookie with the same name twice is accepted if any one matches.
@@ -162,6 +172,7 @@ module.exports = {
   sessionCookie,
   hasSession,
   MAX_BODY,
+  BODY_TIMEOUT_MS,
   TOKEN_FIELD,
   SECURITY_HEADERS,
   RequestError,

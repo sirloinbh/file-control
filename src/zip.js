@@ -139,7 +139,12 @@ function readZipEntries(target, archive, entryCount) {
     if (at + ZIP_END_SIZE > tail.length) continue;
     tried += 1;
     const found = readZipEnd(target, archive, tail, tailOffset, at, size, entryCount);
-    if (found.entries) return found;
+    if (found.entries) {
+      // The accepted record's comment runs to the end of the file, so every candidate tried before it sits inside that comment. tar.exe trusts the one nearest the end,
+      // so a fake record there could make tar.exe extract something other than the entries checked here (#347).
+      if (tried > 1) return { reason: 'Kept because the zip comment contains another end marker. tar.exe may have extracted from a different record.' };
+      return found;
+    }
     first ??= found;
   }
   return first ?? { reason: 'Kept because the zip end marker is missing and the file may be truncated.' };
