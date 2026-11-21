@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const { BARE_DEVICE_NAME } = require('./windowsNames');
-const { FcError, POWERSHELL, claim, ensureItemExists, entryKey, isSameOrUnder, isWindows, pathKey, perform, realKey, rejectBareDeviceArgs } = require('./base');
+const { config, FcError, claim, ensureItemExists, entryKey, isSameOrUnder, pathKey, perform, realKey, rejectBareDeviceArgs } = require('./base');
 
 // Among the items directly inside the folders given under the target, it returns, as a Map of { relative path from the target -> attribute bits }, those that have the hidden (2) or system (4) attribute (#65).
 // Node cannot read file attributes, so it calls PowerShell once. Which folders to look at is the folder list that walk decided (relative paths, '' for the target itself).
@@ -15,7 +15,7 @@ const { FcError, POWERSHELL, claim, ensureItemExists, entryKey, isSameOrUnder, i
 // If even one folder cannot be read, it raises an error so that it does not proceed with only a partial view. If it is not Windows, it is an empty Map.
 // It strips the trailing separator so that a path that keeps a trailing separator, such as a drive root (Q:\), does not get its relative path cut (first review).
 function hiddenOrSystemEntries(dir, folders = ['']) {
-  if (!isWindows) return new Map();
+  if (!config.isWindows) return new Map();
   const full = path.resolve(dir).replace(/[\\/]+$/, '');
   const root = full.startsWith('\\\\') ? `\\\\?\\UNC\\${full.slice(2)}` : `\\\\?\\${full}`;
   const script =
@@ -27,7 +27,7 @@ function hiddenOrSystemEntries(dir, folders = ['']) {
   const input = folders.map((folder) => Buffer.from(folder === '' ? '.' : folder, 'utf16le').toString('base64')).join('\n') + '\n';
   let output;
   try {
-    output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_ROOT: root },
       input,
       encoding: 'utf8',
@@ -127,7 +127,7 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
   // Right before deleting, inside PowerShell, it looks at the volume's Recycle Bin setting and the size, and if it would be deleted permanently, it does not delete and ends with 78 (#81).
   // The path is passed in an environment variable to avoid quoting problems.
   try {
-    childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_SCRIPT], {
+    childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_SCRIPT], {
       env: { ...process.env, FC_TARGET: full },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -252,7 +252,7 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
   let output;
   let timedOut = false;
   try {
-    output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_BATCH: '1', FC_ALLOWED: allowedNames.join('|') },
       input,
       encoding: 'utf8',
@@ -446,7 +446,7 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
   let output;
   let failure;
   try {
-    output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_RECYCLE_FILES: '1' },
       input,
       encoding: 'utf8',
@@ -587,9 +587,9 @@ function sizeUpTo(full, limit) {
 
 function recycleBinState(target) {
   const unknown = { interactive: null, driveType: null, nukeOnDelete: null, maxCapacity: null };
-  if (!isWindows) return unknown;
+  if (!config.isWindows) return unknown;
   try {
-    const output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATE_SCRIPT], {
+    const output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', RECYCLE_STATE_SCRIPT], {
       env: { ...process.env, FC_VOLUME: path.resolve(target) },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -627,7 +627,7 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
 // Callers that already made the same judgment (remove-broken and so on) call it with false so that PowerShell is not started once more.
 // permanentHint is whether to attach the --permanent hint to the refusal reason (only the rm command turns it on).
 function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false } = {}) {
-  if (!permanent && !isWindows) {
+  if (!permanent && !config.isWindows) {
     throw new FcError('Deleting to the Recycle Bin works only on Windows. To delete permanently, use --permanent');
   }
   const planned = new Set();

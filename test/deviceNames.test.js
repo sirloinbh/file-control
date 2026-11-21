@@ -185,12 +185,8 @@ test('rm은 폴더 안의 장치 이름 항목 때문에 휴지통 이동이 실
   assert.throws(() => fresh.remove([path.join(dir, 'plain.txt')]), (err) => !(err instanceof fresh.FcError) && err.status === 1);
 });
 
-// After swapping execFileSync, it reads commands.js, which uses it, anew. Modules other tests use are left as they are.
+// The modules call childProcess.execFileSync at call time, so after swapping it the already loaded commands.js sees the mock.
 function reload() {
-  const id = require.resolve('../src/commands');
-  const saved = require.cache[id];
-  delete require.cache[id];
-  const fresh = require('../src/commands');
-  require.cache[id] = saved;
-  return fresh;
+  // The modules call childProcess.execFileSync at call time, so a swapped mock is seen without loading anything again (#362).
+  return require('../src/commands');
 }

@@ -489,17 +489,11 @@ test('zip은 압축 파일이 원본 폴더 안에 있어도 원본 내용만 �
   assert.deepStrictEqual(fs.readdirSync(p('out', 'd')).sort(), ['f.txt', 'sub']);
 });
 
-// It freshly imports commands.js with the tar run swapped for a fake.
+// It returns commands.js with the tar run swapped for a fake (the modules call childProcess at call time, so nothing is loaded again).
 function loadWithTar(t, fake) {
   // If the temporary folder path has a non-ASCII character, the code page check is called first.
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => (path.basename(file) === 'powershell.exe' ? '' : fake(file, args, options)));
-  const id = require.resolve('../src/commands');
-  const saved = require.cache[id];
-  delete require.cache[id];
-  const fresh = require('../src/commands');
-  delete require.cache[id];
-  require.cache[id] = saved;
-  return fresh;
+  return require('../src/commands');
 }
 
 const isTarCreate = (args) => args[0] === '-a' && args[1] === '-cf';
@@ -789,11 +783,7 @@ test('zip은 OEM을 거치지 않는다고 확인한 형식이 아니면(zip·cp
     checks.push(options.env.FC_WITH_OEM === '1');
     return options.env.FC_WITH_OEM === '1' && options.env.FC_CHARS.includes('¹') ? '185\n' : '';
   });
-  const id = require.resolve('../src/commands');
-  const saved = require.cache[id];
-  delete require.cache[id];
   const mocked = require('../src/commands');
-  require.cache[id] = saved;
   // Multi-layer names are judged by the innermost format (#212). If the inside is zip or cpio, it is also looked at as OEM regardless of the outer layers.
   for (const archive of ['o.zip', 'o.cpio', 'o¹.zip', 'o.tar.zip', 'O.TAR.ZIP', 'o.tar.cpio', 'o.unknownext', 'o.cpio.gz', 'o.ZIP.XZ', 'o.cpio.Z', 'o.cpio.gz.xz', 'o.zip.gz.gz', 'o.tar.zip.gz']) {
     assert.throws(() => mocked.zip(p(archive), [p('s¹.txt')], { dryRun: true }), /U\+00B9/, archive);

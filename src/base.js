@@ -6,10 +6,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { BARE_DEVICE_NAME, deviceNamePart, isDeviceName } = require('./windowsNames');
 
-const isWindows = process.platform === 'win32';
-// Instead of the GNU tar that comes with Git Bash and the like, it uses the Windows default bsdtar, which can handle zip.
-const TAR = isWindows ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
-const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+// The platform values the modules read (#362). They are read through this object at call time (config.isWindows, config.tar, config.powershell),
+// so a test sets them with withConfig() of test/withConfig.js and restores them, instead of reloading modules to get new constants.
+const systemRoot = () => process.env.SystemRoot || 'C:\\Windows';
+const config = {
+  isWindows: process.platform === 'win32',
+  // Instead of the GNU tar that comes with Git Bash and the like, it uses the Windows default bsdtar, which can handle zip.
+  tar: process.platform === 'win32' ? path.join(systemRoot(), 'System32', 'tar.exe') : 'tar',
+  powershell: path.join(systemRoot(), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+};
 
 class FcError extends Error {}
 
@@ -39,7 +44,7 @@ function ensureFree(p, force) {
 // It leaves existing items so that they can be brought out by renaming, and refuses only names it newly creates. It does not examine an existing folder above (such as Con.Air).
 // The judgment uses the same rule as grant (windowsNames.js).
 function rejectNewDeviceName(p) {
-  if (!isWindows) return;
+  if (!config.isWindows) return;
   let existing = path.resolve(p);
   const created = [];
   while (!exists(existing)) {
@@ -121,7 +126,7 @@ function overwriteNote(p, dryRun, info) {
 
 function pathKey(p) {
   const full = path.resolve(p);
-  return isWindows ? full.toLowerCase() : full;
+  return config.isWindows ? full.toLowerCase() : full;
 }
 
 function isSameOrUnder(parentKey, key) {
@@ -196,8 +201,7 @@ function entryKey(p) {
 
 module.exports = {
   FcError,
-  POWERSHELL,
-  TAR,
+  config,
   checkOverwrite,
   claim,
   ensureCanMakeDir,
@@ -209,7 +213,6 @@ module.exports = {
   entryKey,
   exists,
   isSameOrUnder,
-  isWindows,
   lexists,
   overwriteNote,
   pathKey,

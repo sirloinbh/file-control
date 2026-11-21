@@ -5,7 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
-const { FcError, POWERSHELL, TAR, ensureCanMakeDir, ensureExists, ensureFree, ensureParentDir, exists, isSameOrUnder, isWindows, overwriteNote, perform, realKey, rejectBareDeviceArgs, rejectNewDeviceName } = require('./base');
+const { config, FcError, ensureCanMakeDir, ensureExists, ensureFree, ensureParentDir, exists, isSameOrUnder, overwriteNote, perform, realKey, rejectBareDeviceArgs, rejectNewDeviceName } = require('./base');
 const { asidePath, formatSize, freshPath, hasAncestorSameAs, isSameFile, rejectStreamPath } = require('./fsOps');
 
 // The system OEM code page number. tar.exe reads and writes the names of zip entries that have no UTF-8 marker in this code page (#173, #83).
@@ -15,9 +15,9 @@ let oemCodePageCache;
 function oemCodePage() {
   if (oemCodePageCache !== undefined) return oemCodePageCache;
   oemCodePageCache = null;
-  if (!isWindows) return null;
+  if (!config.isWindows) return null;
   try {
-    const output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP"], {
+    const output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage').OEMCP"], {
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
     });
@@ -36,7 +36,7 @@ function oemCodePage() {
 // The entry names of formats other than the path arguments (pax tar, 7z, jar, iso, and so on) do not go through OEM (#173, confirmed on the English Windows of CI).
 // If withOem is false, it looks only at ANSI. If codePages is given, it looks at that instead of the system code pages (for tests).
 function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
-  if (!isWindows) return [];
+  if (!config.isWindows) return [];
   const chars = [...new Set(text.replace(/[\x00-\x7f]/g, ''))];
   if (chars.length === 0) return [];
   // If even one code page cannot be confirmed, it stops and refuses to run, so that the check does not pass in a weakened state.
@@ -50,7 +50,7 @@ function unsupportedChars(text, codePages = null, { withOem = true } = {}) {
     '{ if ($e.GetString($e.GetBytes($c)) -cne $c) { [char]::ConvertToUtf32($c, 0); break } } }';
   let output;
   try {
-    output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: { ...process.env, FC_CHARS: chars.join('\n'), FC_CODEPAGES: codePages ? codePages.join(',') : '', FC_WITH_OEM: withOem ? '1' : '' },
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
@@ -68,7 +68,7 @@ function trailingDotOrSpaceName(p) {
 
 // paths are looked at only as ANSI, and oemNames are looked at as OEM too.
 function ensureTarCanUse(paths, oemNames = []) {
-  if (!isWindows) return;
+  if (!config.isWindows) return;
   const all = [...paths, ...oemNames];
   const trailing = all.find(trailingDotOrSpaceName);
   // It wraps the name in quotes so that the trailing space can be seen.
@@ -106,18 +106,18 @@ function namesInside(src) {
 const TAR_OPTION_ENV = new Set(['TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS']);
 
 function tarEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !TAR_OPTION_ENV.has(isWindows ? name.toUpperCase() : name)));
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !TAR_OPTION_ENV.has(config.isWindows ? name.toUpperCase() : name)));
 }
 
 // tar.exe (libarchive) looks for external compression programs (lz4, lzop, and so on) with SearchPath, and in that order the current folder comes before the PATH.
 // So an lz4.exe planted in the folder where fctl was run could be executed (measured on build 26200: a fake lz4.exe in the current folder was executed, #242).
 // It always runs tar.exe from the folder where tar.exe lives (System32). Every argument is an absolute path or relative to -C, so the interpretation does not change.
-const TAR_CWD = isWindows ? path.dirname(TAR) : undefined;
+const tarCwd = () => (config.isWindows ? path.dirname(config.tar) : undefined);
 
 // 0xC0000005: when tar.exe meets a name it cannot handle, it ends like this without any error message.
 function runTar(args, options) {
   try {
-    return childProcess.execFileSync(TAR, args, { ...options, env: tarEnv(), cwd: TAR_CWD });
+    return childProcess.execFileSync(config.tar, args, { ...options, env: tarEnv(), cwd: tarCwd() });
   } catch (err) {
     if (err.status === 0xc0000005) throw new FcError(`tar.exe exited abnormally. A name it cannot handle may be present. (${err.status})`);
     const program = missingProgram(err.stderr);
@@ -148,21 +148,21 @@ function missingProgram(stderr) {
 }
 
 // It hands over any value in advance, so that tar.exe does not stall asking for a password on the console for a password-protected archive. It fails with the wrong password.
-const NO_PASSWORD = isWindows ? ['--passphrase', 'fctl-no-password'] : [];
+const noPassword = () => (config.isWindows ? ['--passphrase', 'fctl-no-password'] : []);
 
 // It returns the entries in an archive as lines in tar -tv format. The first character is the kind (d folder, - file, h hard link, l link, and so on).
 // RAR folder names do not get a trailing /, so the kind is not judged by name. It only reads, so a broken archive gives an error just like a real extraction.
 // Names come out in the code page and Korean can be garbled, so only the count and the first character are trusted.
 function archiveEntries(archive) {
   ensureTarArgs([path.resolve(archive)]);
-  const listing = runTar(['-tvf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  const listing = runTar(['-tvf', path.resolve(archive), ...noPassword()], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
 // The list of entry names in an archive. They come out in the code page, so non-ASCII names cannot be trusted.
 function archiveNames(archive) {
   ensureTarArgs([path.resolve(archive)]);
-  const listing = runTar(['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
+  const listing = runTar(['-tf', path.resolve(archive), ...noPassword()], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity });
   return listing.toString().split(/\r?\n/).filter((line) => line.trim() !== '');
 }
 
@@ -170,7 +170,7 @@ function archiveNames(archive) {
 // A damage message also comes out with exit code 0 (Damaged tar archive), so the judgment uses stderr. error is a run failure or a limit exceeded (ENOBUFS, ETIMEDOUT).
 function probeArchive(archive, { maxBuffer, timeout }) {
   ensureTarArgs([path.resolve(archive)]);
-  const { error, status, stdout, stderr } = childProcess.spawnSync(TAR, ['-tf', path.resolve(archive), ...NO_PASSWORD], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv(), cwd: TAR_CWD });
+  const { error, status, stdout, stderr } = childProcess.spawnSync(config.tar, ['-tf', path.resolve(archive), ...noPassword()], { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer, timeout, env: tarEnv(), cwd: tarCwd() });
   return { error, status, stderr: stderr ? stderr.toString('latin1') : '', entries: stdout ? stdout.toString('latin1').split(/\r?\n/).filter((line) => line.trim() !== '').length : 0 };
 }
 
@@ -280,12 +280,12 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = fa
   // The name listing is read once for both checks, not once per check (#326).
   let names = null;
   const listedNames = () => (names ??= archiveNames(archive));
-  if (isWindows) rejectExtractShortNameClash(listedNames(), dest);
+  if (config.isWindows) rejectExtractShortNameClash(listedNames(), dest);
   // tar overwrites existing files while extracting, so without --force it refuses before extracting anything (#311).
   if (!force) rejectExtractOverwrite(listedNames(), dest);
   return perform(`Extract: ${archive} -> ${dest}${note}`, dryRun, () => {
     fs.mkdirSync(dest, { recursive: true });
-    runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...NO_PASSWORD], { stdio: ['ignore', 'ignore', 'pipe'] });
+    runTar(['-xf', path.resolve(archive), '-C', path.resolve(dest), ...noPassword()], { stdio: ['ignore', 'ignore', 'pipe'] });
   });
 }
 
@@ -662,12 +662,12 @@ function zip(archive, sources, { force = false, dryRun = false, info } = {}) {
   for (const src of sources) {
     const name = path.basename(path.resolve(src));
     // toLowerCase makes ΑΣ and ασ, which are the same name on NTFS, different, so it compares in upper case (the same as flatten.js).
-    const key = isWindows ? name.toUpperCase() : name;
+    const key = config.isWindows ? name.toUpperCase() : name;
     if (seen.has(key)) throw new FcError(`Sources with the same name cannot be bundled together. Only one would remain when extracting: ${seen.get(key)}, ${src}`);
     seen.set(key, src);
   }
   const inside = sources.map(namesInside);
-  if (isWindows) rejectShortNameClash(sources, inside);
+  if (config.isWindows) rejectShortNameClash(sources, inside);
   ensureParentDir(archive);
   if (exists(archive) && fs.statSync(archive).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${archive}`);
   const entries = [...sources.map((src) => path.basename(path.resolve(src))), ...inside.flat()];

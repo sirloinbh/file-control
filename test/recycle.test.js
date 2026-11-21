@@ -23,14 +23,10 @@ function tempDir() {
   return fs.realpathSync.native(dir);
 }
 
-// After swapping execFileSync, it reads commands.js, which uses it, anew. Modules other tests use are left as they are.
+// The modules call childProcess.execFileSync at call time, so after swapping it the already loaded commands.js sees the mock.
 function reload() {
-  const id = require.resolve('../src/commands');
-  const saved = require.cache[id];
-  delete require.cache[id];
-  const fresh = require('../src/commands');
-  require.cache[id] = saved;
-  return fresh;
+  // The modules call childProcess.execFileSync at call time, so a swapped mock is seen without loading anything again (#362).
+  return require('../src/commands');
 }
 
 // It swaps only the Recycle Bin call for fail and leaves the rest (the PowerShell for locking and so on) as they are. It collects the options of the Recycle Bin call in calls.
