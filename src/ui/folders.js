@@ -60,21 +60,37 @@ const SHELL_SCRIPT = [
   "@{ downloads = $k.'{374DE290-123F-4565-9164-39C4925E467B}'; desktop = $k.Desktop; documents = $k.Personal } | ConvertTo-Json -Compress",
 ].join('; ');
 
-// The registered locations ({ downloads?, desktop?, documents? }). If it cannot read them, it is an empty object. It is read only once while the server runs.
-let shellCache = null;
-function shellFolders() {
-  if (shellCache) return shellCache;
-  shellCache = {};
-  if (process.platform !== 'win32') return shellCache;
-  try {
-    const output = childProcess.execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', SHELL_SCRIPT], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30 * 1000, windowsHide: true });
-    const parsed = JSON.parse(output);
-    for (const key of ['downloads', 'desktop', 'documents']) if (typeof parsed[key] === 'string' && path.isAbsolute(parsed[key])) shellCache[key] = parsed[key];
-  } catch {
-    // If it cannot be read, it looks for the candidate paths below.
+// The registered locations ({ downloads?, desktop?, documents? }), read from PowerShell without blocking the server (#331).
+// The first call starts the read in the background and returns what is known now ({} until it finishes, so the candidate paths below are used meanwhile).
+// A failed read is not kept forever: it is tried again after retryMs. exec, platform, and now are swapped in tests.
+function createShellLoader({ exec = childProcess.execFile, platform = process.platform, retryMs = 60 * 1000, now = Date.now } = {}) {
+  let known = null;
+  let loading = false;
+  let failedAt = -Infinity;
+  function load() {
+    loading = true;
+    exec(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', SHELL_SCRIPT], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30 * 1000, windowsHide: true }, (err, output) => {
+      loading = false;
+      try {
+        if (err) throw err;
+        const parsed = JSON.parse(output);
+        const found = {};
+        for (const key of ['downloads', 'desktop', 'documents']) if (typeof parsed[key] === 'string' && path.isAbsolute(parsed[key])) found[key] = parsed[key];
+        known = found;
+      } catch {
+        failedAt = now();
+      }
+    });
   }
-  return shellCache;
+  return function shellFolders() {
+    if (known) return known;
+    if (platform !== 'win32') return (known = {});
+    if (!loading && now() - failedAt >= retryMs) load();
+    return {};
+  };
 }
+
+const shellFolders = createShellLoader();
 
 // The real paths of the frequently used places ({ label, path }). It uses the locations registered in Windows (shell) first, and if absent or that folder does not exist, it looks at the candidates in order.
 // Candidates: for Desktop and Documents, it looks at the one moved to OneDrive first. The OneDrive-side folder names are made in the display language ("바탕 화면", "문서", Korean for Desktop and Documents), so it looks together with the English names.
@@ -166,7 +182,7 @@ function linkReal(full) {
 // - links: the links that cannot be entered ({ name, linkTo: 'file' | 'broken', target })
 // - files: the number (links are not counted) of files inside, size: the total file size (excluding subfolders)
 // A protected folder can also be looked into (it only reads). Only picking is blocked.
-function browseFolder(dir) {
+function browseFolder(dir, { filter = '' } = {}) {
   const resolved = realFolder(dir);
   let entries;
   try {
@@ -178,7 +194,9 @@ function browseFolder(dir) {
   const own = protection(resolved);
   const inherited = inheritedProtection(own);
   // Links to folders (junctions, directory symbolic links) are folders that can be entered (#267). Entering and picking judge them by the real path, like #254.
-  const dirs = entries.filter((entry) => entry.type === 'dir' || (entry.type === 'link' && entry.linkTo === 'dir'));
+  // filter: only the folders whose name contains this text (case-insensitive), for a folder with more than MAX_FOLDERS subfolders (#331).
+  const needle = typeof filter === 'string' ? filter.trim().toLowerCase() : '';
+  const dirs = entries.filter((entry) => (entry.type === 'dir' || (entry.type === 'link' && entry.linkTo === 'dir')) && (needle === '' || entry.name.toLowerCase().includes(needle)));
   const folders = dirs.slice(0, MAX_FOLDERS).map((entry) => {
     const full = path.join(resolved, entry.name);
     if (entry.type !== 'link') return { name: entry.name, path: full, protected: inherited ?? protection(full) };
@@ -200,4 +218,4 @@ function browseFolder(dir) {
   };
 }
 
-module.exports = { listDrives, commonPlaces, browseFolder, MAX_FOLDERS };
+module.exports = { createShellLoader, listDrives, commonPlaces, browseFolder, MAX_FOLDERS };

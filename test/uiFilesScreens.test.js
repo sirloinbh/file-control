@@ -148,6 +148,24 @@ test('ls shows name, type, size and modified time, and links folders to ls and f
   assert.match(body, /href="\/files\/ls\?dir=[^"]*sub"/);
 });
 
+test('ls labels a junction as a link to a folder with an ls link, and a broken link without a link (#331)', async (t) => {
+  const dir = tempDir();
+  const real = path.join(dir, 'real');
+  fs.mkdirSync(real);
+  fs.symlinkSync(real, path.join(dir, 'junc'), 'junction');
+  const gone = path.join(dir, 'gone');
+  fs.mkdirSync(gone);
+  fs.symlinkSync(gone, path.join(dir, 'broken'), 'junction');
+  fs.rmdirSync(gone);
+  const { get } = await serve(t);
+  const body = await (await get(`/files/ls?${new URLSearchParams({ dir })}`)).text();
+  assert.match(body, /href="\/files\/ls\?dir=[^"]*junc">junc<\/a> <span class="muted">-> [^<]*real[^<]*<\/span><\/td><td>Link to a folder<\/td>/);
+  assert.match(body, /href="\/files\/ls\?dir=[^"]*junc"/);
+  assert.doesNotMatch(body, /files\/cat\?file=[^"]*junc"/);
+  assert.match(body, /broken <span class="muted">[^<]*<\/span><\/td><td>Broken link<\/td>/);
+  assert.doesNotMatch(body, /href="[^"]*broken"/);
+});
+
 test('ls refuses a relative path, a file and a missing folder with a message, and an address opened from another site', async (t) => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, 'a.txt'), 'a');

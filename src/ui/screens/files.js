@@ -267,23 +267,27 @@ ${pathInput({ name: 'dir', label: 'Folder (full path)', value: dir, returnTo: `$
     return readOnlyPage('List a folder', available, [{ kind: 'error', message }], form);
   }
   const shown = entries.slice(0, MAX_ROWS);
-  const dirs = entries.filter((entry) => entry.type === 'dir').length;
+  const isFolder = (entry) => entry.type === 'dir' || (entry.type === 'link' && entry.linkTo === 'dir');
+  const dirs = entries.filter(isFolder).length;
   const files = entries.length - dirs;
   const rows = shown.map((entry) => {
     const full = path.join(folder, entry.name);
-    return [
-      entry.type === 'dir' ? html`<a href="${lsLink(full)}">${entry.name}</a>` : html`<a href="${catLink(full)}">${entry.name}</a>`,
-      entry.type === 'dir' ? 'Folder' : 'File',
-      entry.size === null ? '' : formatSize(entry.size),
-      entry.modified ? formatTime(entry.modified) : '',
-    ];
+    const size = entry.size === null ? '' : formatSize(entry.size);
+    const modified = entry.modified ? formatTime(entry.modified) : '';
+    if (entry.type === 'link') {
+      // A link shows its target and what it leads to. A link to a folder opens as a folder; a link to a file is read with cat; others have nothing to open (#331).
+      const kind = { dir: 'Link to a folder', file: 'Link to a file', broken: 'Broken link' }[entry.linkTo] ?? 'Link (cannot be read)';
+      const name = entry.linkTo === 'dir' ? html`<a href="${lsLink(full)}">${entry.name}</a>` : entry.linkTo === 'file' ? html`<a href="${catLink(full)}">${entry.name}</a>` : entry.name;
+      return [html`${name} <span class="muted">-> ${entry.target ?? ''}</span>`, kind, size, modified];
+    }
+    return [entry.type === 'dir' ? html`<a href="${lsLink(full)}">${entry.name}</a>` : html`<a href="${catLink(full)}">${entry.name}</a>`, entry.type === 'dir' ? 'Folder' : 'File', size, modified];
   });
   const parent = path.dirname(folder);
   return readOnlyPage('List a folder', available, [], html`${form}
 <h2>${folder}</h2>
 ${parent === folder ? '' : html`<p><a href="${lsLink(parent)}">Up one level</a></p>`}
 ${summaryCards([{ label: 'Folders', value: dirs }, { label: 'Files', value: files }])}
-${table([{ label: 'Name', width: '46%' }, { label: 'Type', width: '10%' }, { label: 'Size', width: '14%' }, { label: 'Modified' }], rows, { empty: 'This folder is empty.' })}
+${table([{ label: 'Name', width: '46%' }, { label: 'Type', width: '14%' }, { label: 'Size', width: '14%' }, { label: 'Modified' }], rows, { empty: 'This folder is empty.' })}
 ${entries.length > shown.length ? html`<p class="muted">Too many items, so only the first ${shown.length} are shown (${entries.length - shown.length} more).</p>` : ''}`);
 }
 
