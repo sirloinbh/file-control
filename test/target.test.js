@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { FcError } = require('../src/commands');
-const { resolveTarget, isInside, resolveInside, readInside, readRange, fileSizeInside, walk, grant, deviceNamePattern, protectedReason } = require('../src/target');
+const { resolveTarget, isInside, readRange, fileSizeInside, walk, grant, deviceNamePattern, protectedReason } = require('../src/target');
 
 const isWindows = process.platform === 'win32';
 
@@ -78,13 +78,6 @@ test('isInside는 Windows에서 다른 드라이브를 밖으로, 대소문자 �
   assert.ok(isInside(target, 'c:\\data\\TARGET\\a.txt'));
   assert.ok(!isInside(target, 'c:\\data\\TARGET2\\a.txt'));
   assert.ok(!isInside(target, '..\\Other'));
-});
-
-test('resolveInside는 안쪽 경로를 절대경로로 돌려주고 밖이면 오류를 낸다', () => {
-  const target = path.resolve('/data/target');
-  assert.strictEqual(resolveInside(target, 'sub/a.txt'), path.join(target, 'sub', 'a.txt'));
-  assert.throws(() => resolveInside(target, '../a.txt'), FcError);
-  assert.throws(() => resolveInside(target, path.resolve('/etc/passwd')), FcError);
 });
 
 // On Windows, directory symbolic links need administrator rights, so it uses junctions.
@@ -226,22 +219,15 @@ test('grant는 링크 검사로 훑는 폴더 자신이 그 사이 정션으로 
 });
 
 
-test('readInside는 타겟 안 파일의 내용 전체를 Buffer로 읽는다', () => {
-  const target = resolveTarget(tempDir());
-  fs.mkdirSync(path.join(target, 'sub'));
-  fs.writeFileSync(path.join(target, 'sub', 'a.bin'), Buffer.from([0, 1, 2, 255]));
-  assert.deepStrictEqual(readInside(target, 'sub/a.bin'), Buffer.from([0, 1, 2, 255]));
-  assert.deepStrictEqual(readInside(target, path.join(target, 'sub', 'a.bin')), Buffer.from([0, 1, 2, 255]));
-});
-
 test('readRange는 offset부터 length바이트를 읽고, 파일 끝을 넘으면 있는 만큼만 돌려준다', () => {
   const target = resolveTarget(tempDir());
+  const access = grant(target, ['read']);
   fs.writeFileSync(path.join(target, 'v.mp4'), Buffer.from('0123456789'));
-  assert.strictEqual(readRange(target, 'v.mp4', { length: 4 }).toString(), '0123');
-  assert.strictEqual(readRange(target, 'v.mp4', { offset: 6, length: 3 }).toString(), '678');
-  assert.strictEqual(readRange(target, 'v.mp4', { offset: 8, length: 10 }).toString(), '89');
-  assert.strictEqual(readRange(target, 'v.mp4', { offset: 20, length: 4 }).length, 0);
-  assert.strictEqual(readRange(target, 'v.mp4', { length: 0 }).length, 0);
+  assert.strictEqual(readRange(access, 'v.mp4', { length: 4 }).toString(), '0123');
+  assert.strictEqual(readRange(access, 'v.mp4', { offset: 6, length: 3 }).toString(), '678');
+  assert.strictEqual(readRange(access, 'v.mp4', { offset: 8, length: 10 }).toString(), '89');
+  assert.strictEqual(readRange(access, 'v.mp4', { offset: 20, length: 4 }).length, 0);
+  assert.strictEqual(readRange(access, 'v.mp4', { length: 0 }).length, 0);
 });
 
 test('fileSizeInside는 타겟 안 파일의 크기만 돌려준다', () => {
@@ -250,25 +236,28 @@ test('fileSizeInside는 타겟 안 파일의 크기만 돌려준다', () => {
   fs.writeFileSync(path.join(target, 'v.mp4'), '0123456789');
   fs.writeFileSync(path.join(outside, 'o.mp4'), '0');
   fs.mkdirSync(path.join(target, 'd'));
-  assert.strictEqual(fileSizeInside(target, 'v.mp4'), 10);
-  assert.throws(() => fileSizeInside(target, path.join(outside, 'o.mp4')), /outside the target folder/);
-  assert.throws(() => fileSizeInside(target, 'd'), /Not a file/);
+  const access = grant(target, ['read']);
+  assert.strictEqual(fileSizeInside(access, 'v.mp4'), 10);
+  assert.throws(() => fileSizeInside(access, path.join(outside, 'o.mp4')), /outside the target folder/);
+  assert.throws(() => fileSizeInside(access, 'd'), /Not a file/);
 });
 
 test('readRange는 잘못된 offset·length를 거부한다', () => {
   const target = resolveTarget(tempDir());
   fs.writeFileSync(path.join(target, 'f.txt'), 'x');
+  const access = grant(target, ['read']);
   for (const bad of [{ length: -1 }, { length: 1.5 }, {}, undefined, { offset: -1, length: 1 }, { offset: '1', length: 1 }, { length: 2 ** 31 }]) {
-    assert.throws(() => readRange(target, 'f.txt', bad), FcError, JSON.stringify(bad));
+    assert.throws(() => readRange(access, 'f.txt', bad), FcError, JSON.stringify(bad));
   }
 });
 
-test('readInside·readRange는 타겟 밖, 없는 파일, 폴더를 거부한다', () => {
+test('readRange는 타겟 밖, 없는 파일, 폴더를 거부한다', () => {
   const root = tempDir();
   fs.mkdirSync(path.join(root, 'target', 'dir'), { recursive: true });
   const target = resolveTarget(path.join(root, 'target'));
   fs.writeFileSync(path.join(root, 'secret.txt'), 'secret');
-  for (const read of [(p) => readInside(target, p), (p) => readRange(target, p, { length: 1 })]) {
+  const access = grant(target, ['read']);
+  for (const read of [(p) => readRange(access, p, { length: 1 })]) {
     assert.throws(() => read('../secret.txt'), FcError);
     assert.throws(() => read(path.join(root, 'secret.txt')), FcError);
     assert.throws(() => read('nope.txt'), FcError);
@@ -277,7 +266,7 @@ test('readInside·readRange는 타겟 밖, 없는 파일, 폴더를 거부한다
   }
 });
 
-test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고, 안쪽을 가리키는 링크는 읽는다', () => {
+test('readRange는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고, 안쪽을 가리키는 링크는 읽는다', () => {
   const root = tempDir();
   const outside = path.join(root, 'outside');
   fs.mkdirSync(outside);
@@ -287,30 +276,33 @@ test('readInside는 링크·정션을 거쳐 타겟 밖 파일을 읽지 않고,
   fs.writeFileSync(path.join(target, 'real', 'ok.txt'), 'ok');
   linkDir(outside, path.join(target, 'escape'));
   linkDir(path.join(target, 'real'), path.join(target, 'alias'));
-  assert.throws(() => readInside(target, 'escape/secret.txt'), /through a link/);
-  assert.throws(() => readRange(target, 'escape/secret.txt', { length: 1 }), /through a link/);
-  assert.strictEqual(readInside(target, 'alias/ok.txt').toString(), 'ok');
+  const access = grant(target, ['read']);
+  assert.throws(() => readRange(access, 'escape/secret.txt', { length: 1 }), /through a link/);
+  assert.strictEqual(readRange(access, 'alias/ok.txt', { length: 2 }).toString(), 'ok');
+});
+
+test('readRange와 fileSizeInside는 읽기 권한이 없는 access를 거부한다', () => {
+  const target = resolveTarget(tempDir());
+  fs.writeFileSync(path.join(target, 'f.txt'), 'x');
+  const writeOnly = grant(target, ['write']);
+  assert.throws(() => readRange(writeOnly, 'f.txt', { length: 1 }), /No Read permission/);
+  assert.throws(() => fileSizeInside(writeOnly, 'f.txt'), /No Read permission/);
+});
+
+test('readRange는 Windows에서 다르게 해석될 수 있는 이름을 거부한다', { skip: process.platform !== 'win32' }, () => {
+  const target = resolveTarget(tempDir());
+  const access = grant(target, ['read']);
+  assert.throws(() => readRange(access, 'a.txt.', { length: 1 }), /interpreted differently/);
+  assert.throws(() => fileSizeInside(access, 'CON'), /interpreted differently/);
 });
 
 test('readRange는 손상된 헤더처럼 큰 length를 받아도 파일에 있는 만큼만 읽는다', () => {
   const target = resolveTarget(tempDir());
   fs.writeFileSync(path.join(target, 'tiny.mp4'), 'abcde');
-  const result = readRange(target, 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 });
+  const result = readRange(grant(target, ['read']), 'tiny.mp4', { offset: 1, length: 2 ** 31 - 1 });
   assert.strictEqual(result.toString(), 'bcde');
   // subarray shares the originally allocated memory, so it checks that the allocation itself was small.
   assert.ok(result.buffer.byteLength <= 5, `할당 크기: ${result.buffer.byteLength}`);
-});
-
-test('readInside는 한 번에 읽을 수 없는 큰 파일을 FcError로 거부한다', (t) => {
-  const target = resolveTarget(tempDir());
-  fs.writeFileSync(path.join(target, 'huge.mkv'), '');
-  const statSync = fs.statSync;
-  t.mock.method(fs, 'statSync', (p, opts) => {
-    const stat = statSync(p, opts);
-    if (stat && path.basename(p) === 'huge.mkv') stat.size = 2 ** 31;
-    return stat;
-  });
-  assert.throws(() => readInside(target, 'huge.mkv'), (err) => err instanceof FcError && err.message.includes('readRange'));
 });
 
 test('resolveTarget은 사용자 폴더 바로 아래 숨김 설정 폴더와 그 안을 거부한다', (t) => {
@@ -754,7 +746,7 @@ test('grant는 예상 못 한 파일 시스템 오류와 잘못된 경로 값도
   assert.throws(() => access.read('sub/a.txt'), (err) => err instanceof FcError && err.message.includes('EACCES'));
 });
 
-test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 밖 형제 폴더를 정션으로 읽지 못하게 한다', () => {
+test('grant와 readRange는 대소문자 무시로만 같아 보이는 타겟 밖 형제 폴더를 정션으로 읽지 못하게 한다', () => {
   const root = tempDir();
   const target = path.join(root, 'work');
   // U+212A (the Kelvin sign) is k when toLowerCase is applied, but on NTFS it is a different name.
@@ -767,8 +759,7 @@ test('grant와 readInside는 대소문자 무시로만 같아 보이는 타겟 �
   assert.throws(() => access.read('esc/secret.txt'), /through a link/);
   assert.throws(() => access.write('esc/new.txt'), /through a link/);
   assert.throws(() => access.delete('esc/secret.txt'), /through a link/);
-  assert.throws(() => readInside(target, 'esc/secret.txt'), /through a link/);
-  assert.throws(() => readRange(target, 'esc/secret.txt', { length: 1 }), /through a link/);
+  assert.throws(() => readRange(access, 'esc/secret.txt', { length: 1 }), /through a link/);
 });
 
 test('grant는 대소문자 무시로만 같아 보이는 형제 폴더의 절대경로를 타겟 안 파일로 바꾸지 않는다', () => {

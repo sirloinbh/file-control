@@ -46,12 +46,12 @@ const ZERO_CHECK_FROM = 1024 * 1024;
 const ZERO_SAMPLES = 16;
 const ZERO_BLOCK = 4096;
 
-function hasZeroBlock(target, real, size) {
+function hasZeroBlock(access, real, size) {
   if (size < ZERO_CHECK_FROM) return false;
   const span = size - ZERO_CHECK_FROM - ZERO_BLOCK;
   for (let index = 0; index < ZERO_SAMPLES; index += 1) {
     const offset = ZERO_CHECK_FROM + Math.floor((span * index) / (ZERO_SAMPLES - 1));
-    const block = readRange(target, real, { offset, length: ZERO_BLOCK });
+    const block = readRange(access, real, { offset, length: ZERO_BLOCK });
     if (block.length === ZERO_BLOCK && block.every((byte) => byte === 0)) return true;
   }
   return false;
@@ -70,9 +70,9 @@ function keeperStamp(access, keeper, now, markerOf) {
   const marker = markerReason(markerOf(real), { keeper: true });
   if (marker !== null) throw new FcError(marker);
   const size = Number(stat.size);
-  const found = inspect(access.target, real, size);
+  const found = inspect(access, real, size);
   if (found !== null) throw new FcError(`Kept because the file to keep may be ${found.status === 'broken' ? 'broken' : 'not intact'}. (${found.reason})`);
-  if (hasZeroBlock(access.target, real, size)) throw new FcError('Kept because the file to keep has a section filled only with zeros, so it may be partly downloaded.');
+  if (hasZeroBlock(access, real, size)) throw new FcError('Kept because the file to keep has a section filled only with zeros, so it may be partly downloaded.');
   return fileStamp(stat);
 }
 

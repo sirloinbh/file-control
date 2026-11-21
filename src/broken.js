@@ -100,7 +100,7 @@ function findZipEnds(tail) {
 
 // Starting from one end record, it checks that the central directory and the entry headers fit together. It does not read the compressed content (CRC) of the entries.
 // Split archives and Zip64 cannot be judged this way, so they are treated as having no problem found.
-function checkZipEnd(target, real, tail, tailOffset, at) {
+function checkZipEnd(access, real, tail, tailOffset, at) {
   if (tail.readUInt16LE(at + 4) !== 0 || tail.readUInt16LE(at + 6) !== 0) return null;
   const total = tail.readUInt16LE(at + 10);
   const directorySize = tail.readUInt32LE(at + 12);
@@ -108,13 +108,13 @@ function checkZipEnd(target, real, tail, tailOffset, at) {
   if (total === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff) return null;
   if (directoryOffset + directorySize > tailOffset + at) return broken('The zip directory runs past the end marker. The file is damaged.');
   if (directorySize > MAX_ZIP_DIRECTORY) throw new FcError(`The zip directory is too large to judge: ${directorySize} bytes`);
-  const directory = readRange(target, real, { offset: directoryOffset, length: directorySize });
+  const directory = readRange(access, real, { offset: directoryOffset, length: directorySize });
   let pos = 0;
   for (let index = 0; index < total; index += 1) {
     if (pos + ZIP_CENTRAL_SIZE > directory.length || directory.readUInt32LE(pos) !== ZIP_CENTRAL) return broken('The zip directory is damaged.');
     const offset = directory.readUInt32LE(pos + 42);
     if (offset !== 0xffffffff && index < ZIP_LOCAL_CHECKS) {
-      const local = readRange(target, real, { offset, length: 4 });
+      const local = readRange(access, real, { offset, length: 4 });
       if (local.length < 4 || local.readUInt32LE(0) !== ZIP_LOCAL) return broken('A zip entry header does not match the directory. The file is damaged.');
     }
     pos += ZIP_CENTRAL_SIZE + directory.readUInt16LE(pos + 28) + directory.readUInt16LE(pos + 30) + directory.readUInt16LE(pos + 32);
@@ -123,19 +123,19 @@ function checkZipEnd(target, real, tail, tailOffset, at) {
 }
 
 // If the candidate that matches the end of the file is intact, the file is normal. If only another candidate is intact, other data is attached after it, so it is suspicious. Only when all are wrong is it broken.
-function checkZip(target, real, size) {
+function checkZip(access, real, size) {
   const tailOffset = Math.max(0, size - ZIP_TAIL);
-  const tail = readRange(target, real, { offset: tailOffset, length: ZIP_TAIL });
+  const tail = readRange(access, real, { offset: tailOffset, length: ZIP_TAIL });
   const { exact, others } = findZipEnds(tail);
   if (exact.length === 0 && others.length === 0) return broken('The zip end marker is missing. The file may be truncated.');
   let first = null;
   for (const at of exact) {
-    const found = checkZipEnd(target, real, tail, tailOffset, at);
+    const found = checkZipEnd(access, real, tail, tailOffset, at);
     if (found === null) return null;
     first ??= found;
   }
   for (const at of others) {
-    const found = checkZipEnd(target, real, tail, tailOffset, at);
+    const found = checkZipEnd(access, real, tail, tailOffset, at);
     if (found === null) return suspect('There is other data after the zip end marker.');
     first ??= found;
   }
@@ -180,7 +180,7 @@ function checkMismatch(format, head) {
 // It judges one file and returns { status, reason }. If it finds no problem, it is null. Input/output problems go out as exceptions.
 // - broken: a file judged unusable. It is truncated, structurally damaged, or has no content.
 // - suspect: suspicious but possibly normal, so it is not made a removal target. A file with only its name changed, an unknown packaging, and an empty file that may have a meaning are such cases.
-function inspect(target, real, size) {
+function inspect(access, real, size) {
   const extension = path.extname(real).slice(1).toLowerCase();
   const format = BY_EXTENSION.get(extension);
   const listed = TAR_LISTED.test(real);
@@ -189,12 +189,12 @@ function inspect(target, real, size) {
     return format || listed ? broken('The size is 0.') : suspect('The size is 0.');
   }
   if (!format && !listed) return null;
-  const head = readRange(target, real, { length: HEAD_SIZE });
+  const head = readRange(access, real, { length: HEAD_SIZE });
   if (format && !format.match(head)) return checkMismatch(format, head);
   let found = RIFF_FORMATS.has(format?.name) ? checkRiff(head, size) : null;
-  if (found === null && format === MP4) found = checkMp4Structure(target, real, real);
-  if (found === null && format === MKV) found = checkMkvStructure(target, real, real);
-  if (found === null && format === ZIP) found = checkZip(target, real, size);
+  if (found === null && format === MP4) found = checkMp4Structure(access, real, real);
+  if (found === null && format === MKV) found = checkMkvStructure(access, real, real);
+  if (found === null && format === ZIP) found = checkZip(access, real, size);
   if (found === null && format === SEVEN_ZIP) found = check7z(head, size);
   if (found !== null) return found;
   return listed ? checkTarListing(real) : null;
@@ -235,8 +235,8 @@ function findBroken(dir) {
     try {
       const real = access.read(entry.path);
       const stamp = fileStamp(fs.lstatSync(real, { bigint: true }));
-      const size = fileSizeInside(access.target, real);
-      const found = inspect(access.target, real, size);
+      const size = fileSizeInside(access, real);
+      const found = inspect(access, real, size);
       if (found) result[found.status].push({ path: real, size, reason: found.reason, stamp });
     } catch (err) {
       if (err instanceof FcError) result.unreadable.push({ path: entry.path, reason: err.message });

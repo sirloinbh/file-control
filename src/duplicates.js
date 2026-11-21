@@ -339,7 +339,7 @@ function findDuplicateNames(dir) {
     if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
       // A .ts that is not video (a TypeScript source) is not reported wherever it is. So it checks the content before deciding whether to skip it.
-      if (transport && !isTransportStream(access.target, entry.relative)) continue;
+      if (transport && !isTransportStream(access, entry.relative)) continue;
       const reason = skipReason(parts);
       if (reason !== null) {
         result.skipped.push({ path: entry.path, reason });
@@ -347,7 +347,7 @@ function findDuplicateNames(dir) {
       }
       const real = access.read(entry.path);
       result.checked += 1;
-      const size = fileSizeInside(access.target, real);
+      const size = fileSizeInside(access, real);
       const file = { path: real, size, ...readVideoInfo(access.target, real) };
       videos.push(file);
       if (file.duration === null) result.unknownMetadata += 1;

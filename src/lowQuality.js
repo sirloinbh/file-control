@@ -135,7 +135,7 @@ function findLowQuality(dir, options = {}) {
     const transport = TRANSPORT_EXTENSIONS.has(extension);
     if (!VIDEO_EXTENSIONS.has(extension) && !transport) continue;
     try {
-      if (transport && !isTransportStream(access.target, entry.relative)) continue;
+      if (transport && !isTransportStream(access, entry.relative)) continue;
       const skip = skipReason(parts);
       if (skip !== null) {
         result.skipped.push({ path: entry.path, reason: skip });
@@ -148,7 +148,7 @@ function findLowQuality(dir, options = {}) {
         result.unreadable.push({ path: real, reason: `Cannot read the resolution of the ${extension} format.` });
         continue;
       }
-      const size = fileSizeInside(access.target, real);
+      const size = fileSizeInside(access, real);
       // The bitrate is used for the judgment, so it has the length cross-checked with the sample table and the seek table (#207).
       const info = saneInfo(reader(access.target, real, { verifyBitrate: true }));
       const judged = judgeQuality(info, criteria);

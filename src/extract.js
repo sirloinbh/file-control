@@ -183,11 +183,11 @@ function decodeOemName(bytes) {
 
 // It reads the Zip64 end record and returns the entry count and the central directory position (#83). If it cannot be trusted, it is a reason string.
 // locatorAt is the position of the Zip64 locator right before the 32-bit end record.
-function readZip64End(target, archive, locatorAt) {
-  const locator = readRange(target, archive, { offset: locatorAt, length: ZIP64_LOCATOR_SIZE });
+function readZip64End(access, archive, locatorAt) {
+  const locator = readRange(access, archive, { offset: locatorAt, length: ZIP64_LOCATOR_SIZE });
   if (locator.readUInt32LE(4) !== 0 || locator.readUInt32LE(16) !== 1) return 'Kept because it may be a piece of a split archive.';
   const recordOffset = safeNumber(locator.readBigUInt64LE(8));
-  const record = recordOffset === null ? Buffer.alloc(0) : readRange(target, archive, { offset: recordOffset, length: ZIP64_END_SIZE });
+  const record = recordOffset === null ? Buffer.alloc(0) : readRange(access, archive, { offset: recordOffset, length: ZIP64_END_SIZE });
   if (record.length < ZIP64_END_SIZE || record.readUInt32LE(0) !== ZIP64_END) return 'Kept because the Zip64 structure could not be read.';
   // After passing the record size (the length minus the first 12 bytes), the locator must appear right away.
   const recordSize = safeNumber(record.readBigUInt64LE(4));
@@ -203,20 +203,20 @@ function readZip64End(target, archive, locatorAt) {
 // It checks that the entries continue without a gap from the start of the file to the central directory. If an entry not in the list is in between,
 // tar.exe does not extract it but the original would be deleted (#83). The end of an entry is the local header, the compressed body, and the data descriptor added together.
 // So that the file is not reopened for each entry when reading in order from the front, it reads 1MB at a time (for a zip with tens of thousands of entries).
-function chunkReader(target, archive, chunk = 1 << 20) {
+function chunkReader(access, archive, chunk = 1 << 20) {
   let start = 0;
   let data = Buffer.alloc(0);
   return (offset, length) => {
     if (offset < start || offset + length > start + data.length) {
       start = offset;
-      data = readRange(target, archive, { offset, length: Math.max(length, chunk) });
+      data = readRange(access, archive, { offset, length: Math.max(length, chunk) });
     }
     return data.subarray(offset - start, offset - start + length);
   };
 }
 
-function checkZipLayout(target, archive, entries, directoryOffset) {
-  const read = chunkReader(target, archive);
+function checkZipLayout(access, archive, entries, directoryOffset) {
+  const read = chunkReader(access, archive);
   const sorted = [...entries].sort((a, b) => a.offset - b.offset);
   // If the first entry does not start at the start of the file, there may be an entry in front that is not in the list. A zip whose offsets were fixed after concatenation is like this.
   if (sorted.length > 0 && sorted[0].offset !== 0) return 'Kept because there is data at the start of the zip that is not in the directory.';
@@ -249,10 +249,10 @@ function checkZipLayout(target, archive, entries, directoryOffset) {
 // It reads the central directory of the zip and returns the entry list. If it cannot be trusted, it returns a reason string.
 // tar.exe trusts the first end record it meets from the end, so for an uncompressed zip inside a truncated zip, or a concatenated zip, it extracts only part and succeeds.
 // So it checks that the end record fits exactly at the end of the file and the central directory continues right before it. For Zip64, it looks at the Zip64 end record.
-function readZipEntries(target, archive, entryCount) {
-  const size = fileSizeInside(target, archive);
+function readZipEntries(access, archive, entryCount) {
+  const size = fileSizeInside(access, archive);
   const tailOffset = Math.max(0, size - ZIP_TAIL);
-  const tail = readRange(target, archive, { offset: tailOffset, length: ZIP_TAIL });
+  const tail = readRange(access, archive, { offset: tailOffset, length: ZIP_TAIL });
   const at = tail.lastIndexOf(ZIP_END);
   if (at === -1 || at + ZIP_END_SIZE > tail.length) return 'Kept because the zip end marker is missing and the file may be truncated.';
   const end = tailOffset + at;
@@ -266,10 +266,10 @@ function readZipEntries(target, archive, entryCount) {
   let directoryOffset = tail.readUInt32LE(at + 16);
   let directoryEnd = end;
   const locatorAt = end - ZIP64_LOCATOR_SIZE;
-  const locator = locatorAt >= 0 ? readRange(target, archive, { offset: locatorAt, length: 4 }) : Buffer.alloc(0);
+  const locator = locatorAt >= 0 ? readRange(access, archive, { offset: locatorAt, length: 4 }) : Buffer.alloc(0);
   if (locator.length === 4 && locator.readUInt32LE(0) === ZIP64_LOCATOR) {
     // The values of the 32-bit end record must be the Zip64 marker (all-ones values) or equal to the Zip64 end record.
-    const zip64 = readZip64End(target, archive, locatorAt);
+    const zip64 = readZip64End(access, archive, locatorAt);
     if (typeof zip64 === 'string') return zip64;
     if ((disk !== 0 && disk !== 0xffff) || (directoryDisk !== 0 && directoryDisk !== 0xffff)) return 'Kept because it may be a piece of a split archive.';
     const agrees = (short, full, marker) => short === marker || short === full;
@@ -283,7 +283,7 @@ function readZipEntries(target, archive, entryCount) {
   }
   if (directoryOffset + directorySize !== directoryEnd) return 'Kept because the zip structure does not match the file size. It may be truncated or have another file appended.';
   if (total !== entryCount) return `Kept because the number of zip entries differs from the extracted list. (${total}, ${entryCount})`;
-  const directory = readRange(target, archive, { offset: directoryOffset, length: directorySize });
+  const directory = readRange(access, archive, { offset: directoryOffset, length: directorySize });
   const entries = [];
   let pos = 0;
   while (pos < directory.length) {
@@ -326,7 +326,7 @@ function readZipEntries(target, archive, entryCount) {
     pos = entryEnd;
   }
   if (pos !== directory.length || entries.length !== total) return 'Kept because the zip structure could not be read.';
-  const layout = checkZipLayout(target, archive, entries, directoryOffset);
+  const layout = checkZipLayout(access, archive, entries, directoryOffset);
   if (layout !== null) return layout;
   return entries.map(({ name, size }) => ({ name, size }));
 }
@@ -350,18 +350,18 @@ function checkEntryNames(entries, dest, dryRun) {
 // The reason the original must not be deleted. If it may be deleted, it is null.
 function keepReason(access, item, entryCount, dryRun) {
   const { archive, dest } = item;
-  const head = readRange(access.target, archive, { length: SEVEN_ZIP_HEADER });
+  const head = readRange(access, archive, { length: SEVEN_ZIP_HEADER });
   if (ZIP.test(archive)) {
     if (!head.subarray(0, ZIP_LOCAL.length).equals(ZIP_LOCAL)) return 'Kept because the content does not start as a zip.';
-    const entries = readZipEntries(access.target, archive, entryCount);
+    const entries = readZipEntries(access, archive, entryCount);
     return typeof entries === 'string' ? entries : checkEntryNames(entries, dest, dryRun);
   }
   if (SEVEN_ZIP.test(archive)) {
     if (head.length < SEVEN_ZIP_HEADER || !head.subarray(0, SEVEN_ZIP_MAGIC.length).equals(SEVEN_ZIP_MAGIC)) return 'Kept because the content does not start as a 7z.';
     // It reads the header (including a compressed header) and checks the UTF-16 names and sizes and whether each entry has a CRC (#198). tar.exe reads only the first 7z, so
     // it also checks whether the end the header points to matches the end of the file and whether there is data between bodies that is not in the list.
-    const size = fileSizeInside(access.target, archive);
-    const scan = readSevenZip((offset, length) => readRange(access.target, archive, { offset, length }), size);
+    const size = fileSizeInside(access, archive);
+    const scan = readSevenZip((offset, length) => readRange(access, archive, { offset, length }), size);
     if (scan.reason !== undefined) return scan.reason;
     if (scan.entries.length !== entryCount) return `Kept because the number of 7z entries differs from the tar.exe listing. (${scan.entries.length}, listing ${entryCount})`;
     return checkEntryNames(scan.entries.map(({ name, size: entrySize, folder }) => ({ name: folder ? `${name}/` : name, size: entrySize })), dest, dryRun);

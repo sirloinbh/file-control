@@ -351,15 +351,15 @@ function checkHeader(read, p) {
 function readMkvMetadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
-    return parseMkv(access.target, access.read(p), p, options.verifyBitrate === true);
+    return parseMkv(access, access.read(p), p, options.verifyBitrate === true);
   } catch (err) {
     if (err.syscall) throw new FcError(`Cannot read the MKV file: ${p} (${err.code})`);
     throw err;
   }
 }
 
-function parseMkv(target, real, p, verifyBitrate) {
-  return withOpenFile(target, real, (file) => parseOpenedMkv(file, p, verifyBitrate));
+function parseMkv(access, real, p, verifyBitrate) {
+  return withOpenFile(access, real, (file) => parseOpenedMkv(file, p, verifyBitrate));
 }
 
 function parseOpenedMkv(file, p, verifyBitrate) {
@@ -429,8 +429,8 @@ function parseOpenedMkv(file, p, verifyBitrate) {
 // I/O problems and exceeding the read limit go out as exceptions.
 // It skips over the headers of the elements right under the Segment in order and looks at elements that go past the end of the file and at Tracks. It does not read the video data, so damage inside a Cluster is not found.
 // On meeting an element of unknown size (a live recording), the end cannot be known, so it stops judging there.
-function checkMkvStructure(target, real, p) {
-  return withOpenFile(target, real, (file) => checkOpenedMkv(file, p));
+function checkMkvStructure(access, real, p) {
+  return withOpenFile(access, real, (file) => checkOpenedMkv(file, p));
 }
 
 function checkOpenedMkv(file, p) {

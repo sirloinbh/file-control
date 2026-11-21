@@ -736,7 +736,7 @@ test('MP4 메타데이터와 구조 확인은 파일을 한 번만 열어 읽는
   const open = t.mock.method(fs, 'openSync');
   assert.strictEqual(readMp4Metadata(dir, 'v.mp4').width, 1920);
   assert.strictEqual(open.mock.callCount(), 1);
-  checkMp4Structure(dir, path.join(dir, 'v.mp4'), 'v.mp4');
+  checkMp4Structure(require('../src/target').grant(dir, ['read']), path.join(dir, 'v.mp4'), 'v.mp4');
   assert.strictEqual(open.mock.callCount(), 2);
 });
 
