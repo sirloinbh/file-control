@@ -212,3 +212,13 @@ test('find-low-quality 명령은 기준 옵션을 받고, 잘못된 값과 다�
   assert.throws(() => run(['find-low-quality', dir, '--min-height']), /Attach a value to --min-height/);
   assert.throws(() => run(['flatten', dir, '--min-height=720']), /--min-height can be used only with find-low-quality and remove-low-quality/);
 });
+
+test('saneInfo adds the generic bitrate note only when no earlier note already explains the duration or bitrate (#317)', () => {
+  const base = { width: 1280, height: 720, displayWidth: 1280, displayHeight: 720 };
+  const explained = saneInfo({ ...base, duration: 60, bitrate: 1e6, bitrateNote: 'x' });
+  assert.deepStrictEqual(explained.notes, ['x']);
+  const plain = saneInfo({ ...base, duration: 60 });
+  assert.deepStrictEqual(plain.notes, ['There is no bitrate information.']);
+  const tooLong = saneInfo({ ...base, duration: 8 * 24 * 3600, bitrate: 1e6 });
+  assert.strictEqual(tooLong.notes.length, 1);
+});
