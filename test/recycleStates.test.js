@@ -102,21 +102,20 @@ test('the first problem in target order is still the one reported', { skip: !isW
   t.mock.reset();
   // A validation error in the first target is reported before any state is read for the later ones.
   calls = fakePowerShell(t, () => 'True|Fixed|1|');
-  assert.throws(() => fc.remove([missing, b]), /does not exist|Cannot find|not found/i);
+  assert.throws(() => fc.remove([missing, b]), /does not exist/i);
   assert.strictEqual(calls.many.length + calls.single.length, 0);
   assert.ok(fs.existsSync(a) && fs.existsSync(b));
 });
 
-test('recycleBinStates gives the unknown state for every target when the run fails or an answer line is missing', { skip: !isWindows && 'Windows Recycle Bin' }, (t) => {
+test('recycleBinStates gives the unknown state for every target when the run fails or the answer lines do not match the targets', { skip: !isWindows && 'Windows Recycle Bin' }, (t) => {
   const [a, b, c] = files(t, ['a.txt', 'b.txt', 'c.txt']);
   t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
     if (options?.env?.FC_VOLUMES !== undefined) return 'True|Fixed||\r\n';
     throw new Error('unexpected');
   });
   const states = fc.recycleBinStates([a, b, c]);
-  assert.strictEqual(states[0].driveType, 'Fixed');
-  assert.strictEqual(states[1].driveType, null);
-  assert.strictEqual(states[2].driveType, null);
+  // One line for three targets cannot be matched to them, so every target is unknown.
+  assert.ok(states.every((state) => state.driveType === null && state.interactive === null));
   t.mock.reset();
   t.mock.method(childProcess, 'execFileSync', () => {
     throw new Error('PowerShell failed');

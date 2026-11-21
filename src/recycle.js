@@ -296,7 +296,7 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
 // and if the size was set by policy (RecycleBinSize), the size is treated as unknown.
 // It decides the volume type ($type) and the Recycle Bin setting ($nuke: '0', '1', or '', $cap: MB or '') of $p. RECYCLE_STATE_SCRIPT and the Recycle Bin move script use it together (#81).
 const VOLUME_STATE_PS = String.raw`$names = @('Unknown', 'NoRootDirectory', 'Removable', 'Fixed', 'Network', 'CDRom', 'Ram')
-$type = 'Unknown'; $nuke = ''; $cap = ''
+$type = 'Unknown'; $nuke = ''; $cap = ''; $k = $null
 try {
   if (-not ('FcVolume.Native' -as [type])) { Add-Type -Namespace FcVolume -Name Native -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumePathNameW(string f, System.Text.StringBuilder b, uint n);
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool GetVolumeNameForVolumeMountPointW(string m, System.Text.StringBuilder b, uint n);
@@ -621,7 +621,7 @@ function recycleBinState(target) {
 
 // The state of each target, in one PowerShell run for all of them (#376). Each target still gets its own answer (a volume mount folder is another volume
 // with its own setting, which only Windows can tell), so nothing is cached by drive root. One target uses recycleBinState as before.
-// If the run fails or an answer line is missing, that target's state is unknown, the same as when recycleBinState fails.
+// If the run fails or the answer lines do not match the targets one to one, every state is unknown, the same as when recycleBinState fails.
 function recycleBinStates(targets) {
   if (targets.length === 1) return [recycleBinState(targets[0])];
   if (targets.length === 0 || !config.isWindows) return targets.map(unknownState);
@@ -633,7 +633,9 @@ function recycleBinStates(targets) {
       timeout: 60 * 1000 + targets.length * 2000,
     });
     const lines = output.split(/\r?\n/).filter((line) => line.trim() !== '');
-    return targets.map((_, i) => parseVolumeState(lines[i] ?? ''));
+    // If the number of lines is not the number of targets, the lines cannot be matched to targets, so every target is unknown (and refused).
+    if (lines.length !== targets.length) return targets.map(unknownState);
+    return targets.map((_, i) => parseVolumeState(lines[i]));
   } catch {
     return targets.map(unknownState);
   }
