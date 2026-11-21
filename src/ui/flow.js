@@ -12,7 +12,7 @@ const { summaryCards, table, badge } = require('./layout');
 // Dangerous options and their confirmation boxes. A run request with one turned on must also carry the confirmation (confirm-<name>=yes).
 const DANGEROUS_OPTIONS = {
   force: { label: 'Overwrite', warning: 'Existing files are overwritten. Overwritten files cannot be restored.' },
-  permanent: { label: 'Permanent delete', warning: 'Files are deleted permanently without going to the Recycle Bin. This cannot be undone.' },
+  permanent: { label: 'Permanent delete', warning: 'Items are deleted for good without going to the Recycle Bin (for Move: the items it replaces). This cannot be undone.' },
 };
 
 // Converts values JSON cannot carry (Set, Map, Error, bigint, undefined) and sorts object keys so the text is always the same.

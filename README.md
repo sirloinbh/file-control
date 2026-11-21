@@ -248,7 +248,7 @@ npm test
 
 ## Find broken files
 
-`fctl find-broken <target>` only looks at the files under the target. It does not touch files.
+`fctl find-broken <target>` only looks at the files under the target. It does not touch files. On a long run it prints "Checked N files so far..." every 100 files (#326).
 
 - **Broken**: a video, image, document, or archive file of size 0, a file whose beginning is all zeros or whose content is a web page, and a truncated or structurally damaged video or archive. For the `.tar` family, it is the case where `tar.exe` reported it as truncated or damaged.
 - **Suspicious**: a file that may be fine. A file whose first bytes do not match the extension (only the name changed, or a different packaging such as a password-protected Office document), a file whose structure is intact but has other data attached after it, and an empty file of an unknown format (`__init__.py`, `.gitkeep`, and so on).
@@ -285,7 +285,7 @@ npm test
 
 ## Find duplicate videos
 
-`fctl find-duplicates <target>` groups the video files under the target by name and by length and shows duplicate candidates. It does not touch files. For each file it shows the size, resolution, and length together, and attaches `[kept: <reason it was chosen>]` to the one file to keep in each group. Removal is done with `remove-duplicates` (below).
+`fctl find-duplicates <target>` groups the video files under the target by name and by length and shows duplicate candidates. It does not touch files. For each file it shows the size, resolution, and length together, and attaches `[kept: <reason it was chosen>]` to the one file to keep in each group. Removal is done with `remove-duplicates` (below). On a long run it prints "Checked N video files so far..." every 100 videos (#326).
 
 - **Grouping by product number**: if the name has exactly one upper-case product number (`ABC-123`), it groups by the number. It is the same group even if the extension, folder, quality mark, title, or `(1)` tail differs. `ABC-123.mp4` and `sub/[FHD] ABC-123 Title 1080p.mkv` are such a case.
 - **Words that are not product numbers** (#327): words such as `PART`, `MD`, `PG`, `TV`, and `CD` fit the `ABC-123` form but are skipped, so they are never treated as a number. To change the list, set the environment variable `FCTL_PRODUCT_CONFIG` to a JSON file such as `{ "add": ["XYZ"], "remove": ["MD", "PG"] }` (2 to 6 English letters each). `remove` lets you use a built-in word as a product prefix; `add` skips more words. The file is read once per process (restart a running server after changing it), and a file that cannot be read or has the wrong shape stops the command with a message. This applies to every command that reads product numbers.

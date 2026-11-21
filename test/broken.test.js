@@ -562,3 +562,15 @@ test('the find-broken report writes "1 file" and "2 files", and the plain mismat
   fs.writeFileSync(path.join(odd, 'd.mp4'), Buffer.from('plain bytes that are not a video, long enough to read'));
   assert.match(formatBroken(findBroken(odd)), /The start bytes do not match the extension \(MP4\/MOV\)/);
 });
+
+test('findBroken reports progress every 100 files (#326)', () => {
+  const dir = tempDir();
+  for (let i = 0; i < 150; i += 1) fs.writeFileSync(path.join(dir, `f${i}.dat`), 'x');
+  const lines = [];
+  const result = findBroken(dir, { onProgress: (line) => lines.push(line) });
+  assert.strictEqual(result.checked, 150);
+  assert.deepStrictEqual(lines, ['Checked 100 files so far...']);
+  const viaCli = [];
+  require('../src/execute').execute(['find-broken', dir], { progress: (line) => viaCli.push(line) });
+  assert.deepStrictEqual(viaCli, lines);
+});

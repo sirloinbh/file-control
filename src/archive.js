@@ -290,7 +290,24 @@ function unzip(archive, destDir, { dryRun = false, checkSpace = true, force = fa
 // The temporary name is also used as an --exclude pattern, so it accepts only alphanumeric extensions with no pattern characters.
 // tar.exe looks at extensions case-sensitively and makes X.ZIP and x.TAR.GZ an uncompressed tar. So the temporary file gets a lower-case extension.
 // However, the compress formats .Z, .taZ, and .tZ are told apart by case (.z is an uncompressed tar, .taz is gzip, .tz is an uncompressed tar), so they are left as they are.
-const KEEP_CASE_EXT = new Set(['Z', 'taZ', 'tZ']);
+// The format tables (#362): the one place that says which extensions tar.exe reads as a format, as a compression layer, or as tar and compression together,
+// and what the screens call them. FORMAT_EXT, COMPRESS_EXT, LAYER_EXT and KEEP_CASE_EXT are made from them, and src/ui/archive.js uses the same tables for its format preview,
+// so a new extension added here shows up in both without a second edit.
+// Extensions read as a format (FORMAT_EXT of #164, plus tar).
+const FORMAT_LABELS = {
+  tar: 'tar', zip: 'ZIP', '7z': '7z', cpio: 'cpio', iso: 'ISO 9660', ar: 'ar', shar: 'shar', xar: 'xar', warc: 'WARC', mtree: 'mtree',
+};
+// Extensions read as a compression layer. Only .Z (upper case) is compress; .z is not seen as compression.
+const COMPRESS_LABELS = {
+  gz: 'gzip', bz2: 'bzip2', xz: 'xz', zst: 'zstd', lzma: 'lzma', lz: 'lzip', lz4: 'lz4', lzo: 'lzop', lrz: 'lrzip', grz: 'grzip', uu: 'uuencode', Z: 'compress',
+};
+// Extensions that mean tar and compression together (.taz is gzip, .taZ and .tZ are compress, told apart by case).
+const TAR_COMPRESS = {
+  tgz: 'gzip', taz: 'gzip', tbz: 'bzip2', tbz2: 'bzip2', tz2: 'bzip2', txz: 'xz', tlz: 'lzma', tzst: 'zstd', tzo: 'lzop', taZ: 'compress', tZ: 'compress',
+};
+// The extensions told apart by case are the ones with an upper-case letter in the tables.
+const KEEP_CASE_EXT = new Set([...Object.keys(COMPRESS_LABELS), ...Object.keys(TAR_COMPRESS)].filter((key) => key !== key.toLowerCase()));
+const caseFree = (table) => Object.keys(table).filter((key) => !KEEP_CASE_EXT.has(key));
 
 // Extensions that were confirmed on the English Windows of CI to be written by tar.exe without going through the OEM code page (in UTF-8 or UTF-16) (#173).
 // It compares with the value archiveExt returns. .zip and .cpio (including .tar.zip and .tar.cpio) are written in OEM, and an extension that was not checked is also seen as written in OEM.
@@ -299,15 +316,15 @@ const ANSI_ENTRY_EXT = new Set(['.tar', '.tgz', '.tar.gz', '.tar.bz2', '.tar.xz'
 // The extensions that tar.exe reads as a format from an archive name, and the extensions that, when they follow, are read as compression (#164).
 // Giving x.cpio.gz to tar.exe as it is puts a cpio inside gzip, so the temporary file must also get both extensions for the name and the content to be the same.
 // An extension that is not read as a format, such as .jar, makes x.jar.gz also a tar inside gzip, the same as just adding .gz.
-const FORMAT_EXT = new Set(['cpio', 'iso', 'ar', 'shar', 'xar', 'warc', 'mtree', '7z', 'zip']);
+const FORMAT_EXT = new Set(Object.keys(FORMAT_LABELS).filter((key) => key !== 'tar'));
 
-const COMPRESS_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu)$/i;
+const COMPRESS_EXT = new RegExp(`^(?:${caseFree(COMPRESS_LABELS).join('|')})$`, 'i');
 
 // tar.exe peels off compression extensions at the end layer by layer (#193, measured on build 26200: x.tar.gz.gz is a tar inside two layers of gzip, x.cpio.gz.xz is a cpio inside gzip inside xz,
 // y.tgz.gz is a tar inside two layers of gzip, y.Z.gz is a compress inside gzip). So it moves
 // all the compression extensions continuing from the end (including .tgz and the like, which mean tar and compression together) to the temporary file, so tar.exe decides the format from the original name (lower-cased) the same way. It does not imitate the peeling rules separately.
 // Extensions accept only alphanumerics, so no --exclude pattern characters enter the temporary name.
-const LAYER_EXT = /^(?:gz|bz2|xz|zst|lzma|lz|lz4|lzo|lrz|grz|uu|tgz|tbz|tbz2|txz|tlz|tzst|taz|tz2|tzo)$/i;
+const LAYER_EXT = new RegExp(`^(?:${[...caseFree(COMPRESS_LABELS), ...caseFree(TAR_COMPRESS)].join('|')})$`, 'i');
 
 const isLayerExt = (part) => LAYER_EXT.test(part) || KEEP_CASE_EXT.has(part);
 
@@ -662,13 +679,16 @@ module.exports = {
   archiveEntries,
   archiveExt,
   archiveNames,
+  COMPRESS_LABELS,
   couldBeShortNameOf,
   ensureRoomToExtract,
+  FORMAT_LABELS,
   freeSpace,
   missingProgram,
   oemCodePage,
   probeArchive,
   rejectExtractShortNameClash,
+  TAR_COMPRESS,
   unsupportedChars,
   unzip,
   zip,
