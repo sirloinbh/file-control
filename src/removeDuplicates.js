@@ -3,16 +3,13 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { FcError, recycleBinState, recycleTarget, permanentDeleteReason } = require('./commands');
-const { grant, walk, fileStamp, readRange, stampVolumeReason } = require('./target');
+const { FcError, recycleTarget } = require('./commands');
+const { grant, walk, fileStamp, readRange } = require('./target');
 const { inspect } = require('./broken');
 const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, describeVideo, titlesDiffer, DURATION_TOLERANCE, MIN_DURATION } = require('./duplicates');
 const { rejectRepository } = require('./flatten');
-const { writeRemovalLog } = require('./removalLog');
-const { holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE } = require('./removeBroken');
 const { markerFinder, markerReason } = require('./downloadMarker');
-
-const reasonOf = (err) => (err instanceof FcError ? err.message : `Cannot check the file. (${err.code ?? err.message})`);
+const { planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 
 // Groups with common names such as camera and sequence names (generic of find-duplicates, isGenericGroup) are not deleted, because even with the same name and length they can be different videos (#103, #110).
 const GENERIC_REASON = 'Kept because it is a common name such as a camera or sequence name, so videos with the same duration may be different videos.';
@@ -94,30 +91,25 @@ function keeperStamp(access, keeper, now, markerOf) {
 // - A copy that is the same file as another copy to be deleted this time. If one name is deleted, this name's change time changes and it looks different from the judged file (the same as remove-broken).
 function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
-  rejectRepository(access.target, walk(access.target));
-  const found = findDuplicateNames(dir);
+  const entries = walk(access.target);
+  rejectRepository(access.target, entries);
+  const found = findDuplicateNames(dir, { entries });
   // Reading the length can take time, so it measures by the time after the search.
   const checkedAt = now ?? Date.now();
   const plan = { ...found, sets: [], removals: [], kept: [], lengthOnly: found.metadataGroups.filter((group) => !group.alsoNamed).length, interactive: null };
   const markerOf = markerFinder();
-  // If the file ID is 0, it cannot be known whether it is the same file, so it is not compared (the same as flatten and commands, first review).
-  const fileId = (stat) => (stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`);
   // The file to keep of every group { file ID -> path }. If a copy that is the same file as another group's file to keep is deleted, that file to keep's
   // change time changes and that group's copies fail with "the file to keep changed", and no space is freed (first review).
   const keeperIds = new Map();
   for (const group of found.groups) {
     if (group.generic) continue;
     try {
-      const id = fileId(fs.lstatSync(group.keep.path, { bigint: true }));
+      const id = fileIdOf(fs.lstatSync(group.keep.path, { bigint: true }));
       if (id !== null) keeperIds.set(id, group.keep.path);
     } catch {
       // If the file to keep cannot be read, keeperStamp keeps that group.
     }
   }
-  // Among the copies to delete this time, files whose link count is 2 or more { file ID -> path }
-  const linked = new Map();
-  // Copies kept this time because another copy is deleted first. The reason is decided after checking the volume (the same as remove-broken, first review).
-  const linkKept = [];
   // If the path cannot be sent to the Recycle Bin, it returns that reason, otherwise null (the same check as rm, #129).
   const pathProblem = (p) => {
     try {
@@ -128,9 +120,10 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
       throw err;
     }
   };
+  // Every copy of every group is a candidate. A group-level problem (a bad file to keep, a different video) is a precheck reason of the copy.
+  const candidates = [];
   found.groups.forEach((group, set) => {
     const keeper = group.files.find((file) => file.path === group.keep.path);
-    const keep = (file, reason) => plan.kept.push({ path: file.path, set, reason, file });
     let stamp = null;
     let keeperProblem = group.generic ? GENERIC_REASON : null;
     if (keeperProblem === null) {
@@ -142,84 +135,40 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     }
     plan.sets.push({ label: groupLabel(group), keep: { ...keeper, reason: group.keep.reason, stamp }, doubt: group.keep.doubt });
     for (const file of group.files) {
-      if (file === keeper) continue;
-      const reason = keeperProblem ?? sameVideoReason(keeper, file, group);
-      if (reason !== null) {
-        keep(file, reason);
-        continue;
-      }
-      try {
-        const real = access.delete(file.path);
-        const stat = fs.lstatSync(real, { bigint: true });
-        const hold = holdReason(stat, checkedAt);
-        // If a copy may also be downloading, it is not deleted. It looks in the same order as remove-broken.
-        const marker = hold === null ? markerReason(markerOf(real)) : null;
-        const id = fileId(stat);
-        const twin = id === null ? undefined : keeperIds.get(id);
-        // The path check comes before the hard-link judgment. That way it never says "deleted next run" and then keeps it by path the next time (first review).
-        const badPath = pathProblem(real);
-        if (real !== file.path || !stat.isFile()) keep(file, 'Kept because the file changed after the search.');
-        else if (hold !== null) keep(file, hold);
-        else if (marker !== null) keep(file, marker);
-        else if (badPath !== null) keep(file, badPath);
-        else if (twin === keeper.path) keep(file, 'Kept because it is another name of the same file (hard link) as the file to keep, so deleting it would not free space. Deleting it would change the modification time of the file to keep.');
-        else if (twin !== undefined) keep(file, `Kept because it is another name of the same file (hard link) as the file to keep of another group (${path.relative(access.target, twin)}), so deleting it would not free space. Deleting it would change the modification time of that file.`);
-        else if (stat.nlink > 1n && id !== null && linked.has(id)) linkKept.push({ path: file.path, set, file, other: linked.get(id) });
-        else {
-          if (stat.nlink > 1n && id !== null) linked.set(id, real);
-          plan.removals.push({
-            path: real,
-            size: Number(stat.size),
-            duration: file.duration,
-            width: file.width,
-            height: file.height,
-            displayWidth: file.displayWidth,
-            displayHeight: file.displayHeight,
-            stamp: fileStamp(stat),
-            set,
-            keep: keeper.path,
-            keepStamp: stamp,
-            reason: `Duplicate video (${groupLabel(group)}), file to keep: ${keeper.path}`,
-          });
-        }
-      } catch (err) {
-        keep(file, reasonOf(err));
-      }
+      if (file !== keeper) candidates.push({ path: file.path, file, set, group, keeper, stamp, keeperProblem });
     }
   });
-  // linkKept arises only when another name of the same file is in removals, so if removals is empty, linkKept is also empty.
-  if (plan.removals.length === 0) return plan;
-  // On a volume with no Recycle Bin, it may be deleted permanently, so it deletes only when it was confirmed to be a fixed disk.
-  const state = recycleBinState(access.target);
-  const { interactive, driveType } = state;
-  plan.interactive = interactive;
-  // On a volume without a change time (exFAT and so on), the confirmation value and the 5-minute protection cannot stop a swap, so it does not delete (#184).
-  const volumeReason = driveType === 'Fixed' ? stampVolumeReason(access.target) : null;
-  if (driveType !== 'Fixed' || volumeReason !== null) {
-    const reason = volumeReason ?? (driveType === null ? 'Kept because the volume type could not be checked.' : `Kept because the drive is not a fixed disk (${driveType}), so it could be permanently deleted.`);
-    plan.kept.push(...[...plan.removals, ...linkKept].map((item) => ({ path: item.path, set: item.set, reason, file: item.file ?? item })));
-    plan.removals = [];
-    return plan;
-  }
-  // A copy that would be deleted permanently by the Recycle Bin setting (remove immediately, over the maximum size) is kept (#100). Its other names (hard links) are also kept for the same reason.
-  const dropped = new Map();
-  plan.removals = plan.removals.filter((item) => {
-    const why = permanentDeleteReason(state, item.size, maxSize);
-    if (why === null) return true;
-    plan.kept.push({ path: item.path, set: item.set, reason: `Kept ${why}.`, file: item.file ?? item });
-    dropped.set(item.path, why);
-    return false;
+  const safe = planSafeRemovals(candidates, access, {
+    now: checkedAt,
+    maxSize,
+    sameFileId: fileIdOf,
+    precheck: (item) => item.keeperProblem ?? sameVideoReason(item.keeper, item.file, item.group),
+    isChanged: () => false,
+    changedReason: 'Kept because the file changed after the search.',
+    pathProblem,
+    extraKeep: (item, real, stat) => {
+      const twin = keeperIds.get(fileIdOf(stat));
+      if (twin === undefined) return null;
+      if (twin === item.keeper.path) return 'Kept because it is another name of the same file (hard link) as the file to keep, so deleting it would not free space. Deleting it would change the modification time of the file to keep.';
+      return `Kept because it is another name of the same file (hard link) as the file to keep of another group (${path.relative(access.target, twin)}), so deleting it would not free space. Deleting it would change the modification time of that file.`;
+    },
+    toRemoval: (item, real, stat) => ({
+      path: real,
+      size: Number(stat.size),
+      duration: item.file.duration,
+      width: item.file.width,
+      height: item.file.height,
+      displayWidth: item.file.displayWidth,
+      displayHeight: item.file.displayHeight,
+      stamp: fileStamp(stat),
+      set: item.set,
+      keep: item.keeper.path,
+      keepStamp: item.stamp,
+      reason: `Duplicate video (${groupLabel(item.group)}), file to keep: ${item.keeper.path}`,
+    }),
+    entry: ({ candidate, removal }, reason) => ({ path: (removal ?? candidate).path, set: candidate.set, reason, file: removal ?? candidate.file }),
   });
-  // It deletes only one name of the same file per run, so if there are three or more names, one is reduced each time it runs.
-  for (const item of linkKept) {
-    if (dropped.has(item.other)) {
-      plan.kept.push({ path: item.path, set: item.set, reason: `Kept ${dropped.get(item.other)}.`, file: item.file });
-      continue;
-    }
-    const reason = `Kept because another name of the same file (hard link: ${path.relative(access.target, item.other)}) is deleted first in this run, which changes the file's modification time, so it cannot be deleted together. Each time you run again after 5 minutes, one name is deleted.`;
-    plan.kept.push({ path: item.path, set: item.set, reason, file: item.file });
-  }
-  return plan;
+  return { ...plan, ...safe };
 }
 
 // A value that stands for the list a person saw. It changes if any one of the files to delete or to keep changes.
@@ -252,32 +201,24 @@ function removeDuplicates(dir, { confirm, dryRun = false, now, maxSize = MAX_REC
   if (confirm === undefined || dryRun) return result;
   if (confirm !== code) return { ...result, mismatch: true };
   if (plan.removals.length === 0) return result;
-  if (plan.interactive !== true) throw new FcError('Cannot send to the Recycle Bin because it was not confirmed that this is an interactive session. Nothing was deleted.');
-  result.confirmed = true;
-  const log = writeRemovalLog(
-    plan.target,
-    'duplicate videos',
-    plan.removals.map((item) => ({ path: item.path, reason: item.reason, details: { keep: item.keep, group: plan.sets[item.set].label } })),
-  );
-  result.log = log.path;
-  const access = grant(plan.target, ['read', 'delete']);
   // It sends in batches like remove-broken (#216). Right before sending a batch, Node looks at the file to keep (checkKeeper), and for each copy PowerShell
   // also checks again right before deleting the real path, the file-ness, and the fileStamp (keep). If the file to keep changes in the middle of a batch, the remaining copies are not deleted.
-  recycleInBatches(
-    plan.removals,
-    log,
-    (item) => {
-      checkKeeper(access, item);
-      // The file to keep is not deleted, so it does not run the Recycle Bin path check (recycleTarget). A copy of a file to keep with a long path is also deleted (first review).
-      // checkKeeper already looked at whether it equals the real path, and PowerShell opens a long path with the \\?\ prefix.
-      return { ...checkOne(access, item), keep: { path: item.keep, stamp: item.keepStamp } };
-    },
+  return runConfirmedRemoval(
+    plan,
+    result,
+    'duplicate videos',
+    plan.removals.map((item) => ({ path: item.path, reason: item.reason, details: { keep: item.keep, group: plan.sets[item.set].label } })),
     {
-      removed: (item) => result.removed.push(item),
-      failed: (item, reason) => result.failed.push({ path: item.path, set: item.set, reason }),
+      access: ['read', 'delete'],
+      prepare: (access, item) => {
+        checkKeeper(access, item);
+        // The file to keep is not deleted, so it does not run the Recycle Bin path check (recycleTarget). A copy of a file to keep with a long path is also deleted (first review).
+        // checkKeeper already looked at whether it equals the real path, and PowerShell opens a long path with the \? prefix.
+        return { ...checkOne(access, item), keep: { path: item.keep, stamp: item.keepStamp } };
+      },
+      failedEntry: (item, reason) => ({ path: item.path, set: item.set, reason }),
     },
   );
-  return result;
 }
 
 function formatRemoveDuplicates(result) {

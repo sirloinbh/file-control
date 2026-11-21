@@ -318,13 +318,13 @@ function chooseKeeper(files) {
 // - skipped: items that are not handled ({ path, reason })
 // - checked: the number of video files examined
 // A link is reported as skipped regardless of extension. The inside of repository folders is left out silently. Files that are not video (including the removal records fctl-removed-*.json) are not looked at.
-function findDuplicateNames(dir) {
+function findDuplicateNames(dir, { entries } = {}) {
   const access = grant(dir, ['read']);
   const result = { target: access.target, groups: [], metadataGroups: [], unknownMetadata: 0, metadataErrors: [], conflicts: [], unreadable: [], skipped: [], checked: 0 };
   const byKey = new Map();
   const videos = [];
   const nameGroupOf = new Map();
-  for (const entry of walk(access.target)) {
+  for (const entry of entries ?? walk(access.target)) {
     if (entry.type === 'dir') continue;
     const parts = entry.relative.split(path.sep);
     if (parts.some((part) => REPOSITORY_FOLDER.test(part))) continue;

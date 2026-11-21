@@ -259,10 +259,11 @@ test('MKV의 Segment 앞 Void는 정상이고, Tracks 뒤의 패딩은 의심으
   assert.strictEqual(judge('a.mkv', mkv(tracks(), Buffer.alloc(32))).status, 'suspect');
 });
 
-test('크기를 모르는 MKV 요소를 만나면 판단을 멈춘다', () => {
+test('크기를 모르는 MKV 요소나 Segment는 정상이 아니라 의심으로 돌려준다 (#323)', () => {
   const unknown = Buffer.concat([Buffer.from('1f43b675', 'hex'), Buffer.from([0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), Buffer.alloc(16)]);
   const live = Buffer.concat([ebml(), Buffer.from('18538067', 'hex'), Buffer.from([0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), tracks(), unknown]);
-  assert.strictEqual(judge('a.webm', live), null);
+  assert.strictEqual(judge('a.webm', live).status, 'suspect');
+  assert.match(judge('a.webm', live).reason, /unknown size/);
 });
 
 test('잘린 zip과 항목 머리글이 틀린 zip을 찾는다', () => {
