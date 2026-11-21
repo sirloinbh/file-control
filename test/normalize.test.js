@@ -204,3 +204,11 @@ test('~로 시작하는 이름은 임시 파일로 보고 바꾸지 않는다 (#
     assert.deepStrictEqual(normalizeName(input), { name: input, number: null, inferred: false, reason: 'Hidden and temporary file names are not changed.' }, input);
   }
 });
+
+test('하이픈 없는 번호(ABC123)는 옮기지 않고 사유를 알린다 (#327)', () => {
+  const result = normalizeName('Movie.ABC123.mp4');
+  assert.strictEqual(result.name, 'Movie.ABC123.mp4');
+  assert.strictEqual(result.number, 'ABC-123');
+  assert.match(result.reason, /no hyphen/);
+  for (const plain of ['Movie H264.mp4', 'clip MP4 x264.mkv', 'Movie 1080p.mp4']) assert.strictEqual(normalizeName(plain).reason, null, plain);
+});

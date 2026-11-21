@@ -14,6 +14,8 @@ const EDGE = new RegExp(`^[${SEPARATORS}]+|[${SEPARATORS}]+$`, 'g');
 const TRAILING = new RegExp(`[${SEPARATORS}]+$`);
 const BRACKETS = ['[]', '()', '{}', '（）', '［］', '｛｝', '【】', '「」', '『』', '《》', '〈〉', '〔〕', '〖〗'];
 // Windows removes a trailing dot and space from a name.
+// A number written without a hyphen (ABC123). It is not a product number to move, but it is shown as a skip instead of passing silently (#327).
+const HYPHENLESS = /(?<![A-Za-z0-9])([A-Z]{2,5})(\d{2,5})(?![A-Za-z0-9])/;
 const ENDS_BADLY = /[.\s\u0085]$/;
 const NOT_A_NAME = /[\\/:*?"<>|\x00-\x1f]/;
 
@@ -62,7 +64,10 @@ function normalizeName(fileName) {
 
   const upper = findProductNumberRanges(base);
   const ranges = upper.length > 0 ? upper : findProductNumberRanges(base, { lowercase: true });
-  if (ranges.length === 0) return unchanged(null);
+  if (ranges.length === 0) {
+    const bare = HYPHENLESS.exec(fileName);
+    return bare ? unchanged(`The number has no hyphen (${bare[0]}), so it is not moved.`, `${bare[1]}-${bare[2]}`) : unchanged(null);
+  }
   const inferred = upper.length === 0;
   const numbers = new Set(ranges.map((range) => range.number));
   if (numbers.size > 1) return unchanged(`Several numbers, so none is chosen: ${[...numbers].join(', ')}`);
