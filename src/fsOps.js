@@ -65,7 +65,7 @@ function makeDir(dir, { dryRun = false } = {}) {
   return perform(`Create folder: ${dir}${note}`, dryRun, () => fs.mkdirSync(dir, { recursive: true }));
 }
 
-function writeFile(file, content, { append = false, force = false, dryRun = false } = {}) {
+function writeFile(file, content, { append = false, force = false, dryRun = false, info } = {}) {
   if (!append) ensureFree(file, force);
   // Writing through a link would land wherever it points, even outside the intended folder, so no link is written through (#312).
   if (fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink()) throw new FcError(`Cannot write through a link: ${file}. Remove the link first.`);
@@ -75,7 +75,7 @@ function writeFile(file, content, { append = false, force = false, dryRun = fals
     ensureCanMakeDir(path.dirname(file));
     if (exists(file) && fs.statSync(file).isDirectory()) throw new FcError(`Cannot write to a folder: ${file}`);
   }
-  const note = append ? '' : overwriteNote(file, dryRun);
+  const note = append ? '' : overwriteNote(file, dryRun, info);
   return perform(`${append ? 'Append to file' : 'Write file'}: ${file}${note}`, dryRun, () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (append) fs.appendFileSync(file, content);
@@ -88,7 +88,7 @@ function readFile(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
-function rename(target, newName, { force = false, dryRun = false } = {}) {
+function rename(target, newName, { force = false, dryRun = false, info } = {}) {
   ensureItemExists(target);
   if (newName.includes('/') || newName.includes('\\')) {
     throw new FcError('The new name cannot contain a path. Use mv to move.');
@@ -98,7 +98,7 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   rejectNewDeviceName(dest);
   // Changing only the case of itself is not an overwrite. "Itself" is decided by volume and file number, not by lowercased names (#302).
   if (dryRun && exists(dest) && !isSameItem(target, dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
-  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
+  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
 // fs.cpSync keeps the times of files with preserveTimestamps but not of folders, so the folder times are set after the copy (best effort: a folder time that cannot be set is not an error) (#313).
@@ -339,7 +339,7 @@ function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
 
-function move(sources, dest, { force = false, dryRun = false, permanent = false } = {}) {
+function move(sources, dest, { force = false, dryRun = false, permanent = false, info } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
@@ -370,7 +370,7 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false 
   const done = [];
   for (const { src, target } of items) {
     const where = permanent ? 'it is deleted permanently' : 'the old one goes to the Recycle Bin';
-    const note = dryRun ? targetNote(planned, target, force, ` (replaces the whole existing folder; ${where})`, ` (overwrites; ${where})`) : '';
+    const note = dryRun ? targetNote(planned, target, force, ` (replaces the whole existing folder; ${where})`, ` (overwrites; ${where})`, info) : '';
     try {
       done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target, { permanent })));
     } catch (err) {
@@ -382,7 +382,7 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false 
   return done;
 }
 
-function copy(sources, dest, { force = false, dryRun = false } = {}) {
+function copy(sources, dest, { force = false, dryRun = false, info } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To copy several items, the destination must be an existing folder: ${dest}`);
   }
@@ -433,7 +433,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
   }
   const planned = new Set();
   return items.map(({ src, target }) => {
-    const note = dryRun ? targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)') : '';
+    const note = dryRun ? targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)', ' (overwrites)', info) : '';
     return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
   });
 }
