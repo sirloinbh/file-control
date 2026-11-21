@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
-const { planSafeRemovals, runConfirmedRemoval, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
 
 // It chooses the files to delete among those judged broken. It does not touch files.
 // - removals: files to delete ({ path, size, reason, stamp })
@@ -32,7 +32,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
 // A value that stands for the list a person saw. It changes if the files to delete increase or decrease or if any one changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.reason, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify([plan.target, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-broken', plan.target, items])).digest('hex').slice(0, 12);
 }
 
 // It sends broken files under the target to the Recycle Bin. If there is no confirm or it is dryRun, it only makes the list and changes nothing.
@@ -47,7 +47,7 @@ function removeBroken(dir, { confirm, dryRun = false, now, maxSize = MAX_RECYCLE
   const result = { ...plan, code, dryRun, confirmed: false, mismatch: false, removed: [], failed: [], log: null };
   if (confirm === undefined || dryRun) return result;
   // Even if all files of the list that was seen become kept and there is nothing to delete, it does not silently end as a success.
-  if (confirm !== code) return { ...result, mismatch: true };
+  if (confirm !== code) return { ...result, mismatch: true, mismatchHints: mismatchHints(plan) };
   if (plan.removals.length === 0) return result;
   const total = plan.removals.length;
   const relative = (p) => path.relative(plan.target, p) || '.';
@@ -79,6 +79,11 @@ function formatRemoveBroken(result) {
   for (const item of result.suspect) lines.push(`Suspect, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  if (result.mismatch) {
+    lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
+    for (const item of result.mismatchHints ?? []) lines.push(`Changed: ${relative(item.path)} (${item.reason})`);
+  }
+  if (result.logWarning) lines.push(`Warning: ${result.logWarning}`);
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, suspect ${result.suspect.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
