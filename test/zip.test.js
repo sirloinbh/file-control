@@ -15,7 +15,8 @@ const { inspect } = require('../src/broken');
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-zip-'));
   test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
+  // The real path, so that a short 8.3 temp path (as on CI runners) is not seen as a link out of the target.
+  return fs.realpathSync.native(dir);
 }
 
 // A one-entry stored zip with a comment.
