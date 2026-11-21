@@ -1,13 +1,200 @@
 {
-  "extraKnownMarketplaces": {
-    "sirloinbh-standards": {
-      "source": {
-        "source": "github",
-        "repo": "sirloinbh/project-standards"
-      }
-    }
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(git switch *)",
+      "Bash(git pull --ff-only)",
+      "Bash(git branch --delete *)",
+      "Bash(git fetch origin)",
+      "Bash(git fetch --prune origin)",
+      "Bash(git switch -f *)",
+      "Bash(git switch * -f)",
+      "Bash(git switch * -f *)",
+      "Bash(git switch -C *)",
+      "Bash(git switch * -C *)",
+      "Bash(git switch *--force*)",
+      "Bash(git switch *--discard-changes*)",
+      "Bash(git branch -D *)",
+      "Bash(git branch -f *)",
+      "Bash(git branch * -f)",
+      "Bash(git branch * -f *)",
+      "Bash(git branch *--force*)",
+      "Bash(git reset --hard)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean)",
+      "Bash(git clean *)",
+      "Bash(git stash)",
+      "Bash(git stash *)",
+      "Bash(git rebase)",
+      "Bash(git rebase *)",
+      "Bash(git branch -d *)",
+      "PowerShell(git switch *)",
+      "PowerShell(git pull --ff-only)",
+      "PowerShell(git branch --delete *)",
+      "PowerShell(git fetch origin)",
+      "PowerShell(git fetch --prune origin)",
+      "PowerShell(git switch -f *)",
+      "PowerShell(git switch * -f)",
+      "PowerShell(git switch * -f *)",
+      "PowerShell(git switch -C *)",
+      "PowerShell(git switch * -C *)",
+      "PowerShell(git switch *--force*)",
+      "PowerShell(git switch *--discard-changes*)",
+      "PowerShell(git branch -D *)",
+      "PowerShell(git branch -f *)",
+      "PowerShell(git branch * -f)",
+      "PowerShell(git branch * -f *)",
+      "PowerShell(git branch *--force*)",
+      "PowerShell(git reset --hard)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(git clean)",
+      "PowerShell(git clean *)",
+      "PowerShell(git stash)",
+      "PowerShell(git stash *)",
+      "PowerShell(git rebase)",
+      "PowerShell(git rebase *)",
+      "PowerShell(git branch -d *)"
+    ],
+    "deny": [
+      "Bash(npm install-test *)",
+      "Bash(npm it *)",
+      "Bash(npm install-ci-test *)",
+      "Bash(npm cit *)",
+      "Bash(npm clean-install-test *)",
+      "Bash(npm sit *)",
+      "Bash(npm update *)",
+      "Bash(npm up *)",
+      "Bash(npm u *)",
+      "Bash(npm upgrade *)",
+      "Bash(npm udpate *)",
+      "Bash(npm uninstall *)",
+      "Bash(npm un *)",
+      "Bash(npm remove *)",
+      "Bash(npm rm *)",
+      "Bash(npm r *)",
+      "Bash(npm unlink *)",
+      "Bash(npm exec *)",
+      "Bash(npm x *)",
+      "Bash(npm create *)",
+      "Bash(npm init *)",
+      "Bash(npm innit *)",
+      "Bash(npm rebuild *)",
+      "Bash(npm rb *)",
+      "Bash(npm dedupe *)",
+      "Bash(npm ddp *)",
+      "Bash(npm link *)",
+      "Bash(npm ln *)",
+      "Bash(npm audit fix *)",
+      "Bash(npx *)",
+      "Bash(pnpm *)",
+      "Bash(pnpx *)",
+      "Bash(yarn *)",
+      "Bash(bun *)",
+      "Bash(bunx *)",
+      "Bash(corepack *)",
+      "PowerShell(npm install-test *)",
+      "PowerShell(npm it *)",
+      "PowerShell(npm install-ci-test *)",
+      "PowerShell(npm cit *)",
+      "PowerShell(npm clean-install-test *)",
+      "PowerShell(npm sit *)",
+      "PowerShell(npm update *)",
+      "PowerShell(npm up *)",
+      "PowerShell(npm u *)",
+      "PowerShell(npm upgrade *)",
+      "PowerShell(npm udpate *)",
+      "PowerShell(npm uninstall *)",
+      "PowerShell(npm un *)",
+      "PowerShell(npm remove *)",
+      "PowerShell(npm rm *)",
+      "PowerShell(npm r *)",
+      "PowerShell(npm unlink *)",
+      "PowerShell(npm exec *)",
+      "PowerShell(npm x *)",
+      "PowerShell(npm create *)",
+      "PowerShell(npm init *)",
+      "PowerShell(npm innit *)",
+      "PowerShell(npm rebuild *)",
+      "PowerShell(npm rb *)",
+      "PowerShell(npm dedupe *)",
+      "PowerShell(npm ddp *)",
+      "PowerShell(npm link *)",
+      "PowerShell(npm ln *)",
+      "PowerShell(npm audit fix *)",
+      "PowerShell(npx *)",
+      "PowerShell(pnpm *)",
+      "PowerShell(pnpx *)",
+      "PowerShell(yarn *)",
+      "PowerShell(bun *)",
+      "PowerShell(bunx *)",
+      "PowerShell(corepack *)",
+      "Bash(git push -f *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)",
+      "Bash(git push *--force*)",
+      "Bash(git push origin +*)",
+      "Bash(git push origin main)",
+      "Bash(git push origin main *)",
+      "Bash(git push origin HEAD:main)",
+      "Bash(git push origin HEAD:main *)",
+      "Bash(git push origin *:main)",
+      "PowerShell(git push -f *)",
+      "PowerShell(git push * -f)",
+      "PowerShell(git push * -f *)",
+      "PowerShell(git push *--force*)",
+      "PowerShell(git push origin +*)",
+      "PowerShell(git push origin main)",
+      "PowerShell(git push origin main *)",
+      "PowerShell(git push origin HEAD:main)",
+      "PowerShell(git push origin HEAD:main *)",
+      "PowerShell(git push origin *:main)"
+    ]
   },
-  "enabledPlugins": {
-    "sirloinbh-standards@sirloinbh-standards": true
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/block-package-installs.mjs"],
+            "timeout": 10,
+            "onFailure": "block"
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/block-forbidden-commands.mjs"],
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/block-forbidden-commands.mjs"],
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/pc-setup-notice.mjs"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

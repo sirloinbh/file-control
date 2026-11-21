@@ -1,0 +1,73 @@
+# Managed file. Edit it in sirloinbh/project-standards templates/common/.codex/rules/
+# Lets Codex run the git branch commands in the std-git-writing skill, including the destructive ones, without asking (#361, docs/agent-guardrails.md).
+# Codex rules compare words from the start of a command, and the strictest matching rule wins.
+prefix_rule(
+    pattern = ["git", "switch"],
+    decision = "allow",
+    justification = "Branch switch command from std-git-writing.",
+    match = [["git", "switch", "main"], ["git", "switch", "--create", "feat/1-x", "origin/main"]],
+)
+prefix_rule(
+    pattern = ["git", "pull", "--ff-only"],
+    decision = "allow",
+    justification = "Command to update main from std-git-writing.",
+    match = [["git", "pull", "--ff-only"]],
+    not_match = [["git", "pull"]],
+)
+prefix_rule(
+    pattern = ["git", "branch", ["--delete", "-d"]],
+    decision = "allow",
+    justification = "Deletes only merged local branches.",
+    match = [["git", "branch", "--delete", "feat/1-x"]],
+    not_match = [["git", "branch", "-D", "feat/1-x"]],
+)
+prefix_rule(
+    pattern = ["git", "fetch", ["origin", "--prune"]],
+    decision = "allow",
+    justification = "Only fetches remote state.",
+    match = [["git", "fetch", "origin"], ["git", "fetch", "--prune", "origin"]],
+)
+prefix_rule(
+    pattern = ["git", "switch", ["-f", "-C", "--force", "--force-create", "--discard-changes"]],
+    decision = "allow",
+    justification = "Can overwrite local changes or branches. Allowed without asking by the user decision on #418.",
+    match = [["git", "switch", "-f", "main"]],
+    not_match = [["git", "switch", "main"]],
+)
+prefix_rule(
+    pattern = ["git", "branch", ["-D", "-f", "--force"]],
+    decision = "allow",
+    justification = "Can delete or overwrite unmerged branches. Allowed without asking (#418).",
+    match = [["git", "branch", "-D", "feat/1-x"]],
+)
+prefix_rule(
+    pattern = ["git", "branch", "--delete", "--force"],
+    decision = "allow",
+    justification = "Can delete unmerged branches. Allowed without asking (#418).",
+    match = [["git", "branch", "--delete", "--force", "feat/1-x"]],
+)
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "allow",
+    justification = "Deletes uncommitted changes. Allowed without asking (#418).",
+    match = [["git", "reset", "--hard"]],
+)
+prefix_rule(
+    pattern = ["git", ["clean", "stash", "rebase"]],
+    decision = "allow",
+    justification = "Changes files or history. Allowed without asking (#418).",
+    match = [["git", "clean", "-fd"], ["git", "stash"], ["git", "rebase", "main"]],
+)
+prefix_rule(
+    pattern = ["git", "push", ["-f", "--force", "--force-with-lease"]],
+    decision = "forbidden",
+    justification = "Force push is not allowed (std-git-writing).",
+    match = [["git", "push", "--force", "origin", "x"]],
+    not_match = [["git", "push", "origin", "x"]],
+)
+prefix_rule(
+    pattern = ["git", "push", "origin", ["main", "HEAD:main"]],
+    decision = "forbidden",
+    justification = "Pushing directly to main is not allowed (std-git-writing).",
+    match = [["git", "push", "origin", "main"]],
+)

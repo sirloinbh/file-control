@@ -1,0 +1,42 @@
+# Managed file. Edit it in sirloinbh/project-standards templates/common/.codex/rules/
+# Blocks package installs and ad-hoc package execution for Codex (npm supply-chain attacks, docs/agent-guardrails.md).
+# Codex reads project rules only after the user trusts this project's .codex/ folder.
+prefix_rule(
+    pattern = ["npm", ["install-test", "it", "install-ci-test", "cit", "clean-install-test", "sit", "update", "up", "u", "upgrade", "udpate", "uninstall", "un", "remove", "rm", "r", "unlink", "exec", "x", "create", "init", "innit", "rebuild", "rb", "dedupe", "ddp", "link", "ln"]],
+    decision = "forbidden",
+    justification = "Installing, removing, or running npm packages is done by the user after approval (docs/dependency-policy.md).",
+    match = [["npm", "install-test"], ["npm", "update", "react"], ["npm", "u"], ["npm", "sit"], ["npm", "unlink", "x"]],
+    not_match = [["npm", "ci"], ["npm", "install", "react"], ["npm", "i"], ["npm", "run", "check"], ["npm", "ls"], ["npm", "test"]],
+)
+# Codex rules compare words literally, so this lists every unambiguous prefix and camelCase form npm 11
+# resolves to the commands above (lib/utils/cmd-list.js). The Claude Code hook resolves these instead.
+prefix_rule(
+    pattern = ["npm", [
+        "clean-install-", "clean-install-t", "clean-install-te", "clean-install-tes", "clean-installT", "clean-installTe",
+        "clean-installTes", "clean-installTest", "cleanInstall-", "cleanInstall-t", "cleanInstall-te",
+        "cleanInstall-tes", "cleanInstall-test", "cleanInstallT", "cleanInstallTe", "cleanInstallTes", "cleanInstallTest",
+        "cr", "cre", "crea", "creat", "dd", "ded", "dedu", "dedup", "exe", "ini", "inn", "inni", "install-ci",
+        "install-ci-", "install-ci-t", "install-ci-te", "install-ci-tes", "install-ciT", "install-ciTe", "install-ciTes",
+        "install-ciTest", "install-t", "install-te", "install-tes",
+        "installCi", "installCi-", "installCi-t", "installCi-te", "installCi-tes", "installCi-test", "installCiT",
+        "installCiTe", "installCiTes", "installCiTest", "installT", "installTe", "installTes", "installTest", "lin", "reb", "rebu",
+        "rebui", "rebuil", "rem", "remo", "remov", "si", "ud", "udp", "udpa", "udpat", "uni", "unin", "unins",
+        "uninst", "uninsta", "uninstal", "unl", "unli", "unlin", "upd", "upda", "updat", "upg", "upgr", "upgra",
+        "upgrad",
+    ]],
+    decision = "forbidden",
+    justification = "Short and camelCase forms of install commands that npm accepts. The user installs packages.",
+    match = [["npm", "upd"], ["npm", "installTest"], ["npm", "uni", "react"]],
+    not_match = [["npm", "run"], ["npm", "outdated"]],
+)
+prefix_rule(
+    pattern = ["npm", "audit", "fix"],
+    decision = "forbidden",
+    justification = "npm audit fix installs packages.",
+)
+prefix_rule(
+    pattern = [["npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "corepack"]],
+    decision = "forbidden",
+    justification = "Other package managers and npx are not used.",
+    match = [["npx", "shadcn"], ["yarn"]],
+)

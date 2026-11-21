@@ -1,0 +1,21 @@
+# Managed file. Edit it in sirloinbh/project-standards templates/common/
+node_modules/
+dist/
+.env
+*.log
+.terraform/
+*.tfstate*
+*.tfplan
+backups/
+.local/
+.bkit/
+.playwright-mcp/
+.claude/settings.local.json
+*.tfvars
+test-results/
+playwright-report/
+blob-report/
+coverage/
+.lighthouseci/
+*.tsbuildinfo
+# --- project ---

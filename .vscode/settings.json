@@ -1,0 +1,23 @@
+{
+  "terminal.integrated.env.windows": {
+    "GH_CONFIG_DIR": "${env:APPDATA}\\GitHub CLI",
+    "CODEX_HOME": "${env:LOCALAPPDATA}\\Codex-Account-B",
+    "GH_TOKEN": null,
+    "GITHUB_TOKEN": null
+  },
+  "terminal.integrated.profiles.windows": {
+    "sirloinbh PowerShell": {
+      "path": "${env:WINDIR}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "args": ["-NoExit", "-File", "${env:LOCALAPPDATA}\\sirloinbh-tools\\project-terminal.ps1"]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "sirloinbh PowerShell",
+  "prettier.requireConfig": true,
+  "[javascript][typescript][typescriptreact][json][jsonc][css][html][markdown][yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  }
+}
