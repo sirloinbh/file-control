@@ -53,9 +53,14 @@ ${table([{ label: 'Category', width: '30%' }, { label: 'What it does' }], rows)}
 // token is a random value made at server start. Tests can set it.
 // Session (#265): launch is a one-time value made at server start. The first GET with ?launch=<value> gets the fctl_session cookie and a 303 to the same address without the query,
 // and the value is used up. Every other request without that cookie gets 403 and the NO_SESSION_PAGE (checked after Host, before any route, so /job and /pick are covered too).
-function createHandler(routes = new Map(), { token = createToken(), launch = createToken() } = {}) {
+function createHandler(routes = new Map(), { token = createToken(), launch = createToken(), prefixSecret = createToken() } = {}) {
   let launchValue = launch;
   const session = createToken();
+  // The second secret (#328). The session cookie is sent to every port on 127.0.0.1, so another local service the browser visits would receive it.
+  // Everything is therefore served under /<prefixSecret>/ and the cookie is limited to that path: a service on another port never gets the cookie
+  // (its paths do not match) and cannot guess the prefix. The prefix is added to the server-made links and redirects in send().
+  const prefix = `/${prefixSecret}`;
+  const prefixed = (body) => body.replace(/\b(href|action)="\//g, `$1="${prefix}/`).replace(/(<meta http-equiv="refresh" content="[^"]*; url=)\//g, `$1${prefix}/`);
   const all = new Map([['/', () => ({ body: homePage(available) })], ...routes]);
   const available = new Set(all.keys());
   const send = (res, status, body, headers = {}) => {
@@ -64,8 +69,10 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
       res.destroy();
       return;
     }
-    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', ...headers, ...SECURITY_HEADERS });
-    res.end(res.req.method === 'HEAD' ? undefined : String(body ?? ''));
+    const out = { 'Content-Type': 'text/html; charset=utf-8', ...headers, ...SECURITY_HEADERS };
+    if (typeof out.Location === 'string' && out.Location.startsWith('/') && !out.Location.startsWith(`${prefix}/`)) out.Location = `${prefix}${out.Location}`;
+    res.writeHead(status, out);
+    res.end(res.req.method === 'HEAD' ? undefined : prefixed(String(body ?? '')));
   };
   const fail = (res, err) => {
     // An exception in the screen code shows only the message, without a stack. The server keeps running.
@@ -95,14 +102,17 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
         launchValue = null;
         parsed.searchParams.delete('launch');
         // Leading slashes are collapsed so the Location can never become a protocol-relative address.
-        send(res, 303, '', { Location: `/${parsed.pathname.replace(/^\/+/, '')}${parsed.search}`, 'Set-Cookie': sessionCookie(session) });
+        send(res, 303, '', { Location: `${prefix}/${parsed.pathname.replace(/^\/+/, '').replace(/^[^/]*/, (first) => (first === prefixSecret ? '' : first)).replace(/^\/+/, '')}${parsed.search}`, 'Set-Cookie': sessionCookie(session, `${prefix}/`) });
         return;
       }
-      if (!hasSession(req.headers.cookie, session)) {
+      if (pathname === null || !(pathname === prefix || pathname.startsWith(`${prefix}/`)) || !hasSession(req.headers.cookie, session)) {
         send(res, 403, NO_SESSION_PAGE);
         return;
       }
-      const route = pathname === null ? undefined : all.get(pathname);
+      // Strip the secret prefix so the routes and handlers see their usual addresses.
+      const inner = `/${pathname.slice(prefix.length).replace(/^\/+/, '')}${parsed.search}`;
+      req.url = inner;
+      const route = all.get(new URL(inner, `http://${HOST}`).pathname);
       if (route === undefined) {
         send(res, 404, page({ title: 'Page not found', available, alerts: [{ kind: 'error', message: `No such address: ${req.url}` }], body: html`<p><a href="/">Back to the start page</a></p>` }));
         return;
@@ -122,6 +132,9 @@ function createHandler(routes = new Map(), { token = createToken(), launch = cre
           if (!(err instanceof RequestError)) throw err;
           // If an unread body remains, it closes the connection after the response so it does not mix with the next request.
           res.setHeader('Connection', 'close');
+          // Once the refusal is out, destroy the request so a client cannot keep sending or hold the handler open (#328).
+          // A short delay lets the client read the refusal first; destroying a socket with unread data resets it and loses the response.
+          res.once('finish', () => setTimeout(() => req.destroy(), 1000).unref());
           send(res, err.status, page({ title: 'Request not accepted', available, alerts: [{ kind: 'error', message: err.message }] }));
           return;
         }
@@ -175,7 +188,7 @@ function parseUiArgs(argv) {
 }
 
 // It starts the server and returns { server, url, launchUrl }. If the port is already in use, it does not move to another port and fails.
-function startServer({ port = DEFAULT_PORT, routes, token, launch = createToken() } = {}) {
+function startServer({ port = DEFAULT_PORT, routes, token, launch = createToken(), prefixSecret = createToken() } = {}) {
   const portError = (err) => {
     if (err.code === 'EADDRINUSE') return new FcError(`Port ${port} is already used by another program. Check what uses it (netstat -ano | findstr :${port}). To start on another port, use --port=NUMBER.`);
     if (err.code === 'EACCES') return new FcError(`No permission to open port ${port}. Choose another port with --port=NUMBER.`);
@@ -184,14 +197,14 @@ function startServer({ port = DEFAULT_PORT, routes, token, launch = createToken(
   // A free port (0) is chosen by the operating system, so there is no need to check in advance.
   const checked = port === 0 ? Promise.resolve() : checkPortFree(port);
   return checked.catch((err) => Promise.reject(portError(err))).then(() => new Promise((resolve, reject) => {
-    const server = http.createServer(createHandler(routes, { token, launch }));
+    const server = http.createServer(createHandler(routes, { token, launch, prefixSecret }));
     server.once('error', (err) => reject(portError(err)));
     server.listen({ port, host: HOST, exclusive: true }, () => {
       // A server error after it started is only reported and does not end the process.
       server.on('error', (err) => console.error(`UI server error: ${err.message}`));
-      const url = `http://${HOST}:${server.address().port}/`;
-      // launchUrl is the only way in (#265). url is the plain address that the browser is sent to after the launch step.
-      resolve({ server, url, launchUrl: `${url}?launch=${encodeURIComponent(launch)}` });
+      const origin = `http://${HOST}:${server.address().port}`;
+      // launchUrl is the only way in (#265). url is the plain address that the browser is sent to after the launch step; it carries the secret path prefix (#328).
+      resolve({ server, url: `${origin}/${prefixSecret}/`, launchUrl: `${origin}/?launch=${encodeURIComponent(launch)}` });
     });
   }));
 }
