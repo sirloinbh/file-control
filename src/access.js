@@ -58,29 +58,36 @@ function realForAccess(target, abs) {
 }
 
 // tar, cpSync, and extraction follow junctions inside a folder, so a folder that holds a link is not handed to any work.
-function rejectLinksInside(real, abs) {
+// linkFolders is optional: a Map from a folder's real path to one link path below it, built by a caller that already walked the target (#326).
+// With it the folder is judged from that map and the subtree is not read again. Without it the folder is scanned.
+function rejectLinksInside(real, abs, linkFolders) {
+  if (linkFolders !== undefined) {
+    const known = linkFolders.get(real);
+    if (known !== undefined) throw new FcError(`Cannot handle a folder that contains a link: ${abs} (link: ${known})`);
+    return;
+  }
   if (!fs.statSync(real).isDirectory()) return;
   const link = listEntries(real).find((entry) => entry.type === 'link');
   if (link) throw new FcError(`Cannot handle a folder that contains a link: ${abs} (link: ${link.path})`);
 }
 
-function checkRead(target, p) {
+function checkRead(target, p, linkFolders) {
   const abs = resolveAccessPath(target, p);
   const real = realForAccess(target, abs);
-  rejectLinksInside(real, abs);
+  rejectLinksInside(real, abs, linkFolders);
   return real;
 }
 
 // A path that does not exist yet can also be used, so it goes up to the nearest path that exists and checks that real path.
 // A broken link is caught as an existing path and refused. If used as is, a file would be created outside the target that the link points to.
-function checkWrite(target, p) {
+function checkWrite(target, p, linkFolders) {
   const abs = resolveAccessPath(target, p);
   let existing = abs;
   while (existing !== target && !fs.lstatSync(existing, { throwIfNoEntry: false })) existing = path.dirname(existing);
   const real = realForAccess(target, existing);
   if (existing === abs) {
     if (real === target) throw new FcError(`Cannot write to the target folder itself: ${abs}`);
-    rejectLinksInside(real, abs);
+    rejectLinksInside(real, abs, linkFolders);
     // A hard link cannot be told by path from a file outside the target. Reading and deleting are left as they are, and only writes that change the content are refused (#48).
     rejectHardLinkedWrite(real);
     return real;
@@ -90,13 +97,13 @@ function checkWrite(target, p) {
 }
 
 // The link itself is not deleted. This avoids the risk of following the link, depending on the deletion method such as the Recycle Bin.
-function checkDelete(target, p) {
+function checkDelete(target, p, linkFolders) {
   const abs = resolveAccessPath(target, p);
   const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
   if (stat && stat.isSymbolicLink()) throw new FcError(`Cannot delete a link: ${abs}`);
   const real = realForAccess(target, abs);
   if (real === target) throw new FcError(`Cannot delete the target folder itself: ${abs}`);
-  rejectLinksInside(real, abs);
+  rejectLinksInside(real, abs, linkFolders);
   return real;
 }
 
@@ -119,11 +126,11 @@ function grant(dir, kinds) {
   const target = resolveTarget(dir);
   const access = { target };
   for (const [kind, { name, check }] of Object.entries(ACCESS)) {
-    access[kind] = (p) => {
+    access[kind] = (p, { linkFolders } = {}) => {
       if (typeof p !== 'string') throw new FcError('Paths must be strings.');
       if (!granted.has(kind)) throw new FcError(`No ${name} permission: ${p} (target: ${target})`);
       try {
-        return check(target, p);
+        return check(target, p, linkFolders);
       } catch (err) {
         if (err instanceof FcError) throw err;
         throw new FcError(`Cannot check the path: ${p} (${err.code})`);
