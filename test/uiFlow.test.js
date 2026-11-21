@@ -60,7 +60,7 @@ test('dangerConfirmations: only options that are on get a warning and a required
   assert.deepStrictEqual(dangerConfirmations({}), []);
   const out = dangerConfirmations({ permanent: 'on' }).map(String).join('');
   assert.ok(out.includes('name="confirm-permanent" value="yes" required'));
-  assert.ok(out.includes('Files are deleted permanently without going to the Recycle Bin'));
+  assert.ok(out.includes('Items are deleted for good without going to the Recycle Bin'));
   assert.ok(!out.includes('confirm-force'));
 });
 
