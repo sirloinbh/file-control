@@ -140,6 +140,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const safe = planSafeRemovals(candidates, access, {
     now: checkedAt,
     maxSize,
+    sameFileId: fileIdOf,
     precheck: (item) => item.keeperProblem ?? sameVideoReason(item.keeper, item.file, item.group),
     isChanged: () => false,
     changedReason: 'Kept because the file changed after the search.',

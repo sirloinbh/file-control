@@ -4,7 +4,7 @@
 // Each command keeps only "find the candidates" and "format the report". The rules that keep a file from being lost live here, once:
 // - planSafeRemovals: the keep ladder and the volume checks (it does not touch files)
 // - runConfirmedRemoval: the confirm -> log -> send driver
-// - holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE: the pieces both of them use
+// - holdReason, checkOne, recycleInBatches, MAX_RECYCLE_SIZE: the pieces the commands share
 const fs = require('node:fs');
 const path = require('node:path');
 const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentRefusal, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
@@ -45,6 +45,7 @@ const linkReason = (target, other) =>
 // options:
 // - now: the time to measure the hold by (default Date.now() after the search)
 // - maxSize: the size to keep when the Recycle Bin setting cannot be read
+// - sameFileId(stat): the ID that tells two names of one file apart, or null to not compare (default: device and inode; remove-duplicates passes fileIdOf)
 // - precheck(candidate): a reason to keep the candidate before any file check, or null
 // - isChanged(candidate, real, stat): whether the file differs from the one that was judged
 // - changedReason: the text kept for a changed file
@@ -56,7 +57,7 @@ const linkReason = (target, other) =>
 // Then, only if something is left: a volume that is not a fixed disk or has no change time, and the Recycle Bin setting (would be deleted permanently).
 // It returns { removals, kept, interactive }. interactive is null when there is nothing to delete.
 function planSafeRemovals(candidates, access, options = {}) {
-  const { now, maxSize = MAX_RECYCLE_SIZE, precheck, isChanged, changedReason, pathProblem = longPathReason, extraKeep, toRemoval, entry } = options;
+  const { now, maxSize = MAX_RECYCLE_SIZE, sameFileId = (stat) => `${stat.dev}:${stat.ino}`, precheck, isChanged, changedReason, pathProblem = longPathReason, extraKeep, toRemoval, entry } = options;
   const checkedAt = now ?? Date.now();
   const plan = { removals: [], kept: [], interactive: null };
   const markerOf = markerFinder();
@@ -77,7 +78,7 @@ function planSafeRemovals(candidates, access, options = {}) {
       const hold = holdReason(stat, checkedAt);
       // If a file may also be downloading, it is not deleted.
       const marker = hold === null ? markerReason(markerOf(real)) : null;
-      const id = stat.nlink > 1n ? fileIdOf(stat) : null;
+      const id = stat.nlink > 1n ? sameFileId(stat) : null;
       const sameFile = id === null ? undefined : linked.get(id);
       const pathReason = pathProblem(real);
       const extra = extraKeep?.(candidate, real, stat) ?? null;

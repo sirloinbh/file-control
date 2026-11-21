@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./flatten');
-const { planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
 
 // It chooses the files to delete among those judged broken. It does not touch files.
 // - removals: files to delete ({ path, size, reason, stamp })
@@ -89,4 +89,4 @@ function formatRemoveBroken(result) {
   return lines.join('\n');
 }
 
-module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, holdReason, recycleFailure, checkOne, recycleInBatches, MAX_RECYCLE_SIZE };
+module.exports = { planRemoval, removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE };

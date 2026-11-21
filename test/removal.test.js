@@ -214,3 +214,24 @@ test('rule: a file the Recycle Bin would delete permanently is kept, and so is i
 test('MAX_RECYCLE_SIZE is the fallback limit when the Recycle Bin setting cannot be read (#308)', () => {
   assert.strictEqual(MAX_RECYCLE_SIZE, 1024 * 1024 * 1024);
 });
+
+test('the ladder order is changed, hold, marker, path, extra rule (#308)', () => {
+  const dir = tempDir();
+  const file = make(dir, 'a.mp4');
+  make(dir, 'a.mp4.part');
+  const both = plan(dir, [candidate(file)], { now: Date.now() - HOUR, extraKeep: () => 'EXTRA' });
+  assert.match(keptReasons(both)[0], /changed just now/);
+  const marker = plan(dir, [candidate(file)], { extraKeep: () => 'EXTRA' });
+  assert.match(keptReasons(marker)[0], /marker file/);
+  const changed = plan(dir, [{ path: file, stamp: 'other' }], { now: Date.now() - HOUR });
+  assert.deepStrictEqual(keptReasons(changed), ['CHANGED']);
+});
+
+test('rule: a candidate that is not a regular file is kept as changed (#308)', () => {
+  const dir = tempDir();
+  const sub = path.join(dir, 'folder.bin');
+  fs.mkdirSync(sub);
+  const result = plan(dir, [{ path: sub, stamp: 'x' }]);
+  assert.deepStrictEqual(result.removals, []);
+  assert.strictEqual(result.kept.length, 1);
+});
