@@ -10,27 +10,8 @@ const { archiveExt } = commands;
 const { html } = require('./html');
 const { summaryCards, badge, table } = require('./layout');
 
-// Extensions read as a format (FORMAT_EXT of #164, plus tar).
-const FORMAT_LABELS = {
-  tar: 'tar',
-  zip: 'ZIP',
-  '7z': '7z',
-  cpio: 'cpio',
-  iso: 'ISO 9660',
-  ar: 'ar',
-  shar: 'shar',
-  xar: 'xar',
-  warc: 'WARC',
-  mtree: 'mtree',
-};
-// Extensions read as a compression layer. Only .Z (upper case) is compress; .z is not seen as compression.
-const COMPRESS_LABELS = {
-  gz: 'gzip', bz2: 'bzip2', xz: 'xz', zst: 'zstd', lzma: 'lzma', lz: 'lzip', lz4: 'lz4', lzo: 'lzop', lrz: 'lrzip', grz: 'grzip', uu: 'uuencode', Z: 'compress',
-};
-// Extensions that mean tar and compression together (.taz is gzip, .taZ and .tZ are compress, told apart by case).
-const TAR_COMPRESS = {
-  tgz: 'gzip', taz: 'gzip', tbz: 'bzip2', tbz2: 'bzip2', tz2: 'bzip2', txz: 'xz', tlz: 'lzma', tzst: 'zstd', tzo: 'lzop', taZ: 'compress', tZ: 'compress',
-};
+// The tables of extensions and names are the ones of src/archive.js (#362), so a new extension there shows in this preview too.
+const { FORMAT_LABELS, COMPRESS_LABELS, TAR_COMPRESS } = commands;
 
 const compressKey = (part) => (part === 'Z' ? 'Z' : part.toLowerCase());
 const tarCompressKey = (part) => (part === 'taZ' || part === 'tZ' ? part : part.toLowerCase());
