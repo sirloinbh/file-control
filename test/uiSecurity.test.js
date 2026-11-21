@@ -100,6 +100,29 @@ test('readBody는 한도까지만 읽고 넘으면 413으로 거부한다 (#252)
   await assert.rejects(readBody(chunks), (err) => err instanceof RequestError && err.status === 413);
 });
 
+test('readBody stops reading on overflow (#328)', async () => {
+  const stream = new Readable({ read() {} });
+  const result = readBody(stream, 10);
+  stream.push(Buffer.alloc(11));
+  await assert.rejects(result, (err) => err instanceof RequestError && err.status === 413);
+  assert.strictEqual(stream.isPaused(), true);
+});
+
+test('readBody refuses a stalled body after the timeout (#328)', async () => {
+  const stream = new Readable({ read() {} });
+  stream.push(Buffer.from('a=1'));
+  await assert.rejects(readBody(stream, MAX_BODY, 30), (err) => err instanceof RequestError && err.status === 408);
+  assert.strictEqual(stream.isPaused(), true);
+});
+
+test('readBody refuses a body whose client went away (#328)', async () => {
+  const stream = new Readable({ read() {} });
+  const result = readBody(stream, MAX_BODY, 5000);
+  stream.push(Buffer.from('a=1'));
+  stream.destroy();
+  await assert.rejects(result, (err) => err instanceof RequestError && err.status === 400);
+});
+
 test('readForm은 헤더·본문·토큰을 모두 통과해야 폼 값을 돌려준다 (#252)', async () => {
   const token = createToken();
   const form = await readForm(fakeRequest(`token=${token}&path=${encodeURIComponent('D:\\자료 <1>')}`), { port: PORT, token });

@@ -92,21 +92,22 @@ test('the launch value gives the cookie once, redirects without the query, and w
   const { url, launchUrl } = await serve(t);
   const first = await fetch(new URL(`form?launch=${LAUNCH}&keep=1`, url), { redirect: 'manual' });
   assert.strictEqual(first.status, 303);
-  assert.strictEqual(first.headers.get('location'), '/form?keep=1');
+  const prefix = new URL(url).pathname.replace(/\/$/, '');
+  assert.strictEqual(first.headers.get('location'), `${prefix}/form?keep=1`);
   const setCookie = first.headers.get('set-cookie');
-  assert.match(setCookie, /^fctl_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/$/);
+  assert.match(setCookie, /^fctl_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/[A-Za-z0-9_-]{43}\/$/);
   const cookie = setCookie.split(';')[0];
   // The cookie opens the page the redirect points at.
-  const page = await fetch(new URL('/form?keep=1', url), { headers: { cookie } });
+  const page = await fetch(new URL('form?keep=1', url), { headers: { cookie } });
   assert.strictEqual(page.status, 200);
   assert.ok((await page.text()).includes(`name="token" value="${TOKEN}"`));
   // The same address again is used up: a second browser gets nothing.
   const second = await fetch(launchUrl, { redirect: 'manual' });
   assert.strictEqual(second.status, 403);
   assert.strictEqual(second.headers.get('set-cookie'), null);
-  assert.strictEqual((await fetch(new URL('/form', url))).status, 403);
+  assert.strictEqual((await fetch(new URL('form', url))).status, 403);
   // The first browser keeps working.
-  assert.strictEqual((await fetch(new URL('/form', url), { headers: { cookie } })).status, 200);
+  assert.strictEqual((await fetch(new URL('form', url), { headers: { cookie } })).status, 200);
 });
 
 test('the launch step is for GET only, and the redirect can never leave this server', async (t) => {
@@ -123,7 +124,7 @@ test('the launch step is for GET only, and the redirect can never leave this ser
       resolve(res.headers.location);
     }).on('error', reject);
   });
-  assert.strictEqual(location, '/evil.example/p');
+  assert.match(location, /^\/[A-Za-z0-9_-]{43}\/evil\.example\/p$/);
 });
 
 test('with the cookie but no token, a POST is still refused and nothing changes', async (t) => {
@@ -159,4 +160,31 @@ test('hasSession compares the cookie value exactly and ignores other cookies', (
   assert.strictEqual(hasSession('fctl_session=ab', 'abc'), false);
   assert.strictEqual(hasSession(undefined, 'abc'), false);
   assert.strictEqual(hasSession('fctl_session=', ''), false);
+});
+
+test('the cookie alone is not enough: without the secret path prefix a request is refused and the cookie is limited to that path (#328)', async (t) => {
+  const { launchUrl, url, target } = await serve(t);
+  const res = await fetch(launchUrl, { redirect: 'manual' });
+  const setCookie = res.headers.get('set-cookie');
+  const prefix = new URL(url).pathname.replace(/\/$/, '');
+  assert.ok(setCookie.endsWith(`; Path=${prefix}/`), 'the cookie is sent only under the secret prefix');
+  const cookie = setCookie.split(';')[0];
+  // What another local service that got the cookie could try: the same cookie on addresses without the prefix, GET and POST.
+  const origin = new URL(url).origin;
+  for (const p of ['/', '/form', '/job', '/write']) {
+    assert.strictEqual((await fetch(`${origin}${p}`, { headers: { cookie }, redirect: 'manual' })).status, 403, p);
+  }
+  const post = await fetch(`${origin}/write`, { method: 'POST', headers: { ...FORM, cookie }, body: `token=${TOKEN}` });
+  assert.strictEqual(post.status, 403);
+  // A wrong prefix is refused too, even with the cookie and the token.
+  const wrong = await fetch(`${origin}/${createToken()}/write`, { method: 'POST', headers: { ...FORM, cookie }, body: `token=${TOKEN}` });
+  assert.strictEqual(wrong.status, 403);
+  assert.strictEqual(fs.existsSync(target), false);
+  // With the prefix, the cookie and the token it works, and the links the server writes carry the prefix.
+  const page = await fetch(new URL('form', url), { headers: { cookie } });
+  assert.strictEqual(page.status, 200);
+  const text = await page.text();
+  assert.ok(text.includes(`action="${prefix}/write"`), text.slice(text.indexOf("<form"), text.indexOf("<form") + 200));
+  assert.strictEqual((await fetch(new URL('write', url), { method: 'POST', headers: { ...FORM, cookie }, body: `token=${TOKEN}` })).status, 200);
+  assert.strictEqual(fs.existsSync(target), true);
 });

@@ -118,7 +118,7 @@ test('parseUiArgs: 기본 포트 8109, --port=0, --no-open, 잘못된 포트·�
 
 test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 404, POST 405 (#251)', async (t) => {
   // If the OS picked a port that fetch refuses, it starts the child process once more.
-  const { child, url, cookie } = await withUsablePort(async () => {
+  const { child, base: url, cookie } = await withUsablePort(async () => {
     const started = await launch(['--no-open', '--port=0']);
     try {
       await probe(started.url);
@@ -129,14 +129,14 @@ test('fctl ui --no-open --port=0: 127.0.0.1에서 첫 화면 200, 없는 주소 
     }
   }, 2);
   t.after(() => child.kill());
-  assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+  assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{43}\/$/);
   const headers = { cookie };
   const home = await request(url, { headers });
   assert.strictEqual(home.status, 200);
   assert.strictEqual(home.headers['content-type'], 'text/html; charset=utf-8');
   assert.ok(home.body.includes('<h1>File Control</h1>'));
   for (const category of CATEGORIES) assert.ok(home.body.includes(category.label));
-  const missing = await request(new URL('/nope?<x>', url), { headers });
+  const missing = await request(new URL('nope?<x>', url), { headers });
   assert.strictEqual(missing.status, 404);
   assert.ok(missing.body.includes('No such address: /nope?%3Cx%3E') || missing.body.includes('No such address: /nope?&lt;x&gt;'));
   assert.ok(!missing.body.includes('<x>'));
