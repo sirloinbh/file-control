@@ -156,7 +156,8 @@ test('겹치게 만든 SeekHead로 메모리를 고갈시키지 못한다', () =
   let inner = el(0xec, Buffer.alloc(1024 * 1024));
   for (let index = 100; index >= 0; index -= 1) inner = el(0x114d9b74, seekEntry((index + 1) * step), inner);
   const file = write(dir, 'a.mkv', header(), segment(inner));
-  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /too many/.test(err.message));
+  // The read budget stops the walk, and the values found so far (none here) come back instead of an exception.
+  assert.strictEqual(readMkvMetadata(dir, file).title, null);
 });
 
 test('SeekHead의 같은 항목은 한 번만 보고 순환해도 끝난다', () => {
@@ -434,7 +435,7 @@ test('읽기 한도에 닿는 MKV도 파일을 한 번만 열고 빨리 끝낸�
   const file = write(dir, 'void.mkv', header(), segment(voids));
   const open = t.mock.method(fs, 'openSync');
   const started = Date.now();
-  assert.throws(() => readMkvMetadata(dir, file), (err) => err instanceof FcError && /too many/.test(err.message));
+  assert.strictEqual(readMkvMetadata(dir, file).title, null);
   assert.strictEqual(open.mock.callCount(), 1);
   assert.ok(Date.now() - started < 5000, `${Date.now() - started}ms`);
 });
@@ -459,11 +460,11 @@ test('폴더 번호를 찾아도 메타데이터를 읽지 못한 사유를 보�
   fs.writeFileSync(path.join(dir, 'AAA-111 BBB-222', 'bad.mkv'), 'not mkv');
   const result = addProductNumbers(dir, { dryRun: true });
   const notes = Object.fromEntries(result.renamed.map((item) => [path.basename(item.from), item.note]));
-  assert.match(notes['over.mkv'], /too many MKV elements/);
+  assert.strictEqual(notes['over.mkv'], null);
   assert.strictEqual(notes['ok.mkv'], null);
   assert.match(result.conflicts[0].note, /Not an MKV\/WebM format/);
   const report = formatProductNumbers(result);
-  assert.match(report, /Rename: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(folder name, could not read metadata: Stopped reading because there are too many MKV elements/);
+  assert.match(report, /Rename: ABC-123[\\/]over\.mkv -> ABC-123 over\.mkv \(folder name\)\n/);
   assert.match(report, /Rename: ABC-123[\\/]ok\.mkv -> ABC-123 ok\.mkv \(folder name\)\n/);
   assert.match(report, /Numbers disagree: AAA-111 BBB-222[\\/]bad\.mkv \(AAA-111, BBB-222, could not read metadata: Not an MKV\/WebM format/);
 });
@@ -571,4 +572,35 @@ test('탐색 항목이 하나뿐이거나 마지막 시각이 0이면 길이를 
   // If there is one entry, it is not cross-checked even if the time is not 0.
   const one = readMkvMetadata(dir, write(dir, 'c.mkv', header(), segment(info({ ticks: 6000 * 1000 }), tracks(videoTrack(1920, 1080)), cues([10]), cluster(100000))), { verifyBitrate: true });
   assert.strictEqual(one.bitrateNote, null);
+});
+
+test('다른 DocType의 EBML 파일은 MKV가 아니라고 거부한다 (#323)', () => {
+  const { checkMkvStructure } = require('../src/mkv');
+  const dir = tempDir();
+  const file = write(dir, 'a.webm', header('other'), segment(tracks(videoTrack(640, 360)), cluster()));
+  assert.throws(() => checkMkvStructure(dir, path.join(dir, file), file), (err) => err instanceof FcError && /Not an MKV\/WebM format/.test(err.message));
+  const good = write(dir, 'b.webm', header('webm'), segment(tracks(videoTrack(640, 360)), cluster()));
+  assert.strictEqual(checkMkvStructure(dir, path.join(dir, good), good), null);
+});
+
+test('작은 요소가 25000개여도 읽기 한도에서 멈추고 앞서 찾은 값을 돌려준다 (#323)', () => {
+  const dir = tempDir();
+  const voids = Buffer.alloc(2 * 25000);
+  for (let at = 0; at < voids.length; at += 2) voids.set([0xec, 0x80], at);
+  const file = write(dir, 'many.mkv', header(), segment(info({ title: 'KEEP' }), voids));
+  const result = readMkvMetadata(dir, file);
+  assert.strictEqual(result.title, 'KEEP');
+  assert.strictEqual(result.duration, 90);
+});
+
+test('크기를 모르는 Cluster와 Segment는 의심이다 (#323)', () => {
+  const { checkMkvStructure } = require('../src/mkv');
+  const dir = tempDir();
+  const unknown = (id) => Buffer.from(id + '01FFFFFFFFFFFFFF', 'hex');
+  const liveCluster = write(dir, 'a.mkv', header(), segment(tracks(videoTrack(640, 360)), unknown('1F43B675'), Buffer.alloc(30)));
+  const result = checkMkvStructure(dir, path.join(dir, liveCluster), liveCluster);
+  assert.strictEqual(result.status, 'suspect');
+  assert.match(result.reason, /unknown size/);
+  const liveSegment = write(dir, 'b.mkv', header(), unknown('18538067'), tracks(videoTrack(640, 360)), cluster());
+  assert.strictEqual(checkMkvStructure(dir, path.join(dir, liveSegment), liveSegment).status, 'suspect');
 });

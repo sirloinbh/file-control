@@ -307,6 +307,13 @@ function parseSeekHead(body, positions) {
   }
 }
 
+// The error raised when the read budget runs out. It is marked so that the parser can keep the values found so far.
+function budgetError(p) {
+  const err = new FcError(`Stopped reading because there are too many MKV elements: ${p}`);
+  err.readBudget = true;
+  return err;
+}
+
 // file is the file opened by withOpenFile. It counts the number of reads and the amount read.
 function makeReader(file, p) {
   const { size } = file;
@@ -316,7 +323,7 @@ function makeReader(file, p) {
     reads += 1;
     const wanted = Math.min(length, Math.max(0, size - offset));
     total += wanted;
-    if (reads > MAX_READS || total > MAX_TOTAL) throw new FcError(`Stopped reading because there are too many MKV elements: ${p}`);
+    if (reads > MAX_READS || total > MAX_TOTAL) throw budgetError(p);
     return file.read(offset, wanted);
   };
 }
@@ -331,11 +338,16 @@ function headerAt(read, offset) {
 function checkHeader(read, p) {
   const header = headerAt(read, 0);
   if (!header || header.id !== ID.EBML || header.size === null || header.size > MAX_ELEMENT) throw new FcError(`Not an MKV/WebM format: ${p}`);
+  requireDocType(read, header, p);
+  return header.start + header.size;
+}
+
+// The EBML header must name the document type matroska or webm. Any other EBML file is not MKV/WebM.
+function requireDocType(read, header, p) {
   const body = read(header.start, header.size);
   const type = [...children(body)].find((child) => child.id === ID.DOC_TYPE);
   const name = type && readText(type.body);
   if (name !== 'matroska' && name !== 'webm') throw new FcError(`Not an MKV/WebM format: ${p}`);
-  return header.start + header.size;
 }
 
 // It reads the metadata of an MKV/WebM file inside the target and returns { title, comment, duration, width, height, displayWidth, displayHeight, bitrate }.
@@ -385,27 +397,32 @@ function parseOpenedMkv(file, p, verifyBitrate) {
   };
   let beyondEnd = segment.size !== null && segment.start + segment.size > size;
 
-  // On meeting an element of unknown size or the first Cluster, it stops reading in order. This is so as not to scan the video data.
-  let offset = segment.start;
-  while (offset < segmentEnd) {
-    const header = headerAt(read, offset);
-    if (!header || header.id === ID.CLUSTER || header.size === null) break;
-    if (WANTED.has(header.id)) {
-      seen.add(offset);
-      handle(header);
+  // If the read budget runs out (a file with a very large number of small elements), the values found so far are kept instead of losing the whole file.
+  try {
+    // On meeting an element of unknown size or the first Cluster, it stops reading in order. This is so as not to scan the video data.
+    let offset = segment.start;
+    while (offset < segmentEnd) {
+      const header = headerAt(read, offset);
+      if (!header || header.id === ID.CLUSTER || header.size === null) break;
+      if (WANTED.has(header.id)) {
+        seen.add(offset);
+        handle(header);
+      }
+      offset = header.start + header.size;
     }
-    offset = header.start + header.size;
-  }
 
-  // A SeekHead can point to another SeekHead, so it keeps looking while the list grows. A position already seen is not read again, so it ends.
-  for (const { id, position } of positions) {
-    const at = segment.start + position;
-    if (at >= size) beyondEnd = true;
-    // If the bitrate is not verified, the seek table's header is not even read (#207).
-    if (at >= segmentEnd || seen.has(at) || (id === ID.CUES && !verifyBitrate)) continue;
-    seen.add(at);
-    const header = headerAt(read, at);
-    if (header?.id === id) handle(header);
+    // A SeekHead can point to another SeekHead, so it keeps looking while the list grows. A position already seen is not read again, so it ends.
+    for (const { id, position } of positions) {
+      const at = segment.start + position;
+      if (at >= size) beyondEnd = true;
+      // If the bitrate is not verified, the seek table's header is not even read (#207).
+      if (at >= segmentEnd || seen.has(at) || (id === ID.CUES && !verifyBitrate)) continue;
+      seen.add(at);
+      const header = headerAt(read, at);
+      if (header?.id === id) handle(header);
+    }
+  } catch (err) {
+    if (!err.readBudget) throw err;
   }
 
   const duration = found.duration;
@@ -428,18 +445,20 @@ function parseOpenedMkv(file, p, verifyBitrate) {
 // It checks whether the MKV/WebM structure is intact. For damage it returns { status: 'broken', reason }, for suspicion { status: 'suspect', reason }, and if it finds no problem, null.
 // I/O problems and exceeding the read limit go out as exceptions.
 // It skips over the headers of the elements right under the Segment in order and looks at elements that go past the end of the file and at Tracks. It does not read the video data, so damage inside a Cluster is not found.
-// On meeting an element of unknown size (a live recording), the end cannot be known, so it stops judging there.
+// On meeting an element of unknown size (a live recording), or a Segment of unknown size, the end cannot be known, so it says suspect and gives the reason.
 function checkMkvStructure(target, real, p) {
   return withOpenFile(target, real, (file) => checkOpenedMkv(file, p));
 }
 
 function checkOpenedMkv(file, p) {
   const broken = (reason) => ({ status: 'broken', reason });
+  const suspect = (reason) => ({ status: 'suspect', reason });
   const { size } = file;
   const read = makeReader(file, p);
   const ebml = headerAt(read, 0);
   if (!ebml || ebml.id !== ID.EBML || ebml.size === null || ebml.size > MAX_ELEMENT) return broken('The EBML header is damaged.');
   if (ebml.start + ebml.size > size) return broken('The EBML header is truncated.');
+  requireDocType(read, ebml, p);
   // A Void or CRC can come before the Segment.
   let segment = headerAt(read, ebml.start + ebml.size);
   while (segment && GLOBAL_ELEMENTS.has(segment.id) && segment.size !== null) segment = headerAt(read, segment.start + segment.size);
@@ -455,12 +474,13 @@ function checkOpenedMkv(file, p) {
       if (tracks) return { status: 'suspect', reason: `There is non-element data from byte ${offset}.` };
       return broken(`The element at byte ${offset} is damaged.`);
     }
-    if (header.size === null) return null;
+    if (header.size === null) return suspect(`An element at byte ${offset} has an unknown size, so the rest of the file was not checked. It may be a cut-off live recording.`);
     if (header.start + header.size > end) return broken('An element runs past the end of the file. It may be truncated.');
     if (header.id === ID.TRACKS) tracks = true;
     offset = header.start + header.size;
   }
-  return tracks ? null : broken('The Tracks element is missing.');
+  if (!tracks) return broken('The Tracks element is missing.');
+  return segment.size === null ? suspect('The Segment has an unknown size, so its end cannot be confirmed. It may be a cut-off live recording.') : null;
 }
 
 module.exports = { readMkvMetadata, checkMkvStructure };
