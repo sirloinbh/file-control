@@ -127,9 +127,9 @@ test('a new extension added to the archive tables of src/archive.js shows in the
   assert.strictEqual(commands.COMPRESS_LABELS, archive.COMPRESS_LABELS);
   assert.strictEqual(commands.TAR_COMPRESS, archive.TAR_COMPRESS);
   // Every table extension is described without the "is not read as a format" note, and its first label shows up.
-  for (const [ext, label] of Object.entries(archive.FORMAT_LABELS)) assert.strictEqual(describeArchiveFormat(`x.${ext}`).format, label === 'tar' ? 'tar' : label, ext);
+  for (const [ext, label] of Object.entries(archive.FORMAT_LABELS)) assert.strictEqual(describeArchiveFormat(`x.${ext}`).format, label, ext);
   for (const [ext, label] of Object.entries(archive.TAR_COMPRESS)) assert.deepStrictEqual(describeArchiveFormat(`x.${ext}`).layers, [label], ext);
-  // A scratch extension added to the table (and removed again) appears in the preview of a name that uses it.
+  // A scratch extension added to the table (and removed again) appears in the preview of a name that uses it. (FORMAT_EXT and the regexes of src/archive.js are built once at load, so a runtime addition changes only the preview.)
   archive.FORMAT_LABELS.fctltest = 'Scratch';
   try {
     assert.strictEqual(describeArchiveFormat('x.fctltest').format, 'Scratch');
