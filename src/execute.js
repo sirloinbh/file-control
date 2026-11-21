@@ -137,7 +137,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       return done(fc.rename(args[0], args[1], { force, dryRun }));
     case 'mv': {
       need(args, 2, 'mv <source...> <dest>');
-      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun });
+      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent') });
       return done(lines, lines.join('\n'));
     }
     case 'cp': {
@@ -152,7 +152,7 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(fc.unzip(args[0], args[1], { dryRun }));
+      return done(fc.unzip(args[0], args[1], { dryRun, force }));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
       return done(fc.zip(args[0], args.slice(1), { force, dryRun }));

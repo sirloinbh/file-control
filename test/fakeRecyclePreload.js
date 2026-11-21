@@ -11,6 +11,7 @@
 
 const childProcess = require('node:child_process');
 const fs = require('node:fs');
+const path = require('node:path');
 
 const real = childProcess.execFileSync;
 const METADATA = /^(?:desktop\.ini|thumbs\.db|ehthumbs(?:_vista)?\.db|\.DS_Store)$/i;
@@ -51,7 +52,8 @@ childProcess.execFileSync = function fakeExecFileSync(file, args, options) {
   if (env.FC_VOLUME !== undefined) return 'True|Fixed\r\n';
   if (env.FC_BATCH !== undefined) return fakeBatch(options);
   if (env.FC_TARGET !== undefined) {
-    const filled = filledEntry(env.FC_TARGET);
+    // mv --force sets the replaced item aside under a .fctl-old-* name and sends it to the Recycle Bin (#311); it may hold files.
+    const filled = /^\.fctl-old-/.test(path.basename(env.FC_TARGET)) ? undefined : filledEntry(env.FC_TARGET);
     if (filled) throw new Error(`Tried to send a folder that is not empty to the Recycle Bin: ${filled.name}`);
     log(env.FC_TARGET);
     fs.rmSync(env.FC_TARGET, { recursive: true });
