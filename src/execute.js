@@ -64,6 +64,8 @@ const FORCE_COMMANDS = ['write', 'rename', 'mv', 'cp', 'zip', 'unzip'];
 const PERMANENT_COMMANDS = ['rm', 'mv'];
 function rejectUnusedFlags(command, flags) {
   if (!BASIC_COMMANDS.has(command)) return;
+  // mv --permanent only decides what happens to the item that --force replaces, so without --force it does nothing.
+  if (command === 'mv' && flags.has('permanent') && !flags.has('force')) throw new fc.FcError('mv --permanent only applies with --force (it deletes the replaced item permanently instead of sending it to the Recycle Bin).');
   if (flags.has('force') && !FORCE_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`);
   if (flags.has('permanent') && !PERMANENT_COMMANDS.includes(command)) throw new fc.FcError(`${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`);
 }

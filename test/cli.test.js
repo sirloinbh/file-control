@@ -418,7 +418,8 @@ test('a command refuses --force and --permanent when it does not use them (#314)
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('a.txt'), 'a');
   const cases = [
-    [['mv', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], null],
+    [['mv', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], /mv --permanent only applies with --force/],
+    [['mv', '--force', '--permanent', p('a.txt'), p('b.txt'), '--dry-run'], null],
     [['rm', '--force', p('a.txt')], /rm does not use --force/],
     [['mkdir', '--force', p('d')], /mkdir does not use --force/],
     [['append', '--force', p('a.txt'), 'x'], /append does not use --force/],
@@ -431,7 +432,7 @@ test('a command refuses --force and --permanent when it does not use them (#314)
   ];
   for (const [argv, pattern] of cases) {
     if (pattern === null) {
-      assert.match(run(argv), /Move:/, 'mv accepts --permanent');
+      assert.match(run(argv), /Move:/, 'mv --force --permanent is accepted');
       continue;
     }
     assert.throws(() => run(argv), pattern, argv.join(' '));
