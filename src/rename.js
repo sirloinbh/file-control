@@ -7,8 +7,7 @@ const { grant } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, leftoverNote } = require('./guards');
 const { moveWithoutOverwrite } = require('./safeMove');
 
-// Shared by normalize-files and product-number: the skip rules for files that must not be renamed, and the apply step for a planned rename.
-
+// Shared by normalize-files and product-number.
 // It returns the reason a file must not be renamed because of where it is, or null. entry.relative is the path under the target.
 function skipReason(entry) {
   const parts = entry.relative.split(path.sep);
