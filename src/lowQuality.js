@@ -51,6 +51,8 @@ function lowQualityCriteria({ minHeight = DEFAULT_MIN_HEIGHT, minBitrate = null 
 // A value out of range is left null and the reason is written in notes. It is a pure function.
 function saneInfo(info) {
   const notes = [];
+  // True once a note already explains why the duration or bitrate is unusable, so the generic bitrate note below is not added a second time (#317).
+  let explained = false;
   const number = (value) => (Number.isFinite(value) && value > 0 ? value : null);
   let width = number(info.width);
   let height = number(info.height);
@@ -75,19 +77,22 @@ function saneInfo(info) {
   let duration = number(info.duration);
   if (duration !== null && duration > MAX_DURATION) {
     notes.push(`The duration value (${Math.round(duration)} s) is over 7 days and may be corrupt.`);
+    explained = true;
     duration = null;
   }
   let bitrate = duration === null || duration < MIN_BITRATE_DURATION ? null : number(info.bitrate);
   // The case where, in reading, the length was cross-checked against the tracks and the real data and could not be trusted (a partly downloaded file, a broken length, #179)
   if (duration !== null && typeof info.bitrateNote === 'string') {
     notes.push(info.bitrateNote);
+    explained = true;
     bitrate = null;
   }
   if (bitrate !== null && bitrate < MIN_BITRATE) {
     notes.push(`The bitrate value (${bitrate} bps) is too small and may be corrupt.`);
+    explained = true;
     bitrate = null;
   }
-  if (bitrate === null && !notes.some((note) => /duration|bitrate/i.test(note))) notes.push(duration === null ? 'There is no duration information, so the bitrate is unknown.' : duration < MIN_BITRATE_DURATION ? 'The duration is under 1 second, so the bitrate cannot be trusted.' : 'There is no bitrate information.');
+  if (bitrate === null && !explained) notes.push(duration === null ? 'There is no duration information, so the bitrate is unknown.' : duration < MIN_BITRATE_DURATION ? 'The duration is under 1 second, so the bitrate cannot be trusted.' : 'There is no bitrate information.');
   return { width, height, displayWidth, displayHeight, shortSide, duration, bitrate, notes };
 }
 

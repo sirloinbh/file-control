@@ -138,7 +138,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
     const result = normalizeName(path.basename(entry.path));
     const changes = result.reason === null && result.name !== path.basename(entry.path);
     // When a file to change or report (several numbers and so on) first appears, it checks the hidden-attribute folders. So that the report does not differ with the order (second review).
-    const reported = result.reason !== null && (result.number !== null || /Several numbers/.test(result.reason));
+    const reported = result.reason !== null && (result.number !== null || result.kind === 'several-numbers');
     let guard = guardOf(entry.relative, guarded);
     if (guard === null && (changes || reported) && !hiddenChecked) {
       hiddenChecked = true;
