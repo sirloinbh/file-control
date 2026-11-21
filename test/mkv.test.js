@@ -591,6 +591,9 @@ test('작은 요소가 25000개여도 읽기 한도에서 멈추고 앞서 찾�
   const result = readMkvMetadata(dir, file);
   assert.strictEqual(result.title, 'KEEP');
   assert.strictEqual(result.duration, 90);
+  const checked = readMkvMetadata(dir, file, { verifyBitrate: true });
+  assert.strictEqual(checked.bitrate, null);
+  assert.match(checked.bitrateNote, /could not be verified/);
 });
 
 test('크기를 모르는 Cluster와 Segment는 의심이다 (#323)', () => {

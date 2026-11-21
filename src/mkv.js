@@ -359,7 +359,7 @@ function requireDocType(read, header, p) {
 // and the 90 and 270 degree rotation of a flat projection (ProjectionPoseRoll) (#106, #113). It does not look at the pixel aspect ratio inside the video data (the SPS in CodecPrivate). By the specification, if DisplayWidth/Height are absent, the cropped pixel size is the visible size.
 // FFmpeg 9.0 also sees an MKV that has 32:27 in the SPS and no DisplayWidth as 1:1 (confirmed in #123).
 // It reads the elements before the first Cluster and goes to the elements after it through SeekHead. It does not read the video data.
-// A path or I/O problem, or a file that is not MKV/WebM, raises an FcError. Exceeding the read limit also raises an FcError. For damage inside an element, it returns only the values found so far. It is not a broken-file judge.
+// A path or I/O problem, or a file that is not MKV/WebM, raises an FcError. If the read limit is exceeded or an element is damaged, it returns only the values found so far (the bitrate is then null with a note). It is not a broken-file judge.
 function readMkvMetadata(dir, p, options = {}) {
   try {
     const access = grant(dir, ['read']);
@@ -397,6 +397,7 @@ function parseOpenedMkv(file, p, verifyBitrate) {
   };
   let beyondEnd = segment.size !== null && segment.start + segment.size > size;
 
+  let stoppedEarly = false;
   // If the read budget runs out (a file with a very large number of small elements), the values found so far are kept instead of losing the whole file.
   try {
     // On meeting an element of unknown size or the first Cluster, it stops reading in order. This is so as not to scan the video data.
@@ -423,11 +424,12 @@ function parseOpenedMkv(file, p, verifyBitrate) {
     }
   } catch (err) {
     if (!err.readBudget) throw err;
+    stoppedEarly = true;
   }
 
   const duration = found.duration;
   if (found.lastCluster != null && segment.start + found.lastCluster >= size) beyondEnd = true;
-  const bitrateNote = verifyBitrate && duration ? bitrateDoubt(found, beyondEnd, duration) : null;
+  const bitrateNote = verifyBitrate && duration ? (stoppedEarly ? 'Reading stopped early because there are too many elements, so the bitrate could not be verified.' : bitrateDoubt(found, beyondEnd, duration)) : null;
   const bitrate = verifyBitrate && duration && bitrateNote === null ? Math.round((size * 8) / duration) : null;
   return {
     title: found.title ?? tags.get('TITLE') ?? null,
