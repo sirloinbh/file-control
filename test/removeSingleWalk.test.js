@@ -48,10 +48,12 @@ test('a link that is not a video is not listed as skipped by low-quality (#310)'
   try {
     fs.symlinkSync(other, path.join(dir, 'notes.txt'), 'junction');
     fs.symlinkSync(other, path.join(dir, 'clip.mp4'), 'junction');
+    fs.symlinkSync(other, path.join(dir, 'clip.ts'), 'junction');
   } catch {
     t.skip('links are not available');
     return;
   }
-  const result = findLowQuality(dir);
-  assert.deepStrictEqual(result.skipped.map((item) => path.basename(item.path)), ['clip.mp4']);
+  const expected = ['clip.mp4', 'clip.ts'];
+  assert.deepStrictEqual(findLowQuality(dir).skipped.map((item) => path.basename(item.path)).sort(), expected);
+  assert.deepStrictEqual(findLowQuality(dir, { entries: realWalk(dir) }).skipped.map((item) => path.basename(item.path)).sort(), expected);
 });
