@@ -212,3 +212,28 @@ test('findAttachedProductNumbers는 글자·숫자가 붙은 대문자 번호의
     assert.deepStrictEqual(findAttachedProductNumbers(text), expected, text);
   }
 });
+
+test('a word file named by FCTL_PRODUCT_CONFIG adds and removes not-a-product words (#327)', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { findProductNumberRanges } = require('../src/product');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-productcfg-'));
+  t.after(() => {
+    delete process.env.FCTL_PRODUCT_CONFIG;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const numbers = (text) => findProductNumberRanges(text).map((range) => range.number);
+  assert.deepStrictEqual(numbers('MD-123 XYZ-123'), ['XYZ-123']);
+  const file = path.join(dir, 'product.json');
+  fs.writeFileSync(file, JSON.stringify({ add: ['xyz'], remove: ['MD'] }));
+  process.env.FCTL_PRODUCT_CONFIG = file;
+  assert.deepStrictEqual(numbers('MD-123 XYZ-123'), ['MD-123']);
+  // A bad file stops with a message instead of silently using the built-in list.
+  const bad = path.join(dir, 'bad.json');
+  fs.writeFileSync(bad, JSON.stringify({ add: ['x'] }));
+  process.env.FCTL_PRODUCT_CONFIG = bad;
+  assert.throws(() => numbers('ABC-123'), /list of 2 to 6 English letters/);
+  process.env.FCTL_PRODUCT_CONFIG = path.join(dir, 'missing.json');
+  assert.throws(() => numbers('ABC-123'), /Cannot read the product word file/);
+});
