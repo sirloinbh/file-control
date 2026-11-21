@@ -43,9 +43,10 @@ test('경로·크기·사유를 날짜가 붙은 파일로 타겟 폴더에 남�
   assert.match(log.createdAt, /^2026-11-01T09:05:07[+-]\d{2}:\d{2}$/);
   assert.strictEqual(log.target, dir);
   assert.strictEqual(log.count, 2);
+  assert.strictEqual(log.version, 1);
   assert.deepStrictEqual(log.items, [
-    { path: path.join(dir, 'a', '깨진.mp4'), size: 5, reason: '헤더 불일치' },
-    { path: path.join(dir, 'b.mkv'), size: 0, reason: '크기 0' },
+    { path: path.join(dir, 'a', '깨진.mp4'), size: 5, reason: '헤더 불일치', outcome: 'pending' },
+    { path: path.join(dir, 'b.mkv'), size: 0, reason: '크기 0', outcome: 'pending' },
   ]);
   assert.ok(fs.existsSync(path.join(dir, 'a', '깨진.mp4')));
   assert.ok(fs.existsSync(path.join(dir, 'b.mkv')));
@@ -75,7 +76,9 @@ test('쓰기, 내보내기, 닫기 순서로 기록을 남긴다', (t) => {
   }
   writeRemovalLog(dir, 'duplicates', [{ path: 'a.mp4', reason: 'r' }], { now });
   t.mock.restoreAll();
-  assert.deepStrictEqual(calls, ['writeFileSync', 'fsyncSync', 'closeSync']);
+  // The folder is flushed after the file (fsync and close of the folder handle), where the system lets it be opened.
+  assert.deepStrictEqual(calls.slice(0, 3), ['writeFileSync', 'fsyncSync', 'closeSync']);
+  assert.ok(calls.length === 3 || (calls[3] === 'fsyncSync' && calls[4] === 'closeSync' && calls.length === 5));
 });
 
 test('제거할 실제 경로를 돌려준다', () => {

@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./flatten');
-const { planSafeRemovals, runConfirmedRemoval, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
 
 // A file that is low quality only by bitrate is not deleted. The bitrate is the file size divided by the length, so if the length is read inflated or
 // the file was partly downloaded, even a normal video comes out low. Until the check that cross-checks the length (#179) exists, it only reports them in the list.
@@ -38,7 +38,7 @@ function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SI
 // A value that stands for the list a person saw. It changes if the standards change, the files to delete increase or decrease, or any one changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify(['low-quality videos', plan.target, plan.criteria, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-low-quality', plan.target, plan.criteria, items])).digest('hex').slice(0, 12);
 }
 
 // It sends low-quality videos under the target to the Recycle Bin. If there is no confirm or it is dryRun, it only makes the list and changes nothing.
@@ -50,8 +50,9 @@ function removeLowQuality(dir, { minHeight, minBitrate, confirm, dryRun = false,
   const code = confirmationCode(plan);
   const result = { ...plan, code, dryRun, confirmed: false, mismatch: false, removed: [], failed: [], log: null };
   if (confirm === undefined || dryRun) return result;
-  if (confirm !== code) return { ...result, mismatch: true };
+  // With nothing to delete, a confirmation value is not a mismatch, so it is reported as an empty plan (#309).
   if (plan.removals.length === 0) return result;
+  if (confirm !== code) return { ...result, mismatch: true, mismatchHints: mismatchHints(plan) };
   // It sends in batches like remove-broken (#216). Starting PowerShell for each file takes 0.5 to 0.6 second per file.
   return runConfirmedRemoval(
     plan,
@@ -86,6 +87,11 @@ function formatRemoveLowQuality(result) {
   for (const item of result.kept) lines.push(`Kept: ${line(item.file)} ${item.reason}`);
   for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  if (result.mismatch) {
+    lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
+    for (const item of result.mismatchHints ?? []) lines.push(`Changed: ${relative(item.path)} (${item.reason})`);
+  }
+  if (result.logWarning) lines.push(`Warning: ${result.logWarning}`);
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {

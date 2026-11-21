@@ -175,3 +175,14 @@ test('an empty removal shows a notice (#259)', () => {
   assert.match(body, /alert-info[^>]*>There is nothing to delete\./);
   assert.match(body, /No files to delete or keep\./);
 });
+
+test('remove screen: a planned file that is neither removed nor failed stays in the table as not attempted (#309)', () => {
+  const base = { target: T, broken: [], suspect: [], unreadable: [], skipped: [], checked: 3, interactive: true, code: 'abc123', dryRun: false, confirmed: true, mismatch: false, log: p('fctl-removed-1.json') };
+  const removal = (name) => ({ path: p(name), size: 4096, reason: 'truncated', stamp: '1' });
+  const result = { ...base, removals: [removal('a.zip'), removal('b.zip'), removal('c.zip')], kept: [], removed: [removal('a.zip')], failed: [{ path: p('b.zip'), reason: 'in use' }] };
+  const body = String(removeView(toPlain({ command: 'remove-broken', result })));
+  assert.deepStrictEqual(rows(body).map((cells) => cells[0]), ['a.zip', 'b.zip', 'c.zip']);
+  assert.match(rows(body)[2][1], /Not attempted/);
+  const mismatch = String(removeView(toPlain({ command: 'remove-broken', result: { ...base, confirmed: false, mismatch: true, removed: [], failed: [], removals: [], kept: [], mismatchHints: [{ path: p('a.zip'), reason: 'x' }] } })));
+  assert.match(mismatch, /1 files are now held back because they changed within the last 5 minutes/);
+});
