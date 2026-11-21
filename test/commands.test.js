@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const { execFileSync } = childProcess;
+// mv --force sends the replaced destination to the Recycle Bin (#311); the fake only deletes it inside the test's temp folder. It is swapped before commands.js is imported.
+const recycled = require('./fakeRecycleFiles').installFakeRecycleBin();
 const fc = require('../src/commands');
 
 const isWindows = process.platform === 'win32';
@@ -1127,7 +1129,7 @@ test('원래 8.3 형식인 이름은 ~N 이름과 함께 묶고 풀어도 겹치
   fc.zip(p('a.zip'), [p('src')]);
   // Even if the same names exist in the existing folder, it extracts by overwriting as is (it does not point to another file through a short name).
   fc.writeFile(p('out', 'src', 'photo.jpg'), 'old');
-  fc.unzip(p('a.zip'), p('out'));
+  fc.unzip(p('a.zip'), p('out'), { force: true });
   // tar.exe deletes the existing file and recreates it with the case inside the archive.
   assert.deepStrictEqual(fs.readdirSync(p('out', 'src')).map((n) => n.toLowerCase()).sort(), ['noext', 'noext~1', 'photo.jpg', 'photo~1.jpg']);
   assert.strictEqual(fc.readFile(p('out', 'src', 'photo.jpg')), 'plain');
@@ -1201,9 +1203,10 @@ test('unzip은 압축 안의 8.3 짧은 이름이 풀 폴더의 기존 항목을
   }
   assert.strictEqual(fs.readFileSync(p('out', 'longername.txt'), 'utf8'), 'old');
   assert.deepStrictEqual(fs.readdirSync(p('out', 'longdirectory')), []);
-  // An existing file with exactly the same name is overwritten as now, and in a new folder with no overlapping name it extracts as is.
+  // An existing file with exactly the same name is overwritten only with --force, and in a new folder with no overlapping name it extracts as is.
   fc.writeFile(p('same', 'LONGER~1.TXT'), 'old');
-  fc.unzip(p('file.zip'), p('same'));
+  assert.throws(() => fc.unzip(p('file.zip'), p('same')), /already has a file of the same name/);
+  fc.unzip(p('file.zip'), p('same'), { force: true });
   assert.strictEqual(fs.readFileSync(p('same', 'LONGER~1.TXT'), 'utf8'), 'new');
   fc.unzip(p('file.zip'), p('fresh'));
   assert.deepStrictEqual(fs.readdirSync(p('fresh')), ['LONGER~1.TXT']);
@@ -1556,4 +1559,114 @@ test('rename --force still changes only the case of a file (#302)', () => {
   fc.rename(path.join(dir, 'a.txt'), 'A.txt', { force: true });
   assert.ok(fs.readdirSync(dir).includes('A.txt'));
   assert.ok(!fs.readdirSync(dir).includes('a.txt'));
+});
+
+test('mv --force sends the replaced folder and file to the Recycle Bin, not away for good (#311)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('x', 'new.txt'), 'new');
+  fc.writeFile(p('dest', 'x', 'keep.txt'), 'old');
+  fc.writeFile(p('b.txt'), 'new b');
+  fc.writeFile(p('target.txt'), 'old b');
+  recycled.length = 0;
+  fc.move([p('x')], p('dest'), { force: true });
+  assert.strictEqual(recycled.length, 1);
+  assert.match(path.basename(recycled[0]), /^\.fctl-old-/);
+  assert.deepStrictEqual(fs.readdirSync(p('dest', 'x')), ['new.txt']);
+  fc.move([p('b.txt')], p('target.txt'), { force: true });
+  assert.strictEqual(recycled.length, 2);
+  assert.strictEqual(fc.readFile(p('target.txt')), 'new b');
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['dest', 'target.txt']);
+});
+
+test('mv --force --permanent deletes the replaced item without the Recycle Bin, and the preview says which (#311)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a.txt'), 'new');
+  fc.writeFile(p('target.txt'), 'old');
+  assert.match(fc.move([p('a.txt')], p('target.txt'), { force: true, dryRun: true })[0], /the old one goes to the Recycle Bin/);
+  assert.match(fc.move([p('a.txt')], p('target.txt'), { force: true, dryRun: true, permanent: true })[0], /deleted permanently/);
+  recycled.length = 0;
+  fc.move([p('a.txt')], p('target.txt'), { force: true, permanent: true });
+  assert.strictEqual(recycled.length, 0);
+  assert.strictEqual(fc.readFile(p('target.txt')), 'new');
+});
+
+test('unzip refuses an existing file of the same name without --force and extracts nothing (#311)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'a.txt'), 'new');
+  fc.writeFile(p('src', 'sub', 'b.txt'), 'new b');
+  fc.zip(p('x.zip'), [p('src')]);
+  fc.writeFile(p('out', 'src', 'sub', 'b.txt'), 'old b');
+  for (const dryRun of [true, false]) {
+    assert.throws(() => fc.unzip(p('x.zip'), p('out'), { dryRun }), /already has a file of the same name.*b\.txt.*--force/s);
+  }
+  assert.ok(!fs.existsSync(p('out', 'src', 'a.txt')));
+  assert.strictEqual(fc.readFile(p('out', 'src', 'sub', 'b.txt')), 'old b');
+  // An existing folder merges without --force; only a same-name file is a conflict.
+  fs.rmSync(p('out', 'src', 'sub', 'b.txt'));
+  fc.unzip(p('x.zip'), p('out'));
+  assert.strictEqual(fc.readFile(p('out', 'src', 'a.txt')), 'new');
+  // --force overwrites.
+  fc.writeFile(p('out', 'src', 'a.txt'), 'old', { force: true });
+  fc.unzip(p('x.zip'), p('out'), { force: true });
+  assert.strictEqual(fc.readFile(p('out', 'src', 'a.txt')), 'new');
+});
+
+test('unzip without --force also refuses a same-name file reached through a folder link (#311)', { skip: !isWindows }, () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'a.txt'), 'new');
+  fc.zip(p('x.zip'), [p('src')]);
+  fc.writeFile(p('real', 'src', 'a.txt'), 'old');
+  fs.symlinkSync(p('real'), p('link'), 'junction');
+  assert.throws(() => fc.unzip(p('x.zip'), p('link')), /already has a file of the same name/);
+  fs.mkdirSync(p('out2', 'x'), { recursive: true });
+  fs.symlinkSync(p('real', 'src'), p('out2', 'src'), 'junction');
+  assert.throws(() => fc.unzip(p('x.zip'), p('out2')), /already has a file of the same name/);
+  assert.strictEqual(fc.readFile(p('real', 'src', 'a.txt')), 'old');
+});
+
+test('a move across drives (mocked EXDEV) keeps the modified time of files and folders (#313)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'f.txt'), 'x');
+  fc.writeFile(p('lone.txt'), 'y');
+  fs.mkdirSync(p('out'));
+  const old = new Date('2020-01-02T03:04:05Z');
+  for (const file of [p('src', 'f.txt'), p('lone.txt'), p('src')]) fs.utimesSync(file, old, old);
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from === p('src') || from === p('lone.txt')) throw Object.assign(new Error('cross'), { code: 'EXDEV' });
+    return rename(from, to);
+  });
+  fc.move([p('src'), p('lone.txt')], p('out'));
+  assert.strictEqual(fs.statSync(p('out', 'lone.txt')).mtimeMs, old.getTime());
+  assert.strictEqual(fs.statSync(p('out', 'src', 'f.txt')).mtimeMs, old.getTime());
+  assert.strictEqual(fs.statSync(p('out', 'src')).mtimeMs, old.getTime());
+});
+
+test('cp copies nothing when one source cannot be copied, and resolves d/. like mv (#313)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'a');
+  fc.writeFile(p('b'), 'b');
+  fc.writeFile(p('dir', 'b'), 'old');
+  // The second source's destination already exists, so the first must not be copied either.
+  assert.throws(() => fc.copy([p('a'), p('b')], p('dir')), /Already exists/);
+  assert.ok(!fs.existsSync(p('dir', 'a')));
+  assert.strictEqual(fc.readFile(p('dir', 'b')), 'old');
+  // Two sources with the same name gather into one destination: nothing is copied.
+  fc.writeFile(p('x', 'same'), '1');
+  fc.writeFile(p('y', 'same'), '2');
+  fs.mkdirSync(p('out'));
+  assert.throws(() => fc.copy([p('x', 'same'), p('y', 'same')], p('out')), /Several sources go to the same destination/);
+  assert.deepStrictEqual(fs.readdirSync(p('out')), []);
+  // A source ending in /. goes to the same destination as the plain folder name.
+  fc.writeFile(p('tree', 'f.txt'), 'f');
+  fs.mkdirSync(p('into'));
+  assert.ok(fc.copy([`${p('tree')}${path.sep}.`], p('into'), { dryRun: true })[0].endsWith(`-> ${p('into', 'tree')}`));
+  fc.copy([`${p('tree')}${path.sep}.`], p('into'));
+  assert.strictEqual(fc.readFile(p('into', 'tree', 'f.txt')), 'f');
 });

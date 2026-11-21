@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const zlib = require('node:zlib');
+const { crc32 } = require('../src/crc32');
 const childProcess = require('node:child_process');
 // Archives removed with removeArchives must not reach the real Recycle Bin (#291). It is swapped before commands.js is imported.
 const recycled = require('./fakeRecycleFiles').installFakeRecycleBin();
@@ -31,7 +31,7 @@ function zipBuffer(entries) {
   for (const { name, data = '', flags = 0 } of list) {
     const body = Buffer.from(data);
     const nameBytes = Buffer.from(name);
-    const crc = zlib.crc32(body);
+    const crc = crc32(body);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
