@@ -262,6 +262,20 @@ function rename(target, newName, { force = false, dryRun = false } = {}) {
   return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun)}`, dryRun, () => fs.renameSync(target, dest));
 }
 
+// fs.cpSync keeps the times of files with preserveTimestamps but not of folders, so the folder times are set after the copy (best effort: a folder time that cannot be set is not an error) (#313).
+function copyFolderTimes(src, dest) {
+  try {
+    const stat = fs.lstatSync(src);
+    if (!stat.isDirectory()) return;
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      if (entry.isDirectory()) copyFolderTimes(path.join(src, entry.name), path.join(dest, entry.name));
+    }
+    fs.utimesSync(dest, stat.atime, stat.mtime);
+  } catch {
+    // The times are a nicety; the content was copied.
+  }
+}
+
 function moveOne(src, dest) {
   try {
     fs.renameSync(src, dest);
@@ -271,7 +285,8 @@ function moveOne(src, dest) {
     // Because it moves by copying, it first refuses links that never end, the same as cp (#142). Nothing was copied, so the source and the target stay as they were.
     rejectLoopingLinks(src, dest);
     try {
-      fs.cpSync(src, dest, { recursive: true });
+      fs.cpSync(src, dest, { recursive: true, preserveTimestamps: true });
+      copyFolderTimes(src, dest);
     } catch (copyErr) {
       fs.rmSync(dest, { recursive: true, force: true });
       throw copyErr;
@@ -558,7 +573,7 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
     const earlier = new Map();
     for (const src of sources) {
       ensureExists(src);
-      const target = resolveDest(src, dest);
+      const target = resolveDest(path.resolve(src), dest);
       checkOverwrite(src, target);
       const key = pathKey(target);
       for (const before of earlier.get(key) ?? []) {
@@ -567,27 +582,39 @@ function copy(sources, dest, { force = false, dryRun = false } = {}) {
       earlier.set(key, [...(earlier.get(key) ?? []), src]);
     }
   }
-  // When copying never ends because of a link inside a source (#142), nothing is copied, even in the preview and even if only one of several sources is like that.
-  for (const src of sources) {
+  // The checks for every source run before the first copy, so that one bad source copies nothing (#313). The names are resolved first, as move does,
+  // so that a source ending in d/. uses the same target as d.
+  const items = sources.map((src) => {
     ensureExists(src);
-    rejectLoopingLinks(src, resolveDest(src, dest));
-  }
-  const planned = new Set();
-  return sources.map((src) => {
-    ensureExists(src);
-    const target = resolveDest(src, dest);
+    const target = resolveDest(path.resolve(src), dest);
+    // When copying never ends because of a link inside a source (#142), nothing is copied, even in the preview and even if only one of several sources is like that.
+    rejectLoopingLinks(src, target);
     ensureFree(target, force);
     rejectNewDeviceName(target);
     rejectCopyIntoSelf(src, target);
-    let note = '';
-    if (dryRun) {
+    return { src, target };
+  });
+  // Two sources with the same name would gather into one target, and the second would fail after the first was copied.
+  if (!force) {
+    const seen = new Map();
+    for (const { src, target } of items) {
+      const key = pathKey(target);
+      if (seen.has(key)) throw new FcError(`Several sources go to the same destination: ${target} (${seen.get(key)}, ${src})`);
+      seen.set(key, src);
+    }
+  }
+  if (dryRun) {
+    for (const { src, target } of items) {
       ensureCanMakeDir(path.dirname(target));
       ensureNotIntoSelf(src, target);
       if (exists(target) && fs.statSync(src).isDirectory() !== fs.statSync(target).isDirectory()) {
         throw new FcError(`A file and a folder cannot overwrite each other: ${src} -> ${target}`);
       }
-      note = targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)');
     }
+  }
+  const planned = new Set();
+  return items.map(({ src, target }) => {
+    const note = dryRun ? targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)') : '';
     return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
   });
 }

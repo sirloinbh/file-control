@@ -1627,3 +1627,46 @@ test('unzip without --force also refuses a same-name file reached through a fold
   assert.throws(() => fc.unzip(p('x.zip'), p('out2')), /already has a file of the same name/);
   assert.strictEqual(fc.readFile(p('real', 'src', 'a.txt')), 'old');
 });
+
+test('a move across drives (mocked EXDEV) keeps the modified time of files and folders (#313)', (t) => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('src', 'f.txt'), 'x');
+  fc.writeFile(p('lone.txt'), 'y');
+  fs.mkdirSync(p('out'));
+  const old = new Date('2020-01-02T03:04:05Z');
+  for (const file of [p('src', 'f.txt'), p('lone.txt'), p('src')]) fs.utimesSync(file, old, old);
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (from === p('src') || from === p('lone.txt')) throw Object.assign(new Error('cross'), { code: 'EXDEV' });
+    return rename(from, to);
+  });
+  fc.move([p('src'), p('lone.txt')], p('out'));
+  assert.strictEqual(fs.statSync(p('out', 'lone.txt')).mtimeMs, old.getTime());
+  assert.strictEqual(fs.statSync(p('out', 'src', 'f.txt')).mtimeMs, old.getTime());
+  assert.strictEqual(fs.statSync(p('out', 'src')).mtimeMs, old.getTime());
+});
+
+test('cp copies nothing when one source cannot be copied, and resolves d/. like mv (#313)', () => {
+  const dir = tempDir();
+  const p = (...parts) => path.join(dir, ...parts);
+  fc.writeFile(p('a'), 'a');
+  fc.writeFile(p('b'), 'b');
+  fc.writeFile(p('dir', 'b'), 'old');
+  // The second source's destination already exists, so the first must not be copied either.
+  assert.throws(() => fc.copy([p('a'), p('b')], p('dir')), /Already exists/);
+  assert.ok(!fs.existsSync(p('dir', 'a')));
+  assert.strictEqual(fc.readFile(p('dir', 'b')), 'old');
+  // Two sources with the same name gather into one destination: nothing is copied.
+  fc.writeFile(p('x', 'same'), '1');
+  fc.writeFile(p('y', 'same'), '2');
+  fs.mkdirSync(p('out'));
+  assert.throws(() => fc.copy([p('x', 'same'), p('y', 'same')], p('out')), /Several sources go to the same destination/);
+  assert.deepStrictEqual(fs.readdirSync(p('out')), []);
+  // A source ending in /. goes to the same destination as the plain folder name.
+  fc.writeFile(p('tree', 'f.txt'), 'f');
+  fs.mkdirSync(p('into'));
+  assert.ok(fc.copy([`${p('tree')}${path.sep}.`], p('into'), { dryRun: true })[0].endsWith(`-> ${p('into', 'tree')}`));
+  fc.copy([`${p('tree')}${path.sep}.`], p('into'));
+  assert.strictEqual(fc.readFile(p('into', 'tree', 'f.txt')), 'f');
+});
