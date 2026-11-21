@@ -133,7 +133,7 @@ test('findDuplicateNames: 영상 파일을 번호와 이름으로 묶고 하나�
     { kind: 'number', key: 'ABC-123', number: 'ABC-123', part: null, generic: false, differentTitles: false, files: [{ path: a, size: 4 }, { path: b, size: 2 }] },
     { kind: 'name', key: 'trip', number: null, part: null, generic: false, differentTitles: false, files: [{ path: d, size: 1 }, { path: c, size: 1 }] },
   ]);
-  // The test files are not video structures but files that could not be read at all. So it chooses by size, and a format that is not read (.avi) comes before an unreadable .mp4.
+  // The test files are not video structures but files that could not be read at all. So it chooses by size, and a format that is not read (.avi) comes before an undetermined .mp4.
   assert.deepStrictEqual(result.groups.map((group) => group.keep), [
     { path: a, reason: 'largest size', doubt: null },
     { path: d, reason: 'excludes files whose duration or resolution could not be read', doubt: null },
@@ -145,7 +145,7 @@ test('findDuplicateNames: 영상 파일을 번호와 이름으로 묶고 하나�
   assert.deepStrictEqual(result.metadataGroups, []);
   assert.deepStrictEqual(result.conflicts, [{ path: conflict, numbers: ['ABC-123', 'XYZ-456'] }]);
   assert.deepStrictEqual(result.skipped, []);
-  assert.deepStrictEqual(result.unreadable, []);
+  assert.deepStrictEqual(result.undetermined, []);
 });
 
 test('findDuplicateNames: 파일을 건드리지 않는다', () => {
@@ -728,7 +728,7 @@ test('a Roman numeral before quality tags or a copy tail is still the last word 
   assert.notStrictEqual(duplicateKey('ABC-123 Show II 1080p.mp4').key, duplicateKey('ABC-123 Show III 1080p.mp4').key);
 });
 
-test('findDuplicateNames stops on a bad product word file instead of reporting every file as unreadable (#327 review)', (t) => {
+test('findDuplicateNames stops on a bad product word file instead of reporting every file as undetermined (#327 review)', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-badcfg-'));
   t.after(() => {
     delete process.env.FCTL_PRODUCT_CONFIG;

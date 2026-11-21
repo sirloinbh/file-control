@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
+const { plural } = require('./plural');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./flatten');
 const { planSafeRemovals, runConfirmedRemoval, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
@@ -15,7 +16,7 @@ const BITRATE_ONLY = 'Kept because it is low quality by bitrate only, so the dur
 // - removals: files to delete ({ path, size, width, height, displayWidth, displayHeight, duration, bitrate, reasons, stamp })
 // - kept: files that are low quality but kept ({ path, reason, file })
 // - interactive: whether the session can send to the Recycle Bin. If there are no files to delete, it is not checked and is null.
-// The other values (criteria, unreadable, skipped, checked) are those of findLowQuality.
+// The other values (criteria, undetermined, skipped, checked) are those of findLowQuality.
 // The keep rules are the same as remove-broken (removal.js).
 function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const access = grant(dir, ['read', 'delete']);
@@ -86,7 +87,7 @@ function formatRemoveLowQuality(result) {
   }
   for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
   for (const item of result.kept) lines.push(`Kept: ${line(item.file)} ${item.reason}`);
-  for (const item of result.unreadable) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
+  for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
@@ -94,11 +95,11 @@ function formatRemoveLowQuality(result) {
   }
   if (result.logWarning) lines.push(`Warning: ${result.logWarning}`);
   if (result.log) lines.push(`Removal log: ${result.log}`);
-  const counts = `kept ${result.kept.length}, undetermined ${result.unreadable.length}, skipped ${result.skipped.length}`;
+  const counts = `kept ${result.kept.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`Checked ${result.checked} videos, Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
+    lines.push(`Checked ${plural(result.checked, 'video')}, Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
   } else {
-    lines.push(`Checked ${result.checked} videos, to delete ${result.removals.length}, ${counts}`);
+    lines.push(`Checked ${plural(result.checked, 'video')}, to delete ${result.removals.length}, ${counts}`);
     if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with the same criteria and --yes=${result.code} to send them to the Recycle Bin.`);
   }
   return lines.join('\n');
