@@ -6,7 +6,9 @@
 //   and the job process (checkedRun.js) adds --yes=<code> from a fresh preview, so the screen never asks the user to type a confirmation code.
 //   If the folder changed after the preview, nothing is deleted and a new preview is shown. Deleted files go to the Recycle Bin, and the removal log location is shown in the result.
 
+const path = require('node:path');
 const { FcError } = require('../../commands');
+const { refuseProtected, trailingDotOrSpacePart } = require('../protectedPath');
 const { html } = require('../html');
 const { page, table } = require('../layout');
 const { pathInput } = require('../pickPage');
@@ -37,12 +39,28 @@ function limitOption(values, field, option) {
   return [`--${option}=${text}`];
 }
 
+// The target folder (#329): a full local path that is not in a protected place, with no dash at the start (it would be read as an option).
+// The server's own current folder means nothing in a browser, so a relative path such as . is refused, as on the file screens.
+function checkedTarget(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (text === '') throw new FcError('Enter a target folder.');
+  if (/[\0\r\n]/.test(text)) throw new FcError(`The target folder cannot contain a line break: ${JSON.stringify(text)}`);
+  if (/^[-–—]/.test(text)) throw new FcError(`The target folder cannot start with a dash: ${text}`);
+  if (!path.isAbsolute(text)) throw new FcError(`The target folder must be a full path such as C:\\Users\\you\\Downloads: ${text}`);
+  if (process.platform === 'win32' && /^[\/]{2}/.test(text) && !/^\\\?\[A-Za-z]:/.test(text)) throw new FcError(`Network and device paths are not used: ${text}`);
+  const full = path.resolve(text);
+  const bad = trailingDotOrSpacePart(full);
+  if (bad !== undefined) throw new FcError(`The target folder has a name that ends with a dot or space (${bad}): ${full}`);
+  return refuseProtected(full, 'The target folder');
+}
+
 function toArgv(command, fields) {
   return (values) => {
-    const target = values.target.trim();
-    if (target === '') throw new FcError('Enter a target folder.');
-    const argv = [command, target];
+    const target = checkedTarget(values.target);
+    const argv = [command];
     if (fields.includes(MIN_HEIGHT)) argv.push(...limitOption(values, MIN_HEIGHT, 'min-height'), ...limitOption(values, MIN_BITRATE, 'min-bitrate'));
+    // A literal -- keeps the target from ever being read as an option.
+    argv.push('--', target);
     return argv;
   };
 }

@@ -86,9 +86,11 @@ test('the screen module exports the six commands under /cleanup and is registere
 
 test('toArgv builds the argv from the named fields and refuses bad input before any job starts', () => {
   const low = spec('remove-low-quality');
-  assert.deepStrictEqual(low.toArgv({ target: ' D:\\v ', minHeight: '480', minBitrate: '1000' }), ['remove-low-quality', 'D:\\v', '--min-height=480', '--min-bitrate=1000']);
-  assert.deepStrictEqual(low.toArgv({ target: 'D:\\v', minHeight: '', minBitrate: '' }), ['remove-low-quality', 'D:\\v']);
-  assert.deepStrictEqual(spec('remove-broken').toArgv({ target: 'D:\\v' }), ['remove-broken', 'D:\\v']);
+  assert.deepStrictEqual(low.toArgv({ target: ' D:\\v ', minHeight: '480', minBitrate: '1000' }), ['remove-low-quality', '--min-height=480', '--min-bitrate=1000', '--', 'D:\\v']);
+  assert.deepStrictEqual(low.toArgv({ target: 'D:\\v', minHeight: '', minBitrate: '' }), ['remove-low-quality', '--', 'D:\\v']);
+  assert.deepStrictEqual(spec('remove-broken').toArgv({ target: 'D:\\v' }), ['remove-broken', '--', 'D:\\v']);
+  // A relative target, an option-looking target and a protected place are refused (#329).
+  for (const target of ['.', 'v', '--yes=abc', '-x', 'C:\\Windows', 'D:\\v.']) assert.throws(() => spec('remove-broken').toArgv({ target }), FcError, target);
   assert.throws(() => low.toArgv({ target: '', minHeight: '', minBitrate: '' }), FcError);
   assert.throws(() => low.toArgv({ target: 'D:\\v', minHeight: '--yes=1', minBitrate: '' }), FcError);
   assert.throws(() => low.toArgv({ target: 'D:\\v', minHeight: '', minBitrate: '12 --force' }), FcError);
@@ -231,7 +233,7 @@ test('HTTP: find-low-quality passes the limits and find-duplicates reports nothi
   make(dir, { 'note.txt': 'text' });
   const { post, finish } = await serve(t);
   const low = await finish(await post('/cleanup/find-low-quality/start', { target: dir, minHeight: '480', minBitrate: '900' }));
-  assert.deepStrictEqual(low.job.argv, ['find-low-quality', dir, '--min-height=480', '--min-bitrate=900']);
+  assert.deepStrictEqual(low.job.argv, ['find-low-quality', '--min-height=480', '--min-bitrate=900', '--', dir]);
   assert.match(low.body, /Criteria: below short side 480 px or bitrate 900 kbps/);
   const dup = await finish(await post('/cleanup/find-duplicates/start', { target: dir }));
   assert.match(dup.body, /No duplicate candidates\./);
