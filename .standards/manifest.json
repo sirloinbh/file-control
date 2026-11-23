@@ -1,5 +1,5 @@
 {
-  "centralSha": "ecf825fb15cb0a03c924f7f1a20a1b7754fe0f73",
+  "centralSha": "be1f487692e9227d2b7b9dfdfea6fb308ca37be2",
   "profile": "utility",
   "project": null,
   "files": {
@@ -25,12 +25,12 @@
     },
     ".claude/skills/orca-lanes/SKILL.md": {
       "mode": "full",
-      "sha256": "c82722c8e36622482062325abb0761deb43b7d5b23bc33f5f93d27e973c2612c",
+      "sha256": "01f4a8420135ef970ac06f2fe9088a1235945c669412ada0b5609d82026f5dc6",
       "source": "templates/common/skills/orca-lanes/SKILL.md"
     },
     ".claude/skills/std-backlog/SKILL.md": {
       "mode": "full",
-      "sha256": "d78c85e0ab7e5cde745e013ab27d62b9cbcb8979012ee2dc5fc7b80f309fb6a4",
+      "sha256": "63535252af86e608e0c4de21ec9f14dbbc4d1133d438c43594829c046816ad46",
       "source": "templates/common/skills/std-backlog/SKILL.md"
     },
     ".claude/skills/std-code-review/SKILL.md": {
@@ -110,7 +110,7 @@
     },
     ".standards/check.mjs": {
       "mode": "full",
-      "sha256": "9189de77515827bb3fe6e4875c0808d9a3d58e87d134659058498aff7e8f4cd6",
+      "sha256": "e6631a5aa873e18716d82468846ce83bdd157bf867403778b411ceb3592dad32",
       "source": "scripts/standards-check.mjs"
     },
     ".standards/ioc-scan.mjs": {
@@ -150,12 +150,12 @@
     },
     "skills/orca-lanes/SKILL.md": {
       "mode": "full",
-      "sha256": "c82722c8e36622482062325abb0761deb43b7d5b23bc33f5f93d27e973c2612c",
+      "sha256": "01f4a8420135ef970ac06f2fe9088a1235945c669412ada0b5609d82026f5dc6",
       "source": "templates/common/skills/orca-lanes/SKILL.md"
     },
     "skills/std-backlog/SKILL.md": {
       "mode": "full",
-      "sha256": "d78c85e0ab7e5cde745e013ab27d62b9cbcb8979012ee2dc5fc7b80f309fb6a4",
+      "sha256": "63535252af86e608e0c4de21ec9f14dbbc4d1133d438c43594829c046816ad46",
       "source": "templates/common/skills/std-backlog/SKILL.md"
     },
     "skills/std-code-review/SKILL.md": {
