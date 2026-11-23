@@ -40,6 +40,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl normalize <target>` | Put the product number in a file name first, in upper case |
 | `fctl find-low-quality <target>` | Find low-quality videos below the resolution or bitrate standard (does not touch any file) |
 | `fctl remove-low-quality <target>` | Show the list of low-quality videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -407,3 +408,16 @@ npm test
 - **The preview reads only the list.** Passwords, name overlaps, and unusable names can be known only by really extracting. However, to decide whether to delete, the `--remove-archives` preview also reads the structure of `.zip` and the whole of `.tar.gz` and `.tgz` (decompressing gzip to the end to check the tar structure). It does not compare against the extracted result.
 - **Entry names**: `tar.exe` handles them. If there is a character not in the code page such as an emoji, or a tar made on Linux or macOS holds UTF-8 names as they are, it can fail (the preview can pass), and characters such as `:`, `?`, and `*` can be changed to `_` or the front part of the name can disappear.
 - **There is no size limit.** It does not check the extracted size in advance, so the disk can fill up. Reading an OneDrive online-only archive can trigger a download.
+
+## Sort a folder (sort-by)
+
+`fctl sort-by <target> --by=kind|month` moves the files directly in the target into subfolders. You can check first with `--dry-run`.
+
+- **`--by=kind`** uses the extension: `Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, and `Other` for everything else. **`--by=month`** uses the modified time in local time (`2026-11`).
+- **It only looks at files directly in the target.** `--recursive` also takes files from subfolders and moves them into the folders under the target. The folders it empties are left for `flatten` and `collapse`. A file already anywhere below its destination folder (`Videos/2020/a.mp4`) stays, and nested project folders (a project marker such as `package.json`) and program folders (`node_modules` and so on) are left whole and reported.
+- **It never overwrites.** If the destination name is taken (by an existing file or by another file in the same run), the file stays and is reported as skipped.
+- **A file already in its destination folder stays**, so a second run changes nothing.
+- **It leaves some files alone and says so**: links, unfinished downloads (`.crdownload`, `.part`, `.tmp` and similar), and the leftovers of a failed move (`.fctl-old-*`). `desktop.ini` and `Thumbs.db` are ignored.
+- **A file that has the name of a destination folder** (a file called `Videos`) blocks that folder: files for it stay and the report says why. A move that would make a path of 260 characters or more is skipped.
+- **It refuses a project folder** (a project marker such as `package.json` directly in the target, or a repository above or inside it), the same as `flatten`.
+- The engine in `src/sort.js` takes a rule (file to folder name), so the photo, document and Downloads commands reuse it with their own rules.
