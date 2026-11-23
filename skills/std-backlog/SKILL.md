@@ -117,6 +117,7 @@ Link work issues as GitHub sub-issues under a per-area parent issue. One parent 
   - Before closing, confirm with `sub_issues_summary` that no sub-issue is open, and comment the result of comparing against the goal in the body.
   - If part of the goal is left, do not close it. Register the remaining work as sub-issues and continue.
   - Do not close a parent whose body says "keep open even when all sub-issues are closed", such as an area that continues every working day.
+- **Automatic check and close (#1065)**: the daily compliance run (`scripts/compliance.mjs`) lists open work issues without a parent in the "Work issues without epic" column of `docs/compliance.md` and closes epics whose sub-issues are all closed, with a comment naming them. A body that says "keep open" or "do not close" keeps an epic open. The check does not replace linking at registration; fix every `✗` it reports.
 - **Multi-repo tracking issues** (section 1) are not parents. Keep the central repo's checkbox tracking as is, and link each repo's real issues to that repo's area parent.
 - **First adoption (once per repo)**: the first time you register issues or choose the next task in a repo after this rule is synced, group open work issues that have no parent by area.
   - Tell the user the grouping plan (area, parent, sub-issue numbers) once before proceeding.

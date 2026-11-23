@@ -16,7 +16,8 @@ Follow the repo's own AGENTS.md/CLAUDE.md for the issue, branch, commit, PR, rev
 1. `git status` in the main checkout; stop and tell the user if it is dirty in a way that matters.
 2. Run `ListAgents` and `orca worktree list` to see existing lanes and sessions. Reuse an idle existing lane before creating a new one.
 3. List open issues with labels (`issue list --state open --json number,title,labels`). Drop epics, `needs-user`, `[Manual]` and "user confirmation" items: those stay with the user.
-4. For each remaining issue note the paths it will touch (read the issue body). Group issues into **areas that do not share files** (for example backend, deploy and workflows, scripts and config, UI, docs). Respect blockers: an issue goes after the issue it depends on, in the same lane when possible.
+4. Group by epic first: read each issue's parent (`parent_issue_url`) and `sub_issues_summary`. One lane takes one epic (all its open sub-issues, in order) when the epics' files do not overlap; two epics that touch the same files go to the same lane. Issues without a parent are not lane work: link them to a fitting epic first (std-backlog section 6).
+5. For each remaining issue note the paths it will touch (read the issue body). Within that, group into **areas that do not share files** (for example backend, deploy and workflows, scripts and config, UI, docs). Respect blockers: an issue goes after the issue it depends on, in the same lane when possible.
 
 ## 2. Plan the lanes
 
@@ -35,7 +36,7 @@ Follow the repo's own AGENTS.md/CLAUDE.md for the issue, branch, commit, PR, rev
 1. Work assigned issues in order. Blocked → skip to the next and come back later.
 2. Edit only owned paths. Anything else, or a file nobody owns: ask the coordinator first.
 3. **User choices go to the coordinator**, never decided alone: `[lane-N] #<issue> needs a choice: <one line>`, options A/B/C with the recommendation first, then continue with work that does not depend on it. This covers design choices, `[Manual]`/`needs-user` steps, installs outside policy, real cloud/production changes (`terraform apply`, IAM, secrets), writes to production data, and anything under "check before merging".
-4. After each merge send one line: `[lane-N] merged #<PR> (closes #<issue>); next #<issue>`. When nothing is left: post a handoff comment on the epic and send `[lane-N] done` with what is left and why.
+4. After each merge send one line: `[lane-N] merged #<PR> (closes #<issue>); next #<issue>`. Take the next open sub-issue of the same epic in the same worktree. After the last one, check `sub_issues_summary` and close the epic with a comment naming the sub-issues (the daily compliance run also closes finished epics, #1065). When nothing is left: post a handoff comment on the epic and send `[lane-N] done` with what is left and why.
 5. One full test run at a time across lanes: take a lock folder with `if mkdir <ws>/.check-lock; then echo "lane-N $(date -Is)" > <ws>/.check-lock/owner; <full check>; rc=$?; rm -rf <ws>/.check-lock; fi`. Never remove a lock another lane owns unless its owner file is older than 20 minutes.
 6. "Base branch was modified" on merge: merge origin/main again, rerun the check, push, retry. Report "merged" only after the PR state is MERGED.
 7. Apps that deploy on merge: after each merge confirm the deployed commit = main and health is 200; on a failure stop and report. Never kill a hung deploy without telling the coordinator.
