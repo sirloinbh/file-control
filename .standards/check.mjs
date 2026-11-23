@@ -94,14 +94,25 @@ export function checkComposeDeploy(text, { dbName = null, scripts = {} } = {}) {
   return problems;
 }
 
+/** True when a healthcheck `interval` (not `start_interval`) is under 30 s (#1096). */
+function hasShortHealthcheckInterval(text) {
+  for (const m of text.matchAll(/^ +interval: *(\d+(?:\.\d+)?)(ms|s|m|h)\b/gm)) {
+    const seconds = Number(m[1]) * { ms: 0.001, s: 1, m: 60, h: 3600 }[m[2]];
+    if (seconds < 30) return true;
+  }
+  return false;
+}
+
 /**
  * Warnings for compose.yaml that do not fail the check (#875): the `api` service has no `healthcheck`, so
  * `docker compose up -d --wait` and web's `depends_on` cannot tell when the API is ready. Returns warning strings.
  */
 export function checkComposeWarnings(text) {
   const api = text.match(/^ {2}api:[ \t]*\r?\n((?: {3,}.*\r?\n|[ \t]*\r?\n)*)/m);
-  if (api && !/^ {4}healthcheck:/m.test(api[1])) return ['compose.yaml: the api service has no healthcheck, so `docker compose up -d --wait` cannot tell when the API is ready. Add one on /api/health (scaffold/app/compose.yaml in project-standards has an example).'];
-  return [];
+  const warnings = [];
+  if (api && !/^ {4}healthcheck:/m.test(api[1])) warnings.push('compose.yaml: the api service has no healthcheck, so `docker compose up -d --wait` cannot tell when the API is ready. Add one on /api/health (scaffold/app/compose.yaml in project-standards has an example).');
+  if (hasShortHealthcheckInterval(text)) warnings.push('compose.yaml: a healthcheck polls more often than every 30 s. On the shared server the api check starts a Node.js process each time and the burstable CPU throttles (#1096). Use `interval: 60s` with `start_period` and `start_interval: 2s` (scaffold/app/compose.yaml in project-standards).');
+  return warnings;
 }
 
 /**
