@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseEnvExample, ssmProblems } from './lib/env-tags.mjs';
+import { bareEnvLines, parseEnvExample, ssmProblems } from './lib/env-tags.mjs';
 import { checkManifest, MANIFEST_PATH } from './lib/manifest.mjs';
 
 const CENTRAL = 'sirloinbh/project-standards';
@@ -316,6 +316,11 @@ export function runCheck(root) {
   }
   // @ssm= tags name the SSM parameter the deploy script reads for a key (ADR-0014).
   const envExample = read('.env.example');
+  if (envExample !== null) {
+    for (const { line, text } of bareEnvLines(envExample)) {
+      problems.push({ group: 'env example', path: '.env.example', message: `line ${line} is not blank, a # comment, or KEY=value (a comment split by a real line break?): ${text.slice(0, 60)}` });
+    }
+  }
   if (envExample !== null && manifest.project) {
     for (const message of ssmProblems(parseEnvExample(envExample), manifest.project)) problems.push({ group: 'SSM key', path: '.env.example', message });
   }
@@ -366,7 +371,7 @@ export function formatReport({ problems, warnings, manifest }) {
   return lines.join('\n');
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 if (isMain) {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const flag = process.argv.indexOf('--root');

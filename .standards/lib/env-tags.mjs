@@ -34,6 +34,16 @@ export function parseEnvExample(text) {
   return entries;
 }
 
+/** Lines of .env.example that are not blank, not a # comment, and not KEY=value (docker compose rejects them). */
+export function bareEnvLines(text) {
+  const bad = [];
+  text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
+    const line = raw.trim();
+    if (line !== '' && !line.startsWith('#') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(line)) bad.push({ line: i + 1, text: line });
+  });
+  return bad;
+}
+
 /** Shared keys live under /sirloinbh/shared/, one app's keys under /sirloinbh/<app>/ (ADR-0014). */
 export const SSM_PATH = /^\/sirloinbh\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 
