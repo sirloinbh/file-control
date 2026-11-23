@@ -11,7 +11,7 @@ const path = require('node:path');
 // The temp folder is under the user's AppData, a protected path, so the user folder is swapped with a path that does not exist.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-const { findFiles, formatFind, findCriteria, parseSize, parseAge } = require('../src/find');
+const { globMatches, findFiles, formatFind, findCriteria, parseSize, parseAge } = require('../src/find');
 const { execute } = require('../src/execute');
 const { run } = require('../bin/fctl');
 const { misplacedFlagMessage } = require('../src/commandTable');
@@ -140,4 +140,16 @@ test('find does not touch files, with or without --dry-run', (t) => {
   execute(['find', '--dry-run', '--', dir]);
   execute(['find', '--', dir]);
   assert.deepStrictEqual(fs.readdirSync(dir, { recursive: true }).sort(), before);
+});
+
+test('a glob with many stars finishes fast and still matches correctly', () => {
+  const started = Date.now();
+  assert.strictEqual(globMatches('*a*a*a*a*a*a*a*a*b', 'a'.repeat(200)), false);
+  assert.strictEqual(globMatches('*a*a*a*a*a*a*a*a*b', `${'a'.repeat(200)}b`), true);
+  assert.ok(Date.now() - started < 1000);
+  assert.strictEqual(globMatches('a*', 'ABC'), true);
+  assert.strictEqual(globMatches('*.p?rt', 'x.PART'), true);
+  assert.strictEqual(globMatches('a?c', 'ac'), false);
+  assert.strictEqual(globMatches('**', ''), true);
+  assert.strictEqual(globMatches('a[b]', 'a[b]'), true);
 });

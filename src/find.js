@@ -37,9 +37,30 @@ function parseExtensions(text) {
 }
 
 // A glob on the file name: * is any run of characters, ? is one character. It ignores case, like Windows.
-function globToRegExp(pattern) {
-  const source = [...pattern].map((ch) => (ch === '*' ? '.*' : ch === '?' ? '.' : ch.replace(/[.+^${}()|[\]\\]/g, '\\$&'))).join('');
-  return new RegExp(`^${source}$`, 'is');
+// It is matched with two pointers (no regular expression), so a pattern with many * cannot take exponential time.
+function globMatches(pattern, name) {
+  const p = pattern.toLowerCase();
+  const n = name.toLowerCase();
+  let pi = 0;
+  let ni = 0;
+  let star = -1;
+  let mark = 0;
+  while (ni < n.length) {
+    if (pi < p.length && (p[pi] === '?' || p[pi] === n[ni])) {
+      pi++;
+      ni++;
+    } else if (pi < p.length && p[pi] === '*') {
+      star = pi++;
+      mark = ni;
+    } else if (star !== -1) {
+      pi = star + 1;
+      ni = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pi < p.length && p[pi] === '*') pi++;
+  return pi === p.length;
 }
 
 // It turns the option texts into one criteria object, refusing a bad value before anything is read.
@@ -71,7 +92,6 @@ function findCriteria(options = {}) {
 // A subfolder that cannot be read is listed in skipped and the rest is still searched. now is injectable for tests.
 function findFiles(dir, options = {}, { now = Date.now() } = {}) {
   const criteria = findCriteria(options);
-  const nameMatch = criteria.name === undefined ? undefined : globToRegExp(criteria.name);
   const target = resolveTarget(dir);
   const unreadable = [];
   const entries = walk(target, { unreadable });
@@ -96,7 +116,7 @@ function findFiles(dir, options = {}, { now = Date.now() } = {}) {
     if (criteria.older !== undefined && !(stat.mtimeMs < now - criteria.older)) continue;
     if (criteria.newer !== undefined && !(stat.mtimeMs > now - criteria.newer)) continue;
     if (criteria.ext !== undefined && !criteria.ext.includes(path.extname(base).toLowerCase())) continue;
-    if (nameMatch !== undefined && !nameMatch.test(base)) continue;
+    if (criteria.name !== undefined && !globMatches(criteria.name, base)) continue;
     files.push({ path: entry.path, relative: entry.relative, size: stat.size, mtimeMs: stat.mtimeMs });
   }
   if (criteria.sort === 'size') files.sort((a, b) => b.size - a.size || a.relative.localeCompare(b.relative));
@@ -117,4 +137,4 @@ function formatFind(result) {
   return lines.join('\n');
 }
 
-module.exports = { findFiles, formatFind, findCriteria, formatDate, parseSize, parseAge };
+module.exports = { globMatches, findFiles, formatFind, findCriteria, formatDate, parseSize, parseAge };
