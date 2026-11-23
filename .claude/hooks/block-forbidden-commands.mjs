@@ -120,7 +120,7 @@ function checkMerge(words) {
   const at = words.findIndex((w, i) => w === 'pr' && words[i + 1] === 'merge');
   if (at === -1) return null;
   const flags = words.slice(at + 2);
-  return flags.some((f) => /^(-d|--delete-branch(=true)?)$/.test(f)) ? `pr merge --delete-branch: ${MERGE_RULE}` : null;
+  return flags.some((f) => /^(-[a-zA-Z]*d[a-zA-Z]*|--delete-branch(=true)?)$/.test(f)) ? `pr merge --delete-branch: ${MERGE_RULE}` : null;
 }
 
 function checkWords(words, ctx, depth) {
@@ -136,7 +136,12 @@ function checkWords(words, ctx, depth) {
   if (PREFIXES.has(program)) {
     let j = 0;
     while (j < args.length && (isOption(args[j]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(args[j]) || /^\d+$/.test(args[j]))) j++;
-    return checkWords(args.slice(j), { ...ctx, env }, depth);
+    // An option may take a value (env -u NAME, sudo -u USER): also try the next two words as the command.
+    for (let k = j; k <= j + 2 && k < args.length; k++) {
+      const found = checkWords(args.slice(k), { ...ctx, env }, depth);
+      if (found) return found;
+    }
+    return null;
   }
   if (program === 'timeout') return checkWords(args.slice(args.findIndex((a) => !isOption(a)) + 1), { ...ctx, env }, depth);
   if (SHELLS.has(program)) {

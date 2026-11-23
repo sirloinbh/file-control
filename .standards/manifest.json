@@ -1,11 +1,11 @@
 {
-  "centralSha": "23edc98d92f476b731e8f8265b7946f60c6a57fc",
+  "centralSha": "ecf825fb15cb0a03c924f7f1a20a1b7754fe0f73",
   "profile": "utility",
   "project": null,
   "files": {
     ".claude/hooks/block-forbidden-commands.mjs": {
       "mode": "full",
-      "sha256": "f2209c4d1d703155fa794ea9f5b6be13351227c074f77ff16943adebdd1195ec",
+      "sha256": "790b43ff72a29e9c9c47f29ddae893a93ab406613918f4833290cb8d1d599288",
       "source": "templates/common/.claude/hooks/block-forbidden-commands.mjs"
     },
     ".claude/hooks/block-package-installs.mjs": {
@@ -110,7 +110,7 @@
     },
     ".standards/check.mjs": {
       "mode": "full",
-      "sha256": "61108495fe719aafbdf1abd5756e291a25546107bbe7826787a34123b0501243",
+      "sha256": "9189de77515827bb3fe6e4875c0808d9a3d58e87d134659058498aff7e8f4cd6",
       "source": "scripts/standards-check.mjs"
     },
     ".standards/ioc-scan.mjs": {
