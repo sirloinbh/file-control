@@ -14,10 +14,11 @@ const { findDuplicateNames, formatDuplicateNames } = require('./duplicates');
 const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates');
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
+const { sortBy, formatSort } = require('./sort');
 
 const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive']);
 
 function parse(argv) {
   const flags = new Set();
@@ -183,6 +184,12 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       const result = collapse(args[0], { dryRun });
       // Skipped items are enough as a report. It ends as a failure only when there is a failed stretch.
       return failIf(result.failed.length > 0, result, formatCollapse(result));
+    }
+    case 'sort-by': {
+      checkWholeTarget(command, args, flags);
+      const result = sortBy(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
+      // Skipped files are enough as a report. It ends as a failure only when there is a file that could not be moved.
+      return failIf(result.failed.length > 0, result, formatSort(result));
     }
     case 'extract-all': {
       checkWholeTarget(command, args, flags);
