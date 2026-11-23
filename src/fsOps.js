@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { config, FcError, checkOverwrite, ensureCanMakeDir, ensureExists, ensureFree, ensureItemExists, ensureNotIntoSelf, ensureParentDir, entryKey, exists, isSameOrUnder, lexists, overwriteNote, pathKey, perform, realKey, rejectHardLinkedWrite, rejectNewDeviceName, targetNote } = require('./base');
 const { permanentRefusal, previewRefusal, remove } = require('./recycle');
+const journal = require('./journal');
 
 function formatSize(bytes) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -62,7 +63,24 @@ function makeDir(dir, { dryRun = false } = {}) {
   rejectNewDeviceName(dir);
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (already exists)' : '';
-  return perform(`Create folder: ${dir}${note}`, dryRun, () => fs.mkdirSync(dir, { recursive: true }));
+  return perform(`Create folder: ${dir}${note}`, dryRun, () => {
+    const first = firstMissing(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    if (first !== undefined) journal.record('create-dir', { path: first });
+  });
+}
+
+// The first folder of a path that does not exist yet, so the journal can say what mkdir really created.
+function firstMissing(dir) {
+  let current = path.resolve(dir);
+  let missing;
+  while (!fs.lstatSync(current, { throwIfNoEntry: false })) {
+    missing = current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return missing;
 }
 
 function writeFile(file, content, { append = false, force = false, dryRun = false, info } = {}) {
@@ -77,9 +95,15 @@ function writeFile(file, content, { append = false, force = false, dryRun = fals
   }
   const note = append ? '' : overwriteNote(file, dryRun, info);
   return perform(`${append ? 'Append to file' : 'Write file'}: ${file}${note}`, dryRun, () => {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const firstDir = firstMissing(path.dirname(file));
+    if (firstDir !== undefined) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      journal.record('create-dir', { path: firstDir });
+    }
+    const existed = Boolean(fs.lstatSync(file, { throwIfNoEntry: false }));
     if (append) fs.appendFileSync(file, content);
     else fs.writeFileSync(file, content);
+    journal.record('write', { path: file, append, existed });
   });
 }
 
@@ -98,7 +122,7 @@ function rename(target, newName, { force = false, dryRun = false, info } = {}) {
   rejectNewDeviceName(dest);
   // Changing only the case of itself is not an overwrite. "Itself" is decided by volume and file number, not by lowercased names (#302).
   if (dryRun && exists(dest) && !isSameItem(target, dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
-  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => fs.renameSync(target, dest));
+  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => journal.rename(target, dest));
 }
 
 // fs.cpSync keeps the times of files with preserveTimestamps but not of folders, so the folder times are set after the copy (best effort: a folder time that cannot be set is not an error) (#313).
@@ -117,7 +141,7 @@ function copyFolderTimes(src, dest) {
 
 function moveOne(src, dest) {
   try {
-    fs.renameSync(src, dest);
+    journal.rename(src, dest);
   } catch (err) {
     // When moving to another drive, rename does not work, so it deletes the original after copying.
     if (err.code !== 'EXDEV') throw err;
@@ -131,6 +155,7 @@ function moveOne(src, dest) {
       throw copyErr;
     }
     fs.rmSync(src, { recursive: true, force: true });
+    journal.record('move', { from: src, to: dest });
   }
 }
 
@@ -154,14 +179,14 @@ function asidePath(target) {
 function moveReplacing(src, target, { permanent = false } = {}) {
   if (!lexists(target)) return moveOne(src, target);
   const aside = asidePath(target);
-  fs.renameSync(target, aside);
+  journal.rename(target, aside);
   try {
     moveOne(src, target);
   } catch (err) {
     // If the copy finished and the target exists, only the cleanup of the source failed, so it does not roll back.
     if (lexists(target)) throw new FcError(`Moved, but the source could not be fully deleted: ${src} (${err.code}). The previous destination is at ${aside}.`);
     try {
-      fs.renameSync(aside, target);
+      journal.rename(aside, target);
     } catch (restoreErr) {
       throw new FcError(`Could not move, and could not restore the previous destination either: ${src} (${err.code}, ${restoreErr.code}). The previous destination is at ${aside}.`);
     }
@@ -434,7 +459,11 @@ function copy(sources, dest, { force = false, dryRun = false, info } = {}) {
   const planned = new Set();
   return items.map(({ src, target }) => {
     const note = dryRun ? targetNote(planned, target, force, ' (merged into the folder, files with the same name are overwritten)', ' (overwrites)', info) : '';
-    return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => fs.cpSync(src, target, { recursive: true, force }));
+    return perform(`Copy: ${src} -> ${target}${note}`, dryRun, () => {
+      const existed = Boolean(fs.lstatSync(target, { throwIfNoEntry: false }));
+      fs.cpSync(src, target, { recursive: true, force });
+      journal.record('copy', { from: src, to: target, existed });
+    });
   });
 }
 

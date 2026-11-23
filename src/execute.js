@@ -1,6 +1,7 @@
 'use strict';
 
 // The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
+const path = require('node:path');
 const fc = require('./commands');
 const { plural } = require('./plural');
 const { flatten, formatFlatten } = require('./flatten');
@@ -16,6 +17,7 @@ const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 
 const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
+const journal = require('./journal');
 
 const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate']);
 
@@ -79,6 +81,12 @@ function checkWholeTarget(command, args, flags) {
   if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command} never overwrites or permanently deletes, so --force and --permanent cannot be used.`);
 }
 
+// Archives are made and extracted in src/archive.js, which does not know about the journal, so the command records the one "created" step after it succeeded.
+function journaled(dryRun, op, result, fields) {
+  if (!dryRun) journal.record(op, fields);
+  return result;
+}
+
 function defaultReadStdin() {
   return require('node:fs').readFileSync(0, 'utf8');
 }
@@ -100,7 +108,23 @@ function formatList(entries) {
 // An argument error or an exception during the run is thrown as is. An unknown command is an FcError whose err.unknownCommand is true.
 // If progress(line) is given, long-running commands (flatten, remove-broken, find-broken, find-duplicates) pass on what they did, one line at a time, even before they finish (#67, #99, #326).
 // readStdin() is called when write and append have no content.
-function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
+function execute(argv, options = {}) {
+  const run = journal.begin(argv[0] ?? '', argv.slice(1));
+  let outcome;
+  try {
+    outcome = executeCommand(argv, options);
+  } catch (err) {
+    journal.finish(run, err);
+    throw err;
+  }
+  const written = journal.finish(run, outcome.failure);
+  // The journal is a record, not the work, so a journal that could not be written is reported but does not turn a finished run into a failure.
+  if (written?.error && typeof outcome.report === 'string') outcome.report += `
+Warning: could not write the change journal (${written.error}).`;
+  return outcome;
+}
+
+function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
@@ -157,10 +181,10 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(fc.unzip(args[0], args[1], { dryRun, force, info }));
+      return done(journaled(dryRun, 'create', fc.unzip(args[0], args[1], { dryRun, force, info }), { path: args[1] || path.join(path.dirname(args[0]), path.parse(args[0]).name), source: args[0] }));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
-      return done(fc.zip(args[0], args.slice(1), { force, dryRun, info }));
+      return done(journaled(dryRun, 'create', fc.zip(args[0], args.slice(1), { force, dryRun, info }), { path: args[0], source: args.slice(1).join(', ') }));
     case 'flatten': {
       checkWholeTarget(command, args, flags);
       const result = flatten(args[0], { dryRun, onProgress: progress });
