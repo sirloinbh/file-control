@@ -4,7 +4,7 @@
 // that does not use it (--force, --permanent, --remove-archives, --yes, --include-lowercase, --min-height, --min-bitrate) read it too,
 // so a command is added in one place and the help and the checks cannot disagree.
 // kind: 'basic' (the file commands, which refuse --force and --permanent when they do not use them), 'whole' (commands that handle a whole target) or 'ui'.
-// The other fields say which options a command accepts: force, permanent, removeArchives, yes, includeLowercase, lowQuality (--min-height and --min-bitrate).
+// The other fields say which options a command accepts: force, permanent, removeArchives, yes, includeLowercase, lowQuality (--min-height and --min-bitrate), sortBy (--by and --recursive).
 
 const COMMANDS = [
   { name: 'ls', usage: 'ls [folder]', summary: 'list folder contents (default: current folder)', kind: 'basic' },
@@ -29,6 +29,7 @@ const COMMANDS = [
   { name: 'remove-duplicates', usage: 'remove-duplicates <target>', summary: 'show duplicate videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'find-low-quality', usage: 'find-low-quality <target>', summary: 'find low-quality videos below the resolution or bitrate limit (does not touch files)', kind: 'whole', lowQuality: true },
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
+  { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
 
@@ -43,7 +44,9 @@ function helpCommandLines() {
 const BASIC_COMMANDS = new Set(COMMANDS.filter((command) => command.kind === 'basic').map((command) => command.name));
 const FORCE_COMMANDS = named('force');
 const PERMANENT_COMMANDS = named('permanent');
-const VALUE_FLAGS = new Set(['min-height', 'min-bitrate']);
+// Options that carry a value (--name=VALUE) and the command field that allows each one.
+const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy' };
+const VALUE_FLAGS = new Set(Object.keys(VALUE_FLAG_FIELDS));
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
 // Only the basic commands are looked at for --force and --permanent; the whole-target commands refuse both in checkWholeTarget of src/execute.js.
@@ -59,7 +62,10 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('force', FORCE_COMMANDS, `${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`) : undefined,
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
-    ...[...VALUE_FLAGS].map((flag) => only(flag, named('lowQuality'), `--${flag} can be used only with find-low-quality and remove-low-quality.`)),
+    only('min-height', named('lowQuality'), '--min-height can be used only with find-low-quality and remove-low-quality.'),
+    only('min-bitrate', named('lowQuality'), '--min-bitrate can be used only with find-low-quality and remove-low-quality.'),
+    only('by', named('sortBy'), '--by can be used only with sort-by.'),
+    only('recursive', named('sortBy'), '--recursive can be used only with sort-by.'),
   ].find((message) => message !== undefined);
 }
 
