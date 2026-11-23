@@ -24,8 +24,8 @@ const rows = (body) => [...String(body).matchAll(/<tr><td>(.*?)<\/td><\/tr>/g)].
 const T = path.join('D:\\', 'v');
 const p = (...parts) => path.join(T, ...parts);
 
-test('CLEANUP_VIEWS has a screen for all six find and remove commands (#259)', () => {
-  assert.deepStrictEqual(Object.keys(CLEANUP_VIEWS).sort(), ['find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']);
+test('CLEANUP_VIEWS has a screen for all find and remove commands (#259, #393)', () => {
+  assert.deepStrictEqual(Object.keys(CLEANUP_VIEWS).sort(), ['find', 'find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']);
 });
 
 test('find-broken screen: broken and suspect in a table, undetermined and skipped apart, names escaped (#259)', () => {

@@ -22,10 +22,21 @@ const TARGET = { name: 'target', label: 'Target folder', kind: 'path' };
 const MIN_HEIGHT = { name: 'minHeight', label: 'Low quality below this short side, in pixels (blank: 360)', kind: 'text' };
 const MIN_BITRATE = { name: 'minBitrate', label: 'Low quality below this bitrate, in kbps (blank: not checked)', kind: 'text' };
 
+const FIND_FIELDS = [
+  { name: 'larger', label: 'Larger than (such as 500KB, 1MB, 1GB)', kind: 'text', option: 'larger' },
+  { name: 'smaller', label: 'Smaller than (such as 10MB)', kind: 'text', option: 'smaller' },
+  { name: 'older', label: 'Last changed more than this long ago (such as 30d, 4w, 6m)', kind: 'text', option: 'older' },
+  { name: 'newer', label: 'Last changed within this time (such as 7d)', kind: 'text', option: 'newer' },
+  { name: 'ext', label: 'Extensions (such as mp4,mkv)', kind: 'text', option: 'ext' },
+  { name: 'name', label: 'File name pattern (* and ?, such as *.part)', kind: 'text', option: 'name' },
+  { name: 'sort', label: 'Sort by (size, date, or blank for path order)', kind: 'text', option: 'sort' },
+];
+
 const COMMANDS = [
   { command: 'find-broken', title: 'Find broken files', detail: 'Lists broken and suspect files. Changes nothing.', fields: [TARGET], find: true },
   { command: 'find-duplicates', title: 'Find duplicate videos', detail: 'Groups videos with the same name, product number or length. Changes nothing.', fields: [TARGET], find: true },
   { command: 'find-low-quality', title: 'Find low-quality videos', detail: 'Lists videos below the resolution or bitrate limit. Changes nothing.', fields: [TARGET, MIN_HEIGHT, MIN_BITRATE], find: true },
+  { command: 'find', title: 'Search files by size, date, extension and name', detail: 'Lists the files that match every condition you fill in, with a total. Changes nothing.', fields: [TARGET, ...FIND_FIELDS], find: true },
   { command: 'remove-broken', title: 'Delete broken files', detail: 'Shows the files to delete first, then sends them to the Recycle Bin and writes a removal log.', fields: [TARGET] },
   { command: 'remove-duplicates', title: 'Delete duplicate videos', detail: 'Shows what is kept and what is deleted first, then sends the extra copies to the Recycle Bin and writes a removal log.', fields: [TARGET] },
   { command: 'remove-low-quality', title: 'Delete low-quality videos', detail: 'Shows the files to delete first, then sends them to the Recycle Bin and writes a removal log.', fields: [TARGET, MIN_HEIGHT, MIN_BITRATE] },
@@ -58,6 +69,11 @@ function toArgv(command, fields) {
   return (values) => {
     const target = checkedTarget(values.target);
     const argv = [command];
+    // Search conditions are passed on as text; src/find.js checks the values and refuses a bad one with the reason.
+    for (const field of fields) {
+      const text = field.option === undefined ? '' : values[field.name].trim();
+      if (text !== '') argv.push(`--${field.option}=${text}`);
+    }
     if (fields.includes(MIN_HEIGHT)) argv.push(...limitOption(values, MIN_HEIGHT, 'min-height'), ...limitOption(values, MIN_BITRATE, 'min-bitrate'));
     // A literal -- keeps the target from ever being read as an option.
     argv.push('--', target);
@@ -79,7 +95,7 @@ const views = { ...CLEANUP_VIEWS };
 
 function fieldRow(entry, field, value) {
   if (field.kind === 'path') return pathInput({ name: field.name, label: field.label, value, returnTo: `${AREA}/${entry.command}` });
-  return html`<p><label>${field.label}<br><input type="text" name="${field.name}" value="${value}" size="12" spellcheck="false" inputmode="numeric"></label></p>`;
+  return html`<p><label>${field.label}<br><input type="text" name="${field.name}" value="${value}" size="12" spellcheck="false"${field.option === undefined ? ' inputmode="numeric"' : ''}></label></p>`;
 }
 
 function findForm(jobs, entry, req, { available, tokenField }) {

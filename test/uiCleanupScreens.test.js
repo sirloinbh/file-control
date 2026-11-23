@@ -79,9 +79,9 @@ test.beforeEach(() => {
 
 // ---- specs ----
 
-test('the screen module exports the six commands under /cleanup and is registered in the server', () => {
+test('the screen module exports the seven commands under /cleanup and is registered in the server', () => {
   assert.deepStrictEqual(cleanup.specs.map((s) => s.command), ['remove-broken', 'remove-duplicates', 'remove-low-quality']);
-  assert.deepStrictEqual(Object.keys(cleanup.views).sort(), ['find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']);
+  assert.deepStrictEqual(Object.keys(cleanup.views).sort(), ['find', 'find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']);
   for (const s of cleanup.specs) assert.ok(s.path.startsWith('/cleanup/'));
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'server.js'), 'utf8'), /SCREENS = \[[^\]]*require\('\.\/screens\/cleanup'\)/);
 });
@@ -200,10 +200,10 @@ async function serve(t) {
 
 const fingerprintOf = (body) => /name="fingerprint" value="([0-9a-f]{64})"/.exec(body)?.[1];
 
-test('HTTP: the landing page lists the six commands and every screen has a form', async (t) => {
+test('HTTP: the landing page lists the seven commands and every screen has a form', async (t) => {
   const { get } = await serve(t);
   const landing = await (await get('/cleanup')).text();
-  for (const command of ['find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']) {
+  for (const command of ['find', 'find-broken', 'find-duplicates', 'find-low-quality', 'remove-broken', 'remove-duplicates', 'remove-low-quality']) {
     assert.ok(landing.includes(`href="/cleanup/${command}"`), command);
     const form = await get(`/cleanup/${command}`);
     assert.strictEqual(form.status, 200, command);
@@ -239,6 +239,27 @@ test('HTTP: find-low-quality passes the limits and find-duplicates reports nothi
   assert.match(low.body, /Criteria: below short side 480 px or bitrate 900 kbps/);
   const dup = await finish(await post('/cleanup/find-duplicates/start', { target: dir }));
   assert.match(dup.body, /No duplicate candidates\./);
+});
+
+test('HTTP: find passes the search conditions and shows the matches and the total (#393)', async (t) => {
+  const dir = tempDir();
+  make(dir, { 'a&1.txt': 'x'.repeat(2048), 'small.txt': 'x', 'big.mp4': 'y'.repeat(4096) });
+  const { post, finish } = await serve(t);
+  const result = await finish(await post('/cleanup/find/start', { target: dir, larger: '1KB', ext: 'txt', sort: 'size' }));
+  assert.deepStrictEqual(result.job.argv, ['find', '--larger=1KB', '--ext=txt', '--sort=size', '--', dir]);
+  assert.match(result.body, /<td>a&amp;1\.txt<\/td>/);
+  assert.doesNotMatch(result.body, /small\.txt/);
+  assert.doesNotMatch(result.body, /big\.mp4/);
+  assert.match(result.body, /2\.0KB/);
+  assert.doesNotMatch(result.body, /name="fingerprint"/);
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['a&1.txt', 'big.mp4', 'small.txt']);
+});
+
+test('HTTP: a bad search condition is refused by the job with the reason (#393)', async (t) => {
+  const dir = tempDir();
+  const { post, finish } = await serve(t);
+  const result = await finish(await post('/cleanup/find/start', { target: dir, larger: 'lots' }));
+  assert.match(result.body, /--larger needs a size/);
 });
 
 test('HTTP: a bad limit or a missing folder is refused with a reason and starts no job', async (t) => {

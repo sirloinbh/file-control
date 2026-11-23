@@ -29,6 +29,7 @@ const COMMANDS = [
   { name: 'remove-duplicates', usage: 'remove-duplicates <target>', summary: 'show duplicate videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'find-low-quality', usage: 'find-low-quality <target>', summary: 'find low-quality videos below the resolution or bitrate limit (does not touch files)', kind: 'whole', lowQuality: true },
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
+  { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
 
@@ -43,7 +44,9 @@ function helpCommandLines() {
 const BASIC_COMMANDS = new Set(COMMANDS.filter((command) => command.kind === 'basic').map((command) => command.name));
 const FORCE_COMMANDS = named('force');
 const PERMANENT_COMMANDS = named('permanent');
-const VALUE_FLAGS = new Set(['min-height', 'min-bitrate']);
+const LOW_QUALITY_FLAGS = ['min-height', 'min-bitrate'];
+const FIND_FLAGS = ['larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort'];
+const VALUE_FLAGS = new Set([...LOW_QUALITY_FLAGS, ...FIND_FLAGS]);
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
 // Only the basic commands are looked at for --force and --permanent; the whole-target commands refuse both in checkWholeTarget of src/execute.js.
@@ -59,8 +62,9 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('force', FORCE_COMMANDS, `${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`) : undefined,
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
-    ...[...VALUE_FLAGS].map((flag) => only(flag, named('lowQuality'), `--${flag} can be used only with find-low-quality and remove-low-quality.`)),
+    ...LOW_QUALITY_FLAGS.map((flag) => only(flag, named('lowQuality'), `--${flag} can be used only with find-low-quality and remove-low-quality.`)),
+    ...FIND_FLAGS.map((flag) => only(flag, named('find'), `--${flag} can be used only with find.`)),
   ].find((message) => message !== undefined);
 }
 
-module.exports = { COMMANDS, VALUE_FLAGS, helpCommandLines, misplacedFlagMessage };
+module.exports = { COMMANDS, VALUE_FLAGS, FIND_FLAGS, helpCommandLines, misplacedFlagMessage };

@@ -10,6 +10,7 @@ const { groupLabel, groupCautions } = require('../../duplicates');
 const { describeVideo } = require('../../video');
 const { criteriaText } = require('../../lowQuality');
 const { plural } = require('../../plural');
+const { formatDate } = require('../../find');
 const { html } = require('../html');
 const { summaryCards, badge, table, alertBox } = require('../layout');
 
@@ -118,6 +119,20 @@ ${table([{ label: 'File', width: '30%' }, { label: 'Resolution', width: '18%' },
 ${otherTable(rel, [['Undetermined', 'warning', r.undetermined], ['Skipped', 'skipped', r.skipped]])}`;
 }
 
+// find (#393)
+function findView(outcome) {
+  const r = outcome.result;
+  const rows = r.files.map((file) => [file.relative, size(file.size), formatDate(file.mtimeMs)]);
+  return html`${targetLine(r)}
+${summaryCards([
+    { label: 'Files checked', value: r.checked },
+    { label: 'Matches', value: r.files.length, tone: r.files.length > 0 ? 'warning' : 'ok' },
+    { label: 'Total size', value: formatSize(r.total) },
+  ])}
+${table([{ label: 'File', width: '60%' }, { label: 'Size', width: '15%' }, { label: 'Last changed' }], rows, { empty: 'No files match.' })}
+${otherTable(relativeTo(r.target), [['Skipped', 'skipped', r.skipped]])}`;
+}
+
 // The state notice of a removal result: the preview (list to delete), a stop on a changed list, or sent to the Recycle Bin.
 function removalState(r) {
   if (r.mismatch) {
@@ -177,9 +192,10 @@ const CLEANUP_VIEWS = {
   'find-broken': findBrokenView,
   'find-duplicates': findDuplicatesView,
   'find-low-quality': findLowQualityView,
+  find: findView,
   'remove-broken': removeView,
   'remove-duplicates': removeView,
   'remove-low-quality': removeView,
 };
 
-module.exports = { CLEANUP_VIEWS, findBrokenView, findDuplicatesView, findLowQualityView, removeView };
+module.exports = { CLEANUP_VIEWS, findView, findBrokenView, findDuplicatesView, findLowQualityView, removeView };
