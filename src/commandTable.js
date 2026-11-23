@@ -62,9 +62,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('force', FORCE_COMMANDS, `${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`) : undefined,
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
-    only('min-height', named('lowQuality'), '--min-height can be used only with find-low-quality and remove-low-quality.'),
-    only('min-bitrate', named('lowQuality'), '--min-bitrate can be used only with find-low-quality and remove-low-quality.'),
-    only('by', named('sortBy'), '--by can be used only with sort-by.'),
+    ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
     only('recursive', named('sortBy'), '--recursive can be used only with sort-by.'),
   ].find((message) => message !== undefined);
 }

@@ -413,9 +413,10 @@ npm test
 `fctl sort-by <target> --by=kind|month` moves the files directly in the target into subfolders. You can check first with `--dry-run`.
 
 - **`--by=kind`** uses the extension: `Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, and `Other` for everything else. **`--by=month`** uses the modified time in local time (`2026-11`).
-- **It only looks at files directly in the target.** `--recursive` also takes files from subfolders and moves them into the folders under the target. The folders it empties are left for `flatten` and `collapse`.
+- **It only looks at files directly in the target.** `--recursive` also takes files from subfolders and moves them into the folders under the target. The folders it empties are left for `flatten` and `collapse`. A file already anywhere below its destination folder (`Videos/2020/a.mp4`) stays, and nested project folders (a project marker such as `package.json`) and program folders (`node_modules` and so on) are left whole and reported.
 - **It never overwrites.** If the destination name is taken (by an existing file or by another file in the same run), the file stays and is reported as skipped.
 - **A file already in its destination folder stays**, so a second run changes nothing.
 - **It leaves some files alone and says so**: links, unfinished downloads (`.crdownload`, `.part`, `.tmp` and similar), and the leftovers of a failed move (`.fctl-old-*`). `desktop.ini` and `Thumbs.db` are ignored.
+- **A file that has the name of a destination folder** (a file called `Videos`) blocks that folder: files for it stay and the report says why. A move that would make a path of 260 characters or more is skipped.
 - **It refuses a project folder** (a project marker such as `package.json` directly in the target, or a repository above or inside it), the same as `flatten`.
 - The engine in `src/sort.js` takes a rule (file to folder name), so the photo, document and Downloads commands reuse it with their own rules.

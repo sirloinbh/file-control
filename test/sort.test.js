@@ -164,3 +164,54 @@ test('planSortWith takes any rule: a nested folder and a stay decision', () => {
   assert.strictEqual(plan.moves[0].to, path.join(dir, '2026', '2026-11', 'a.txt'));
   assert.deepStrictEqual(plan.skipped.map((s) => s.reason), ['no date']);
 });
+
+test('--recursive leaves nested project and program folders whole', () => {
+  const dir = tempDir();
+  make(dir, ['proj/package.json', 'proj/logo.png', 'sub/node_modules/x/a.png', 'sub/ok.png']);
+  const result = sortBy(dir, { by: 'kind', recursive: true });
+  assert.deepStrictEqual(result.moved.map((m) => m.name), ['ok.png']);
+  assert.strictEqual(result.skipped.length, 2);
+  assert.ok(fs.existsSync(path.join(dir, 'proj', 'logo.png')));
+  assert.ok(fs.existsSync(path.join(dir, 'sub', 'node_modules', 'x', 'a.png')));
+});
+
+test('a file already below its destination folder stays (no flattening on a second run)', () => {
+  const dir = tempDir();
+  make(dir, ['Videos/2020/a.mp4', 'Videos/b.mp4']);
+  const result = sortBy(dir, { by: 'kind', recursive: true });
+  assert.strictEqual(result.moved.length, 0);
+  assert.strictEqual(result.stay, 2);
+});
+
+test('a file named like a destination folder is reported once and nothing is lost', () => {
+  const dir = tempDir();
+  make(dir, ['Videos', 'clip.mp4', 'doc.pdf']);
+  const result = sortBy(dir, { by: 'kind' });
+  // The file called Videos is itself an Other file, so it moves to Other/ and frees the name for the next run.
+  assert.deepStrictEqual(result.moved.map((m) => m.name), ['doc.pdf', 'Videos']);
+  assert.strictEqual(result.skipped.length, 1);
+  assert.ok(result.skipped.some((s) => /Videos exists and is a file/.test(s.reason)));
+  assert.ok(fs.existsSync(path.join(dir, 'clip.mp4')));
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'Other', 'Videos'), 'utf8'), 'Videos');
+});
+
+test('a move that would make a path that is too long is skipped', () => {
+  const dir = tempDir();
+  make(dir, [`${'n'.repeat(240)}.mp4`]);
+  const result = sortBy(dir, { by: 'kind', dryRun: true });
+  assert.strictEqual(result.moved.length, 0);
+  assert.match(result.skipped[0].reason, /too long/);
+});
+
+test('a rule that returns a path outside the target is refused', () => {
+  const dir = tempDir();
+  make(dir, ['a.txt']);
+  const plan = planSortWith(dir, () => ({ folder: '../out' }));
+  assert.strictEqual(plan.moves.length, 0);
+  assert.strictEqual(plan.skipped.length, 1);
+});
+
+test('.ts files are not videos', () => {
+  assert.strictEqual(kindFolder('app.ts'), 'Other');
+  assert.strictEqual(kindFolder('clip.m2ts'), 'Videos');
+});
