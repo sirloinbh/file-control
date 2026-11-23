@@ -24,6 +24,8 @@ Options:
   --ext=a,b     with find, only these extensions
   --name=GLOB   with find, only file names matching a pattern (* and ?)
   --sort=size|date  with find, list the largest or newest first (default: by path)
+  --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time)
+  --recursive   with sort-by, also sort files in subfolders
   --            treat all following arguments as names or content, not options
   -h, --help    show help`;
 
