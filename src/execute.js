@@ -1,6 +1,7 @@
 'use strict';
 
 // The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
+const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./commands');
 const { plural } = require('./plural');
@@ -82,9 +83,18 @@ function checkWholeTarget(command, args, flags) {
 }
 
 // Archives are made and extracted in src/archive.js, which does not know about the journal, so the command records the one "created" step after it succeeded.
-function journaled(dryRun, op, result, fields) {
-  if (!dryRun) journal.record(op, fields);
-  return result;
+// It also records after a failure when the output exists now but did not before, because tar may have written part of it. existed:true means it was there before.
+function journaled(dryRun, output, source, action) {
+  if (dryRun) return action();
+  const existed = Boolean(fs.lstatSync(output, { throwIfNoEntry: false }));
+  try {
+    const result = action();
+    journal.record('create', { path: output, source, existed });
+    return result;
+  } catch (err) {
+    if (!existed && fs.lstatSync(output, { throwIfNoEntry: false })) journal.record('create', { path: output, source, existed, partial: true });
+    throw err;
+  }
 }
 
 function defaultReadStdin() {
@@ -109,7 +119,9 @@ function formatList(entries) {
 // If progress(line) is given, long-running commands (flatten, remove-broken, find-broken, find-duplicates) pass on what they did, one line at a time, even before they finish (#67, #99, #326).
 // readStdin() is called when write and append have no content.
 function execute(argv, options = {}) {
-  const run = journal.begin(argv[0] ?? '', argv.slice(1));
+  // The content of write and append can be large or secret, so the journal keeps only the file path.
+  const redacted = argv[0] === 'write' || argv[0] === 'append' ? argv.slice(1, 2) : undefined;
+  const run = journal.begin(argv[0] ?? '', argv.slice(1), { redacted });
   let outcome;
   try {
     outcome = executeCommand(argv, options);
@@ -181,10 +193,10 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(journaled(dryRun, 'create', fc.unzip(args[0], args[1], { dryRun, force, info }), { path: args[1] || path.join(path.dirname(args[0]), path.parse(args[0]).name), source: args[0] }));
+      return done(journaled(dryRun, args[1] || path.join(path.dirname(args[0]), path.parse(args[0]).name), args[0], () => fc.unzip(args[0], args[1], { dryRun, force, info })));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
-      return done(journaled(dryRun, 'create', fc.zip(args[0], args.slice(1), { force, dryRun, info }), { path: args[0], source: args.slice(1).join(', ') }));
+      return done(journaled(dryRun, args[0], args.slice(1).join(', '), () => fc.zip(args[0], args.slice(1), { force, dryRun, info })));
     case 'flatten': {
       checkWholeTarget(command, args, flags);
       const result = flatten(args[0], { dryRun, onProgress: progress });

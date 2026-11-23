@@ -154,8 +154,9 @@ function moveOne(src, dest) {
       fs.rmSync(dest, { recursive: true, force: true });
       throw copyErr;
     }
+    journal.record('copy', { from: src, to: dest });
     fs.rmSync(src, { recursive: true, force: true });
-    journal.record('move', { from: src, to: dest });
+    journal.record('delete', { path: src });
   }
 }
 

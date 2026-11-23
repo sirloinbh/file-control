@@ -201,3 +201,38 @@ test('files sent to the Recycle Bin in a batch are journaled', () => {
     restore();
   }
 });
+
+test('rename --force marks the move as a replacement', () => {
+  const dir = tempDir();
+  make(dir, ['a.txt', 'b.txt']);
+  const forced = runJournaled(['rename', path.join(dir, 'a.txt'), 'b.txt', '--force']).read.steps;
+  assert.strictEqual(forced[0].replaced, true);
+});
+
+test('write and append keep the content out of the journal header', () => {
+  const dir = tempDir();
+  const { run } = runJournaled(['write', path.join(dir, 'secret.txt'), 'top secret text']).read;
+  assert.deepStrictEqual(run.args, [path.join(dir, 'secret.txt')]);
+});
+
+test('zip and unzip journal the output, and extracting into an existing folder says existed', () => {
+  const dir = tempDir();
+  make(dir, ['src/a.txt']);
+  const archive = path.join(dir, 'x.zip');
+  const zipped = runJournaled(['zip', archive, path.join(dir, 'src')]).read.steps;
+  assert.deepStrictEqual(zipped.map((s) => [s.op, s.path, s.existed]), [['create', archive, false]]);
+  const fresh = runJournaled(['unzip', archive, path.join(dir, 'out')]).read.steps;
+  assert.deepStrictEqual(fresh.map((s) => [s.op, s.path, s.existed]), [['create', path.join(dir, 'out'), false]]);
+  const again = runJournaled(['unzip', archive, path.join(dir, 'out'), '--force']).read.steps;
+  assert.strictEqual(again[0].existed, true);
+});
+
+test('an unzip that fails after creating the folder still records it', () => {
+  const dir = tempDir();
+  const bad = path.join(dir, 'bad.zip');
+  fs.writeFileSync(bad, 'not a zip');
+  const { read, error } = runJournaled(['unzip', bad, path.join(dir, 'out')]);
+  assert.ok(error);
+  if (fs.existsSync(path.join(dir, 'out'))) assert.deepStrictEqual(read.steps.map((s) => [s.op, s.partial]), [['create', true]]);
+  else assert.strictEqual(read, undefined);
+});

@@ -9,6 +9,8 @@
 //   {"type":"end","status":"ok"|"failed","error?","steps","endedAt"}         the last line (missing if the process was killed)
 // ops: move { from, to }, copy { from, to }, create-dir { path }, write { path, append }, create { path, source? } (made by extraction or compression),
 //      recycle { path }, delete { path } (permanent).
+// A move with replaced:true overwrote an existing item (the old content is gone). create/write/copy with existed:true changed something that was already there,
+// so a reverse replay must not delete it. Fields named source may be relative; every other path is absolute.
 //
 // Where: the folder in FCTL_JOURNAL_DIR, else %LOCALAPPDATA%\fctl\journal, else ~/.fctl/journal. It is not inside the target folder,
 // because mv, cp and rename have no single target folder and a journal inside the target would itself be a file the command could touch.
@@ -50,7 +52,7 @@ function append(run, object) {
     if (run.file === undefined) {
       fs.mkdirSync(run.dir, { recursive: true });
       run.file = path.join(run.dir, `fctl-journal-${stamp(run.startedAt)}-${run.runId}.jsonl`);
-      const header = { type: 'run', version: JOURNAL_VERSION, runId: run.runId, command: run.command, args: run.args, cwd: process.cwd(), startedAt: localTime(run.startedAt) };
+      const header = { type: 'run', version: JOURNAL_VERSION, runId: run.runId, command: run.command, args: run.redacted ?? run.args, cwd: process.cwd(), startedAt: localTime(run.startedAt) };
       fs.appendFileSync(run.file, `${JSON.stringify(header)}\n`);
     }
     fs.appendFileSync(run.file, `${JSON.stringify(object)}\n`);
@@ -61,12 +63,12 @@ function append(run, object) {
 }
 
 // Starts recording. Nested calls (a command run from inside a command) join the outer run.
-function begin(command, args = []) {
+function begin(command, args = [], { redacted } = {}) {
   if (active) {
     active.depth += 1;
     return active;
   }
-  active = { command, args, dir: journalDir(), runId: crypto.randomBytes(4).toString('hex'), startedAt: new Date(), steps: 0, depth: 1, muted: 0 };
+  active = { command, args, dir: journalDir(), runId: crypto.randomBytes(4).toString('hex'), startedAt: new Date(), steps: 0, depth: 1, muted: 0, redacted };
   return active;
 }
 
@@ -106,9 +108,13 @@ function quiet(fn) {
 }
 
 // renameSync that records the move. Callers that rename with it keep renameSync's behavior, including overwriting.
-function rename(from, to) {
+function rename(from, to, extra = {}) {
+  // A case-only rename finds the item itself under the new name, which is not a replacement.
+  const before = fs.lstatSync(to, { bigint: true, throwIfNoEntry: false });
+  const self = before && fs.lstatSync(from, { bigint: true, throwIfNoEntry: false });
+  const replaced = Boolean(before) && !(self && self.ino !== 0n && self.ino === before.ino && self.dev === before.dev);
   fs.renameSync(from, to);
-  record('move', { from, to });
+  record('move', { from, to, ...(replaced ? { replaced: true } : {}), ...extra });
 }
 
 // Reads a journal file back: { run, steps, end }. A missing end means the process ended without finishing (a crash or a kill).
