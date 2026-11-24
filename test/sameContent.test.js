@@ -334,3 +334,12 @@ test('a sidecar that is the file to keep of another group is not taken along wit
   assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.jpg')), 'one copy of the image is still there');
   assert.strictEqual(result.removed.length, 2);
 });
+
+test('sidecarCount adds nothing without sidecars and names the kept ones (#422)', () => {
+  const { sidecarCount } = require('../src/removal');
+  assert.strictEqual(sidecarCount({}), '');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [], sidecars: [], sidecarKept: [] }), '');
+  assert.strictEqual(sidecarCount({ confirmed: false, sidecars: [{}, {}] }), ', sidecars 2');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [{}], sidecars: [{}, {}], sidecarKept: [{}] }), ', sidecars 1, sidecars kept 1');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [], sidecarKept: [{}] }), ', sidecars 0, sidecars kept 1');
+});
