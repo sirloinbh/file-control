@@ -19,8 +19,8 @@ Options:
   --include-lowercase  with normalize, also treat lowercase words (abc-123) as numbers
   --min-height=PIXELS  with find-low-quality and remove-low-quality, below this short side is low quality (default: 360)
   --min-bitrate=KBPS   with find-low-quality and remove-low-quality, below this bitrate is low quality (default: not checked)
-  --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time)
-  --recursive   with sort-by, also sort files in subfolders
+  --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time); with sort-docs, --by=month adds a month folder inside each type folder
+  --recursive   with sort-by and sort-docs, also sort files in subfolders
   --            treat all following arguments as names or content, not options
   -h, --help    show help`;
 

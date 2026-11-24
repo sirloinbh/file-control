@@ -15,6 +15,7 @@ const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 const { sortBy, formatSort } = require('./sort');
+const { sortDocs } = require('./sortDocs');
 
 const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
 
@@ -189,6 +190,11 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
       checkWholeTarget(command, args, flags);
       const result = sortBy(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
       // Skipped files are enough as a report. It ends as a failure only when there is a file that could not be moved.
+      return failIf(result.failed.length > 0, result, formatSort(result));
+    }
+    case 'sort-docs': {
+      checkWholeTarget(command, args, flags);
+      const result = sortDocs(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
       return failIf(result.failed.length > 0, result, formatSort(result));
     }
     case 'extract-all': {

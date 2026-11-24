@@ -30,6 +30,7 @@ const COMMANDS = [
   { name: 'find-low-quality', usage: 'find-low-quality <target>', summary: 'find low-quality videos below the resolution or bitrate limit (does not touch files)', kind: 'whole', lowQuality: true },
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
   { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true },
+  { name: 'sort-docs', usage: 'sort-docs <target> [--by=month]', summary: 'move documents into folders by type (PDF, Word, Excel, Slides, HWP, Text); other files stay (no overwriting)', kind: 'whole', sortBy: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
 

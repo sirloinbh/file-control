@@ -41,6 +41,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl find-low-quality <target>` | Find low-quality videos below the resolution or bitrate standard (does not touch any file) |
 | `fctl remove-low-quality <target>` | Show the list of low-quality videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
+| `fctl sort-docs <target> [--by=month]` | Move documents into folders by type (`PDF`, `Word`, `Excel`, `Slides`, `HWP`, `Text`, `Other documents`). Files that are not documents stay. `--by=month` adds a month folder inside each type folder (`PDF/2026-11`); `--recursive` and `--dry-run` work as in `sort-by` |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -420,3 +421,11 @@ npm test
 - **A file that has the name of a destination folder** (a file called `Videos`) blocks that folder: files for it stay and the report says why. A move that would make a path of 260 characters or more is skipped.
 - **It refuses a project folder** (a project marker such as `package.json` directly in the target, or a repository above or inside it), the same as `flatten`.
 - The engine in `src/sort.js` takes a rule (file to folder name), so the photo, document and Downloads commands reuse it with their own rules.
+
+## Sort documents (sort-docs)
+
+`fctl sort-docs <target>` moves documents into folders by type, using the same engine and safety rules as `sort-by` (never overwrites, skips links, unfinished downloads and project folders, `--dry-run`, `--recursive`).
+
+- **Types**: `PDF` (pdf), `Word` (doc, docx, docm, dot, dotx), `Excel` (xls, xlsx, xlsm, xlsb, csv), `Slides` (ppt, pptx, pptm, pps, ppsx), `HWP` (hwp, hwpx), `Text` (txt, md), `Other documents` (rtf, odt, ods, odp, epub).
+- **Files that are not documents are left in place** and not listed; the summary line counts them as "not concerned".
+- **`--by=month`** puts a month folder (modified time, `YYYY-MM`) inside each type folder. It is the only value `sort-docs` accepts.
