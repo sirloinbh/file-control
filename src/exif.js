@@ -130,7 +130,17 @@ function dateFromWebp(fd, size) {
 }
 
 const MAX_META = 4 * 1024 * 1024;
-const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1', 'avif']);
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
+
+// The major brand of the ftyp box, or one of its compatible brands (a list of 4-byte names after the major brand and its minor version), tells a HEIC/HEIF file.
+function isHeifBrand(fd, head, size) {
+  if (HEIF_BRANDS.has(head.toString('latin1', 8, 12))) return true;
+  const boxSize = head.readUInt32BE(0);
+  if (boxSize < 16 || boxSize > Math.min(size, 256)) return false;
+  const brands = readAt(fd, 16, boxSize - 16);
+  for (let at = 0; at + 4 <= brands.length; at += 4) if (HEIF_BRANDS.has(brands.toString('latin1', at, at + 4))) return true;
+  return false;
+}
 
 // A box is size(4, big endian) + type(4) + data. size 1 means a 64-bit size follows the type; size 0 means up to the end of the file. It returns null for a size that cannot be right.
 function boxAt(buf, pos, end) {
@@ -285,7 +295,7 @@ function readTakenDate(file) {
     if (head[0] === 0xff && head[1] === 0xd8) return dateFromJpeg(readAt(fd, 0, Math.min(size, JPEG_WINDOW)));
     if (head.toString('latin1', 0, 8) === '\x89PNG\r\n\x1a\n') return dateFromPng(fd, size);
     if (head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP') return dateFromWebp(fd, size);
-    if (head.toString('latin1', 4, 8) === 'ftyp' && HEIF_BRANDS.has(head.toString('latin1', 8, 12))) return dateFromHeic(fd, size);
+    if (head.toString('latin1', 4, 8) === 'ftyp' && isHeifBrand(fd, head, size)) return dateFromHeic(fd, size);
     const mark = head.toString('latin1', 0, 4);
     if (mark === 'II*\0' || mark === 'MM\0*') return dateFromTiff(readAt(fd, 0, Math.min(size, TIFF_WINDOW)));
     return null;
