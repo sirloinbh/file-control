@@ -34,6 +34,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl extract-all <target>` | Extract each archive into its own new folder |
 | `fctl find-broken <target>` | Find broken files (does not touch any file) |
 | `fctl remove-broken <target>` | Show the list of broken files and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl du <target> [--depth=N] [--top=N]` | Show each subfolder's total size and file count, largest first, with a total (does not touch any file) |
 | `fctl find <target> [--larger=SIZE] [--smaller=SIZE] [--older=AGE] [--newer=AGE] [--ext=a,b] [--name=GLOB] [--sort=size|date]` | List files that match every condition, with size, date and a total (does not touch any file) |
 | `fctl find-duplicates <target>` | Group videos that have the same name or product number, or the same length (does not touch any file) |
 | `fctl remove-duplicates <target>` | Show the list of duplicate videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
@@ -266,6 +267,21 @@ fctl find D:Videos --larger=1GB --older=180d --ext=mp4,mkv --sort=size
 - **`--sort=size|date`**: the largest or the newest first. Without it, files are in path order.
 - The report is one line per file (size, last modified time, path relative to the target) and a last line with the number of matches, the number of files checked, and the total size. Links are not listed and not followed, and a folder that cannot be read is reported as skipped.
 - The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--larger=big`, `--sort=name`) or conditions that cannot match together (`--larger` not below `--smaller`, `--older` not below `--newer`) are refused before anything is read.
+
+## Show folder sizes
+
+`fctl du <target>` lists the subfolders under the target with their total size and file count, largest first, and prints the total at the end (#395). It does not touch any file, so `--dry-run` gives the same result.
+
+```
+fctl du D:Videos --depth=2 --top=10
+```
+
+- **`--depth=N`** (default 1): how many folder levels to list. At depth 1 only the folders directly under the target are listed, and each size includes everything below it. At depth 2 their subfolders are listed too.
+- **`--top=N`** (default 20): how many folders to list. If more were left out, the report says how many.
+- Files directly in the target are shown on one line as "(files directly in the target)". Empty folders are listed with 0 files. Links are not followed or counted.
+- A folder that cannot be read is reported as "Skipped" (and not listed as an empty folder), and the rest is still counted, so the total covers only what could be read.
+- Sizes are file sizes, not space used on disk. A file with several hard links is counted once per path. With `--depth=2` or more, a folder's size includes the folders listed below it, so the rows do not add up to the total.
+- The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--depth=0`, `--top=abc`) is refused before anything is read.
 
 ## Find broken files
 
