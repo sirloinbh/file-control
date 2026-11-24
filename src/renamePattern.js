@@ -9,11 +9,13 @@
 // It never overwrites: if a new name is taken, if two files would get the same name, or if a new name is not a valid Windows name, nothing is renamed and every problem is reported.
 // A video's subtitle and sidecar files (src/sidecar.js) are not renamed by themselves: they follow their video and take its new name.
 
+const fs = require('node:fs');
 const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant, walk } = require('./target');
 const { rejectRepository } = require('./guards');
-const { skipReason, applyRenames } = require('./rename');
+const { skipReason, applyRenames, withSidecars } = require('./rename');
+const { isDeviceName } = require('./windowsNames');
 const { markerFinder } = require('./downloadMarker');
 const { findSidecars } = require('./sidecar');
 const { guardedFolders, addHiddenFolders, guardOf, downloadReason, caseOnly, nameKey } = require('./normalizeFiles');
@@ -116,6 +118,7 @@ function invalidName(name) {
   if (name === '' || name === '.' || name === '..') return 'The new name is empty.';
   if (INVALID_CHARS.test(name)) return 'The new name has a character Windows does not allow in a name.';
   if (/[. ]$/.test(name)) return 'The new name ends with a dot or a space.';
+  if (isDeviceName(name)) return 'Windows opens this name as a device (such as CON or NUL), so the file could not be used.';
   if (name.length > MAX_NAME) return `The new name is longer than ${MAX_NAME} characters.`;
   return null;
 }
@@ -137,7 +140,7 @@ function planRenamePattern(dir, options = {}) {
   const reportedGuards = new Set();
   // The sidecars of a video follow it, so they are not renamed or numbered on their own.
   const carried = new Set();
-  const files = [];
+  const candidates = [];
   for (const entry of entries) {
     if (entry.type === 'dir') continue;
     if (!options.recursive && entry.relative.includes(path.sep)) continue;
@@ -150,8 +153,14 @@ function planRenamePattern(dir, options = {}) {
       plan.skipped.push({ path: entry.path, reason });
       continue;
     }
-    files.push(entry);
+    candidates.push(entry);
   }
+  // Files that are kept as they are (program and project folders, web page resources, downloads in progress) are taken out before numbering, so the numbers have no gaps.
+  const files = candidates.filter((entry) => !checkGuards(entry, plan, guards, access, findMarker, reportedGuards, () => {
+    if (hiddenChecked) return;
+    hiddenChecked = true;
+    addHiddenFolders(access.target, guards);
+  }));
   for (const entry of files) for (const sidecar of findSidecars(entry.path)) carried.add(sidecar.path.toLowerCase());
   // Each folder is numbered on its own, in name order.
   const byFolder = new Map();
@@ -169,7 +178,7 @@ function planRenamePattern(dir, options = {}) {
       const base = file.slice(0, file.length - extension.length);
       let modified;
       try {
-        modified = rules.datePrefix ? require('node:fs').lstatSync(entry.path).mtime : undefined;
+        modified = rules.datePrefix ? fs.lstatSync(entry.path).mtime : undefined;
       } catch (err) {
         plan.skipped.push({ path: entry.path, reason: `Cannot read the file. (${err.code})` });
         return;
@@ -188,15 +197,10 @@ function planRenamePattern(dir, options = {}) {
     const key = nameKey(path.join(path.dirname(entry.path), name));
     targets.set(key, (targets.get(key) ?? 0) + 1);
   }
-  for (const { entry, name } of wanted) {
-    const guarded = checkGuards(entry, plan, guards, access, findMarker, reportedGuards, () => {
-      if (hiddenChecked) return;
-      hiddenChecked = true;
-      addHiddenFolders(access.target, guards);
-    });
-    if (guarded) continue;
-    planOne(entry, name, access, plan, existing, targets);
-  }
+  for (const { entry, name } of wanted) planOne(entry, name, access, plan, existing, targets);
+  // A name that is taken for a video's subtitle or sidecar file is a problem for the whole run too, not a partial skip.
+  const grouped = withSidecars(plan.renames);
+  for (const item of grouped.skipped) plan.conflicts.push({ path: item.path, name: path.basename(plan.renames.find((r) => r.from === item.path)?.to ?? item.path), reason: item.reason });
   return plan;
 }
 

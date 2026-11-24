@@ -178,3 +178,30 @@ test('bad options are refused before anything changes', () => {
   assert.throws(() => run('ls', dir, '--number=x{n}'), /--number can be used only with rename-pattern/);
   assert.deepStrictEqual(names(dir), ['a.txt']);
 });
+
+test('a name taken for a subtitle refuses the whole run, and a device name is refused', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt', 'b.srt', 'c.txt']);
+  const text = outcome('rename-pattern', dir, '--replace=^[ac]/b');
+  assert.match(text, /Nothing was renamed/);
+  assert.deepStrictEqual(names(dir), ['a.mp4', 'a.srt', 'b.srt', 'c.txt']);
+  const device = outcome('rename-pattern', dir, '--replace=^c$/nul');
+  assert.match(device, /opens this name as a device/);
+  assert.match(device, /Nothing was renamed/);
+  assert.deepStrictEqual(names(dir), ['a.mp4', 'a.srt', 'b.srt', 'c.txt']);
+});
+
+test('numbers have no gap for a file that is left alone (a download in progress)', () => {
+  const dir = tempDir();
+  make(dir, ['a.txt', 'b.txt.crdownload', 'c.txt']);
+  run('rename-pattern', dir, '--number=p{n}');
+  assert.deepStrictEqual(names(dir), ['b.txt.crdownload', 'p1.txt', 'p2.txt']);
+});
+
+test('a target name that another file is about to leave is still refused (no shifting)', () => {
+  const dir = tempDir();
+  make(dir, ['1.txt', '2.txt', '00.txt']);
+  const text = outcome('rename-pattern', dir, '--number={n}');
+  assert.match(text, /The name already exists/);
+  assert.deepStrictEqual(names(dir), ['00.txt', '1.txt', '2.txt']);
+});

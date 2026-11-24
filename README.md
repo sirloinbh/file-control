@@ -511,6 +511,10 @@ fctl du D:Videos --depth=2 --top=10
 Safety, as in the other rename commands:
 
 - **No overwriting, all or nothing.** If a new name is already taken, two files would get the same name, or a new name is not valid on Windows (a character it does not allow, a trailing dot or space, over 255 characters), nothing is renamed. Every problem is listed as `Name problem: ...`, and the command ends with an error.
+- A name taken for a video's subtitle or sidecar file, and a name Windows opens as a device (`CON`, `NUL`), also refuse the whole run.
+- A new name counts as taken even when the file that has it is about to be renamed too, so shifting names (`1.txt`, `2.txt` to `2.txt`, `3.txt`) is refused. Rename in a way that gives new names, then rename again.
+- In `<to>`, `$1` and the other JavaScript replacement patterns (`$&`) work, and a backslash stays a backslash (which Windows does not allow in a name).
+- Files that are left alone (see below) are taken out before numbering, so the numbers have no gaps.
 - Only the files directly in the target are handled; `--recursive` includes subfolders. Links, project and program folders, web page resource folders and unfinished downloads are skipped, as in `normalize`.
 - A video's subtitle and sidecar files take its new name and are not renamed or numbered on their own (see Subtitles and sidecar files).
 - A rename that only changes the case works. `--dry-run` shows the plan. The change is in the change journal, so `fctl undo` reverses it.
