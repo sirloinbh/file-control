@@ -114,14 +114,16 @@ test('--by is refused on sort-photos', () => {
   assert.throws(() => run(['sort-photos', dir, '--by=month']), /--by can be used only with/);
 });
 
-test('a HEIC photo uses the modified time and the note does not claim it has no date', () => {
+test('a HEIC photo goes by its date taken, and one without a date uses the modified time like the other formats (#420)', () => {
   const dir = tempDir();
-  const file = put(dir, 'IMG_0001.heic', Buffer.concat([Buffer.alloc(4), Buffer.from('ftypheic')]));
-  fs.utimesSync(file, new Date(2022, 5, 1), new Date(2022, 5, 1));
+  const withDate = put(dir, 'IMG_0001.heic', samples.heic('2019:03:09 08:00:00'));
+  fs.utimesSync(withDate, new Date(2022, 5, 1), new Date(2022, 5, 1));
+  const without = put(dir, 'IMG_0002.heic', Buffer.concat([Buffer.alloc(4), Buffer.from('ftypheic')]));
+  fs.utimesSync(without, new Date(2022, 5, 1), new Date(2022, 5, 1));
   const out = run(['sort-photos', dir]);
-  assert.deepStrictEqual(listAll(dir), ['2022', '2022/2022-06', '2022/2022-06/IMG_0001.heic']);
-  assert.match(out, /date taken not read for this format/);
-  assert.ok(!out.includes('no date taken'));
+  assert.deepStrictEqual(listAll(dir), ['2019', '2019/2019-03', '2019/2019-03/IMG_0001.heic', '2022', '2022/2022-06', '2022/2022-06/IMG_0002.heic']);
+  assert.match(out, /IMG_0002\.heic .*no date taken, used the modified time/);
+  assert.ok(!out.includes('not read for this format'));
 });
 
 test('--recursive: a screenshot in a subfolder goes to Screenshots even with an EXIF date', () => {

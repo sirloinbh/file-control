@@ -1,8 +1,8 @@
 'use strict';
 
 // A reader for the date taken (EXIF DateTimeOriginal) of a photo, with built-in modules only (#389).
-// It knows JPEG, PNG (eXIf chunk), WebP (EXIF chunk) and the TIFF family (TIFF, DNG, CR2, NEF, ARW). The format is told by the first bytes, not by the extension.
-// HEIC/HEIF keep the date in a box structure this reader does not parse, so it returns null for them and the caller falls back to the modified time.
+// It knows JPEG, PNG (eXIf chunk), WebP (EXIF chunk), HEIC/HEIF and the TIFF family (TIFF, DNG, CR2, NEF, ARW). The format is told by the first bytes, not by the extension.
+// HEIC/HEIF (#420) keep the Exif block as an item of an ISO box file: the meta box says which item is "Exif" (iinf) and where its bytes are (iloc).
 // Anything it cannot read or that looks wrong gives null; it never throws for a damaged file.
 const fs = require('node:fs');
 
@@ -129,6 +129,152 @@ function dateFromWebp(fd, size) {
   return null;
 }
 
+const MAX_META = 4 * 1024 * 1024;
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1', 'avif']);
+
+// A box is size(4, big endian) + type(4) + data. size 1 means a 64-bit size follows the type; size 0 means up to the end of the file. It returns null for a size that cannot be right.
+function boxAt(buf, pos, end) {
+  if (pos + 8 > end) return null;
+  let size = buf.readUInt32BE(pos);
+  let header = 8;
+  if (size === 1) {
+    if (pos + 16 > end) return null;
+    const big = buf.readBigUInt64BE(pos + 8);
+    if (big > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    size = Number(big);
+    header = 16;
+  } else if (size === 0) {
+    size = end - pos;
+  }
+  if (size < header || pos + size > end) return null;
+  return { type: buf.toString('latin1', pos + 4, pos + 8), start: pos + header, end: pos + size };
+}
+
+// An unsigned number of 0, 4 or 8 bytes (the sizes iloc allows); 0 bytes is the value 0. null if it does not fit or is not allowed.
+function uintOf(buf, pos, width) {
+  if (width === 0) return 0;
+  if (pos + width > buf.length) return null;
+  if (width === 4) return buf.readUInt32BE(pos);
+  if (width === 8) {
+    const big = buf.readBigUInt64BE(pos);
+    return big > BigInt(Number.MAX_SAFE_INTEGER) ? null : Number(big);
+  }
+  return null;
+}
+
+// iinf: the id of the item whose type is "Exif", or null.
+function exifItemId(meta, box) {
+  const version = meta[box.start];
+  let pos = box.start + 4;
+  const count = version === 0 ? meta.readUInt16BE(pos) : meta.readUInt32BE(pos);
+  pos += version === 0 ? 2 : 4;
+  for (let i = 0; i < Math.min(count, MAX_ENTRIES) && pos < box.end; i++) {
+    const infe = boxAt(meta, pos, box.end);
+    if (infe === null) return null;
+    if (infe.type === 'infe') {
+      const v = meta[infe.start];
+      let at = infe.start + 4;
+      if (v === 2 || v === 3) {
+        const id = v === 2 ? meta.readUInt16BE(at) : meta.readUInt32BE(at);
+        at += (v === 2 ? 2 : 4) + 2;
+        if (meta.toString('latin1', at, at + 4) === 'Exif') return id;
+      }
+    }
+    pos = infe.end;
+  }
+  return null;
+}
+
+// iloc: where the bytes of item id are in the file, as { offset, length } (one extent, stored as file offsets), or null.
+function itemPlace(meta, box, id) {
+  const version = meta[box.start];
+  if (version > 2) return null;
+  let pos = box.start + 4;
+  const offsetSize = meta[pos] >> 4;
+  const lengthSize = meta[pos] & 15;
+  const baseSize = meta[pos + 1] >> 4;
+  const indexSize = version === 0 ? 0 : meta[pos + 1] & 15;
+  pos += 2;
+  const count = version < 2 ? meta.readUInt16BE(pos) : meta.readUInt32BE(pos);
+  pos += version < 2 ? 2 : 4;
+  for (let i = 0; i < Math.min(count, MAX_ENTRIES) && pos < box.end; i++) {
+    const itemId = version < 2 ? meta.readUInt16BE(pos) : meta.readUInt32BE(pos);
+    pos += version < 2 ? 2 : 4;
+    let method = 0;
+    if (version > 0) {
+      method = meta.readUInt16BE(pos) & 15;
+      pos += 2;
+    }
+    pos += 2;
+    const base = uintOf(meta, pos, baseSize);
+    pos += baseSize;
+    const extents = meta.readUInt16BE(pos);
+    pos += 2;
+    let first = null;
+    for (let e = 0; e < Math.min(extents, MAX_ENTRIES); e++) {
+      pos += indexSize;
+      const offset = uintOf(meta, pos, offsetSize);
+      pos += offsetSize;
+      const length = uintOf(meta, pos, lengthSize);
+      pos += lengthSize;
+      if (first === null) first = { offset, length };
+    }
+    if (itemId !== id) continue;
+    if (method !== 0 || extents !== 1 || base === null || first === null || first.offset === null || first.length === null) return null;
+    return { offset: base + first.offset, length: first.length };
+  }
+  return null;
+}
+
+// HEIC/HEIF: the Exif item starts with a 4-byte offset (big endian) to the TIFF header, counted from after those 4 bytes; "Exif\0\0" may sit before the header.
+function dateFromHeic(fd, size) {
+  let pos = 0;
+  let meta = null;
+  for (let i = 0; i < MAX_CHUNKS && pos + 8 <= size; i++) {
+    const head = readAt(fd, pos, 16);
+    if (head.length < 8) return null;
+    let boxSize = head.readUInt32BE(0);
+    let headerSize = 8;
+    if (boxSize === 1) {
+      if (head.length < 16) return null;
+      const big = head.readBigUInt64BE(8);
+      if (big > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+      boxSize = Number(big);
+      headerSize = 16;
+    } else if (boxSize === 0) {
+      boxSize = size - pos;
+    }
+    if (boxSize < headerSize || pos + boxSize > size) return null;
+    if (head.toString('latin1', 4, 8) === 'meta') {
+      if (boxSize - headerSize > MAX_META) return null;
+      meta = readAt(fd, pos + headerSize, boxSize - headerSize);
+      break;
+    }
+    pos += boxSize;
+  }
+  if (meta === null || meta.length < 4) return null;
+  // meta is a full box: version and flags first, then its child boxes.
+  let id = null;
+  let iloc = null;
+  for (let at = 4; at < meta.length; ) {
+    const child = boxAt(meta, at, meta.length);
+    if (child === null) break;
+    if (child.type === 'iinf') id = exifItemId(meta, child);
+    else if (child.type === 'iloc') iloc = child;
+    at = child.end;
+  }
+  if (id === null || iloc === null) return null;
+  const place = itemPlace(meta, iloc, id);
+  if (place === null || place.length < 12 || place.length > MAX_EXIF_CHUNK || place.offset + place.length > size) return null;
+  const item = readAt(fd, place.offset, place.length);
+  if (item.length < 12) return null;
+  const skip = item.readUInt32BE(0);
+  if (skip > item.length - 8) return null;
+  let tiff = item.subarray(4 + skip);
+  if (tiff.toString('latin1', 0, 6) === 'Exif\0\0') tiff = tiff.subarray(6);
+  return dateFromTiff(tiff);
+}
+
 // It returns { year, month, day } of the date taken stored in the photo, or null when there is none or it cannot be read.
 function readTakenDate(file) {
   let fd;
@@ -139,6 +285,7 @@ function readTakenDate(file) {
     if (head[0] === 0xff && head[1] === 0xd8) return dateFromJpeg(readAt(fd, 0, Math.min(size, JPEG_WINDOW)));
     if (head.toString('latin1', 0, 8) === '\x89PNG\r\n\x1a\n') return dateFromPng(fd, size);
     if (head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP') return dateFromWebp(fd, size);
+    if (head.toString('latin1', 4, 8) === 'ftyp' && HEIF_BRANDS.has(head.toString('latin1', 8, 12))) return dateFromHeic(fd, size);
     const mark = head.toString('latin1', 0, 4);
     if (mark === 'II*\0' || mark === 'MM\0*') return dateFromTiff(readAt(fd, 0, Math.min(size, TIFF_WINDOW)));
     return null;
