@@ -275,4 +275,4 @@ function formatNormalize(result) {
   return lines.join('\n');
 }
 
-module.exports = { planNormalize, applyNormalize, normalizeFiles, formatNormalize };
+module.exports = { planNormalize, applyNormalize, normalizeFiles, formatNormalize, guardedFolders, addHiddenFolders, guardOf, downloadReason, caseOnly, nameKey };

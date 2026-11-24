@@ -22,6 +22,7 @@ const COMMANDS = [
   { name: 'flatten', usage: 'flatten <target>', summary: 'move files from subfolders directly under the target and send empty folders to the Recycle Bin (no overwriting)', kind: 'whole' },
   { name: 'product-number', usage: 'product-number <target>', summary: 'prefix video file names with the product number (no overwriting)', kind: 'whole' },
   { name: 'normalize', usage: 'normalize <target>', summary: 'put the product number in file names first, in uppercase (no overwriting)', kind: 'whole', includeLowercase: true },
+  { name: 'rename-pattern', usage: 'rename-pattern <target>', summary: 'rename files by rule: --replace=<from>/<to>, --case=upper|lower, --number=<template>, --date-prefix (no overwriting; the whole run is refused on a clash)', kind: 'whole', renamePattern: true, recursive: true },
   { name: 'collapse', usage: 'collapse <target>', summary: 'collapse single-folder chains (a/b/c/file) into the top folder', kind: 'whole' },
   { name: 'extract-all', usage: 'extract-all <target>', summary: 'extract each archive into a new folder (with --remove-archives, send successfully extracted originals to the Recycle Bin)', kind: 'whole', removeArchives: true },
   { name: 'find-broken', usage: 'find-broken <target>', summary: 'find broken files (does not touch files)', kind: 'whole' },
@@ -54,7 +55,7 @@ const PERMANENT_COMMANDS = named('permanent');
 const FIND_FLAGS = ['larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort'];
 // Options that carry a value (--name=VALUE) and the command field that allows each one.
 const DU_FLAGS = ['depth', 'top'];
-const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', run: 'undo', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
+const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', run: 'undo', replace: 'renamePattern', number: 'renamePattern', case: 'renamePattern', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
 const VALUE_FLAGS = new Set(Object.keys(VALUE_FLAG_FIELDS));
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
@@ -72,6 +73,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
     ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
+    only('date-prefix', named('renamePattern'), '--date-prefix can be used only with rename-pattern.'),
     only('no-sidecars', named('sidecars'), '--no-sidecars can be used only with rename, mv, and rm.'),
     only('list', named('undo'), '--list can be used only with undo.'),
     only('recursive', named('recursive'), `--recursive can be used only with ${named('recursive').join(', ')}.`),
