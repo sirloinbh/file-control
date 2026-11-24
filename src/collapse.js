@@ -8,6 +8,7 @@ const { extractProductNumbers } = require('./product');
 const { containsNumber, VIDEO_EXTENSIONS, TRANSPORT_EXTENSIONS } = require('./video');
 const { LEFTOVER, SYSTEM_FOLDER, rejectRepository } = require('./guards');
 const { moveWithoutOverwrite } = require('./safeMove');
+const journal = require('./journal');
 
 // It collects the items directly under each folder. The key of the target itself is ''.
 function childrenOf(entries) {
@@ -192,9 +193,9 @@ function collapseOne(item, access) {
   checkChain(item, access);
   const lifted = freshPath(item.top, '.fctl-new');
   const emptied = freshPath(item.top, '.fctl-old');
-  fs.renameSync(item.leaf, lifted);
+  journal.rename(item.leaf, lifted);
   try {
-    fs.renameSync(item.top, emptied);
+    journal.rename(item.top, emptied);
   } catch (err) {
     restore([[lifted, item.leaf]], err);
     throw err;

@@ -1,6 +1,8 @@
 'use strict';
 
 // The "arguments -> function call -> result object" part of each command. The CLI (bin/fctl.js) and the UI worker process (src/ui/worker.js) share it (#253).
+const fs = require('node:fs');
+const path = require('node:path');
 const fc = require('./commands');
 const { plural } = require('./plural');
 const { flatten, formatFlatten } = require('./flatten');
@@ -18,6 +20,7 @@ const { sortBy, formatSort } = require('./sort');
 const { sortDocs } = require('./sortDocs');
 
 const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
+const journal = require('./journal');
 
 const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive']);
 
@@ -81,6 +84,21 @@ function checkWholeTarget(command, args, flags) {
   if (flags.has('force') || flags.has('permanent')) throw new fc.FcError(`${command} never overwrites or permanently deletes, so --force and --permanent cannot be used.`);
 }
 
+// Archives are made and extracted in src/archive.js, which does not know about the journal, so the command records the one "created" step after it succeeded.
+// It also records after a failure when the output exists now but did not before, because tar may have written part of it. existed:true means it was there before.
+function journaled(dryRun, output, source, action) {
+  if (dryRun) return action();
+  const existed = Boolean(fs.lstatSync(output, { throwIfNoEntry: false }));
+  try {
+    const result = action();
+    journal.record('create', { path: output, source, existed });
+    return result;
+  } catch (err) {
+    if (!existed && fs.lstatSync(output, { throwIfNoEntry: false })) journal.record('create', { path: output, source, existed, partial: true });
+    throw err;
+  }
+}
+
 function defaultReadStdin() {
   return require('node:fs').readFileSync(0, 'utf8');
 }
@@ -102,7 +120,25 @@ function formatList(entries) {
 // An argument error or an exception during the run is thrown as is. An unknown command is an FcError whose err.unknownCommand is true.
 // If progress(line) is given, long-running commands (flatten, remove-broken, find-broken, find-duplicates) pass on what they did, one line at a time, even before they finish (#67, #99, #326).
 // readStdin() is called when write and append have no content.
-function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
+function execute(argv, options = {}) {
+  // The content of write and append can be large or secret, so the journal keeps only the file path.
+  const redacted = argv[0] === 'write' || argv[0] === 'append' ? argv.slice(1, 2) : undefined;
+  const run = journal.begin(argv[0] ?? '', argv.slice(1), { redacted });
+  let outcome;
+  try {
+    outcome = executeCommand(argv, options);
+  } catch (err) {
+    journal.finish(run, err);
+    throw err;
+  }
+  const written = journal.finish(run, outcome.failure);
+  // The journal is a record, not the work, so a journal that could not be written is reported but does not turn a finished run into a failure.
+  if (written?.error && typeof outcome.report === 'string') outcome.report += `
+Warning: could not write the change journal (${written.error}).`;
+  return outcome;
+}
+
+function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
@@ -159,10 +195,10 @@ function execute(argv, { progress, readStdin = defaultReadStdin } = {}) {
     }
     case 'unzip':
       need(args, 1, 'unzip <archive> [folder]');
-      return done(fc.unzip(args[0], args[1], { dryRun, force, info }));
+      return done(journaled(dryRun, args[1] || path.join(path.dirname(args[0]), path.parse(args[0]).name), args[0], () => fc.unzip(args[0], args[1], { dryRun, force, info })));
     case 'zip':
       need(args, 2, 'zip <archive> <source...>');
-      return done(fc.zip(args[0], args.slice(1), { force, dryRun, info }));
+      return done(journaled(dryRun, args[0], args.slice(1).join(', '), () => fc.zip(args[0], args.slice(1), { force, dryRun, info })));
     case 'flatten': {
       checkWholeTarget(command, args, flags);
       const result = flatten(args[0], { dryRun, onProgress: progress });

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const { BARE_DEVICE_NAME } = require('./windowsNames');
+const journal = require('./journal');
 const { config, FcError, claim, ensureItemExists, entryKey, isSameOrUnder, pathKey, perform, realKey, rejectBareDeviceArgs } = require('./base');
 
 // Among the items directly inside the folders given under the target, it returns, as a Map of { relative path from the target -> attribute bits }, those that have the hidden (2) or system (4) attribute (#65).
@@ -154,6 +155,7 @@ function moveToRecycleBin(target, { permanentHint = false } = {}) {
     err.message = `Could not send to the Recycle Bin: ${full} (PowerShell exit code ${err.status ?? err.code})`;
     throw err;
   }
+  journal.record('recycle', { path: full });
 }
 
 // The message to report when the Recycle Bin move failed with a Windows reason. If a file in use exists, its name is attached (#97).
@@ -274,6 +276,7 @@ function recycleEmptyFolders(folders, { allowedNames = [], timeoutMs = 30 * 1000
     const match = /^(\w+) ([A-Za-z0-9+/=]+)$/.exec(line.trim());
     if (match && FOLDER_BATCH_STATUS.has(match[1])) done.set(Buffer.from(match[2], 'base64').toString('utf16le'), match[1]);
   }
+  for (const [folder, status] of done) if (status === 'ok') journal.record('recycle', { path: folder });
   let first = true;
   return folders.map((folder) => {
     if (done.has(folder)) return { path: folder, status: done.get(folder) };
@@ -467,6 +470,7 @@ function recycleFiles(items, { script = RECYCLE_FILES_SCRIPT } = {}) {
     const reason = decodeReason(match[3]);
     done.set(Buffer.from(match[2], 'base64').toString('utf16le'), { status: match[1], reason: match[1] === 'permanent' ? refusalReason(reason) : reason });
   }
+  for (const [file, { status }] of done) if (status === 'ok') journal.record('recycle', { path: file });
   return items.map((item) => ({ path: item.path, ...(done.get(item.path) ?? { status: 'unknown', reason: failure ?? 'PowerShell did not report a result' }) }));
 }
 
@@ -699,7 +703,12 @@ function remove(targets, { permanent = false, dryRun = false, checkVolume = true
   return checked.map(({ target, recycleAs }) => {
     // If an earlier target contained this target and it was already deleted (rm a a/b), it reports that it does not exist, as before.
     if (!dryRun) ensureItemExists(target);
-    if (permanent) return perform(`Delete permanently: ${target}`, dryRun, () => fs.rmSync(target, { recursive: true, force: true }));
+    if (permanent) {
+      return perform(`Delete permanently: ${target}`, dryRun, () => {
+        fs.rmSync(target, { recursive: true, force: true });
+        journal.record('delete', { path: target });
+      });
+    }
     return perform(`Move to the Recycle Bin: ${target}`, dryRun, () => moveToRecycleBin(recycleAs, { permanentHint }));
   });
 }

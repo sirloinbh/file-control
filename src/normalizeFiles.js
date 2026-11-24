@@ -8,6 +8,7 @@ const { grant, walk } = require('./target');
 const { normalizeName } = require('./normalize');
 const { PROGRAM_FOLDER, PROJECT_FILE, leftoverNote, rejectRepository, looksLikeGitDir, rejectProjectAncestor } = require('./guards');
 const { moveWithoutOverwrite } = require('./safeMove');
+const journal = require('./journal');
 const { skipReason, applyRenames } = require('./rename');
 const { DOWNLOAD_MARKER, markerFinder } = require('./downloadMarker');
 
@@ -215,7 +216,7 @@ function planNormalize(dir, { includeLowercase = false } = {}) {
 // While it was moved to the temporary name, another program may create a file under that name. So that it does not overwrite that file, the move back also does not overwrite.
 function renameCaseOnly(from, to, name) {
   const middle = freshPath(from, '.fctl-new');
-  fs.renameSync(from, middle);
+  journal.rename(from, middle);
   let cause;
   try {
     // Opening a broken junction with wx would create a folder outside the target that the junction points to, so it looks first.

@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const { FcError } = require('./commands');
+const journal = require('./journal');
 
 // It moves without overwriting. If it already exists (including an 8.3 short name or case), it changes nothing and returns false.
 // renameSync overwrites the target (a folder also overwrites a file of the same name, confirmed on build 26200), so it is not used as is.
@@ -9,6 +10,12 @@ const { FcError } = require('./commands');
 // and even if the power goes off midway, only two names with the same content remain, with no empty file left. If the source is locked and the original name cannot be deleted, it deletes the new name and rolls back.
 // When a hard link cannot be made (FAT32, exFAT, cloud-only files, and so on) and for folders, it first creates an empty placeholder file and then moves over it.
 function moveWithoutOverwrite(from, to) {
+  const moved = moveUnrecorded(from, to);
+  if (moved) journal.record('move', { from, to });
+  return moved;
+}
+
+function moveUnrecorded(from, to) {
   if (fs.lstatSync(from).isFile()) {
     try {
       fs.linkSync(from, to);
