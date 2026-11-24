@@ -16,6 +16,7 @@ const { findDuplicateNames, formatDuplicateNames } = require('./duplicates');
 const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates');
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
+const { undo, listRuns, formatRuns, formatUndo } = require('./undo');
 const { findFiles, formatFind } = require('./find');
 const { folderSizes, formatDu } = require('./du');
 const { findSameContent, formatSameContent, removeSameContent, formatRemoveSameContent } = require('./sameContent');
@@ -26,7 +27,7 @@ const { sortPhotos } = require('./sortPhotos');
 const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run']);
 
 function parse(argv) {
   const flags = new Set();
@@ -247,6 +248,18 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       const result = extractArchives(args[0], { dryRun, removeArchives: flags.has('remove-archives') });
       // Skipped items are enough as a report. It ends as a failure only when there is an archive that could not be extracted.
       return failIf(result.failed.length > 0, result, formatExtractions(result));
+    }
+    case 'undo': {
+      if (args.length > 0) throw new fc.FcError(`undo takes no path. Use --run=ID to choose a run: ${args.join(' ')}`);
+      if (force || flags.has('permanent')) throw new fc.FcError('undo never overwrites or permanently deletes, so --force and --permanent cannot be used.');
+      if (flags.has('list')) {
+        const runs = listRuns();
+        return done(runs, formatRuns(runs));
+      }
+      const result = undo({ id: values.get('run'), dryRun });
+      const report = formatUndo(result);
+      // A step that was not touched because the state changed is part of what the user must see, so the run ends as a failure with the report on standard output.
+      return done(result, report, result.steps.some((s) => s.status === 'mismatch') ? Object.assign(new fc.FcError(`Some steps were not reversed because the files changed since the run.`), { output: report }) : undefined);
     }
     case 'find-broken': {
       checkWholeTarget(command, args, flags);

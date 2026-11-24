@@ -150,7 +150,7 @@ test('read-only commands, previews and failed checks write no journal', () => {
 test('mkdir, write, cp and rm --permanent are journaled', () => {
   const dir = tempDir();
   make(dir, ['a.txt']);
-  assert.deepStrictEqual(runJournaled(['mkdir', path.join(dir, 'x', 'y')]).read.steps.map((s) => [s.op, s.path]), [['create-dir', path.join(dir, 'x')]]);
+  assert.deepStrictEqual(runJournaled(['mkdir', path.join(dir, 'x', 'y')]).read.steps.map((s) => [s.op, s.path]), [['create-dir', path.join(dir, 'x')], ['create-dir', path.join(dir, 'x', 'y')]]);
   const written = runJournaled(['write', path.join(dir, 'x', 'w.txt'), 'hi']).read.steps;
   assert.deepStrictEqual(written.map((s) => [s.op, s.path, s.existed]), [['write', path.join(dir, 'x', 'w.txt'), false]]);
   assert.deepStrictEqual(runJournaled(['cp', path.join(dir, 'a.txt'), path.join(dir, 'c.txt')]).read.steps.map((s) => [s.op, s.from, s.to]), [['copy', path.join(dir, 'a.txt'), path.join(dir, 'c.txt')]]);

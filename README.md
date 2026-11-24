@@ -47,6 +47,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
 | `fctl sort-docs <target> [--by=month]` | Move documents into folders by type (`PDF`, `Word`, `Excel`, `Slides`, `HWP`, `Text`, `Other documents`). Files that are not documents stay. `--by=month` adds a month folder inside each type folder (`PDF/2026-11`); `--recursive` and `--dry-run` work as in `sort-by` |
 | `fctl sort-photos <target>` | Move photos into `YYYY/YYYY-MM` folders by the date taken stored in the photo (the modified time if there is none, and the report says so) and screenshots into `Screenshots`. Other files stay; `--recursive` and `--dry-run` work as in `sort-by` |
+| `fctl undo [--list] [--run=<id>]` | Show the recent runs of the change journal, or reverse the last run (or the run with that id). Moves and renames go back, created files go to the Recycle Bin, and files sent to the Recycle Bin are restored. It never overwrites, and it leaves a file alone if it changed after the run. `--dry-run` shows the plan. See [Undo](#undo-fctl-undo) below |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -496,3 +497,14 @@ fctl du D:Videos --depth=2 --top=10
 - **Screenshots** (names starting with `Screenshot_`, `Screenshot 2026...`, `Screen Shot ...`, `스크린샷` or `화면 캡처`; a name like `Screenshots_from_trip.jpg` is not one) go to a top-level `Screenshots` folder, whatever their date.
 - **Photo files are** `.jpg .jpeg .png .heic .heif .tif .tiff .webp .dng .cr2 .nef .arw`. Everything else (videos, documents, GIFs) stays and is only counted as "not concerned".
 - **The layout is a default** (year, then month inside it). A photo already below its year folder stays where it is, so a second run changes nothing. The rule is in `photoFolder` in `src/sortPhotos.js`; the EXIF reader is `src/exif.js` (reads the first 256 KB of a JPEG and at most 8 MB of a TIFF, and gives up quietly on a damaged file).
+
+## Undo (fctl undo)
+
+`fctl undo --list` shows the recent runs of the [change journal](#safety-measures) (id, time, command, number of steps, `ok`, `failed` or `interrupted`, and `(undone)`). `fctl undo` reverses the newest run that is not undone yet; `fctl undo --run=<id>` reverses the run with that id (the first characters are enough). `--dry-run` prints the plan and changes nothing.
+
+- **Opposite order.** Steps are reversed from the last to the first, so `flatten` then `undo` restores the folders first and then moves each file back.
+- **It never overwrites.** A move goes back only if the old name is free. A file is restored from the Recycle Bin only if its original path is free.
+- **It leaves changed files alone.** A file that has another size or modification time than the journal recorded, a file that is gone, or a folder that is not empty is not touched. The step is reported as `[mismatch]`, and the command ends as a failure after doing the other steps. Run it again after fixing the cause: steps already reversed are skipped.
+- **What it reverses.** `mv`, `rename`, `flatten`, `collapse`, `normalize`, `product-number`, `sort-by`, `sort-docs` (moves go back); `cp`, `write`, `zip` (the created file goes to the Recycle Bin); `mkdir` (an empty folder is removed); files sent to the Recycle Bin by `rm` and the `remove-*` commands (restored from the Recycle Bin when still there).
+- **What it cannot reverse** is reported as `[irreversible]`: a permanent delete, a file that an overwrite replaced, a folder created by `unzip` or `extract-all` (remove it yourself), and a file that was already there before `write` or `cp`.
+- **Marked as undone.** `undo` writes what it reversed into the journal file, so a run is never reversed twice. `undo` is itself a run in the journal, so `undo --run=<id of that undo>` puts things back again where possible.

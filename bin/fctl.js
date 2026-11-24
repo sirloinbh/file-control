@@ -26,6 +26,8 @@ Options:
   --sort=size|date  with find, list the largest or newest first (default: by path)
   --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time); with sort-docs, --by=month adds a month folder inside each type folder
   --recursive   with sort-by, sort-docs and sort-photos, also sort files in subfolders
+  --list        with undo, show the recent runs of the change journal
+  --run=ID      with undo, reverse the run with this id instead of the last one
   --depth=N     with du, how many folder levels to list (default: 1)
   --top=N       with du, how many folders to list, largest first (default: 20)
   --            treat all following arguments as names or content, not options

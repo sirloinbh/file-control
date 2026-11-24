@@ -64,18 +64,18 @@ function makeDir(dir, { dryRun = false } = {}) {
   if (dryRun) ensureCanMakeDir(dir);
   const note = dryRun && exists(dir) ? ' (already exists)' : '';
   return perform(`Create folder: ${dir}${note}`, dryRun, () => {
-    const first = firstMissing(dir);
+    const missing = missingFolders(dir);
     fs.mkdirSync(dir, { recursive: true });
-    if (first !== undefined) journal.record('create-dir', { path: first });
+    for (const folder of missing) journal.record('create-dir', { path: folder });
   });
 }
 
-// The first folder of a path that does not exist yet, so the journal can say what mkdir really created.
-function firstMissing(dir) {
+// The folders of a path that do not exist yet, the topmost first, so the journal can say what mkdir really created and undo can remove them from the bottom.
+function missingFolders(dir) {
   let current = path.resolve(dir);
-  let missing;
+  const missing = [];
   while (!fs.lstatSync(current, { throwIfNoEntry: false })) {
-    missing = current;
+    missing.unshift(current);
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
@@ -95,11 +95,9 @@ function writeFile(file, content, { append = false, force = false, dryRun = fals
   }
   const note = append ? '' : overwriteNote(file, dryRun, info);
   return perform(`${append ? 'Append to file' : 'Write file'}: ${file}${note}`, dryRun, () => {
-    const firstDir = firstMissing(path.dirname(file));
-    if (firstDir !== undefined) {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      journal.record('create-dir', { path: firstDir });
-    }
+    const missing = missingFolders(path.dirname(file));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    for (const folder of missing) journal.record('create-dir', { path: folder });
     const existed = Boolean(fs.lstatSync(file, { throwIfNoEntry: false }));
     if (append) fs.appendFileSync(file, content);
     else fs.writeFileSync(file, content);
