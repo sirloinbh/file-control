@@ -157,6 +157,57 @@ test('a recipe can never confirm, overwrite, delete permanently or dry-run on it
   }
 });
 
+test('every spelling of a forbidden option is refused, and odd keys and sizes are rejected', () => {
+  const step = (option) => ({ steps: [{ command: 'normalize', options: [option] }] });
+  for (const option of ['--yes', '--YES', '--yes=1', '--yes ', ' --yes', '--yes\n', '--force', '--permanent', '--remove-archives']) {
+    assert.throws(() => validateRecipe(step(option)), /cannot be used in a recipe|is not an option/, JSON.stringify(option));
+  }
+  assert.throws(() => validateRecipe({ steps: [{ command: 'extract-all', options: ['--remove-archives'] }] }), /--remove-archives cannot be used in a recipe/);
+  // A value that contains = or -- stays one value and cannot add an option.
+  assert.deepStrictEqual(validateRecipe({ steps: [{ command: 'find', options: ['--ext=--yes=1'] }] }).steps[0].options, ['--ext=--yes=1']);
+  assert.throws(() => validateRecipe({ steps: [{ command: 'find', options: ['--ext=a --yes'] , x: 1 }] }), /unknown field "x"/);
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    assert.throws(() => validateRecipe(JSON.parse(`{"steps":["flatten"],"${key}":{}}`)), /unknown field/, key);
+    assert.throws(() => validateRecipe(JSON.parse(`{"steps":[{"command":"flatten","${key}":{}}]}`)), /unknown field/, key);
+  }
+  for (const command of ['Flatten', ' flatten', 'flatten ', 'FLATTEN']) assert.throws(() => validateRecipe({ steps: [command] }), /cannot be a step/, JSON.stringify(command));
+  assert.throws(() => validateRecipe({ steps: Array(51).fill('flatten') }), /at most 50 are allowed/);
+  assert.strictEqual(validateRecipe({ steps: Array(50).fill('flatten') }).steps.length, 50);
+  const big = recipeFile(JSON.stringify({ steps: ['flatten'], name: 'x'.repeat(1024 * 1024 + 1) }));
+  assert.throws(() => loadRecipe(big), /too large/);
+});
+
+test('the target comes after -- so a target that looks like an option cannot become one', () => {
+  const dir = tempDir();
+  const seen = [];
+  const file = recipeFile({ steps: [{ command: 'find', options: ['--ext=txt'] }, 'du'] });
+  runRecipe(file, '--yes=1', { dryRun: true, execute: (argv) => { seen.push(argv); return { report: '' }; } });
+  assert.deepStrictEqual(seen, [['find', '--ext=txt', '--dry-run', '--', '--yes=1'], ['du', '--dry-run', '--', '--yes=1']]);
+  // On the command line it is refused as the option it looks like; after -- it is a target, and the step refuses it as a missing folder.
+  assert.throws(() => run(['run', file, '--yes=1']), /--yes can be used only with/);
+  assert.throws(() => run(['run', file, '--', '--yes=1']), /does not exist/);
+  assert.ok(dir);
+});
+
+test('an unexpected error of a step is rethrown and the journal run is closed', () => {
+  const dir = tempDir();
+  make(dir, { 'a.txt': 'x' });
+  const journal = require('../src/journal');
+  const file = recipeFile({ steps: ['flatten', 'normalize'] });
+  const boom = new TypeError('programming error');
+  assert.throws(() => runRecipe(file, dir, { execute: () => { throw boom; } }), (err) => err === boom);
+  // A failing step leaves no open journal run: the next command starts a fresh one.
+  const begins = [];
+  const realBegin = journal.begin;
+  test.mock.method(journal, 'begin', (...args) => {
+    const run = realBegin(...args);
+    begins.push(run.depth);
+    return run;
+  });
+  execute(['run', file, dir]);
+  assert.strictEqual(begins[0], 1, 'the recipe started a fresh journal run');
+});
+
 test('a remove step is last and only previews: it shows the list and the confirmation value and never deletes', () => {
   const dir = tempDir();
   make(dir, { 'a.bin': 'AAAA', 'sub/b.bin': 'AAAA', 'x/y/c.txt': 'unique' });

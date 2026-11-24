@@ -4,14 +4,14 @@
 //
 // Recipe file (JSON):
 //   { "name": "tidy a download", "steps": [
-//       { "command": "extract-all", "options": ["--remove-archives"] },
+//       { "command": "extract-all" },
 //       { "command": "flatten" },
 //       "normalize",
 //       { "command": "remove-duplicates" }
 //   ] }
 // - A step is a command name, or { command, options? }. options is a list of option strings ("--include-lowercase", "--min-height=480").
 // - Only the commands that take one target folder can be steps. `run` itself cannot.
-// - --yes, --force, --permanent, --dry-run and --help can never be set by a recipe. A remove-* step only previews (the list and the confirmation value),
+// - --yes, --force, --permanent, --remove-archives, --dry-run and --help can never be set by a recipe. A remove-* step only previews (the list and the confirmation value),
 //   so it must be the last step: the recipe stops there and the person runs the remove command with --yes=VALUE on their own.
 // - The whole recipe is checked before any step runs.
 
@@ -23,9 +23,9 @@ const { plural } = require('./plural');
 const MAX_RECIPE_BYTES = 1024 * 1024;
 const MAX_STEPS = 50;
 // Options without a value that a step may carry. Options with a value are VALUE_FLAGS.
-const SWITCHES = new Set(['remove-archives', 'include-lowercase', 'recursive']);
+const SWITCHES = new Set(['include-lowercase', 'recursive']);
 // Never set by a recipe: run decides --dry-run, and the rest would let a recipe delete or overwrite without a person looking at the list.
-const FORBIDDEN = new Set(['yes', 'force', 'permanent', 'dry-run', 'help']);
+const FORBIDDEN = new Set(['yes', 'force', 'permanent', 'dry-run', 'help', 'remove-archives']);
 
 const STEP_COMMANDS = new Set(COMMANDS.filter((command) => command.kind === 'whole' && command.name !== 'run').map((command) => command.name));
 const CONFIRMED_COMMANDS = new Set(COMMANDS.filter((command) => command.yes).map((command) => command.name));
@@ -43,7 +43,7 @@ function checkOptions(label, command, options) {
     if (!match) throw new FcError(`${label}: "${option}" is not an option. Write options as --name or --name=VALUE.`);
     const [, name, , value] = match;
     if (FORBIDDEN.has(name)) {
-      const why = name === 'dry-run' ? 'use fctl run --dry-run to preview a whole recipe' : 'a recipe never confirms, overwrites or deletes permanently';
+      const why = name === 'dry-run' ? 'use fctl run --dry-run to preview a whole recipe' : name === 'remove-archives' ? 'it sends the original archives to the Recycle Bin without showing a list first, so run extract-all --remove-archives yourself' : 'a recipe never confirms, overwrites or deletes permanently';
       throw new FcError(`${label}: --${name} cannot be used in a recipe (${why}).`);
     }
     if (VALUE_FLAGS.has(name)) {

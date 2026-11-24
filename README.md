@@ -296,7 +296,7 @@ fctl du D:Videos --depth=2 --top=10
 {
   "name": "tidy a download",
   "steps": [
-    { "command": "extract-all", "options": ["--remove-archives"] },
+    { "command": "extract-all" },
     { "command": "flatten" },
     "normalize",
     { "command": "remove-duplicates" }
@@ -307,8 +307,8 @@ fctl du D:Videos --depth=2 --top=10
 - **Recipe file.** JSON with an optional `name` and a `steps` list (1 to 50 steps). A step is a command name, or `{ "command": ..., "options": [...] }` where `options` are option strings such as `--include-lowercase` or `--min-height=480`. Only commands that take one target folder can be steps (`flatten`, `normalize`, `find`, `du`, `find-same-content`, `remove-duplicates`, and so on). `run` cannot run another recipe, and the file commands (`mv`, `rm`, `zip`, ...) cannot be steps.
 - **Checked first.** The whole recipe is checked before any step runs: bad JSON, an unknown field, an unknown command, an unknown option, an option on the wrong command, or a remove step that is not last are refused, and nothing is touched. The value of an option (`--min-height=abc`) is checked when its step runs.
 - **Steps run in order on the same target** and stop at the first failure. The report shows each step's own report, which steps finished, and which were not run.
-- **`--dry-run`** is passed to every step, so the whole recipe is previewed and nothing changes.
-- **A recipe never confirms or deletes by itself.** `--yes`, `--force`, `--permanent`, `--dry-run` and `--help` are refused inside a recipe. A `remove-*` step (`remove-broken`, `remove-duplicates`, `remove-low-quality`, `remove-same-content`) only shows its list and confirmation value, and it must be the last step so no later step can change the list the value was made for. After the recipe, run that command yourself with `--yes=<value>`. `extract-all --remove-archives` sends the extracted originals to the Recycle Bin, as it does on its own, so a recipe that lists it as an option does so on purpose.
+- **`--dry-run`** is passed to every step, so nothing changes. Each step previews against the folder as it is now, so a later step's preview does not see what an earlier step would have changed (a `normalize` preview after `flatten` lists the old layout).
+- **A recipe never confirms or deletes by itself.** `--yes`, `--force`, `--permanent`, `--remove-archives`, `--dry-run` and `--help` are refused inside a recipe. A `remove-*` step (`remove-broken`, `remove-duplicates`, `remove-low-quality`, `remove-same-content`) only shows its list and confirmation value, and it must be the last step so no later step can change the list the value was made for. After the recipe, run that command yourself with `--yes=<value>`. `extract-all --remove-archives` is refused too, because it sends the original archives to the Recycle Bin without showing a list first; run it yourself.
 - **Undo.** Each step goes through the same code as the single command, so the change journal records the whole recipe as one run.
 - The target and the arguments follow the other whole-target commands: a protected path is refused, and only one recipe and one target are accepted. Folder watching and scheduled runs are not part of `run`; if they are added later, a run without a person present should allow only previews and Recycle Bin removal, never permanent deletion.
 
