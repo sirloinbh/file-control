@@ -7,6 +7,7 @@ const path = require('node:path');
 const { config, FcError, checkOverwrite, ensureCanMakeDir, ensureExists, ensureFree, ensureItemExists, ensureNotIntoSelf, ensureParentDir, entryKey, exists, isSameOrUnder, lexists, overwriteNote, pathKey, perform, realKey, rejectHardLinkedWrite, rejectNewDeviceName, targetNote } = require('./base');
 const { permanentRefusal, previewRefusal, remove } = require('./recycle');
 const journal = require('./journal');
+const { isVideoPath, sidecarMoves, sameItem: sameSidecarItem } = require('./sidecar');
 
 function formatSize(bytes) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -110,7 +111,26 @@ function readFile(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
-function rename(target, newName, { force = false, dryRun = false, info } = {}) {
+// The sidecar moves that go with a video renamed or moved from `from` to `to` (#399): [] when sidecars are off or `from` is not a video file.
+// A name that is taken is a clash for the whole group, so it is checked before anything moves.
+// A sidecar never overwrites anything, even with --force (the video may, as before): a taken name for a sidecar stops the whole group.
+function refuseTakenSidecar(move) {
+  if (lexists(move.to) && !sameSidecarItem(move.from, move.to)) {
+    throw new FcError(`Already exists: ${move.to} (a name for a subtitle or sidecar file, which is never overwritten; use --no-sidecars to move only the video)`);
+  }
+}
+
+function sidecarGroup(from, to, { enabled }) {
+  if (!enabled || !isVideoPath(from)) return [];
+  const moves = sidecarMoves(path.resolve(from), path.resolve(to));
+  for (const move of moves) {
+    refuseTakenSidecar(move);
+    rejectNewDeviceName(move.to);
+  }
+  return moves;
+}
+
+function rename(target, newName, { force = false, dryRun = false, info, sidecars = false } = {}) {
   ensureItemExists(target);
   if (newName.includes('/') || newName.includes('\\')) {
     throw new FcError('The new name cannot contain a path. Use mv to move.');
@@ -120,7 +140,34 @@ function rename(target, newName, { force = false, dryRun = false, info } = {}) {
   rejectNewDeviceName(dest);
   // Changing only the case of itself is not an overwrite. "Itself" is decided by volume and file number, not by lowercased names (#302).
   if (dryRun && exists(dest) && !isSameItem(target, dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
-  return perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => journal.rename(target, dest));
+  const group = sidecarGroup(target, dest, { enabled: sidecars });
+  const first = perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => journal.rename(target, dest));
+  if (group.length === 0) return first;
+  const lines = [first];
+  const done = [];
+  for (const move of group) {
+    try {
+      lines.push(perform(`Rename: ${move.from} -> ${move.to}${overwriteNote(move.to, dryRun, info)} (sidecar)`, dryRun, () => journal.rename(move.from, move.to)));
+      done.push(move);
+    } catch (err) {
+      if (!dryRun) putBack([...done.map((m) => [m.to, m.from]), [dest, target]], err);
+      throw err;
+    }
+  }
+  return lines.join('\n');
+}
+
+// A sidecar could not move, so the renames that already happened are undone (newest first) and the original error is thrown. What cannot be put back is named.
+function putBack(pairs, cause) {
+  const stuck = [];
+  for (const [from, to] of pairs.reverse()) {
+    try {
+      journal.rename(from, to);
+    } catch {
+      stuck.push(`${from} -> ${to}`);
+    }
+  }
+  if (stuck.length > 0) throw new FcError(`${cause.message} Could not put these renames back: ${stuck.join(', ')}`);
 }
 
 // fs.cpSync keeps the times of files with preserveTimestamps but not of folders, so the folder times are set after the copy (best effort: a folder time that cannot be set is not an error) (#313).
@@ -363,17 +410,12 @@ function resolveDest(src, dest) {
   return exists(dest) && fs.statSync(dest).isDirectory() ? path.join(dest, path.basename(src)) : dest;
 }
 
-function move(sources, dest, { force = false, dryRun = false, permanent = false, info } = {}) {
+function move(sources, dest, { force = false, dryRun = false, permanent = false, info, sidecars = false } = {}) {
   if (sources.length > 1 && !(exists(dest) && fs.statSync(dest).isDirectory())) {
     throw new FcError(`To move several items, the destination must be an existing folder: ${dest}`);
   }
   // It runs after checking everything, so that if it fails, nothing has been moved.
-  const items = sources.map((src) => {
-    ensureItemExists(src);
-    rejectStreamPath(src);
-    rejectCurrentDir(src);
-    // It resolves the names so that a source ending in d/. uses the same target as d.
-    const target = resolveDest(path.resolve(src), dest);
+  const checkMove = (src, target) => {
     rejectStreamPath(target);
     rejectCurrentDir(target);
     ensureFree(target, force);
@@ -388,7 +430,26 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false,
     ensureParentDir(target);
     rejectMoveOverlap(src, target);
     return { src, target };
+  };
+  const items = sources.map((src) => {
+    ensureItemExists(src);
+    rejectStreamPath(src);
+    rejectCurrentDir(src);
+    // It resolves the names so that a source ending in d/. uses the same target as d.
+    return checkMove(src, resolveDest(path.resolve(src), dest));
   });
+  // The subtitle and sidecar files of a moved video go with it (#399). They are checked like any other item, so a name that is taken for one of them stops the whole move before anything moves.
+  if (sidecars) {
+    const named = new Set(sources.map((src) => path.resolve(src).toLowerCase()));
+    for (const { src, target } of [...items]) {
+      if (!isVideoPath(src)) continue;
+      for (const move of sidecarMoves(path.resolve(src), target)) {
+        if (named.has(move.from.toLowerCase())) continue;
+        refuseTakenSidecar(move);
+        items.push(checkMove(move.from, move.to));
+      }
+    }
+  }
   rejectBatchOverlap(items);
   const planned = new Set();
   const done = [];

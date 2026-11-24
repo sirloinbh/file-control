@@ -159,7 +159,10 @@ function formatProductNumbers(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.renamed) lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]}${item.note ? `, could not read metadata: ${item.note}` : ''})`);
+  for (const item of result.renamed) {
+    lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name} (${SOURCE_NAMES[item.source]}${item.note ? `, could not read metadata: ${item.note}` : ''})`);
+    for (const move of item.sidecars ?? []) lines.push(`${prefix}  and its sidecar: ${path.basename(move.from)} -> ${path.basename(move.to)}`);
+  }
   for (const item of result.already) lines.push(`${prefix}Already present: ${relative(item.path)} (${item.number})`);
   for (const item of result.notFound) lines.push(`${prefix}Not found: ${relative(item.path)}${item.note ? ` (${item.note})` : ''}`);
   for (const item of result.conflicts) lines.push(`${prefix}Numbers disagree: ${relative(item.path)} (${item.numbers.join(', ')}${item.note ? `, could not read metadata: ${item.note}` : ''})`);

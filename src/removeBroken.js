@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./guards');
-const { planSafeRemovals, runConfirmedRemoval, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
 
 // It chooses the files to delete among those judged broken. It does not touch files.
 // - removals: files to delete ({ path, size, reason, stamp })
@@ -19,6 +19,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   const found = findBroken(dir, { entries });
   // The judgment can take a long time, so it measures by the time after the judgment so that a file changed in the meantime is not wrongly seen as a file with a future time.
   const safe = planSafeRemovals(found.broken, access, {
+    sidecars: true,
     now,
     maxSize,
     isChanged: (item, real, stat) => fileStamp(stat) !== item.stamp,
@@ -32,7 +33,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
 // A value that stands for the list a person saw. It changes if the files to delete increase or decrease or if any one changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.reason, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify(['remove-broken', plan.target, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-broken', plan.target, items, ...sidecarDigest(plan)])).digest('hex').slice(0, 12);
 }
 
 // It sends broken files under the target to the Recycle Bin. If there is no confirm or it is dryRun, it only makes the list and changes nothing.
@@ -79,6 +80,7 @@ function formatRemoveBroken(result) {
   for (const item of result.suspect) lines.push(`Suspect, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  lines.push(...sidecarLines(result, relative));
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
     for (const item of result.mismatchHints ?? []) lines.push(`Changed: ${relative(item.path)} (${item.reason})`);
