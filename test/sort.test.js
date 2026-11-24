@@ -252,3 +252,25 @@ test('sort-by month: sidecars follow the video even when their own times differ 
   sortBy(dir, { by: 'month' });
   assert.deepStrictEqual(listAll(dir), ['2026-05', '2026-05/a.mp4', '2026-05/a.srt']);
 });
+
+// ---- undo removes the folders a sort created (#427) ----
+
+test('undo of a sort puts the files back and removes the folders the sort created, but keeps folders that were there (#427)', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'doc.pdf', 'Images/old.jpg', 'new.jpg']);
+  run(['sort-by', dir, '--by=kind']);
+  assert.deepStrictEqual(listAll(dir), ['Documents', 'Documents/doc.pdf', 'Images', 'Images/new.jpg', 'Images/old.jpg', 'Videos', 'Videos/a.mp4']);
+  const report = run(['undo', `--target=${dir}`]);
+  assert.match(report, /5 reversed, 0 not touched/);
+  assert.deepStrictEqual(listAll(dir).filter((p) => !p.startsWith('.fctl-journal')), ['Images', 'Images/old.jpg', 'a.mp4', 'doc.pdf', 'new.jpg']);
+});
+
+test('undo of a recursive month sort removes nested folders too (#427)', () => {
+  const dir = tempDir();
+  make(dir, ['a/b.txt']);
+  fs.utimesSync(path.join(dir, 'a', 'b.txt'), new Date(2026, 4, 5), new Date(2026, 4, 5));
+  run(['sort-by', dir, '--by=month', '--recursive']);
+  assert.ok(fs.existsSync(path.join(dir, '2026-05', 'b.txt')));
+  run(['undo', `--target=${dir}`]);
+  assert.deepStrictEqual(listAll(dir).filter((p) => !p.startsWith('.fctl-journal')), ['a', 'a/b.txt']);
+});
