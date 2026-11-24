@@ -152,7 +152,7 @@ test('--by is required and must be kind or month', () => {
 test('--by and --recursive are refused on other commands', () => {
   const dir = tempDir();
   assert.throws(() => run(['flatten', dir, '--by=kind']), /--by can be used only with sort-by/);
-  assert.throws(() => run(['flatten', dir, '--recursive']), /--recursive can be used only with sort-by and sort-docs/);
+  assert.throws(() => run(['flatten', dir, '--recursive']), /--recursive can be used only with sort-by, sort-docs, sort-photos/);
   assert.throws(() => run(['sort-by', dir, '--by=kind', '--force']), FcError);
 });
 

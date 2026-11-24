@@ -22,6 +22,7 @@ const { folderSizes, formatDu } = require('./du');
 const { findSameContent, formatSameContent, removeSameContent, formatRemoveSameContent } = require('./sameContent');
 const { sortBy, formatSort } = require('./sort');
 const { sortDocs } = require('./sortDocs');
+const { sortPhotos } = require('./sortPhotos');
 
 const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
@@ -237,6 +238,11 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
     case 'sort-docs': {
       checkWholeTarget(command, args, flags);
       const result = sortDocs(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
+      return failIf(result.failed.length > 0, result, formatSort(result));
+    }
+    case 'sort-photos': {
+      checkWholeTarget(command, args, flags);
+      const result = sortPhotos(args[0], { dryRun, recursive: flags.has('recursive') });
       return failIf(result.failed.length > 0, result, formatSort(result));
     }
     case 'extract-all': {
