@@ -269,3 +269,21 @@ test('a subtitle that changed just now is kept with a reason, and the video stil
   assert.deepStrictEqual(plan.sidecars, []);
   assert.match(plan.sidecarKept[0].reason, /changed just now/);
 });
+
+test('the sidecar lines of rename and mv use the same path style as the video line (#428)', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt', 'out/placeholder.txt', 'x.mp4', 'x.srt']);
+  const before = process.cwd();
+  process.chdir(dir);
+  try {
+    const rename = run('rename', 'a.mp4', 'b.mp4', '--dry-run').report.split('\n');
+    assert.deepStrictEqual(rename, ['[Preview] Rename: a.mp4 -> b.mp4', '[Preview] Rename: a.srt -> b.srt (sidecar)']);
+    const move = run('mv', 'x.mp4', 'out', '--dry-run').report.split('\n');
+    assert.deepStrictEqual(move, [`[Preview] Move: x.mp4 -> ${path.join('out', 'x.mp4')}`, `[Preview] Move: x.srt -> ${path.join('out', 'x.srt')}`]);
+  } finally {
+    process.chdir(before);
+  }
+  // A video given as an absolute path keeps absolute sidecar lines.
+  const absolute = run('rename', path.join(dir, 'a.mp4'), 'b.mp4', '--dry-run').report.split('\n');
+  assert.strictEqual(absolute[1], `[Preview] Rename: ${path.join(dir, 'a.srt')} -> ${path.join(dir, 'b.srt')} (sidecar)`);
+});
