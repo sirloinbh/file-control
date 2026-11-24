@@ -153,3 +153,68 @@ test('undo looks in the current folder or --target, and --list shows that folder
 test('--target belongs to undo only', () => {
   assert.throws(() => run('ls', tempDir(), '--target=x'), /--target can be used only with undo/);
 });
+
+test('collapse treats a folder that only holds its own journal as emptied', () => {
+  const dir = tempDir();
+  make(dir, ['a/b/c/f.txt']);
+  run('rename', path.join(dir, 'a', 'b', 'c', 'f.txt'), 'g.txt');
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'b', 'c', '.fctl-journal')));
+  const out = run('collapse', dir);
+  assert.deepStrictEqual(out.result.failed, [], out.report);
+  assert.ok(fs.existsSync(path.join(dir, 'a', 'g.txt')) || fs.existsSync(path.join(dir, 'g.txt')), out.report);
+});
+
+test('undo does not follow a journal that was copied from another folder', () => {
+  const dir = tempDir();
+  const copy = tempDir();
+  make(dir, ['a.txt']);
+  run('rename', path.join(dir, 'a.txt'), 'b.txt');
+  fs.cpSync(path.join(dir, '.fctl-journal'), path.join(copy, '.fctl-journal'), { recursive: true });
+  assert.throws(() => run('undo', `--target=${copy}`), /was written for .* but sits in/);
+  // --list only shows, so it still works.
+  assert.strictEqual(run('undo', '--list', `--target=${copy}`).result.length, 1);
+  assert.deepStrictEqual(fs.readdirSync(dir).filter((name) => name !== '.fctl-journal'), ['b.txt']);
+});
+
+test('undo does not follow a journal without a recorded folder', () => {
+  const dir = tempDir();
+  fs.mkdirSync(path.join(dir, '.fctl-journal'));
+  const line = (object) => `${JSON.stringify(object)}\n`;
+  fs.writeFileSync(path.join(dir, '.fctl-journal', 'fctl-journal-2026-01-01-000000-000-deadbeef.jsonl'), line({ type: 'run', version: 1, runId: 'deadbeef', command: 'rename', args: [], startedAt: 'x' }) + line({ type: 'step', seq: 1, op: 'move', from: path.join(dir, 'x'), to: path.join(dir, 'y') }));
+  assert.throws(() => run('undo', `--target=${dir}`), /does not say which folder/);
+});
+
+test('a journal step that points into a protected place is not touched', () => {
+  const dir = tempDir();
+  make(dir, ['a.txt']);
+  run('rename', path.join(dir, 'a.txt'), 'b.txt');
+  const file = journal.listJournals(path.join(dir, '.fctl-journal'))[0];
+  const protectedTarget = path.join(process.env.SystemRoot ?? String.fromCharCode(67, 58, 92) + 'Windows', 'fctl-should-not-exist.txt');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').split(JSON.stringify(path.join(dir, 'a.txt'))).join(JSON.stringify(protectedTarget)));
+  const outcome = (() => {
+    try {
+      return run('undo', `--target=${dir}`);
+    } catch (err) {
+      return err;
+    }
+  })();
+  assert.match(String(outcome.report ?? outcome.message), /protected path/);
+  assert.ok(fs.existsSync(path.join(dir, 'b.txt')));
+  assert.ok(!fs.existsSync(protectedTarget));
+});
+
+test('a journal folder that is a link is not written through', (t) => {
+  const dir = tempDir();
+  const elsewhere = tempDir();
+  make(dir, ['a.txt']);
+  try {
+    fs.symlinkSync(elsewhere, path.join(dir, '.fctl-journal'), 'junction');
+  } catch {
+    t.skip('links are not available');
+    return;
+  }
+  const out = run('rename', path.join(dir, 'a.txt'), 'b.txt');
+  assert.match(out.report, /could not write the change journal/);
+  assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
+  assert.ok(fs.existsSync(path.join(dir, 'b.txt')));
+});

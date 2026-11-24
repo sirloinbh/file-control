@@ -64,9 +64,12 @@ function localTime(now) {
 function append(run, object, { durable = false } = {}) {
   try {
     if (run.file === undefined) {
+      // A link or junction named .fctl-journal would send the journal somewhere else, so only a real folder is used.
+      const existing = fs.lstatSync(run.dir, { throwIfNoEntry: false });
+      if (existing && !existing.isDirectory()) throw Object.assign(new Error('the journal folder is a link or a file'), { code: 'EJOURNAL' });
       fs.mkdirSync(run.dir, { recursive: true });
       run.file = path.join(run.dir, `fctl-journal-${stamp(run.startedAt)}-${pad(run.startedAt.getMilliseconds(), 3)}-${run.runId}.jsonl`);
-      const header = { type: 'run', version: JOURNAL_VERSION, runId: run.runId, command: run.command, args: run.redacted ?? run.args, cwd: process.cwd(), startedAt: localTime(run.startedAt) };
+      const header = { type: 'run', version: JOURNAL_VERSION, runId: run.runId, command: run.command, args: run.redacted ?? run.args, cwd: process.cwd(), base: realFolder(path.dirname(run.dir)), startedAt: localTime(run.startedAt) };
       fs.appendFileSync(run.file, `${JSON.stringify(header)}\n`);
     }
     fs.appendFileSync(run.file, `${JSON.stringify(object)}\n`);
@@ -99,6 +102,26 @@ function finish(run, error) {
     append(run, end);
   }
   return { file: run.file, steps: run.steps, error: run.error };
+}
+
+// The real path of a folder (so a junction and a plain path compare equal); the path itself if it cannot be resolved.
+function realFolder(folder) {
+  try {
+    return fs.realpathSync.native(folder);
+  } catch {
+    return path.resolve(folder);
+  }
+}
+
+// Why a journal file must not be trusted by undo, or null (#415). A journal now sits in the folder it describes, so a folder that came from somewhere else
+// (a download, a copy of a folder) can carry a journal written by someone else or for another place. undo only follows a journal that records the folder it sits in.
+// Where FCTL_JOURNAL_DIR or the test run sends every journal to one folder, there is nothing to compare.
+function untrustedReason(file, header) {
+  if (process.env.FCTL_JOURNAL_DIR || process.env.NODE_TEST_CONTEXT) return null;
+  const actual = realFolder(path.dirname(path.dirname(path.resolve(file))));
+  if (typeof header?.base !== 'string') return `The journal ${file} does not say which folder it was written for, so it is not followed.`;
+  if (realFolder(header.base).toLowerCase() !== actual.toLowerCase()) return `The journal ${file} was written for ${header.base} but sits in ${actual} (the folder was copied or moved), so it is not followed.`;
+  return null;
 }
 
 // It flushes a file to the disk, so a record that must exist before a removal is not lost to a crash.
@@ -204,4 +227,4 @@ function listJournals(dir = journalDir()) {
   return names.filter((name) => JOURNAL_FILE.test(name)).sort().reverse().map((name) => path.join(dir, name));
 }
 
-module.exports = { begin, finish, current, record, writeRemoval, quiet, rename, readJournal, markUndone, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION, JOURNAL_FOLDER };
+module.exports = { begin, finish, current, untrustedReason, record, writeRemoval, quiet, rename, readJournal, markUndone, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION, JOURNAL_FOLDER };

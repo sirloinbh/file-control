@@ -269,6 +269,7 @@ function Check([string]$p) {
     $d = $stack.Pop()
     foreach ($e in [IO.DirectoryInfo]::new((Long $d)).EnumerateFileSystemInfos()) {
       $child = $d + '\' + $e.Name
+      if ($e.Name -eq '.fctl-journal') { continue }
       if (-not ([int]$e.Attributes -band 16)) { if ($allowed -notcontains $e.Name.ToLowerInvariant()) { return 'filled' }; continue }
       if (-not (Same $child)) { return 'filled' }
       $stack.Push($child)
