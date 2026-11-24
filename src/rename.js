@@ -141,4 +141,4 @@ function applyRenames(plan, { dryRun = false, caseOnly } = {}) {
   return result;
 }
 
-module.exports = { skipReason, applyRename, applyRenames };
+module.exports = { skipReason, applyRename, applyRenames, withSidecars };
