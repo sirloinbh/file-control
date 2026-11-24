@@ -14,8 +14,13 @@
 // A move with replaced:true overwrote an existing item (the old content is gone). create/write/copy with existed:true changed something that was already there,
 // so a reverse replay must not delete it. Fields named source may be relative; every other path is absolute.
 //
-// Where: the folder in FCTL_JOURNAL_DIR, else %LOCALAPPDATA%\fctl\journal, else ~/.fctl/journal. It is not inside the target folder,
-// because mv, cp and rename have no single target folder and a journal inside the target would itself be a file the command could touch.
+// Removal records (#415): remove-* commands write { type: "removal", kind, createdAt, target, count, items } before they send anything to the Recycle Bin
+// (every item { path, size, reason, outcome: "pending", details? }), then { type: "removal-outcome", updates: [{ index, outcome, error? }] } lines as the batches finish.
+// This replaces the separate fctl-removed-*.json file.
+//
+// Where (#415): a hidden folder .fctl-journal inside the folder the command worked on, chosen by the command (see journalBase in src/execute.js):
+// the target of a whole-target command, the folder of the item for rename / mkdir / write / zip output, the destination folder for mv and cp,
+// the common ancestor of the paths for rm. FCTL_JOURNAL_DIR, when set, replaces it (tests use it). Walkers never list the folder (src/walk.js).
 // A run that changes nothing (a preview, a read-only command, a command that failed before its first change) writes no file.
 
 const fs = require('node:fs');
@@ -29,12 +34,18 @@ const JOURNAL_FILE = /^fctl-journal-\d{4}-\d{2}-\d{2}-\d{6}-\d{3}-[0-9a-f]{8}\.j
 
 let active = null;
 
-function journalDir() {
+const JOURNAL_FOLDER = '.fctl-journal';
+
+// The journal folder for work done in `base` (default: the current folder).
+function journalDir(base = process.cwd()) {
   if (process.env.FCTL_JOURNAL_DIR) return path.resolve(process.env.FCTL_JOURNAL_DIR);
-  // `node --test` runs a test file without the helper of `npm test`, so a test still never writes into the real journal.
+  // `node --test` runs a test file without the helper of `npm test`, so a test still never writes a journal into a folder it did not make.
   if (process.env.NODE_TEST_CONTEXT) return path.join(os.tmpdir(), 'fctl-test-journal');
-  if (process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, 'fctl', 'journal');
-  return path.join(os.homedir(), '.fctl', 'journal');
+  return path.join(path.resolve(base), JOURNAL_FOLDER);
+}
+
+function current() {
+  return active;
 }
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');
@@ -50,7 +61,7 @@ function localTime(now) {
   return `${stamp(now).slice(0, 10)}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${zone}`;
 }
 
-function append(run, object) {
+function append(run, object, { durable = false } = {}) {
   try {
     if (run.file === undefined) {
       fs.mkdirSync(run.dir, { recursive: true });
@@ -59,6 +70,7 @@ function append(run, object) {
       fs.appendFileSync(run.file, `${JSON.stringify(header)}\n`);
     }
     fs.appendFileSync(run.file, `${JSON.stringify(object)}\n`);
+    if (durable) flush(run.file);
   } catch (err) {
     // The files were already changed, so a journal that cannot be written must not stop the command. It is reported at the end.
     run.error ??= `${err.code ?? err.message}`;
@@ -66,12 +78,12 @@ function append(run, object) {
 }
 
 // Starts recording. Nested calls (a command run from inside a command) join the outer run.
-function begin(command, args = [], { redacted } = {}) {
+function begin(command, args = [], { redacted, base } = {}) {
   if (active) {
     active.depth += 1;
     return active;
   }
-  active = { command, args, dir: journalDir(), runId: crypto.randomBytes(4).toString('hex'), startedAt: new Date(), steps: 0, depth: 1, muted: 0, redacted };
+  active = { command, args, dir: journalDir(base), runId: crypto.randomBytes(4).toString('hex'), startedAt: new Date(), steps: 0, depth: 1, muted: 0, redacted };
   return active;
 }
 
@@ -87,6 +99,25 @@ function finish(run, error) {
     append(run, end);
   }
   return { file: run.file, steps: run.steps, error: run.error };
+}
+
+// It flushes a file to the disk, so a record that must exist before a removal is not lost to a crash.
+function flush(file) {
+  const fd = fs.openSync(file, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Writes a removal record before the first item is sent (record) or the outcome of a batch (outcome). A record that cannot be written throws, because nothing may be removed without it.
+function writeRemoval(line) {
+  const run = active;
+  if (!run) throw new Error('No journal run is open.');
+  append(run, line, { durable: true });
+  if (run.error !== undefined) throw new Error(run.error);
+  return run.file;
 }
 
 // Records one change that already happened. Paths are written as absolute paths.
@@ -148,6 +179,8 @@ function readJournal(file) {
     else if (entry.type === 'end') result.end = entry;
     else if (entry.type === 'undo-step') result.reversed.add(entry.seq);
     else if (entry.type === 'undone') result.undone = true;
+    else if (entry.type === 'removal') result.removal = entry;
+    else if (entry.type === 'removal-outcome') (result.outcomes ??= []).push(...entry.updates);
   }
   return result;
 }
@@ -171,4 +204,4 @@ function listJournals(dir = journalDir()) {
   return names.filter((name) => JOURNAL_FILE.test(name)).sort().reverse().map((name) => path.join(dir, name));
 }
 
-module.exports = { begin, finish, record, quiet, rename, readJournal, markUndone, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION };
+module.exports = { begin, finish, current, record, writeRemoval, quiet, rename, readJournal, markUndone, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION, JOURNAL_FOLDER };

@@ -48,6 +48,7 @@ test.mock.method(Date, 'now', () => realNow() + 2 * DAY);
 const { findJunk, formatJunk, removeJunk, formatRemoveJunk, copyOriginal } = require('../src/junk');
 const { run } = require('../bin/fctl');
 const { REMOVAL_LOG } = require('../src/removalLog');
+const { logs, readRecord } = require('./removalRecord');
 
 const OLD = new Date(realNow() - HOUR);
 // A time one minute before the faked clock: recent enough to be held.
@@ -173,9 +174,9 @@ test('remove-junk --yes=VALUE sends only the listed files to the Recycle Bin and
   assert.match(output, /Recycle Bin 3, failed 0/);
   assert.deepStrictEqual(names(dir), ['doc.pdf', 'other.pdf']);
   assert.deepStrictEqual(recycled.map((p) => path.basename(p)).sort(), ['a.crdownload', 'doc (1).pdf', 'empty.txt']);
-  const logs = fs.readdirSync(dir).filter((n) => REMOVAL_LOG.test(n));
-  assert.strictEqual(logs.length, 1);
-  const log = JSON.parse(fs.readFileSync(path.join(dir, logs[0]), 'utf8'));
+  assert.strictEqual(logs(dir).length, 1);
+  assert.deepStrictEqual(names(dir), ['doc.pdf', 'other.pdf']);
+  const log = readRecord(logs(dir)[0]);
   assert.strictEqual(log.items.length, 3);
   assert.ok(log.items.every((item) => item.outcome === 'removed'));
   assert.ok(log.items.some((item) => /copy of doc\.pdf/.test(item.reason)));
@@ -288,7 +289,7 @@ test('the file a copy duplicates goes along to the last-moment check and into th
   const fields = inputs[0].trim().split(' ');
   assert.strictEqual(fields.length, 4, 'path, stamp, keeper path and keeper stamp');
   assert.strictEqual(Buffer.from(fields[2], 'base64').toString('utf16le'), path.join(dir, 'doc.pdf'));
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const log = readRecord(result.log);
   assert.strictEqual(log.items[0].details.keep, path.join(dir, 'doc.pdf'));
 });
 

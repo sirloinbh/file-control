@@ -138,7 +138,7 @@ test('remove-broken: the preview shows the list and a Run form without a code fi
   assert.deepStrictEqual(recycled.sort(), [path.join(dir, 'bad.mp4'), path.join(dir, 'bad2.mp4')].sort());
   assert.ok(fs.existsSync(path.join(dir, 'good.txt')));
   assert.match(done.body, /Sent 2 files to the Recycle Bin\./);
-  assert.match(done.body, /Removal log: <code>[^<]*fctl-removed-[^<]*<\/code>/);
+  assert.match(done.body, /Removal log: <code>[^<]*fctl-journal-[^<]*<\/code>/);
   assert.ok(fs.existsSync(done.outcome.result.log), 'the log file exists');
   assert.doesNotMatch(done.body, /action="\/cleanup\/remove-broken\/run"/, 'a finished run has no Run form');
 });

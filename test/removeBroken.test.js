@@ -71,7 +71,6 @@ test.mock.method(Date, 'now', () => realNow() + skew);
 
 const { removeBroken, formatRemoveBroken, confirmationCode, MAX_RECYCLE_SIZE } = require('../src/removeBroken');
 const { recycleBinState, remove, MAX_RECYCLE_PATH } = require('../src/commands');
-const { REMOVAL_LOG } = require('../src/removalLog');
 const { fileStamp, volumeFormat } = require('../src/target');
 const { run } = require('../bin/fctl');
 
@@ -112,7 +111,7 @@ function replaceSameSize(file, content) {
   throw new Error('식별값이 바뀌지 않았습니다: ' + file);
 }
 
-const logs = (dir) => fs.readdirSync(dir).filter((name) => REMOVAL_LOG.test(name));
+const { logs, readRecord } = require('./removalRecord');
 // The order in which a person looks at the list and then runs with the confirmation value attached.
 const confirmed = (dir, options = {}) => removeBroken(dir, { ...options, confirm: removeBroken(dir, options).code });
 const codeIn = (report) => /--yes=([0-9a-f]+)/.exec(report)[1];
@@ -161,9 +160,8 @@ test('확인값이 맞으면 기록을 먼저 남기고 깨진 파일만 휴지�
   assert.strictEqual(logged, 1, '지우기 전에 기록이 있어야 한다');
   for (const name of ['c.jpg', 'd.txt', 'e.py']) assert.ok(fs.existsSync(path.join(dir, name)), name);
   assert.strictEqual(result.suspect.length, 2);
-  const [name] = logs(dir);
-  assert.strictEqual(result.log, path.join(dir, name));
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  assert.strictEqual(result.log, logs(dir)[0]);
+  const log = readRecord(result.log);
   assert.strictEqual(log.kind, 'broken files');
   assert.deepStrictEqual(log.items.map((item) => item.path).sort(), recycled.slice().sort());
   assert.strictEqual(log.items.find((item) => item.path.endsWith('a.mp4')).size, Buffer.byteLength(BROKEN));
@@ -809,11 +807,12 @@ test('기록을 남기지 못하면 아무것도 지우지 않는다', (t) => {
   t.mock.method(fs, 'fsyncSync', () => {
     throw Object.assign(new Error('디스크'), { code: 'ENOSPC' });
   });
-  assert.throws(() => removeBroken(dir, { confirm: code }), /Could not write the log file/);
+  assert.throws(() => removeBroken(dir, { confirm: code }), /Could not write the removal record into the change journal/);
   t.mock.restoreAll();
   assert.deepStrictEqual(recycled, []);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')));
-  assert.deepStrictEqual(logs(dir), []);
+  // The line may have reached the file before the flush failed, but nothing was sent, so no item is marked removed.
+  for (const file of logs(dir)) assert.ok(readRecord(file).items.every((item) => item.outcome === 'pending'));
 });
 
 test('다시 실행해도 제거 기록을 깨진 파일로 보지 않는다', () => {
@@ -993,13 +992,13 @@ test('기록 파일은 항목마다 결과를 담고, 실패한 항목은 failed
   };
   const result = confirmed(dir);
   assert.strictEqual(result.failed.length, 1);
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const log = readRecord(result.log);
   assert.strictEqual(log.version, 1);
   const outcomeOf = (name) => log.items.find((item) => item.path.endsWith(name));
   assert.strictEqual(outcomeOf('a.mp4').outcome, 'removed');
   assert.strictEqual(outcomeOf('b.mp4').outcome, 'failed');
   assert.ok(outcomeOf('b.mp4').error.length > 0);
-  assert.deepStrictEqual(logs(dir).length, 1, '임시 파일이 남으면 안 된다');
+  assert.deepStrictEqual(logs(dir).length, 1);
   assert.deepStrictEqual(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp')), []);
 });
 

@@ -30,6 +30,7 @@ const { findSidecars, withSidecarPaths } = require('../src/sidecar');
 const { planSafeRemovals, runConfirmedRemoval, sidecarDigest } = require('../src/removal');
 const { grant, fileStamp } = require('../src/target');
 const journal = require('../src/journal');
+const { readRecord } = require('./removalRecord');
 
 // The temporary folder is under the AppData of the real user folder and is refused as a protected path, so the user folder is swapped with a fake path.
 test.mock.method(os, 'homedir', () => path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
@@ -64,8 +65,7 @@ function make(dir, files) {
   }
 }
 
-// The removal log (fctl-removed-*.json) is written into the target by the remove commands, so it is left out of the listing.
-const names = (dir) => fs.readdirSync(dir).filter((name) => !/^fctl-removed-/.test(name)).sort();
+const names = (dir) => fs.readdirSync(dir).sort();
 const run = (...argv) => execute(argv);
 
 test('findSidecars: same base name, known extensions, language tags on subtitles only', () => {
@@ -241,7 +241,7 @@ test('removing a duplicate video also sends its subtitle to the Recycle Bin and 
   runConfirmedRemoval(plan, result, 'test', plan.removals.map(log), {});
   assert.deepStrictEqual(names(dir), ['keep.mp4', 'keep.srt']);
   assert.deepStrictEqual(result.removedSidecars.map((r) => path.basename(r.path)), ['dup.ko.srt', 'dup.srt']);
-  const written = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const written = readRecord(result.log);
   assert.deepStrictEqual(written.items.map((i) => [path.basename(i.path), i.outcome]), [['dup.mp4', 'removed'], ['dup.ko.srt', 'removed'], ['dup.srt', 'removed']]);
 });
 
@@ -256,7 +256,7 @@ test('when the video could not be sent to the Recycle Bin, its sidecars stay', (
   assert.deepStrictEqual(names(dir), ['dup.mp4', 'dup.srt']);
   assert.strictEqual(result.failed.length, 1);
   assert.match(result.sidecarKept[0].reason, /video was not sent/);
-  const written = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const written = readRecord(result.log);
   assert.deepStrictEqual(written.items.map((i) => i.outcome), ['failed', 'failed']);
 });
 

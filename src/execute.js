@@ -27,10 +27,10 @@ const { findJunk, formatJunk, removeJunk, formatRemoveJunk } = require('./junk')
 const { sortDocs } = require('./sortDocs');
 const { sortPhotos } = require('./sortPhotos');
 
-const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
+const { COMMANDS, VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run', 'no-sidecars', 'replace', 'number', 'case', 'date-prefix']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run', 'no-sidecars', 'target', 'replace', 'number', 'case', 'date-prefix']);
 
 function parse(argv) {
   const flags = new Set();
@@ -121,6 +121,72 @@ function formatList(entries) {
     .join('\n');
 }
 
+// The nearest folder that exists at or above p (a file counts as its folder).
+function existingFolder(p) {
+  let here = path.resolve(p);
+  for (;;) {
+    const stat = fs.statSync(here, { throwIfNoEntry: false });
+    if (stat?.isDirectory()) return here;
+    const up = path.dirname(here);
+    if (up === here) return here;
+    here = up;
+  }
+}
+
+// The deepest folder that holds all the given folders, or undefined when there is none (other drives) or it is only a drive root.
+function commonFolder(folders) {
+  const split = folders.map((folder) => path.resolve(folder).split(path.sep));
+  let common = split[0];
+  for (const parts of split.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < parts.length && common[i].toLowerCase() === parts[i].toLowerCase()) i += 1;
+    common = common.slice(0, i);
+  }
+  if (common.length === 0 || common[0] === '') return undefined;
+  const folder = common.join(path.sep);
+  return /^[A-Za-z]:$/.test(folder) || folder === '' ? undefined : folder;
+}
+
+// The folder whose .fctl-journal keeps the journal of a command (#415): the target of a whole-target command; the folder of the item for rename, mkdir, write, append and the output of zip and unzip;
+// the destination folder for mv and cp (the one place every source ends up); the common folder of the paths for rm (the folder of the first path if they share none).
+// A command that cannot be undone with a journal anyway (read-only commands) gets the current folder, and writes nothing there.
+function journalBase(argv) {
+  let parsed;
+  try {
+    parsed = parse(argv);
+  } catch {
+    return undefined;
+  }
+  const { command, args, values } = parsed;
+  const first = args[0];
+  const info = COMMANDS.find((entry) => entry.name === command);
+  if (command === 'undo') return values.get('target');
+  if (first === undefined) return undefined;
+  if (command === 'run') return args[1] === undefined ? undefined : existingFolder(args[1]);
+  if (info?.kind === 'whole') return existingFolder(first);
+  switch (command) {
+    case 'rename':
+    case 'mkdir':
+    case 'write':
+    case 'append':
+    case 'zip':
+      return existingFolder(path.dirname(path.resolve(first)));
+    case 'unzip':
+      return existingFolder(path.dirname(path.resolve(args[1] || path.join(path.dirname(first), path.parse(first).name))));
+    case 'mv':
+    case 'cp': {
+      const dest = path.resolve(args[args.length - 1]);
+      return fs.statSync(dest, { throwIfNoEntry: false })?.isDirectory() ? dest : existingFolder(path.dirname(dest));
+    }
+    case 'rm': {
+      const folders = args.map((p) => existingFolder(path.dirname(path.resolve(p))));
+      return commonFolder(folders) ?? folders[0];
+    }
+    default:
+      return undefined;
+  }
+}
+
 // It runs argv and returns the result.
 // - If help is wanted, { help: true }.
 // - Otherwise { command, result, report, failure }. result is the value the function returned as is, report is the text the CLI prints,
@@ -131,7 +197,7 @@ function formatList(entries) {
 function execute(argv, options = {}) {
   // The content of write and append can be large or secret, so the journal keeps only the file path.
   const redacted = argv[0] === 'write' || argv[0] === 'append' ? argv.slice(1, 2) : undefined;
-  const run = journal.begin(argv[0] ?? '', argv.slice(1), { redacted });
+  const run = journal.begin(argv[0] ?? '', argv.slice(1), { redacted, base: journalBase(argv) });
   let outcome;
   try {
     outcome = executeCommand(argv, options);
@@ -264,10 +330,10 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       if (args.length > 0) throw new fc.FcError(`undo takes no path. Use --run=ID to choose a run: ${args.join(' ')}`);
       if (force || flags.has('permanent')) throw new fc.FcError('undo never overwrites or permanently deletes, so --force and --permanent cannot be used.');
       if (flags.has('list')) {
-        const runs = listRuns();
+        const runs = listRuns({ dir: journal.journalDir(values.get('target')) });
         return done(runs, formatRuns(runs));
       }
-      const result = undo({ id: values.get('run'), dryRun });
+      const result = undo({ id: values.get('run'), dryRun, dir: journal.journalDir(values.get('target')) });
       const report = formatUndo(result);
       // A step that was not touched because the state changed is part of what the user must see, so the run ends as a failure with the report on standard output.
       return done(result, report, result.steps.some((s) => s.status === 'mismatch') ? Object.assign(new fc.FcError(`Some steps were not reversed because the files changed since the run.`), { output: report }) : undefined);

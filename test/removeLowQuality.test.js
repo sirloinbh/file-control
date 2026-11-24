@@ -47,7 +47,6 @@ const realNow = Date.now;
 test.mock.method(Date, 'now', () => realNow() + HOUR);
 
 const { removeLowQuality, formatRemoveLowQuality } = require('../src/removeLowQuality');
-const { REMOVAL_LOG } = require('../src/removalLog');
 const { run } = require('../bin/fctl');
 
 const OLD = new Date(realNow() - HOUR);
@@ -92,7 +91,7 @@ function mp4({ seconds = 60, width, height, padding = 0 }) {
 }
 
 const names = (root, list) => list.map((item) => path.relative(root, item.path).replaceAll(path.sep, '/')).sort();
-const logs = (dir) => fs.readdirSync(dir).filter((name) => REMOVAL_LOG.test(name));
+const { logs, readRecord } = require('./removalRecord');
 
 function fixture() {
   const dir = tempDir();
@@ -136,9 +135,8 @@ test('remove-low-quality는 확인값 없이는 목록만 보이고, 확인값�
   assert.deepStrictEqual(recycled.map((p) => path.relative(dir, p).replaceAll(path.sep, '/')).sort(), ['small.mp4', 'sub/tiny.mp4']);
   assert.ok(fs.existsSync(path.join(dir, 'hd.mp4')) && fs.existsSync(path.join(dir, 'starved.mp4')));
   // The record holds the path, size, and reason, and the resolution, bitrate, and standards.
-  const [logName] = logs(dir);
-  assert.strictEqual(done.log, path.join(dir, logName));
-  const log = JSON.parse(fs.readFileSync(done.log, 'utf8'));
+  assert.strictEqual(done.log, logs(dir)[0]);
+  const log = readRecord(done.log);
   assert.strictEqual(log.kind, 'low-quality videos');
   assert.strictEqual(log.count, 2);
   const small = log.items.find((item) => item.path.endsWith('small.mp4'));

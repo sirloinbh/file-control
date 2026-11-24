@@ -30,6 +30,7 @@ Options:
   --replace=F/T --case=upper|lower --number=TEMPLATE --date-prefix   the rules of rename-pattern
   --list        with undo, show the recent runs of the change journal
   --run=ID      with undo, reverse the run with this id instead of the last one
+  --target=DIR  with undo, look for the journal in DIR (default: the current folder)
   --depth=N     with du, how many folder levels to list (default: 1)
   --top=N       with du, how many folders to list, largest first (default: 20)
   --            treat all following arguments as names or content, not options

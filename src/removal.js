@@ -10,6 +10,7 @@ const path = require('node:path');
 const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFailureMessage, permanentRefusal, permanentDeleteReason, UNKNOWN_RECYCLE_LIMIT, MAX_RECYCLE_PATH } = require('./commands');
 const { grant, fileStamp, stampVolumeReason } = require('./target');
 const { writeRemovalLog, updateRemovalLog } = require('./removalLog');
+const journal = require('./journal');
 const { markerFinder, markerReason } = require('./downloadMarker');
 const { findSidecars } = require('./sidecar');
 
@@ -281,6 +282,23 @@ function recycleInBatches(removals, log, prepare, on) {
 // It leaves the record file before deleting, and if it cannot leave the record, it deletes nothing. Even if one file fails, it continues with the rest.
 // In a non-interactive session it cannot send to the Recycle Bin, so it stops before the record is written, so that only records do not pile up.
 function runConfirmedRemoval(plan, result, label, logItems, hooks = {}) {
+  // The record goes into the change journal (#415). A command run through execute has opened one; a direct call opens its own in the target folder.
+  const own = journal.current() ? null : journal.begin(label, [], { base: plan.target });
+  let outcome;
+  try {
+    outcome = confirmedRemoval(plan, result, label, logItems, hooks);
+  } catch (err) {
+    if (own) journal.finish(own, err);
+    throw err;
+  }
+  if (own) {
+    const written = journal.finish(own);
+    if (written?.error) result.logWarning ??= `Could not write the change journal (${written.error}).`;
+  }
+  return outcome;
+}
+
+function confirmedRemoval(plan, result, label, logItems, hooks) {
   if (plan.interactive !== true) throw new FcError('Cannot send to the Recycle Bin because it was not confirmed that this is an interactive session. Nothing was deleted.');
   result.confirmed = true;
   const sidecars = plan.sidecars ?? [];
