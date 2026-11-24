@@ -113,11 +113,18 @@ function readFile(file) {
 
 // The sidecar moves that go with a video renamed or moved from `from` to `to` (#399): [] when sidecars are off or `from` is not a video file.
 // A name that is taken is a clash for the whole group, so it is checked before anything moves.
-function sidecarGroup(from, to, { force, enabled }) {
+// A sidecar never overwrites anything, even with --force (the video may, as before): a taken name for a sidecar stops the whole group.
+function refuseTakenSidecar(move) {
+  if (lexists(move.to) && !sameSidecarItem(move.from, move.to)) {
+    throw new FcError(`Already exists: ${move.to} (a name for a subtitle or sidecar file, which is never overwritten; use --no-sidecars to move only the video)`);
+  }
+}
+
+function sidecarGroup(from, to, { enabled }) {
   if (!enabled || !isVideoPath(from)) return [];
   const moves = sidecarMoves(path.resolve(from), path.resolve(to));
   for (const move of moves) {
-    if (!sameSidecarItem(move.from, move.to)) ensureFree(move.to, force);
+    refuseTakenSidecar(move);
     rejectNewDeviceName(move.to);
   }
   return moves;
@@ -133,7 +140,7 @@ function rename(target, newName, { force = false, dryRun = false, info, sidecars
   rejectNewDeviceName(dest);
   // Changing only the case of itself is not an overwrite. "Itself" is decided by volume and file number, not by lowercased names (#302).
   if (dryRun && exists(dest) && !isSameItem(target, dest) && fs.statSync(dest).isDirectory()) throw new FcError(`Cannot overwrite a folder: ${dest}`);
-  const group = sidecarGroup(target, dest, { force, enabled: sidecars });
+  const group = sidecarGroup(target, dest, { enabled: sidecars });
   const first = perform(`Rename: ${target} -> ${dest}${overwriteNote(dest, dryRun, info)}`, dryRun, () => journal.rename(target, dest));
   if (group.length === 0) return first;
   const lines = [first];
@@ -437,7 +444,9 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false,
     for (const { src, target } of [...items]) {
       if (!isVideoPath(src)) continue;
       for (const move of sidecarMoves(path.resolve(src), target)) {
-        if (!named.has(move.from.toLowerCase())) items.push(checkMove(move.from, move.to));
+        if (named.has(move.from.toLowerCase())) continue;
+        refuseTakenSidecar(move);
+        items.push(checkMove(move.from, move.to));
       }
     }
   }

@@ -39,7 +39,9 @@ function findSidecars(video) {
   } catch {
     return [];
   }
-  const videoBases = names.filter(isVideoName).map((name) => ({ name, base: path.basename(name, path.extname(name)).toLowerCase() }));
+  // .ts and .mts need a content check to be called video, but they still own a base name, so a subtitle shared with one is not taken away from it.
+  const owner = (name) => isVideoName(name) || require('./video').TRANSPORT_EXTENSIONS.has(path.extname(name).toLowerCase());
+  const videoBases = names.filter(owner).map((name) => ({ name, base: path.basename(name, path.extname(name)).toLowerCase() }));
   // Another video with the same base name would lose its subtitle if this video took it away.
   if (videoBases.some((other) => other.name.toLowerCase() !== own.toLowerCase() && other.base === lowBase)) return [];
   const found = [];
@@ -68,7 +70,8 @@ function sidecarTarget(videoTo, sidecar) {
 
 // The sidecar moves of a video move: [{ from, to, suffix }].
 function sidecarMoves(videoFrom, videoTo) {
-  return findSidecars(videoFrom).map((sidecar) => ({ from: sidecar.path, to: sidecarTarget(videoTo, sidecar), suffix: sidecar.suffix }));
+  // A move to the same name (the base name did not change, as in rename a.mp4 a.mkv) is not a move.
+  return findSidecars(videoFrom).map((sidecar) => ({ from: sidecar.path, to: sidecarTarget(videoTo, sidecar), suffix: sidecar.suffix })).filter((move) => move.from !== move.to);
 }
 
 // Whether two paths are the same item (a rename that only changes the case leads to itself).

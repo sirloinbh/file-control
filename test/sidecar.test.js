@@ -162,6 +162,37 @@ test('normalize renames abc-123.mp4 and its subtitles together, the preview list
   assert.match(real.report, /Skipped: other XYZ-999\.mp4 \(Not renamed because a subtitle or sidecar file would clash/);
 });
 
+test('a rename that only changes the case takes the sidecars along, and the report is true', () => {
+  const dir = tempDir();
+  make(dir, ['abc-123.mp4', 'abc-123.srt', 'abc-123.ko.srt']);
+  const real = run('normalize', dir, '--include-lowercase');
+  assert.deepStrictEqual(names(dir), ['ABC-123.ko.srt', 'ABC-123.mp4', 'ABC-123.srt']);
+  assert.strictEqual(real.result.renamed.length, 1);
+});
+
+test('rename to another extension does not rename the sidecars to themselves', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt']);
+  const outcome = run('rename', path.join(dir, 'a.mp4'), 'a.mkv');
+  assert.doesNotMatch(outcome.report, /a.srt/);
+  assert.deepStrictEqual(names(dir), ['a.mkv', 'a.srt']);
+});
+
+test('--force replaces the video but never a sidecar name', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt', 'b.mp4', 'b.srt']);
+  assert.throws(() => run('rename', path.join(dir, 'a.mp4'), 'b.mp4', '--force'), /never overwritten/);
+  assert.throws(() => run('mv', path.join(dir, 'a.mp4'), path.join(dir, 'b.mp4'), '--force'), /never overwritten/);
+  assert.deepStrictEqual(names(dir), ['a.mp4', 'a.srt', 'b.mp4', 'b.srt']);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'b.srt'), 'utf8'), 'b.srt');
+});
+
+test('a transport-stream video with the same base name keeps the shared subtitle', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.ts', 'a.srt']);
+  assert.deepStrictEqual(findSidecars(path.join(dir, 'a.mp4')), []);
+});
+
 test('product-number puts the number in front of the video and its subtitle', () => {
   const dir = tempDir();
   make(dir, ['ABC-123/clip.mp4', 'ABC-123/clip.srt']);

@@ -23,7 +23,11 @@ function applyRename(rename, access, { caseOnly } = {}) {
   const from = access.delete(rename.from);
   if (from !== rename.from) throw new FcError(`The path changed after planning: ${rename.from} -> ${from}`);
   if (!fs.lstatSync(from).isFile()) throw new FcError(`No longer a file after planning: ${from}`);
-  if (caseOnly && caseOnly(rename, from)) return;
+  if (caseOnly && caseOnly(rename, from)) {
+    // The video only changed its case, and its sidecars still change theirs with it.
+    if (rename.sidecars?.length) moveSidecars(rename, from, rename.to, access, caseOnly);
+    return;
+  }
   const taken = () => new FcError(`Not renamed because the name already exists: ${rename.name}${leftoverNote(from, rename.to)}`);
   // It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to.
   if (fs.lstatSync(rename.to, { throwIfNoEntry: false })) throw taken();
@@ -35,6 +39,12 @@ function applyRename(rename, access, { caseOnly } = {}) {
 
 // The subtitle and sidecar files go with the video (#399). If one of them cannot move, what already moved (the sidecars before it and the video) goes back,
 // so a video is never left with half of its group under the new name.
+// It puts one moved item back. A move that only changed the case goes back the way it went (through caseOnly), because the old spelling is "taken" by the item itself.
+function moveBack(src, dst, caseOnly) {
+  if (caseOnly && src.toLowerCase() === dst.toLowerCase()) return caseOnly({ from: src, to: dst, name: path.basename(dst) }, src);
+  return moveWithoutOverwrite(src, dst);
+}
+
 function moveSidecars(rename, videoFrom, videoTo, access, caseOnly) {
   const done = [];
   try {
@@ -56,13 +66,13 @@ function moveSidecars(rename, videoFrom, videoTo, access, caseOnly) {
     const left = [];
     for (const move of [...done].reverse()) {
       try {
-        if (!moveWithoutOverwrite(move.to, move.from)) left.push(move.to);
+        if (!moveBack(move.to, move.from, caseOnly)) left.push(move.to);
       } catch {
         left.push(move.to);
       }
     }
     try {
-      if (!moveWithoutOverwrite(videoTo, videoFrom)) left.push(videoTo);
+      if (!moveBack(videoTo, videoFrom, caseOnly)) left.push(videoTo);
     } catch {
       left.push(videoTo);
     }
