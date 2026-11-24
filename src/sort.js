@@ -10,6 +10,7 @@ const { moveWithoutOverwrite } = require('./safeMove');
 const { LEFTOVER, PROGRAM_FOLDER, PROJECT_FILE, rejectRepository, rejectProjectAncestor } = require('./guards');
 const { FOLDER_METADATA } = require('./flatten');
 const { listEntries } = require('./walk');
+const { sidecarMoves } = require('./sidecar');
 const { plural } = require('./plural');
 
 const ext = (name) => path.extname(name).toLowerCase();
@@ -93,6 +94,18 @@ function guardOf(relative, guarded) {
   return undefined;
 }
 
+// The subtitle and sidecar files of the videos in the list (#426): { sidecar path (lower case) -> video path }. They are not sorted by a rule of their own; they go where their video goes (or stay with it).
+function ownedSidecars(entries, guarded) {
+  const { VIDEO_EXTENSIONS } = require('./video');
+  const { findSidecars } = require('./sidecar');
+  const owned = new Map();
+  for (const entry of entries) {
+    if (entry.type !== 'file' || !VIDEO_EXTENSIONS.has(ext(entry.relative)) || guardOf(entry.relative, guarded) !== undefined) continue;
+    for (const sidecar of findSidecars(entry.path)) owned.set(sidecar.path.toLowerCase(), entry.path);
+  }
+  return owned;
+}
+
 // A destination folder name must be a real folder: a file with that name (or a link) is in the way.
 function folderBlock(target, name) {
   const stat = fs.lstatSync(path.join(target, name), { throwIfNoEntry: false });
@@ -117,6 +130,7 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
   const taken = new Set();
   const guarded = recursive ? guardedFolders(entries) : new Map();
   const reported = new Set();
+  const owned = ownedSidecars(entries, guarded);
   for (const entry of entries) {
     const guard = guardOf(entry.relative, guarded);
     if (guard !== undefined) {
@@ -132,6 +146,8 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
       continue;
     }
     if (entry.type !== 'file') continue;
+    // A sidecar of a video goes with its video, so it is handled when the video is.
+    if (owned.has(entry.path.toLowerCase())) continue;
     if (FOLDER_METADATA.test(name)) continue;
     if (LEFTOVER.test(name)) {
       skipped.push({ path: entry.path, reason: 'Left in place because it is a leftover of a failed move and must stay where the message said.' });
@@ -177,8 +193,23 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
         skipped.push({ path: entry.path, reason: `Left in place because ${path.join(...folders, name)} already exists.` });
         continue;
       }
+      // The sidecars of a video move to the same folder with it. A clash on any of them leaves the whole group in place.
+      const group = [{ from, to, folder: decision.folder, name, ...(decision.note === undefined ? {} : { note: decision.note }) }];
+      const clash = [];
+      for (const move of sidecarMoves(from, to)) {
+        const sidecarName = path.basename(move.to);
+        const sidecarRelative = path.join(...folders, sidecarName);
+        const sidecarTo = access.write(sidecarRelative);
+        if (taken.has(nameKey(sidecarRelative)) || fs.lstatSync(sidecarTo, { throwIfNoEntry: false })) clash.push(path.join(...folders, sidecarName));
+        else group.push({ from: move.from, to: sidecarTo, folder: decision.folder, name: sidecarName, note: `sidecar of ${name}` });
+      }
+      if (clash.length > 0) {
+        skipped.push({ path: entry.path, reason: `Left in place because ${clash[0]} already exists, and its sidecar files stay with it.` });
+        continue;
+      }
       taken.add(nameKey(toRelative));
-      moves.push({ from, to, folder: decision.folder, name, ...(decision.note === undefined ? {} : { note: decision.note }) });
+      for (const move of group.slice(1)) taken.add(nameKey(path.join(...folders, move.name)));
+      moves.push(...group);
     } catch (err) {
       skipped.push({ path: entry.path, reason: reasonOf(err) });
     }
