@@ -10,7 +10,7 @@ const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, titlesDiffer, D
 const { rejectRepository } = require('./guards');
 const { describeVideo } = require('./video');
 const { markerFinder, markerReason } = require('./downloadMarker');
-const { planSafeRemovals, runConfirmedRemoval, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 
 // Groups with common names such as camera and sequence names (generic of find-duplicates, isGenericGroup) are not deleted, because even with the same name and length they can be different videos (#103, #110).
 const GENERIC_REASON = 'Kept because it is a common name such as a camera or sequence name, so videos with the same duration may be different videos.';
@@ -140,6 +140,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
     }
   });
   const safe = planSafeRemovals(candidates, access, {
+    sidecars: true,
     now: checkedAt,
     maxSize,
     sameFileId: fileIdOf,
@@ -175,7 +176,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE } = {}) {
 // A value that stands for the list a person saw. It changes if any one of the files to delete or to keep changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.stamp, item.keep, item.keepStamp]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify(['remove-duplicates', plan.target, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-duplicates', plan.target, items, ...sidecarDigest(plan)])).digest('hex').slice(0, 12);
 }
 
 // Right before deleting, it checks again that the file to keep is still there. If the file to keep is gone, it does not delete the copies.
@@ -242,6 +243,8 @@ function formatRemoveDuplicates(result) {
   for (const item of result.conflicts) lines.push(`Several numbers, not deleted: ${relative(item.path)} (${item.numbers.join(', ')})`);
   for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  lines.push(...sidecarLines(result, relative));
+  for (const item of result.failed.filter((entry) => entry.sidecar)) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
     for (const item of result.mismatchHints ?? []) lines.push(`Changed: ${relative(item.path)} (${item.reason})`);

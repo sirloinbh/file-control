@@ -11,6 +11,7 @@ const { FcError, remove, recycleBinState, recycleTarget, recycleFiles, recycleFa
 const { grant, fileStamp, stampVolumeReason } = require('./target');
 const { writeRemovalLog, updateRemovalLog } = require('./removalLog');
 const { markerFinder, markerReason } = require('./downloadMarker');
+const { findSidecars } = require('./sidecar');
 
 // A file changed more recently than this may be downloading, so it is kept.
 const RECENT_MS = 5 * 60 * 1000;
@@ -60,7 +61,7 @@ function planSafeRemovals(candidates, access, options = {}) {
   const { now, maxSize = MAX_RECYCLE_SIZE, sameFileId = (stat) => `${stat.dev}:${stat.ino}`, precheck, isChanged, changedReason, pathProblem = longPathReason, extraKeep, toRemoval, entry } = options;
   const checkedAt = now ?? Date.now();
   // recent: files kept only because they changed within the last 5 minutes or have a future time. A confirmation that no longer matches may be because of them (#309).
-  const plan = { removals: [], kept: [], recent: [], interactive: null };
+  const plan = { removals: [], kept: [], recent: [], interactive: null, ...(options.sidecars ? { sidecars: [], sidecarKept: [] } : {}) };
   const markerOf = markerFinder();
   const origin = new Map();
   // Hard-link files put into the delete list: file ID => path. Its other names get their reason decided after the volume check.
@@ -131,7 +132,57 @@ function planSafeRemovals(candidates, access, options = {}) {
   for (const { candidate, other } of linkKept) {
     plan.kept.push(entry({ candidate }, dropped.has(other) ? `Kept ${dropped.get(other)}.` : linkReason(access.target, other)));
   }
+  if (options.sidecars) attachSidecars(plan, access, { checkedAt, state, maxSize, markerOf, pathProblem });
   return plan;
+}
+
+// The subtitle and sidecar files of the videos to delete go to the Recycle Bin with them (#399). They are listed in plan.sidecars after the videos, are part of the confirmation value,
+// and go through the same checks that make sense for them: not changed just now, not a download in progress, a path the Recycle Bin accepts, and not deleted permanently by the volume setting.
+// A sidecar that is itself a candidate or a removal is not added twice. One that fails a check is kept, with the reason, in plan.sidecarKept.
+function attachSidecars(plan, access, { checkedAt, state, maxSize, markerOf, pathProblem }) {
+  const listed = new Set(plan.removals.map((removal) => removal.path.toLowerCase()));
+  for (const removal of plan.removals) {
+    for (const sidecar of findSidecars(removal.path)) {
+      if (listed.has(sidecar.path.toLowerCase())) continue;
+      listed.add(sidecar.path.toLowerCase());
+      const of = removal.path;
+      const keep = (reason) => plan.sidecarKept.push({ path: sidecar.path, of, reason });
+      try {
+        const real = access.delete(sidecar.path);
+        const stat = fs.lstatSync(real, { bigint: true });
+        const hold = holdReason(stat, checkedAt);
+        const marker = hold === null ? markerReason(markerOf(real)) : null;
+        const why = permanentDeleteReason(state, Number(stat.size), maxSize);
+        const long = pathProblem(real);
+        if (real !== sidecar.path || !stat.isFile()) keep('Kept because it changed after it was found.');
+        else if (hold !== null) keep(hold);
+        else if (marker !== null) keep(marker);
+        else if (long !== null) keep(long);
+        else if (why !== null) keep(`Kept ${why}.`);
+        else plan.sidecars.push({ path: real, size: Number(stat.size), stamp: fileStamp(stat), of, reason: `Subtitle or sidecar file of ${path.basename(of)}` });
+      } catch (err) {
+        keep(reasonOf(err));
+      }
+    }
+  }
+}
+
+// What a confirmation value must also cover when sidecars are part of the list: [] (nothing added to the value) or one sorted list of [path, stamp].
+function sidecarDigest(plan) {
+  if (!plan.sidecars?.length) return [];
+  return [plan.sidecars.map((item) => [item.path, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1))];
+}
+
+// The report lines for the sidecars of a removal command: the ones to delete (or deleted) and the ones kept.
+function sidecarLines(result, relative) {
+  const lines = [];
+  if (result.confirmed) {
+    for (const item of result.removedSidecars ?? []) lines.push(`Move to the Recycle Bin: ${relative(item.path)} (${item.reason})`);
+  } else {
+    for (const item of result.sidecars ?? []) lines.push(`To delete: ${relative(item.path)} (${item.reason})`);
+  }
+  for (const item of result.sidecarKept ?? []) lines.push(`Kept: ${relative(item.path)} (${item.reason})`);
+  return lines;
 }
 
 // It turns the result of recycleFiles into failure reasons. If ok, it is undefined.
@@ -232,7 +283,8 @@ function recycleInBatches(removals, log, prepare, on) {
 function runConfirmedRemoval(plan, result, label, logItems, hooks = {}) {
   if (plan.interactive !== true) throw new FcError('Cannot send to the Recycle Bin because it was not confirmed that this is an interactive session. Nothing was deleted.');
   result.confirmed = true;
-  const log = writeRemovalLog(plan.target, label, logItems);
+  const sidecars = plan.sidecars ?? [];
+  const log = writeRemovalLog(plan.target, label, [...logItems, ...sidecars.map((item) => ({ path: item.path, reason: item.reason }))]);
   result.log = log.path;
   const access = grant(plan.target, hooks.access ?? ['delete']);
   hooks.onStart?.();
@@ -268,7 +320,44 @@ function runConfirmedRemoval(plan, result, label, logItems, hooks = {}) {
     // Even if a hook throws, what was already done goes into the record.
     flush();
   }
+  try {
+    removeSidecars(plan, result, log, access, hooks, updates);
+  } finally {
+    flush();
+  }
   return result;
+}
+
+// The sidecars go after the videos, and only those whose video really went to the Recycle Bin. The record has them after the videos, so an index here is the number of videos plus the place in plan.sidecars.
+function removeSidecars(plan, result, log, access, hooks, updates) {
+  const sidecars = plan.sidecars ?? [];
+  if (sidecars.length === 0) return;
+  const offset = plan.removals.length;
+  const gone = new Set(result.removed.map((item) => item.path));
+  const eligible = sidecars.filter((item) => gone.has(item.of));
+  result.removedSidecars = [];
+  result.sidecarKept = [...(plan.sidecarKept ?? [])];
+  for (const [i, item] of sidecars.entries()) {
+    if (gone.has(item.of)) continue;
+    const reason = 'Kept because its video was not sent to the Recycle Bin.';
+    result.sidecarKept.push({ path: item.path, of: item.of, reason });
+    updates.set(offset + i, { outcome: 'failed', error: reason });
+  }
+  // A record seen from the first eligible sidecar on, with the same item objects, so the position of a sidecar in the list is also its position in the record.
+  const view = { ...log, items: eligible.map((item) => log.items[offset + sidecars.indexOf(item)]) };
+  const prepare = hooks.prepareSidecar ?? checkOne;
+  recycleInBatches(eligible, view, (item) => prepare(access, item), {
+    removed: (item, step) => {
+      result.removedSidecars.push(item);
+      updates.set(offset + sidecars.indexOf(item), { outcome: 'removed' });
+      hooks.onRemoved?.(item, step);
+    },
+    failed: (item, reason, step) => {
+      result.failed.push({ path: item.path, reason, sidecar: true });
+      updates.set(offset + sidecars.indexOf(item), { outcome: 'failed', error: reason });
+      hooks.onFailed?.(item, reason, step);
+    },
+  });
 }
 
 // The lines that tell a person why a confirmation value no longer matches. The old list is not kept, so it can name only the files held back by the 5-minute rule.
@@ -276,4 +365,4 @@ function mismatchHints(plan) {
   return plan.recent.map((file) => ({ path: file, reason: 'Held back now because it changed within the last 5 minutes (or has a future time), so it may have been in the list you saw.' }));
 }
 
-module.exports = { mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };
+module.exports = { sidecarDigest, sidecarLines, mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };

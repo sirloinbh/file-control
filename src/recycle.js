@@ -7,6 +7,7 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const { BARE_DEVICE_NAME } = require('./windowsNames');
 const journal = require('./journal');
+const { withSidecarPaths } = require('./sidecar');
 const { config, FcError, claim, ensureItemExists, entryKey, isSameOrUnder, pathKey, perform, realKey, rejectBareDeviceArgs } = require('./base');
 
 // Among the items directly inside the folders given under the target, it returns, as a Map of { relative path from the target -> attribute bits }, those that have the hidden (2) or system (4) attribute (#65).
@@ -709,10 +710,12 @@ function permanentDeleteReason(state, size, fallback = UNKNOWN_RECYCLE_LIMIT) {
 // it deletes nothing and refuses (#81). On a real delete, the Recycle Bin move script looks once more right before deleting.
 // Callers that already made the same judgment (remove-broken and so on) call it with false so that PowerShell is not started once more.
 // permanentHint is whether to attach the --permanent hint to the refusal reason (only the rm command turns it on).
-function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false } = {}) {
+function remove(targets, { permanent = false, dryRun = false, checkVolume = true, permanentHint = false, sidecars = false } = {}) {
   if (!permanent && !config.isWindows) {
     throw new FcError('Deleting to the Recycle Bin works only on Windows. To delete permanently, use --permanent');
   }
+  // The subtitle and sidecar files of a removed video go with it (#399), and they are checked and listed like any other target.
+  if (sidecars) targets = withSidecarPaths(targets);
   const planned = new Set();
   // It checks every target before deleting anything (#129). In rm a b c, if only c cannot be sent, a and b are not deleted either and the reason is reported.
   // The preview goes through the same check, so it does not show a target that would really fail as "Move to the Recycle Bin".

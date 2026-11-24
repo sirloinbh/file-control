@@ -6,7 +6,7 @@ const { grant, walk, fileStamp } = require('./target');
 const { plural } = require('./plural');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./guards');
-const { planSafeRemovals, runConfirmedRemoval, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
 
 // A file that is low quality only by bitrate is not deleted. The bitrate is the file size divided by the length, so if the length is read inflated or
 // the file was partly downloaded, even a normal video comes out low. Until the check that cross-checks the length (#179) exists, it only reports them in the list.
@@ -25,6 +25,7 @@ function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SI
   const found = findLowQuality(dir, { minHeight, minBitrate, entries });
   // Reading the metadata can take time, so it measures by the time after the search.
   const safe = planSafeRemovals(found.low, access, {
+    sidecars: true,
     now,
     maxSize,
     precheck: (file) => (file.byResolution ? null : BITRATE_ONLY),
@@ -39,7 +40,7 @@ function planRemoval(dir, { minHeight, minBitrate, now, maxSize = MAX_RECYCLE_SI
 // A value that stands for the list a person saw. It changes if the standards change, the files to delete increase or decrease, or any one changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify(['remove-low-quality', plan.target, plan.criteria, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-low-quality', plan.target, plan.criteria, items, ...sidecarDigest(plan)])).digest('hex').slice(0, 12);
 }
 
 // It sends low-quality videos under the target to the Recycle Bin. If there is no confirm or it is dryRun, it only makes the list and changes nothing.
@@ -89,6 +90,7 @@ function formatRemoveLowQuality(result) {
   for (const item of result.kept) lines.push(`Kept: ${line(item.file)} ${item.reason}`);
   for (const item of result.undetermined) lines.push(`Undetermined, not deleted: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
+  lines.push(...sidecarLines(result, relative));
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
     for (const item of result.mismatchHints ?? []) lines.push(`Changed: ${relative(item.path)} (${item.reason})`);
