@@ -65,6 +65,10 @@ function ownLog() {
   const log = path.join(os.tmpdir(), `fc-no-real-recycle-${process.pid}-${Date.now()}.log`);
   fs.writeFileSync(log, '');
   process.env.FC_NO_REAL_RECYCLE_LOG = log;
+  // Commands run through execute() write a change journal (#396). Every process of the run writes it into one temporary folder, never the real one.
+  const journalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-test-journal-'));
+  process.env.FCTL_JOURNAL_DIR = journalDir;
+  process.on('exit', () => fs.rmSync(journalDir, { recursive: true, force: true }));
   process.on('exit', () => {
     let text = '';
     try {

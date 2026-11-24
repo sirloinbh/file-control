@@ -10,6 +10,7 @@ const { readSevenZip } = require('./sevenZip');
 const { readZipEntries, ZIP_LOCAL } = require('./zip');
 const { MAX_NAME, LEFTOVER, SYSTEM_FOLDER, REPOSITORY_FOLDER } = require('./guards');
 const { moveWithoutOverwrite } = require('./safeMove');
+const journal = require('./journal');
 
 // Formats read with tar.exe. Layered extensions are looked at first.
 const ARCHIVE = /\.(?:tar\.gz|tar\.bz2|tar\.xz|zip|tar|tgz|tbz2|txz|7z|rar)$/i;
@@ -129,10 +130,11 @@ function extractOne(item, access) {
   const { entries, files } = inspectArchive(archive, path.dirname(item.dest));
   const temp = freshPath(archive, '.fctl-new');
   try {
-    unzip(archive, temp, { checkSpace: false });
+    journal.quiet(() => unzip(archive, temp, { checkSpace: false }));
     checkExtracted(temp, files);
     // renameSync overwrites if the target is a file. The same name may have appeared during extraction, so it uses a move that does not overwrite.
-    if (!moveWithoutOverwrite(temp, dest)) throw new FcError(`Not extracted because the name already exists: ${item.name}`);
+    if (!journal.quiet(() => moveWithoutOverwrite(temp, dest))) throw new FcError(`Not extracted because the name already exists: ${item.name}`);
+    journal.record('create', { path: dest, source: archive });
   } catch (err) {
     removeTemp(temp, err instanceof FcError ? err : new FcError(failureReason(err)));
     throw err;
