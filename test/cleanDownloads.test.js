@@ -19,16 +19,20 @@ const realExecFileSync = childProcess.execFileSync;
 const recycled = [];
 // What the faked "reg query" answers: a function returning the output, or null to fail like a missing key.
 let registry = () => null;
+const regFiles = [];
+// The answer of the faked Recycle Bin state check (interactive|drive type).
+let volume = () => 'True|Fixed\r\n';
 // File names whose move to the Recycle Bin fails.
 const failing = new Set();
 test.mock.method(childProcess, 'execFileSync', (file, args, options) => {
-  if (file === 'reg.exe') {
+  if (path.basename(file) === 'reg.exe') {
+    regFiles.push(file);
     const answer = registry();
     if (answer === null) throw new Error('key not found');
     return answer;
   }
   if (options?.env?.FC_FORMAT_VOLUME !== undefined) return 'NTFS\r\n';
-  const state = volumeStateAnswer(options?.env, () => 'True|Fixed\r\n');
+  const state = volumeStateAnswer(options?.env, () => volume());
   if (state !== undefined) return state;
   if (options?.env?.FC_RECYCLE_FILES !== undefined) {
     const lines = [];
@@ -107,6 +111,8 @@ test.beforeEach(() => {
   recycled.length = 0;
   failing.clear();
   registry = () => null;
+  regFiles.length = 0;
+  volume = () => 'True|Fixed\r\n';
 });
 
 test('--dry-run shows junk, photos, documents and other files in one list and changes nothing', () => {
@@ -280,4 +286,74 @@ test('planClean and formatClean: the plan does not touch files, and junk kept fo
   assert.ok(plan.junk.kept.some((item) => path.basename(item.path) === 'new.tmp'));
   assert.deepStrictEqual(names(dir), before);
   assert.match(formatClean(cleanDownloads(dir, { older: '0d' })), /^Target: /);
+});
+
+test('the registry is read with the full path of reg.exe, never the bare name', () => {
+  registry = () => null;
+  assert.throws(() => downloadsFolder());
+  if (process.platform === 'win32') {
+    assert.ok(regFiles.length > 0 && regFiles.every((file) => path.isAbsolute(file) && /System32[\\/]reg\.exe$/i.test(file)), regFiles.join());
+  }
+});
+
+test('a Downloads folder redirected to a folder not named Downloads (user folder, drive root, Documents) is refused', () => {
+  if (process.platform !== 'win32') return;
+  const home = tempDir();
+  for (const redirected of [home, path.join(home, 'Documents'), path.parse(home).root]) {
+    if (!fs.existsSync(redirected)) fs.mkdirSync(redirected, { recursive: true });
+    registry = () => `X    REG_SZ    ${redirected}\r\n`;
+    assert.throws(() => run(['clean-downloads', '--dry-run']), /is not named Downloads, so it is not cleaned without being asked\. Give the folder/);
+  }
+  const named = path.join(home, '다운로드');
+  fs.mkdirSync(named);
+  registry = () => `X    REG_SZ    ${named}\r\n`;
+  assert.strictEqual(downloadsFolder(), fs.realpathSync.native(named));
+});
+
+test('a file that changes while the junk is being sent stays where it is', () => {
+  const dir = downloads();
+  const code = cleanDownloads(dir, { older: '0d' }).code;
+  const result = cleanDownloads(dir, {
+    older: '0d',
+    confirm: code,
+    onProgress: (line) => {
+      // After the removal log is written and before the moves: a browser is still writing movie.mp4.
+      if (/^Sending to the Recycle Bin/.test(line)) make(dir, { 'movie.mp4': 'a longer video than before' }, new Date(OLD.getTime() + 1000));
+    },
+  });
+  assert.strictEqual(result.mismatch, false);
+  assert.ok(fs.existsSync(path.join(dir, 'movie.mp4')));
+  assert.ok(!fs.existsSync(path.join(dir, 'Videos', 'movie.mp4')));
+  assert.ok(result.sorted.skipped.some((item) => /movie\.mp4/.test(item.path) && /changed after the list was made/.test(item.reason)));
+  assert.ok(fs.existsSync(path.join(dir, 'Audio', 'song.mp3')), 'the other files are still sorted');
+  assert.strictEqual(recycled.length, 4);
+});
+
+test('in a session that is not interactive nothing is deleted, moved or logged', () => {
+  const dir = downloads();
+  const code = cleanDownloads(dir, { older: '0d' }).code;
+  volume = () => 'False|Fixed\r\n';
+  const before = names(dir);
+  assert.throws(() => cleanDownloads(dir, { older: '0d', confirm: code }), /interactive session/);
+  assert.deepStrictEqual(names(dir), before);
+  assert.deepStrictEqual(recycled, []);
+  assert.strictEqual(fs.readdirSync(dir).filter((n) => REMOVAL_LOG.test(n)).length, 0);
+});
+
+test('junk in a subfolder is removed too, while the sorting only touches the files directly in the folder', () => {
+  const dir = tempDir();
+  make(dir, { 'movie.mp4': 'v', 'sub/old.crdownload': 'half', 'sub/keep.mp4': 'stays', 'sub/doc.pdf': 'doc', 'sub/doc (1).pdf': 'doc' });
+  const code = cleanDownloads(dir).code;
+  run(['clean-downloads', dir, `--yes=${code}`]);
+  assert.deepStrictEqual(names(dir), ['Videos', 'Videos/movie.mp4', 'sub', 'sub/doc.pdf', 'sub/keep.mp4']);
+  assert.deepStrictEqual(recycled.map((p) => path.basename(p)).sort(), ['doc (1).pdf', 'old.crdownload']);
+});
+
+test('a stale value through the command line exits with an error and the new list on standard output', () => {
+  const dir = downloads();
+  assert.throws(() => run(['clean-downloads', dir, '--yes=000000000000']), (err) => {
+    assert.match(err.message, /The list differs from when the confirmation value was made/);
+    assert.match(err.output, /The list changed after the confirmation value was made, so nothing was deleted or moved\./);
+    return true;
+  });
 });

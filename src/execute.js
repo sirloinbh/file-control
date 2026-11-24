@@ -318,9 +318,9 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
     }
     case 'clean-downloads': {
       // The folder is optional: without one, the real Downloads folder is looked up (it is named in the first line of the report).
-      if (args.length === 0) checkWholeTarget(command, [downloadsFolder()], flags);
-      else checkWholeTarget(command, args, flags);
-      const target = args.length === 0 ? downloadsFolder() : args[0];
+      const folder = args.length === 0 ? [downloadsFolder()] : args;
+      checkWholeTarget(command, folder, flags);
+      const target = folder[0];
       // A bare --yes would only be reported after the work was planned, so it is refused first (the preview with --dry-run may carry it).
       if (flags.has('yes') && confirm === undefined && !dryRun) throw new fc.FcError(`Give --yes the confirmation value shown in the list: --yes=VALUE. Run ${command} without --yes to see the list and the value. Nothing was deleted or moved.`);
       const result = cleanDownloads(target, { dryRun, confirm, older: values.get('older'), onProgress: progress });

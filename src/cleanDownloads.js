@@ -19,6 +19,8 @@ const { photoFolder } = require('./sortPhotos');
 const { docFolder } = require('./sortDocs');
 
 // The Downloads folder in the registry (a known folder GUID), which also follows a Downloads folder moved to another drive or into OneDrive.
+// An absolute path, never the bare name: Windows looks for a bare name in the current folder first, and the current folder is often Downloads.
+const REG_EXE = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
 const DOWNLOADS_GUID = '{374DE290-123F-4565-9164-39C4925E467B}';
 const SHELL_FOLDERS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders';
 
@@ -26,7 +28,7 @@ function registryDownloads() {
   let output;
   try {
     // It is looked up in the module on every call so that tests can intercept it.
-    output = childProcess.execFileSync('reg.exe', ['query', SHELL_FOLDERS_KEY, '/v', DOWNLOADS_GUID], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10 * 1000 });
+    output = childProcess.execFileSync(REG_EXE, ['query', SHELL_FOLDERS_KEY, '/v', DOWNLOADS_GUID], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10 * 1000 });
   } catch {
     return null;
   }
@@ -36,16 +38,25 @@ function registryDownloads() {
   return path.isAbsolute(expanded) && !expanded.includes('%') ? expanded : null;
 }
 
-// It finds the real Downloads folder instead of hard-coding one: the registry on Windows, else Downloads under the user folder. It must be an existing folder.
+// Only a folder that is named like a Downloads folder is accepted from the lookup. A Downloads folder redirected to the user folder, a drive root or Documents would otherwise be
+// cleaned as a whole (junk is searched below it), so those are refused and the person is asked to give the folder.
+const DOWNLOADS_NAME = /^(?:Downloads?|다운로드)$/i;
+
+// It finds the real Downloads folder instead of hard-coding one: the registry on Windows, else Downloads under the user folder. It must be an existing folder named like Downloads.
 function downloadsFolder() {
   const candidates = [process.platform === 'win32' ? registryDownloads() : null, path.join(os.homedir(), 'Downloads')].filter(Boolean);
+  let refused = null;
   for (const candidate of candidates) {
     try {
-      if (fs.statSync(candidate).isDirectory()) return fs.realpathSync.native(candidate);
+      if (!fs.statSync(candidate).isDirectory()) continue;
+      const real = fs.realpathSync.native(candidate);
+      if (DOWNLOADS_NAME.test(path.basename(real))) return real;
+      refused ??= real;
     } catch {
       // Try the next candidate.
     }
   }
+  if (refused !== null) throw new FcError(`The Downloads folder found (${refused}) is not named Downloads, so it is not cleaned without being asked. Give the folder: clean-downloads <folder>`);
   throw new FcError('Cannot find the Downloads folder. Give the folder: clean-downloads <folder>');
 }
 
@@ -78,7 +89,8 @@ function planClean(dir, { older, now, maxSize = MAX_RECYCLE_SIZE } = {}) {
   };
   const sort = planSortWith(junk.target, rule, { recursive: false });
   // The sort engine leaves unfinished downloads and .tmp files in place and says so; the junk list already says it for those, so it is not said twice.
-  sort.skipped = sort.skipped.filter((item) => !junkKeys.has(key(item.path)));
+  const junkSkipped = new Set(junk.skipped.map((item) => key(item.path)));
+  sort.skipped = sort.skipped.filter((item) => !junkKeys.has(key(item.path)) && !junkSkipped.has(key(item.path)));
   return { target: junk.target, junk, sort, groups, stamps };
 }
 
@@ -106,8 +118,23 @@ function cleanDownloads(dir, { confirm, dryRun = false, older, now, maxSize = MA
     result.junkResult = { removed: junkResult.removed, failed: junkResult.failed, log: junkResult.log, logWarning: junkResult.logWarning };
   }
   // Step 2: sort. A file that stopped being there or a name that was taken in the meantime is skipped and reported.
-  if (plan.sort.moves.length > 0) result.sorted = applySort(plan.sort, { dryRun: false });
+  // Step 1 can take a while, so each file is looked at again right before its move: one that changed since the list was made (still being written, or replaced) stays where it is.
+  const changed = [];
+  const stillSame = plan.sort.moves.filter((move) => {
+    let stat;
+    try {
+      stat = fs.lstatSync(move.from);
+    } catch {
+      changed.push({ path: move.from, reason: 'Left in place because it is gone or cannot be read now.' });
+      return false;
+    }
+    if (`${stat.size}:${stat.mtimeMs}:${stat.ino}` === plan.stamps.get(move.from)) return true;
+    changed.push({ path: move.from, reason: 'Left in place because it changed after the list was made.' });
+    return false;
+  });
+  if (stillSame.length > 0) result.sorted = applySort({ ...plan.sort, moves: stillSame }, { dryRun: false });
   else result.sorted = { moved: [], skipped: [...plan.sort.skipped], failed: [], stay: plan.sort.stay, ignored: plan.sort.ignored };
+  result.sorted.skipped.push(...changed);
   return result;
 }
 
