@@ -236,4 +236,4 @@ function formatSort(result) {
   return lines.join('\n');
 }
 
-module.exports = { KINDS, OTHER_FOLDER, RULES, kindFolder, monthFolder, planSortWith, applySort, sortBy, formatSort };
+module.exports = { KINDS, OTHER_FOLDER, RULES, kindFolder, monthFolder, guardedFolders, guardOf, planSortWith, applySort, sortBy, formatSort };

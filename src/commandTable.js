@@ -30,17 +30,22 @@ const COMMANDS = [
   { name: 'remove-duplicates', usage: 'remove-duplicates <target>', summary: 'show duplicate videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'find-low-quality', usage: 'find-low-quality <target>', summary: 'find low-quality videos below the resolution or bitrate limit (does not touch files)', kind: 'whole', lowQuality: true },
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
-  { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true },
+  { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true, older: true },
   { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true, recursive: true },
   { name: 'sort-docs', usage: 'sort-docs <target> [--by=month]', summary: 'move documents into folders by type (PDF, Word, Excel, Slides, HWP, Text); other files stay (no overwriting)', kind: 'whole', sortBy: true, recursive: true },
   { name: 'sort-photos', usage: 'sort-photos <target>', summary: 'move photos into YYYY/YYYY-MM folders by the date taken (modified time if none) and screenshots into Screenshots (no overwriting)', kind: 'whole', recursive: true },
   { name: 'rename-pattern', usage: 'rename-pattern <target>', summary: 'rename files by rule: --replace=<from>/<to>, --case=upper|lower, --number=<template>, --date-prefix (no overwriting; the whole run is refused on a clash)', kind: 'whole', renamePattern: true, recursive: true },
   { name: 'find-same-content', usage: 'find-same-content <target>', summary: 'group files of any type with exactly the same content (size, then SHA-256; does not touch files)', kind: 'whole' },
   { name: 'remove-same-content', usage: 'remove-same-content <target>', summary: 'show extra copies of identical files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
+  { name: 'find-junk', usage: 'find-junk <target> [--older=30d]', summary: 'list leftover files with the reason each is junk: unfinished downloads, empty and temp files, identical (1) copies, old installers (does not touch files)', kind: 'whole', older: true },
+  { name: 'remove-junk', usage: 'remove-junk <target> [--older=30d]', summary: 'show the junk files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, older: true },
+  { name: 'run', usage: 'run <recipe.json> <target>', summary: 'run a saved list of commands on a target, stopping at the first failure (remove steps only preview)', kind: 'whole' },
   { name: 'du', usage: 'du <target> [--depth=1] [--top=20]', summary: 'show subfolder sizes and file counts, largest first, with a total (does not touch files)', kind: 'whole', du: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
 
+// "a", "a and b", "a, b and c"
+const andList = (items) => (items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 const named = (field) => COMMANDS.filter((command) => command[field]).map((command) => command.name);
 
 // The command list of the help text: the usage padded to one column, then the summary.
@@ -55,7 +60,7 @@ const PERMANENT_COMMANDS = named('permanent');
 const FIND_FLAGS = ['larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort'];
 // Options that carry a value (--name=VALUE) and the command field that allows each one.
 const DU_FLAGS = ['depth', 'top'];
-const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', run: 'undo', replace: 'renamePattern', number: 'renamePattern', case: 'renamePattern', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
+const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', run: 'undo', replace: 'renamePattern', number: 'renamePattern', case: 'renamePattern', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])), older: 'older' };
 const VALUE_FLAGS = new Set(Object.keys(VALUE_FLAG_FIELDS));
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
@@ -72,7 +77,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('force', FORCE_COMMANDS, `${command} does not use --force. --force can be used with ${FORCE_COMMANDS.join(', ')}.`) : undefined,
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
-    ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
+    ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${andList(named(field))}.`)),
     only('date-prefix', named('renamePattern'), '--date-prefix can be used only with rename-pattern.'),
     only('no-sidecars', named('sidecars'), '--no-sidecars can be used only with rename, mv, and rm.'),
     only('list', named('undo'), '--list can be used only with undo.'),

@@ -36,6 +36,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl remove-broken <target>` | Show the list of broken files and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl find-same-content <target>` | Group files of any type with exactly the same content (size first, then SHA-256; does not touch any file) |
 | `fctl remove-same-content <target>` | Show the extra copies of identical files to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl run <recipe.json> <target>` | Run a saved list of commands on a target in order, stopping at the first failure (`--dry-run` previews every step; remove steps only preview) |
 | `fctl du <target> [--depth=N] [--top=N]` | Show each subfolder's total size and file count, largest first, with a total (does not touch any file) |
 | `fctl find <target> [--larger=SIZE] [--smaller=SIZE] [--older=AGE] [--newer=AGE] [--ext=a,b] [--name=GLOB] [--sort=size|date]` | List files that match every condition, with size, date and a total (does not touch any file) |
 | `fctl find-duplicates <target>` | Group videos that have the same name or product number, or the same length (does not touch any file) |
@@ -49,6 +50,8 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl sort-photos <target>` | Move photos into `YYYY/YYYY-MM` folders by the date taken stored in the photo (the modified time if there is none, and the report says so) and screenshots into `Screenshots`. Other files stay; `--recursive` and `--dry-run` work as in `sort-by` |
 | `fctl rename-pattern <target> --replace=<from>/<to> --case=upper or lower --number=<template> --date-prefix` | Rename the files directly in the target by rule (`--recursive` for subfolders). Never overwrites; if two files would get the same name, a name exists, or a new name is not valid on Windows, nothing is renamed and every problem is listed. `--dry-run` previews |
 | `fctl undo [--list] [--run=<id>]` | Show the recent runs of the change journal, or reverse the last run (or the run with that id). Moves and renames go back, created files go to the Recycle Bin, and files sent to the Recycle Bin are restored. It never overwrites, and it leaves a file alone if it changed after the run. `--dry-run` shows the plan. See [Undo](#undo-fctl-undo) below |
+| `fctl find-junk <target> [--older=30d]` | List leftover files with the reason each is junk (unfinished downloads, empty and temp files, identical `name (1).ext` copies, old installers). Does not touch any file |
+| `fctl remove-junk <target> [--older=30d]` | Show the junk list and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends exactly that list to the Recycle Bin |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -287,6 +290,30 @@ fctl du D:Videos --depth=2 --top=10
 - A folder that cannot be read is reported as "Skipped" (and not listed as an empty folder), and the rest is still counted, so the total covers only what could be read.
 - Sizes are file sizes, not space used on disk. A file with several hard links is counted once per path. With `--depth=2` or more, a folder's size includes the folders listed below it, so the rows do not add up to the total.
 - The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--depth=0`, `--top=abc`) is refused before anything is read.
+
+## Run a saved recipe
+
+`fctl run <recipe.json> <target>` runs a saved list of commands on one target, so the same sequence is not typed again for every new folder (#400).
+
+```json
+{
+  "name": "tidy a download",
+  "steps": [
+    { "command": "extract-all" },
+    { "command": "flatten" },
+    "normalize",
+    { "command": "remove-duplicates" }
+  ]
+}
+```
+
+- **Recipe file.** JSON with an optional `name` and a `steps` list (1 to 50 steps). A step is a command name, or `{ "command": ..., "options": [...] }` where `options` are option strings such as `--include-lowercase` or `--min-height=480`. Only commands that take one target folder can be steps (`flatten`, `normalize`, `find`, `du`, `find-same-content`, `remove-duplicates`, and so on). `run` cannot run another recipe, and the file commands (`mv`, `rm`, `zip`, ...) cannot be steps.
+- **Checked first.** The whole recipe is checked before any step runs: bad JSON, an unknown field, an unknown command, an unknown option, an option on the wrong command, or a remove step that is not last are refused, and nothing is touched. The value of an option (`--min-height=abc`) is checked when its step runs.
+- **Steps run in order on the same target** and stop at the first failure. The report shows each step's own report, which steps finished, and which were not run.
+- **`--dry-run`** is passed to every step, so nothing changes. Each step previews against the folder as it is now, so a later step's preview does not see what an earlier step would have changed (a `normalize` preview after `flatten` lists the old layout).
+- **A recipe never confirms or deletes by itself.** `--yes`, `--force`, `--permanent`, `--remove-archives`, `--dry-run` and `--help` are refused inside a recipe. A `remove-*` step (`remove-broken`, `remove-duplicates`, `remove-low-quality`, `remove-same-content`) only shows its list and confirmation value, and it must be the last step so no later step can change the list the value was made for. After the recipe, run that command yourself with `--yes=<value>`. `extract-all --remove-archives` is refused too, because it sends the original archives to the Recycle Bin without showing a list first; run it yourself.
+- **Undo.** Each step goes through the same code as the single command, so the change journal records the whole recipe as one run.
+- The target and the arguments follow the other whole-target commands: a protected path is refused, and only one recipe and one target are accepted. Folder watching and scheduled runs are not part of `run`; if they are added later, a run without a person present should allow only previews and Recycle Bin removal, never permanent deletion.
 
 ## Find broken files
 
@@ -529,6 +556,24 @@ Safety, as in the other rename commands:
 - **What it reverses.** `mv`, `rename`, `flatten`, `collapse`, `normalize`, `product-number`, `sort-by`, `sort-docs` (moves go back); `cp`, `write`, `zip` (the created file goes to the Recycle Bin); `mkdir` (an empty folder is removed); files sent to the Recycle Bin by `rm` and the `remove-*` commands (restored from the Recycle Bin when still there).
 - **What it cannot reverse** is reported as `[irreversible]`: a permanent delete, a file that an overwrite replaced, a folder created by `unzip` or `extract-all` (remove it yourself), and a file that was already there before `write` or `cp`.
 - **Marked as undone.** `undo` writes what it reversed into the journal file, so a run is never reversed twice. `undo` is itself a run in the journal, so `undo --run=<id of that undo>` puts things back again where possible.
+
+## Find and remove junk files (find-junk, remove-junk)
+
+`fctl find-junk <target>` lists files that are safe to throw away, each with the reason, and touches nothing. `fctl remove-junk <target>` shows the same list and a confirmation value; with `--yes=<value>` it writes a removal log and sends exactly that list to the Recycle Bin, the same way as `remove-broken`.
+
+What counts as junk (the reason is printed on each line):
+
+- **Unfinished downloads**: `.crdownload`, `.part`, `.partial`, `.download`, `.opdownload`, once nothing touched them for a day (a paused download can be resumed later; a newer one is shown as `Kept`).
+- **Empty files**: 0 bytes. Files programs need empty are not listed: every dotfile (`.gitkeep`, `.nomedia`, `.npmrc`), `__init__.py`, `py.typed`, `lockfile`, and `*.lock`, `*.pid`, `*.sock`.
+- **Temporary files**: `.tmp`, `.temp`, and Office lock files that start with `~$`.
+- **Copies**: `name (1).ext` (also `name (2).tar.gz` and so on) when `name.ext` is in the same folder and has exactly the same bytes (compared byte by byte, not by name or size). The original is never listed for being the original. If the original is junk by another rule, both go by their own reasons and the copy rule is not used; a copy of a copy (`a (1) (1).pdf`) is not listed; a copy is kept while its original changed in the last 5 minutes. Right before a copy is sent, the original is checked again (by this tool and again by the Recycle Bin step); if it is gone, changed or recent, the copy stays. Comparing two files reads both, so a OneDrive online-only pair is downloaded to be compared.
+- **Installers**: `.exe` and `.msi` directly in the target folder (not in subfolders, where a program's own `setup.exe` or helper lives) that were not touched for `--older` (default `30d`; also `4w`, `6m`, `0d` for any age). The age is measured from the later of the modified and creation times, so a freshly downloaded or copied installer is not old. If the target folder also holds a `.dll`, its `.exe` files are programs and are not listed. The 30-day default is a choice made for this tool; change it with `--older`.
+
+What it leaves alone:
+
+- **Files that changed in the last 5 minutes, have a download marker beside them, or have a future time** are kept and shown as `Kept` (they may still be written), by the same rules as the other `remove-*` commands. So are files on a volume without a Recycle Bin, hard links of a deleted file, and paths too long for the Recycle Bin.
+- **Project folders** (a project marker such as `package.json`), **program folders** (`node_modules` and so on), the Windows system folders, removal logs and leftovers of failed moves (`.fctl-old-*`) are not looked at. A repository inside the target makes it refuse, as in `flatten`.
+- **A changed list makes the value stale.** The value covers each file and its stamp, each copy's original and its stamp, and the reasons, so a changed file or a different `--older` gives a new value and nothing is deleted with the old one.
 
 ## Subtitles and sidecar files
 
