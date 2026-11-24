@@ -292,6 +292,7 @@ test('the subtitle and thumbnail of an extra video copy are listed, covered by t
   assert.match(text, /To delete: sub[\\/]b\.srt \(Subtitle or sidecar file of b\.mp4\)/);
   assert.match(text, /To delete: sub[\\/]b\.jpg \(Subtitle or sidecar file of b\.mp4\)/);
   assert.doesNotMatch(text, /a\.srt/, 'the sidecar of the file to keep is not touched');
+  assert.match(text.split('\n').find((line) => line.startsWith('Groups ')), /^Groups 1, to delete 1, sidecars 2, /, 'the summary counts the sidecars too');
   assert.deepStrictEqual(recycled, []);
   // A sidecar that appears after the preview makes the value stale and nothing is deleted.
   make(dir, { 'sub/b.ass': 'late subtitle' });
@@ -306,6 +307,7 @@ test('the subtitle and thumbnail of an extra video copy are listed, covered by t
   assert.deepStrictEqual([...sent].sort(), ['sub/b.jpg', 'sub/b.mp4', 'sub/b.srt']);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'a.srt')));
   assert.match(formatRemoveSameContent(result), /Move to the Recycle Bin: sub[\\/]b\.srt/);
+  assert.match(formatRemoveSameContent(result).split('\n').find((line) => line.startsWith('Groups ')), /^Groups 1, Recycle Bin 1, sidecars 2, failed 0, /);
   const log = readRecord(result.log);
   assert.deepStrictEqual(log.items.map((item) => rel(dir, item.path)).slice(0, 1), ['sub/b.mp4']);
   assert.ok(log.items.some((item) => /b\.srt$/.test(item.path)));
@@ -331,4 +333,13 @@ test('a sidecar that is the file to keep of another group is not taken along wit
   assert.deepStrictEqual(recycled.map((p) => rel(dir, p)).sort(), ['sub/b.mp4', 'zzz/yyy/c.jpg']);
   assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.jpg')), 'one copy of the image is still there');
   assert.strictEqual(result.removed.length, 2);
+});
+
+test('sidecarCount adds nothing without sidecars and names the kept ones (#422)', () => {
+  const { sidecarCount } = require('../src/removal');
+  assert.strictEqual(sidecarCount({}), '');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [], sidecars: [], sidecarKept: [] }), '');
+  assert.strictEqual(sidecarCount({ confirmed: false, sidecars: [{}, {}] }), ', sidecars 2');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [{}], sidecars: [{}, {}], sidecarKept: [{}] }), ', sidecars 1, sidecars kept 1');
+  assert.strictEqual(sidecarCount({ confirmed: true, removedSidecars: [], sidecarKept: [{}] }), ', sidecars 0, sidecars kept 1');
 });

@@ -174,6 +174,15 @@ function sidecarDigest(plan) {
   return [plan.sidecars.map((item) => [item.path, item.stamp]).sort(([a], [b]) => (a < b ? -1 : 1))];
 }
 
+// The text a summary line adds for sidecars (#422): ", sidecars N" (and ", sidecars kept K"), or "" when the list has no sidecars, so the line is unchanged then.
+// N is what was sent to the Recycle Bin in a confirmed run and what would be in a preview.
+function sidecarCount(result) {
+  const count = result.confirmed ? (result.removedSidecars ?? []).length : (result.sidecars ?? []).length;
+  const kept = (result.sidecarKept ?? []).length;
+  if (count === 0 && kept === 0) return '';
+  return `, sidecars ${count}${kept > 0 ? `, sidecars kept ${kept}` : ''}`;
+}
+
 // The report lines for the sidecars of a removal command: the ones to delete (or deleted) and the ones kept.
 function sidecarLines(result, relative) {
   const lines = [];
@@ -383,4 +392,4 @@ function mismatchHints(plan) {
   return plan.recent.map((file) => ({ path: file, reason: 'Held back now because it changed within the last 5 minutes (or has a future time), so it may have been in the list you saw.' }));
 }
 
-module.exports = { sidecarDigest, sidecarLines, mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };
+module.exports = { sidecarDigest, sidecarLines, sidecarCount, mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };

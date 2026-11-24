@@ -726,3 +726,18 @@ test('fctl remove-duplicates: 목록과 확인값을 내고, 확인값으로 지
   assert.ok(fs.existsSync(f['ABC-123.mp4']));
   assert.match(run(['--help']), /remove-duplicates <target>/);
 });
+
+test('the summary line counts the sidecar files of the copies too (#422)', () => {
+  const dir = tempDir();
+  make(dir, {
+    'ABC-123.mp4': mp4({ seconds: 3600 }),
+    'old/ABC-123 720p.mp4': mp4({ seconds: 3600.4, width: 1280, height: 720 }),
+    'old/ABC-123 720p.srt': 'subtitle',
+    'old/ABC-123 720p.jpg': 'thumb',
+  });
+  const preview = formatRemoveDuplicates(removeDuplicates(dir)).split('\n');
+  assert.match(preview.find((line) => line.startsWith('Groups ')), /^Groups 1, to delete 1, sidecars 2, /);
+  const done = formatRemoveDuplicates(confirmed(dir)).split('\n');
+  assert.match(done.find((line) => line.startsWith('Groups ')), /^Groups 1, Recycle Bin 1, sidecars 2, failed 0, /);
+  assert.strictEqual(recycled.length, 3);
+});
