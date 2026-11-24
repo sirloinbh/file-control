@@ -396,7 +396,7 @@ fctl du D:Videos --depth=2 --top=10
 `fctl find-same-content <target>` groups files of any type (photos, documents, archives, videos, ...) whose bytes are exactly the same (#394). `find-duplicates` only compares videos by name and length; this compares the content itself. It does not touch files, so `--dry-run` gives the same result.
 
 - **How it compares.** Files are grouped by size first, and only files that share a size with another file are hashed with SHA-256, read in chunks (a large file is never loaded whole). Two files are in one group only when the hashes are equal. Empty files are not compared. A file that changes while it is read is skipped.
-- **Which copy is kept.** In each group the file to keep is the one with the shortest path (relative to the target), then the oldest modification time, then the first by name. The list shows the file to keep and the rule: `File to keep: a.bin [shortest path]`.
+- **Which copy is kept.** In each group the file to keep is the one with the shortest path (relative to the target), then the oldest modification time, then the first by name. The list shows the file to keep and the rule: `File to keep: a.bin [shortest path]`. The rule compares the length of the path text, not the folder depth, so read the "File to keep" lines before you confirm; the keep rule cannot know which folder you prefer.
 - **Progress.** It prints "Hashing N files that share a size with another file..." and then "Hashed N of M files so far..." every 100 files.
 - **Skipped places.** A target inside or containing a repository is refused, like the other remove commands. Files inside a Windows system folder, a program folder (`node_modules` and so on) and leftovers of an earlier job are not compared and are listed as skipped.
 
@@ -404,7 +404,7 @@ fctl du D:Videos --depth=2 --top=10
 
 - Run it without `--yes` to see the list and a confirmation value. Run it again with `--yes=<value>` to delete. If anything in the list changed in between, nothing is deleted and the new list is shown. `--dry-run` never deletes.
 - A removal log is written before anything is deleted, and it records the file to keep and the SHA-256 of each copy and what happened to it.
-- Right before each batch it checks again that the file to keep is unchanged, and the Recycle Bin move checks each copy again.
+- Right before each copy is sent, it checks again that the file to keep is unchanged (a changed or missing file to keep means that copy is not deleted), and the Recycle Bin move checks each copy again.
 - The shared keep rules apply: a copy that changed within the last 5 minutes (or has a future time), a copy that is another name (hard link) of the file to keep, a path that cannot be sent to the Recycle Bin, a volume that is not a fixed disk or has no change time, and a file the Recycle Bin settings would delete permanently stay where they are, with the reason in the list. A group whose file to keep changed after the search deletes nothing.
 
 ## Find low-quality videos

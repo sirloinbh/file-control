@@ -58,7 +58,15 @@ function chooseKeeper(files) {
 // It returns { target, checked, hashed, groups, skipped, copies, reclaimable }. A group is { hash, size, files, keep, keepReason }; files are
 // { path, relative, size, mtimeMs, stamp } and include the file to keep. Empty files are not compared (every empty file is "the same").
 // A file that cannot be read or changed while it was read goes to skipped. If onProgress(line) is given, it is called after every PROGRESS_EVERY files hashed.
-function findSameContent(dir, { entries, onProgress } = {}) {
+function findSameContent(dir, { entries, onProgress: sink } = {}) {
+  // A failing progress display does not affect the result.
+  const onProgress = sink && ((line) => {
+    try {
+      sink(line);
+    } catch {
+      // ignored
+    }
+  });
   const access = grant(dir, ['read']);
   const listed = entries ?? walk(access.target);
   rejectRepository(access.target, listed);
@@ -130,7 +138,7 @@ function formatSameContent(result) {
     for (const file of group.files) if (file !== group.keep) lines.push(`  Same content: ${file.relative}`);
   });
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
-  lines.push(`Groups ${result.groups.length}, extra copies ${result.copies} (${formatSize(result.reclaimable)}), checked ${plural(result.checked, 'file')}, skipped ${result.skipped.length}`);
+  lines.push(`Groups ${result.groups.length}, extra copies ${result.copies} (up to ${formatSize(result.reclaimable)}), checked ${plural(result.checked, 'file')}, skipped ${result.skipped.length}`);
   if (result.groups.length > 0) lines.push('Nothing was changed. Use remove-same-content to send the extra copies to the Recycle Bin.');
   return lines.join('\n');
 }

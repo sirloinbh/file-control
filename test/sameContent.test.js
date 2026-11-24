@@ -114,7 +114,7 @@ test('find-same-content lists the groups with the keep rule, changes nothing and
   const output = run(['find-same-content', '--', dir]);
   const result = findSameContent(dir, { onProgress: (line) => lines.push(line) });
   assert.match(formatSameContent(result), /Group 1 \(2 files, 4B each, sha256 [0-9a-f]{12}\):\n {2}File to keep: a\.bin \[shortest path\]\n {2}Same content: sub[\\/]a2\.bin/);
-  assert.match(output, /Groups 1, extra copies 1 \(4B\), checked 2 files, skipped 0/);
+  assert.match(output, /Groups 1, extra copies 1 \(up to 4B\), checked 2 files, skipped 0/);
   assert.match(output, /Nothing was changed/);
   assert.deepStrictEqual(lines, ['Hashing 2 files that share a size with another file...']);
   assert.deepStrictEqual(recycled, []);
@@ -225,6 +225,52 @@ test('hard links to the file to keep are kept, because deleting them frees no sp
   const result = removeSameContent(dir);
   assert.deepStrictEqual(result.removals.map((item) => rel(dir, item.path)), ['sub/copy.bin']);
   assert.ok(result.kept.some((item) => rel(dir, item.path) === 'link.bin' && /hard link/.test(item.reason)));
+});
+
+test('if the file to keep changes after the list is confirmed, its copies are not deleted', () => {
+  const dir = tempDir();
+  make(dir, { 'a.bin': 'AAAA', 'sub/b.bin': 'AAAA' });
+  const code = removeSameContent(dir).code;
+  // The first progress line comes after the removal log is written and before any copy is checked, so the keeper changes in that window.
+  const result = removeSameContent(dir, {
+    confirm: code,
+    onProgress: (line) => {
+      if (/^Sending to the Recycle Bin/.test(line)) make(dir, { 'a.bin': 'ZZZZZZ' });
+    },
+  });
+  assert.strictEqual(result.confirmed, true);
+  assert.deepStrictEqual(recycled, []);
+  assert.strictEqual(result.removed.length, 0);
+  assert.strictEqual(result.failed.length, 1);
+  assert.match(result.failed[0].reason, /file to keep changed/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'sub/b.bin'), 'utf8'), 'AAAA');
+  assert.match(formatRemoveSameContent(result), /Failed: sub[\\/]b\.bin/);
+});
+
+test('a copy that changed after it was hashed is skipped from the group', (t) => {
+  const dir = tempDir();
+  make(dir, { 'a.bin': 'AAAA', 'b.bin': 'AAAA' });
+  const realRead = fs.readSync;
+  t.mock.method(fs, 'readSync', (fd, ...rest) => {
+    const n = realRead(fd, ...rest);
+    if (n > 0 && rest[0].subarray(0, n).toString() === 'AAAA') make(dir, { 'b.bin': 'AAAA' }, new Date(OLD.getTime() + 1000));
+    return n;
+  });
+  const result = findSameContent(dir);
+  assert.ok(result.skipped.some((item) => /changed while it was read/.test(item.reason)));
+  assert.ok(result.groups.every((group) => group.files.length >= 2));
+});
+
+test('progress is passed on every 100 hashed files, and a failing progress display does not stop the search', () => {
+  const dir = tempDir();
+  const files = {};
+  for (let i = 0; i < 120; i += 1) files[`f${i}.bin`] = 'same';
+  make(dir, files);
+  const lines = [];
+  const result = findSameContent(dir, { onProgress: (line) => lines.push(line) });
+  assert.strictEqual(result.groups[0].files.length, 120);
+  assert.deepStrictEqual(lines, ['Hashing 120 files that share a size with another file...', 'Hashed 100 of 120 files so far...']);
+  assert.strictEqual(findSameContent(dir, { onProgress: () => { throw new Error('display broke'); } }).groups.length, 1);
 });
 
 test('options of other commands are refused, and --yes is listed for the new command', () => {
