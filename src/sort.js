@@ -7,6 +7,7 @@ const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant } = require('./target');
 const { moveWithoutOverwrite } = require('./safeMove');
+const journal = require('./journal');
 const { LEFTOVER, PROGRAM_FOLDER, PROJECT_FILE, rejectRepository, rejectProjectAncestor } = require('./guards');
 const { FOLDER_METADATA } = require('./flatten');
 const { listEntries } = require('./walk');
@@ -233,8 +234,15 @@ function applySort(plan, { dryRun = false } = {}) {
       // Remember which folders this move creates, outermost last, so a failed move can remove them again.
       for (let dir = path.dirname(to); dir !== plan.target && !fs.existsSync(dir); dir = path.dirname(dir)) created.push(dir);
       fs.mkdirSync(path.dirname(to), { recursive: true });
-      if (moveWithoutOverwrite(from, to)) result.moved.push({ ...move, from, to });
-      else result.skipped.push({ path: move.from, reason: `Left in place because ${path.relative(plan.target, move.to)} already exists.` });
+      // The move is recorded after the folders it made (outermost first), so undo moves the file back before it removes the empty folder (#427).
+      // A folder is recorded only when a move happened, so a failed or skipped move leaves no step that undo cannot find.
+      const moved = journal.quiet(() => moveWithoutOverwrite(from, to));
+      if (moved) {
+        for (const dir of [...created].reverse()) journal.record('create-dir', { path: dir });
+        journal.record('move', { from, to });
+        created.length = 0;
+        result.moved.push({ ...move, from, to });
+      } else result.skipped.push({ path: move.from, reason: `Left in place because ${path.relative(plan.target, move.to)} already exists.` });
     } catch (err) {
       result.failed.push({ path: move.from, reason: reasonOf(err) });
     }
