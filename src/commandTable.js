@@ -29,6 +29,7 @@ const COMMANDS = [
   { name: 'remove-duplicates', usage: 'remove-duplicates <target>', summary: 'show duplicate videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'find-low-quality', usage: 'find-low-quality <target>', summary: 'find low-quality videos below the resolution or bitrate limit (does not touch files)', kind: 'whole', lowQuality: true },
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
+  { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true },
   { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
@@ -44,8 +45,9 @@ function helpCommandLines() {
 const BASIC_COMMANDS = new Set(COMMANDS.filter((command) => command.kind === 'basic').map((command) => command.name));
 const FORCE_COMMANDS = named('force');
 const PERMANENT_COMMANDS = named('permanent');
+const FIND_FLAGS = ['larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort'];
 // Options that carry a value (--name=VALUE) and the command field that allows each one.
-const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy' };
+const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
 const VALUE_FLAGS = new Set(Object.keys(VALUE_FLAG_FIELDS));
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
@@ -67,4 +69,4 @@ function misplacedFlagMessage(command, flags) {
   ].find((message) => message !== undefined);
 }
 
-module.exports = { COMMANDS, VALUE_FLAGS, helpCommandLines, misplacedFlagMessage };
+module.exports = { COMMANDS, VALUE_FLAGS, FIND_FLAGS, helpCommandLines, misplacedFlagMessage };
