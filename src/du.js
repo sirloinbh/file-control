@@ -66,7 +66,9 @@ function folderSizes(dir, options = {}) {
     }
     for (let level = 1; level <= Math.min(depth, parts.length - 1); level++) bump(parts.slice(0, level).join(path.sep), stat.size);
   }
-  const ordered = [...sums.values()].sort((a, b) => b.size - a.size || a.relative.localeCompare(b.relative));
+  // A folder that could not be read is reported in skipped, not listed as an empty folder.
+  const unreadableFolders = new Set(unreadable.map((item) => item.relative));
+  const ordered = [...sums.values()].filter((sum) => !unreadableFolders.has(sum.relative)).sort((a, b) => b.size - a.size || a.relative.localeCompare(b.relative));
   return { target, depth, top, total, files, folders: ordered.slice(0, top), hidden: Math.max(0, ordered.length - top), own, skipped };
 }
 
@@ -74,8 +76,8 @@ function formatDu(result) {
   const lines = result.folders.map((folder) => `${formatSize(folder.size).padStart(9)}  ${String(folder.files).padStart(7)} ${folder.files === 1 ? 'file ' : 'files'}  ${folder.relative}`);
   if (result.hidden > 0) lines.push(`(${plural(result.hidden, 'more folder')} not shown; raise --top to see them)`);
   if (result.own.files > 0) lines.push(`${formatSize(result.own.size).padStart(9)}  ${String(result.own.files).padStart(7)} ${result.own.files === 1 ? 'file ' : 'files'}  (files directly in the target)`);
-  lines.push(`Total: ${formatSize(result.total)} in ${plural(result.files, 'file')}.`);
   for (const item of result.skipped) lines.push(`Skipped: ${item.relative} (${item.reason})`);
+  lines.push(`Total: ${formatSize(result.total)} in ${plural(result.files, 'file')}${result.skipped.length > 0 ? ' (only what could be read)' : ''}.`);
   return lines.join('\n');
 }
 

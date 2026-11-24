@@ -278,7 +278,8 @@ fctl du D:Videos --depth=2 --top=10
 - **`--depth=N`** (default 1): how many folder levels to list. At depth 1 only the folders directly under the target are listed, and each size includes everything below it. At depth 2 their subfolders are listed too.
 - **`--top=N`** (default 20): how many folders to list. If more were left out, the report says how many.
 - Files directly in the target are shown on one line as "(files directly in the target)". Empty folders are listed with 0 files. Links are not followed or counted.
-- A folder that cannot be read is reported as "Skipped" and the rest is still counted, so the total covers only what could be read.
+- A folder that cannot be read is reported as "Skipped" (and not listed as an empty folder), and the rest is still counted, so the total covers only what could be read.
+- Sizes are file sizes, not space used on disk. A file with several hard links is counted once per path. With `--depth=2` or more, a folder's size includes the folders listed below it, so the rows do not add up to the total.
 - The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--depth=0`, `--top=abc`) is refused before anything is read.
 
 ## Find broken files

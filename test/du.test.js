@@ -82,8 +82,9 @@ test('an unreadable folder is reported and the rest is still counted', (t) => {
   assert.strictEqual(result.skipped.length, 1);
   assert.strictEqual(result.skipped[0].relative, 'mid');
   assert.deepStrictEqual(rows(result)[0], ['big', 10000, 3]);
+  assert.ok(!rows(result).some(([name]) => name === 'mid'), 'an unreadable folder is not listed as an empty one');
   assert.strictEqual(result.total, 11100);
-  assert.match(formatDu(result), /Skipped: mid \(/);
+  assert.match(formatDu(result), /Skipped: mid \([^)]*\)\nTotal: 10\.8KB in 5 files \(only what could be read\)\./);
 });
 
 test('links are not followed or counted', (t) => {
@@ -94,6 +95,7 @@ test('links are not followed or counted', (t) => {
   try {
     fs.symlinkSync(outside, path.join(dir, 'link'), 'junction');
   } catch {
+    t.skip('links cannot be made here');
     return;
   }
   assert.strictEqual(folderSizes(dir).total, 15100);
