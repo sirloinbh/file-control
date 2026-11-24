@@ -36,6 +36,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl remove-broken <target>` | Show the list of broken files and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl find-same-content <target>` | Group files of any type with exactly the same content (size first, then SHA-256; does not touch any file) |
 | `fctl remove-same-content <target>` | Show the extra copies of identical files to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl run <recipe.json> <target>` | Run a saved list of commands on a target in order, stopping at the first failure (`--dry-run` previews every step; remove steps only preview) |
 | `fctl du <target> [--depth=N] [--top=N]` | Show each subfolder's total size and file count, largest first, with a total (does not touch any file) |
 | `fctl find <target> [--larger=SIZE] [--smaller=SIZE] [--older=AGE] [--newer=AGE] [--ext=a,b] [--name=GLOB] [--sort=size|date]` | List files that match every condition, with size, date and a total (does not touch any file) |
 | `fctl find-duplicates <target>` | Group videos that have the same name or product number, or the same length (does not touch any file) |
@@ -284,6 +285,30 @@ fctl du D:Videos --depth=2 --top=10
 - A folder that cannot be read is reported as "Skipped" (and not listed as an empty folder), and the rest is still counted, so the total covers only what could be read.
 - Sizes are file sizes, not space used on disk. A file with several hard links is counted once per path. With `--depth=2` or more, a folder's size includes the folders listed below it, so the rows do not add up to the total.
 - The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--depth=0`, `--top=abc`) is refused before anything is read.
+
+## Run a saved recipe
+
+`fctl run <recipe.json> <target>` runs a saved list of commands on one target, so the same sequence is not typed again for every new folder (#400).
+
+```json
+{
+  "name": "tidy a download",
+  "steps": [
+    { "command": "extract-all", "options": ["--remove-archives"] },
+    { "command": "flatten" },
+    "normalize",
+    { "command": "remove-duplicates" }
+  ]
+}
+```
+
+- **Recipe file.** JSON with an optional `name` and a `steps` list (1 to 50 steps). A step is a command name, or `{ "command": ..., "options": [...] }` where `options` are option strings such as `--include-lowercase` or `--min-height=480`. Only commands that take one target folder can be steps (`flatten`, `normalize`, `find`, `du`, `find-same-content`, `remove-duplicates`, and so on). `run` cannot run another recipe, and the file commands (`mv`, `rm`, `zip`, ...) cannot be steps.
+- **Checked first.** The whole recipe is checked before any step runs: bad JSON, an unknown field, an unknown command, an unknown option, an option on the wrong command, or a remove step that is not last are refused, and nothing is touched. The value of an option (`--min-height=abc`) is checked when its step runs.
+- **Steps run in order on the same target** and stop at the first failure. The report shows each step's own report, which steps finished, and which were not run.
+- **`--dry-run`** is passed to every step, so the whole recipe is previewed and nothing changes.
+- **A recipe never confirms or deletes by itself.** `--yes`, `--force`, `--permanent`, `--dry-run` and `--help` are refused inside a recipe. A `remove-*` step (`remove-broken`, `remove-duplicates`, `remove-low-quality`, `remove-same-content`) only shows its list and confirmation value, and it must be the last step so no later step can change the list the value was made for. After the recipe, run that command yourself with `--yes=<value>`. `extract-all --remove-archives` sends the extracted originals to the Recycle Bin, as it does on its own, so a recipe that lists it as an option does so on purpose.
+- **Undo.** Each step goes through the same code as the single command, so the change journal records the whole recipe as one run.
+- The target and the arguments follow the other whole-target commands: a protected path is refused, and only one recipe and one target are accepted. Folder watching and scheduled runs are not part of `run`; if they are added later, a run without a person present should allow only previews and Recycle Bin removal, never permanent deletion.
 
 ## Find broken files
 

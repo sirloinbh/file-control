@@ -18,6 +18,7 @@ const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 const { findFiles, formatFind } = require('./find');
 const { folderSizes, formatDu } = require('./du');
+const { runRecipe, formatRecipe } = require('./recipe');
 const { findSameContent, formatSameContent, removeSameContent, formatRemoveSameContent } = require('./sameContent');
 const { sortBy, formatSort } = require('./sort');
 const { sortDocs } = require('./sortDocs');
@@ -295,6 +296,15 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       // Found groups are enough as a report. It does not touch files, so --dry-run gives the same result.
       const result = findSameContent(args[0], { onProgress: progress });
       return done(result, formatSameContent(result));
+    }
+    case 'run': {
+      need(args, 2, 'run <recipe.json> <target>');
+      if (args.length > 2) throw new fc.FcError(`Only one recipe and one target are accepted. Wrap paths that contain spaces in quotes: ${args.join(' ')}`);
+      if (/^[A-Za-z]:(?![\\/])/.test(args[1])) throw new fc.FcError(`Write a path after the drive letter: ${args[1]}`);
+      if (flags.has('force') || flags.has('permanent')) throw new fc.FcError('run never overwrites or permanently deletes, so --force and --permanent cannot be used.');
+      // Each step runs through execute, so the change journal records the whole recipe as one run. --dry-run previews every step.
+      const result = runRecipe(args[0], args[1], { execute, dryRun, progress });
+      return failIf(result.failed, result, formatRecipe(result));
     }
     case 'du': {
       checkWholeTarget(command, args, flags);
