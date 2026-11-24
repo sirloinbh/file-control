@@ -318,3 +318,16 @@ test('a file that is not a video has no sidecars removed with it (#416)', () => 
   assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.srt')));
   assert.strictEqual(result.removed.length, 1);
 });
+
+test('a sidecar that is the file to keep of another group is not taken along with its video (#416)', () => {
+  const dir = tempDir();
+  make(dir, { 'k.mp4': 'VIDEO', 'sub/b.mp4': 'VIDEO', 'sub/b.jpg': 'IMAGE', 'zzz/yyy/c.jpg': 'IMAGE' });
+  const preview = removeSameContent(dir);
+  const text = formatRemoveSameContent(preview);
+  assert.match(text, /Kept: sub[\\/]b\.jpg \(Kept because it is part of a group of files with the same content/);
+  assert.doesNotMatch(text, /To delete: sub[\\/]b\.jpg/);
+  const result = removeSameContent(dir, { confirm: preview.code });
+  assert.deepStrictEqual(recycled.map((p) => rel(dir, p)).sort(), ['sub/b.mp4', 'zzz/yyy/c.jpg']);
+  assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.jpg')), 'one copy of the image is still there');
+  assert.strictEqual(result.removed.length, 2);
+});

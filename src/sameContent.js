@@ -214,7 +214,16 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE, onProgress } = {}) 
     }),
     entry: ({ candidate, removal }, reason) => ({ path: (removal ?? candidate).path, set: candidate.set, reason }),
   });
-  return { ...plan, ...safe };
+  // A sidecar that is itself in a group of same-content files (the file to keep of another group, or a copy that was kept) is handled by that group, never taken along with a video:
+  // otherwise the keeper of an image group could go to the Recycle Bin with the video it sits beside, and every copy of that image would be gone.
+  const grouped = new Set(found.groups.flatMap((group) => group.files.map((file) => file.path.toLowerCase())));
+  const sidecars = [];
+  const sidecarKept = [...(safe.sidecarKept ?? [])];
+  for (const item of safe.sidecars ?? []) {
+    if (grouped.has(item.path.toLowerCase())) sidecarKept.push({ path: item.path, of: item.of, reason: 'Kept because it is part of a group of files with the same content, and is handled there.' });
+    else sidecars.push(item);
+  }
+  return { ...plan, ...safe, ...(safe.sidecars ? { sidecars, sidecarKept } : {}) };
 }
 
 // A value that stands for the list a person saw. It changes if any file to delete or to keep, or its content hash, changes.
