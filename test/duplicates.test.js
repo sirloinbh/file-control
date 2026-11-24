@@ -255,7 +255,7 @@ test('fctl find-duplicates: 목록을 내고, 타겟 검사와 옵션 검사를 
   assert.throws(() => run(['find-duplicates']), /Usage: fctl find-duplicates <target>/);
   assert.throws(() => run(['find-duplicates', dir, 'extra']), /Only one target/);
   assert.throws(() => run(['find-duplicates', dir, '--force']), /so --force and --permanent cannot be used/);
-  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality/);
+  assert.throws(() => run(['find-duplicates', dir, '--yes=abc']), /--yes can be used only with remove-broken, remove-duplicates, remove-low-quality, remove-same-content/);
   assert.match(run(['--help']), /find-duplicates <target>/);
 });
 
