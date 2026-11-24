@@ -232,7 +232,7 @@ test('a junk file that changed after the list was made makes the value stale, so
 test('--yes without a value is refused and --older is refused on other commands', () => {
   const dir = tempDir();
   assert.throws(() => run(['remove-junk', dir, '--yes']), /--yes=VALUE/);
-  assert.throws(() => run(['flatten', dir, '--older=30d']), /--older can be used only with find, find-junk and remove-junk\./);
+  assert.throws(() => run(['flatten', dir, '--older=30d']), /--older can be used only with find, find-junk, remove-junk/);
   assert.throws(() => run(['find-junk', dir, '--larger=1MB']), /--larger can be used only with find/);
   assert.throws(() => run(['find-junk', dir, '--yes=abc']), /--yes can be used only with/);
 });
