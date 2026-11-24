@@ -103,7 +103,7 @@ function folderBlock(target, name) {
 // Windows refuses a path of 260 characters or more in many programs, so a move that would make one is skipped.
 const MAX_PATH = 259;
 
-// rule(file) gets { name, path, relative, stat } and returns { folder } (a folder name, or 'a/b' for nested folders), { stay: reason } to leave the file where it is and report it, or { ignore: true } to leave it without a report line.
+// rule(file) gets { name, path, real (the checked real path), relative, stat } and returns { folder } (a folder name, or 'a/b' for nested folders), { stay: reason } to leave the file where it is and report it, or { ignore: true } to leave it without a report line. A { folder, note } decision shows the note after the move in the report.
 // It does not touch files. Returns { target, moves, stay, ignored, skipped }; stay is the count of files already in the right folder and ignored the count of files the rule does not concern.
 function planSortWith(dir, rule, { recursive = false } = {}) {
   const access = grant(dir, ['read', 'write']);
@@ -144,7 +144,7 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
     try {
       const from = access.read(entry.path);
       const stat = fs.lstatSync(from);
-      const decision = rule({ name, path: entry.path, relative: entry.relative, stat });
+      const decision = rule({ name, path: entry.path, real: from, relative: entry.relative, stat });
       // ignore: the rule does not concern this file (a photo rule and a text file). It is counted but not listed.
       if (decision.ignore) {
         ignored++;
@@ -178,7 +178,7 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
         continue;
       }
       taken.add(nameKey(toRelative));
-      moves.push({ from, to, folder: decision.folder, name });
+      moves.push({ from, to, folder: decision.folder, name, ...(decision.note === undefined ? {} : { note: decision.note }) });
     } catch (err) {
       skipped.push({ path: entry.path, reason: reasonOf(err) });
     }
@@ -229,7 +229,7 @@ function formatSort(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.moved) lines.push(`${prefix}Move: ${relative(item.from)} -> ${relative(item.to)}`);
+  for (const item of result.moved) lines.push(`${prefix}Move: ${relative(item.from)} -> ${relative(item.to)}${item.note === undefined ? '' : ` (${item.note})`}`);
   for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
   lines.push(`${prefix}Move ${plural(result.moved.length, 'file')}, already in place ${result.stay}, skipped ${result.skipped.length}, failed ${result.failed.length}${result.ignored > 0 ? `, not concerned ${result.ignored}` : ''}`);
