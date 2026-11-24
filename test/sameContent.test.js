@@ -306,7 +306,7 @@ test('the subtitle and thumbnail of an extra video copy are listed, covered by t
   assert.deepStrictEqual([...sent].sort(), ['sub/b.jpg', 'sub/b.mp4', 'sub/b.srt']);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'a.srt')));
   assert.match(formatRemoveSameContent(result), /Move to the Recycle Bin: sub[\\/]b\.srt/);
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const log = readRecord(result.log);
   assert.deepStrictEqual(log.items.map((item) => rel(dir, item.path)).slice(0, 1), ['sub/b.mp4']);
   assert.ok(log.items.some((item) => /b\.srt$/.test(item.path)));
 });
