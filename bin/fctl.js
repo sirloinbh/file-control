@@ -26,7 +26,8 @@ Options:
   --name=GLOB   with find, only file names matching a pattern (* and ?)
   --sort=size|date  with find, list the largest or newest first (default: by path)
   --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time); with sort-docs, --by=month adds a month folder inside each type folder
-  --recursive   with sort-by, sort-docs and sort-photos, also sort files in subfolders
+  --recursive   with sort-by, sort-docs, sort-photos and rename-pattern, also handle files in subfolders
+  --replace=F/T --case=upper|lower --number=TEMPLATE --date-prefix   the rules of rename-pattern
   --list        with undo, show the recent runs of the change journal
   --run=ID      with undo, reverse the run with this id instead of the last one
   --depth=N     with du, how many folder levels to list (default: 1)

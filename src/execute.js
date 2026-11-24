@@ -10,6 +10,7 @@ const { addProductNumbers, formatProductNumbers } = require('./productName');
 const { extractArchives, formatExtractions } = require('./extract');
 const { collapse, formatCollapse } = require('./collapse');
 const { normalizeFiles, formatNormalize } = require('./normalizeFiles');
+const { renamePattern, formatRenamePattern } = require('./renamePattern');
 const { findBroken, formatBroken } = require('./broken');
 const { removeBroken, formatRemoveBroken } = require('./removeBroken');
 const { findDuplicateNames, formatDuplicateNames } = require('./duplicates');
@@ -30,7 +31,7 @@ const { sortPhotos } = require('./sortPhotos');
 const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run', 'no-sidecars']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run', 'no-sidecars', 'replace', 'number', 'case', 'date-prefix']);
 
 function parse(argv) {
   const flags = new Set();
@@ -225,6 +226,12 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       const result = normalizeFiles(args[0], { dryRun, includeLowercase: flags.has('include-lowercase') });
       // Overlapping or skipped items are enough as a report. It ends as a failure only when there is a failed file.
       return failIf(result.failed.length > 0, result, formatNormalize(result));
+    }
+    case 'rename-pattern': {
+      checkWholeTarget(command, args, flags);
+      const result = renamePattern(args[0], { dryRun, replace: values.get('replace'), number: values.get('number'), caseMode: values.get('case'), datePrefix: flags.has('date-prefix'), recursive: flags.has('recursive') });
+      // A refused run (a name problem) and a failed file both end as a failure.
+      return failIf(result.refused || result.failed.length > 0, result, formatRenamePattern(result));
     }
     case 'collapse': {
       checkWholeTarget(command, args, flags);

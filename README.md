@@ -48,6 +48,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
 | `fctl sort-docs <target> [--by=month]` | Move documents into folders by type (`PDF`, `Word`, `Excel`, `Slides`, `HWP`, `Text`, `Other documents`). Files that are not documents stay. `--by=month` adds a month folder inside each type folder (`PDF/2026-11`); `--recursive` and `--dry-run` work as in `sort-by` |
 | `fctl sort-photos <target>` | Move photos into `YYYY/YYYY-MM` folders by the date taken stored in the photo (the modified time if there is none, and the report says so) and screenshots into `Screenshots`. Other files stay; `--recursive` and `--dry-run` work as in `sort-by` |
+| `fctl rename-pattern <target> --replace=<from>/<to> --case=upper or lower --number=<template> --date-prefix` | Rename the files directly in the target by rule (`--recursive` for subfolders). Never overwrites; if two files would get the same name, a name exists, or a new name is not valid on Windows, nothing is renamed and every problem is listed. `--dry-run` previews |
 | `fctl undo [--list] [--run=<id>]` | Show the recent runs of the change journal, or reverse the last run (or the run with that id). Moves and renames go back, created files go to the Recycle Bin, and files sent to the Recycle Bin are restored. It never overwrites, and it leaves a file alone if it changed after the run. `--dry-run` shows the plan. See [Undo](#undo-fctl-undo) below |
 | `fctl find-junk <target> [--older=30d]` | List leftover files with the reason each is junk (unfinished downloads, empty and temp files, identical `name (1).ext` copies, old installers). Does not touch any file |
 | `fctl remove-junk <target> [--older=30d]` | Show the junk list and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends exactly that list to the Recycle Bin |
@@ -525,6 +526,26 @@ fctl du D:Videos --depth=2 --top=10
 - **Screenshots** (names starting with `Screenshot_`, `Screenshot 2026...`, `Screen Shot ...`, `스크린샷` or `화면 캡처`; a name like `Screenshots_from_trip.jpg` is not one) go to a top-level `Screenshots` folder, whatever their date.
 - **Photo files are** `.jpg .jpeg .png .heic .heif .tif .tiff .webp .dng .cr2 .nef .arw`. Everything else (videos, documents, GIFs) stays and is only counted as "not concerned".
 - **The layout is a default** (year, then month inside it). A photo already below its year folder stays where it is, so a second run changes nothing. The rule is in `photoFolder` in `src/sortPhotos.js`; the EXIF reader is `src/exif.js` (reads the first 256 KB of a JPEG and at most 8 MB of a TIFF, and gives up quietly on a damaged file).
+
+## Rename by rule (rename-pattern)
+
+`fctl rename-pattern <target>` renames many files at once by rule (#398). Give one or more rules; they always run in this order on the name without its extension (the extension stays):
+
+1. `--replace=<from>/<to>`: replace every match of a regular expression. `$1` in `<to>` is a group; `<from>/<to>/i` ignores case; write a slash inside a part as a backslash and a slash (`\/`).
+2. `--case=upper` or `--case=lower`: change the case of the name.
+3. `--number=<template>`: replace the name with the template. `{n}` is the number, `{n:3}` pads it to 3 digits (`사진_{n:3}` gives `사진_001.jpg`), `{name}` is the name after rules 1 and 2, `{{` and `}}` are braces. Numbers start at 1 and follow the name order, where numbers inside names compare as numbers (`2` before `10`), separately in each folder.
+4. `--date-prefix`: put the modified date and a space in front (`2024-01-05 name.txt`), unless the name already starts with it.
+
+Safety, as in the other rename commands:
+
+- **No overwriting, all or nothing.** If a new name is already taken, two files would get the same name, or a new name is not valid on Windows (a character it does not allow, a trailing dot or space, over 255 characters), nothing is renamed. Every problem is listed as `Name problem: ...`, and the command ends with an error.
+- A name taken for a video's subtitle or sidecar file, and a name Windows opens as a device (`CON`, `NUL`), also refuse the whole run.
+- A new name counts as taken even when the file that has it is about to be renamed too, so shifting names (`1.txt`, `2.txt` to `2.txt`, `3.txt`) is refused. Rename in a way that gives new names, then rename again.
+- In `<to>`, `$1` and the other JavaScript replacement patterns (`$&`) work, and a backslash stays a backslash (which Windows does not allow in a name).
+- Files that are left alone (see below) are taken out before numbering, so the numbers have no gaps.
+- Only the files directly in the target are handled; `--recursive` includes subfolders. Links, project and program folders, web page resource folders and unfinished downloads are skipped, as in `normalize`.
+- A video's subtitle and sidecar files take its new name and are not renamed or numbered on their own (see Subtitles and sidecar files).
+- A rename that only changes the case works. `--dry-run` shows the plan. The change is in the change journal, so `fctl undo` reverses it.
 
 ## Undo (fctl undo)
 
