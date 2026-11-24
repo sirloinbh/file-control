@@ -38,6 +38,7 @@ const COMMANDS = [
   { name: 'remove-same-content', usage: 'remove-same-content <target>', summary: 'show extra copies of identical files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'find-junk', usage: 'find-junk <target> [--older=30d]', summary: 'list leftover files with the reason each is junk: unfinished downloads, empty and temp files, identical (1) copies, old installers (does not touch files)', kind: 'whole', older: true },
   { name: 'remove-junk', usage: 'remove-junk <target> [--older=30d]', summary: 'show the junk files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, older: true },
+  { name: 'run', usage: 'run <recipe.json> <target>', summary: 'run a saved list of commands on a target, stopping at the first failure (remove steps only preview)', kind: 'whole' },
   { name: 'du', usage: 'du <target> [--depth=1] [--top=20]', summary: 'show subfolder sizes and file counts, largest first, with a total (does not touch files)', kind: 'whole', du: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
