@@ -215,3 +215,40 @@ test('.ts files are not videos', () => {
   assert.strictEqual(kindFolder('app.ts'), 'Other');
   assert.strictEqual(kindFolder('clip.m2ts'), 'Videos');
 });
+
+// ---- sidecars go with their video (#426) ----
+
+test('sort-by kind: a video and its subtitle and thumbnail end up in the same folder (#426)', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt', 'a.en.srt', 'a.jpg', 'doc.pdf', 'x.jpg']);
+  const result = sortBy(dir, { by: 'kind' });
+  assert.deepStrictEqual(listAll(dir), ['Documents', 'Documents/doc.pdf', 'Images', 'Images/x.jpg', 'Videos', 'Videos/a.en.srt', 'Videos/a.jpg', 'Videos/a.mp4', 'Videos/a.srt']);
+  assert.strictEqual(result.moved.length, 6);
+  assert.match(formatSort(result), /Move: a\.srt -> Videos[\\/]a\.srt \(sidecar of a\.mp4\)/);
+});
+
+test('sort-by kind: a sidecar next to a video that is already in place stays with it (#426)', () => {
+  const dir = tempDir();
+  make(dir, ['Videos/a.mp4', 'Videos/a.srt']);
+  const result = sortBy(dir, { by: 'kind' });
+  assert.deepStrictEqual(listAll(dir), ['Videos', 'Videos/a.mp4', 'Videos/a.srt']);
+  assert.strictEqual(result.moved.length, 0);
+});
+
+test('sort-by kind: a name clash on a sidecar leaves the video and all its sidecars in place (#426)', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt', 'a.jpg', 'Videos/a.srt']);
+  const result = sortBy(dir, { by: 'kind' });
+  assert.deepStrictEqual(listAll(dir), ['Videos', 'Videos/a.srt', 'a.jpg', 'a.mp4', 'a.srt']);
+  assert.strictEqual(result.moved.length, 0);
+  assert.match(formatSort(result), /Skipped: a\.mp4 \(Left in place because Videos[\\/]a\.srt already exists/);
+});
+
+test('sort-by month: sidecars follow the video even when their own times differ (#426)', () => {
+  const dir = tempDir();
+  make(dir, ['a.mp4', 'a.srt']);
+  fs.utimesSync(path.join(dir, 'a.mp4'), new Date(2026, 4, 5), new Date(2026, 4, 5));
+  fs.utimesSync(path.join(dir, 'a.srt'), new Date(2020, 1, 5), new Date(2020, 1, 5));
+  sortBy(dir, { by: 'month' });
+  assert.deepStrictEqual(listAll(dir), ['2026-05', '2026-05/a.mp4', '2026-05/a.srt']);
+});
