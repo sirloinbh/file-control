@@ -56,7 +56,7 @@ function listFiles(target, recursive) {
   } catch (err) {
     throw new FcError(`Cannot read the folder: ${target} (${err.code})`);
   }
-  return dirents.map((dirent) => ({
+  return dirents.filter((dirent) => !(dirent.isDirectory() && dirent.name.toLowerCase() === '.fctl-journal')).map((dirent) => ({
     path: path.join(target, dirent.name),
     relative: dirent.name,
     type: dirent.isSymbolicLink() ? 'link' : dirent.isDirectory() ? 'dir' : 'file',

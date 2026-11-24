@@ -51,7 +51,6 @@ let skew = HOUR;
 test.mock.method(Date, 'now', () => realNow() + skew);
 
 const { removeDuplicates, formatRemoveDuplicates } = require('../src/removeDuplicates');
-const { REMOVAL_LOG } = require('../src/removalLog');
 const { run } = require('../bin/fctl');
 
 const OLD = new Date(realNow() - HOUR);
@@ -104,7 +103,7 @@ function make(dir, files) {
   return made;
 }
 
-const logs = (dir) => fs.readdirSync(dir).filter((name) => REMOVAL_LOG.test(name));
+const { logs, readRecord } = require('./removalRecord');
 const confirmed = (dir, options = {}) => removeDuplicates(dir, { ...options, confirm: removeDuplicates(dir, options).code });
 const codeIn = (report) => /--yes=([0-9a-f]+)/.exec(report)[1];
 
@@ -156,7 +155,7 @@ test('확인값이 맞으면 기록을 먼저 남기고 남길 파일과 길이�
   for (const name of ['ABC-123.mp4', 'c/ABC-123 trailer.mp4', 'x.mp4', 'y.mp4']) assert.ok(fs.existsSync(f[name]), name);
   assert.deepStrictEqual(result.kept.map((item) => [item.path, item.reason]), [[f['c/ABC-123 trailer.mp4'], 'Kept because the duration differs from the file to keep, so it may not be the same video.']]);
   assert.strictEqual(result.lengthOnly, 1);
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const log = readRecord(result.log);
   assert.strictEqual(log.kind, 'duplicate videos');
   assert.deepStrictEqual(log.items.map((item) => item.path).sort(), recycled.slice().sort());
   assert.ok(log.items.every((item) => item.details.keep === f['ABC-123.mp4'] && item.details.group === 'number ABC-123'));

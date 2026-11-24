@@ -16,6 +16,7 @@ const { remove } = require('./recycle');
 const { restoreFromRecycleBin } = require('./recycle');
 const { moveWithoutOverwrite } = require('./safeMove');
 const journal = require('./journal');
+const { protectedReason } = require('./protectedPaths');
 
 const LIST_LIMIT = 20;
 
@@ -43,7 +44,7 @@ function listRuns({ dir = journal.journalDir(), limit = LIST_LIMIT } = {}) {
 }
 
 function formatRuns(runs) {
-  if (runs.length === 0) return 'No runs are recorded in the journal.';
+  if (runs.length === 0) return 'No runs are recorded in the journal of this folder. The journal is in the folder the command worked on: run undo from there, or give --target=<folder>.';
   return runs.map((run) => `${run.id}  ${run.startedAt}  ${run.command.padEnd(14)}  ${String(run.steps).padStart(4)} steps  ${run.status}${run.undone ? '  (undone)' : ''}`).join('\n');
 }
 
@@ -57,7 +58,7 @@ function pickRun(id, dir) {
     return found[0];
   }
   const latest = runs.find((run) => !run.undone && run.command !== 'undo' && run.steps > 0);
-  if (!latest) throw new FcError('There is no run to undo. Run undo --list to see the runs.');
+  if (!latest) throw new FcError('There is no run to undo here. Run undo --list to see the runs, from the folder the command worked on or with --target=<folder>.');
   return latest;
 }
 
@@ -133,6 +134,12 @@ const irreversible = (message) => ({ status: 'irreversible', message });
 
 // The reverse of one step. In a preview it only says what it would do, through the overlay of the earlier planned steps.
 function reverse(step, view) {
+  // A journal is a file in a folder, so whatever it names is checked as if it came from the command line: nothing in a protected place is touched.
+  for (const p of [step.from, step.to, step.path]) {
+    if (typeof p !== 'string') continue;
+    const reason = protectedReason(p);
+    if (reason !== null) return mismatch(`${p}: not touched because it is a protected path (${reason})`);
+  }
   const act = (verb, fn) => {
     if (!view.dryRun) fn();
     return done(verb);
@@ -188,6 +195,8 @@ function undo({ id, dryRun = false, dir = journal.journalDir() } = {}) {
   const run = pickRun(id, dir);
   const read = journal.readJournal(run.file);
   if (read.undone) throw new FcError(`The run ${run.id} was already undone.`);
+  const untrusted = journal.untrustedReason(run.file, read.run);
+  if (untrusted !== null) throw new FcError(untrusted);
   const view = makeView(dryRun);
   const results = [];
   for (const step of [...read.steps].reverse()) {

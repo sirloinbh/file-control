@@ -64,6 +64,7 @@ test.mock.method(Date, 'now', () => realNow() + 2 * DAY);
 const { downloadsFolder, planClean, cleanDownloads, formatClean } = require('../src/cleanDownloads');
 const { run } = require('../bin/fctl');
 const { REMOVAL_LOG } = require('../src/removalLog');
+const { logs, readRecord } = require('./removalRecord');
 
 const OLD = new Date(realNow() - HOUR);
 const JUST_NOW = () => new Date(realNow() + 2 * DAY - 60 * 1000);
@@ -171,9 +172,8 @@ test('with the confirmation value, junk is in the Recycle Bin and the rest is in
   assert.match(out, /Moved \(photos\): photo\.jpg/);
   assert.match(out, /Recycle Bin 4, moved: photos 2, documents 2, other 4, failed 0, kept 1, skipped 0/);
   assert.match(out, /Removal log: /);
-  const logs = fs.readdirSync(dir).filter((n) => REMOVAL_LOG.test(n));
-  assert.strictEqual(logs.length, 1);
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, logs[0]), 'utf8')).items.length, 4);
+  assert.strictEqual(logs(dir).length, 1);
+  assert.strictEqual(readRecord(logs(dir)[0]).items.length, 4);
 });
 
 test('a second run has nothing to clean', () => {
@@ -182,7 +182,7 @@ test('a second run has nothing to clean', () => {
   const out = run(['clean-downloads', dir, '--older=0d']);
   assert.match(out, /Nothing to clean\./);
   assert.match(out, /To delete 0 .*, to move: photos 0, documents 0, other 0, kept 1, skipped 0/);
-  assert.strictEqual(fs.readdirSync(dir).filter((n) => REMOVAL_LOG.test(n)).length, 1, 'the removal log stays in the folder and is not sorted');
+  assert.strictEqual(logs(dir).length, 1, 'the first run is the only one with a removal record');
 });
 
 test('removals are never permanent: --permanent and --force are refused', () => {
@@ -337,7 +337,7 @@ test('in a session that is not interactive nothing is deleted, moved or logged',
   assert.throws(() => cleanDownloads(dir, { older: '0d', confirm: code }), /interactive session/);
   assert.deepStrictEqual(names(dir), before);
   assert.deepStrictEqual(recycled, []);
-  assert.strictEqual(fs.readdirSync(dir).filter((n) => REMOVAL_LOG.test(n)).length, 0);
+  assert.deepStrictEqual(logs(dir), []);
 });
 
 test('junk in a subfolder is removed too, while the sorting only touches the files directly in the folder', () => {

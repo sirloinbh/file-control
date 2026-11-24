@@ -168,7 +168,8 @@ function checkChain(item, access) {
     if (real !== folder) throw new FcError(`The path changed after planning: ${folder} -> ${real}`);
     if (!fs.lstatSync(real).isDirectory()) throw new FcError(`No longer a folder after planning: ${real}`);
     if (index === item.folders.length - 1) break;
-    const inside = fs.readdirSync(real);
+    // The change journal of an earlier command (#415) goes to the Recycle Bin with the folder, so it does not count as content.
+    const inside = fs.readdirSync(real).filter((name) => name.toLowerCase() !== '.fctl-journal');
     if (inside.length !== 1 || inside[0] !== path.basename(item.folders[index + 1])) throw new FcError(`The folder content changed after planning: ${real}`);
   }
 }
@@ -215,7 +216,7 @@ class EmptiedHasFiles extends FcError {}
 
 // It sends only empty folders to the Recycle Bin. If there are files, it does not delete.
 function removeEmptied(emptied) {
-  const filled = fs.readdirSync(emptied, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory());
+  const filled = fs.readdirSync(emptied, { recursive: true, withFileTypes: true }).find((entry) => !entry.isDirectory() && !path.relative(emptied, entry.parentPath).split(path.sep).some((part) => part.toLowerCase() === '.fctl-journal'));
   if (filled) throw new EmptiedHasFiles(`Collapsed, but not deleted because the emptied folder contains files: ${emptied}`);
   remove([emptied]);
 }

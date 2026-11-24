@@ -66,6 +66,7 @@ function make(dir, files, when = OLD) {
 const rel = (dir, file) => path.relative(dir, file).split(path.sep).join('/');
 const relGroups = (dir, result) => result.groups.map((group) => group.files.map((file) => rel(dir, file.path)).sort());
 const notLog = (name) => !REMOVAL_LOG.test(name);
+const { logs, readRecord } = require('./removalRecord');
 
 test.beforeEach(() => {
   recycled.length = 0;
@@ -174,8 +175,8 @@ test('remove-same-content --yes=VALUE keeps one file per group and logs the rest
   assert.deepStrictEqual(recycled.map((file) => rel(dir, file)).sort(), ['copy.bin', 'q/p2.jpg', 'sub/c.bin']);
   assert.deepStrictEqual(fs.readdirSync(dir).filter(notLog).sort(), ['a.bin', 'p.jpg', 'q', 'solo.txt', 'sub']);
   assert.match(final, /Groups 2, Recycle Bin 3, failed 0/);
-  const [name] = fs.readdirSync(dir).filter((entry) => !notLog(entry));
-  const log = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+  assert.strictEqual(logs(dir).length, 1);
+  const log = readRecord(logs(dir)[0]);
   assert.strictEqual(log.kind, 'files with the same content');
   assert.deepStrictEqual(log.items.map((item) => rel(dir, item.path)).sort(), ['copy.bin', 'q/p2.jpg', 'sub/c.bin']);
   assert.ok(log.items.every((item) => item.outcome === 'removed' && item.details.sha256.length === 64 && item.details.keep));
@@ -305,7 +306,7 @@ test('the subtitle and thumbnail of an extra video copy are listed, covered by t
   assert.deepStrictEqual([...sent].sort(), ['sub/b.jpg', 'sub/b.mp4', 'sub/b.srt']);
   assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'a.srt')));
   assert.match(formatRemoveSameContent(result), /Move to the Recycle Bin: sub[\\/]b\.srt/);
-  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  const log = readRecord(result.log);
   assert.deepStrictEqual(log.items.map((item) => rel(dir, item.path)).slice(0, 1), ['sub/b.mp4']);
   assert.ok(log.items.some((item) => /b\.srt$/.test(item.path)));
 });

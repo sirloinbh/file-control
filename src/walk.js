@@ -5,6 +5,9 @@ const path = require('node:path');
 const { FcError } = require('./commands');
 const { resolveTarget } = require('./protectedPaths');
 
+// The change journal of fctl lives in this folder inside the folder it worked on (#415). A listing never shows it, so no command moves, renames, counts or removes it by accident.
+const JOURNAL_FOLDER = '.fctl-journal';
+
 // It reads under the target recursively and returns a list of files, folders, and links. It does not include the target itself.
 // Symbolic links and junctions are included only as type 'link' and are not followed into.
 // The result is sorted by relative path, and a folder comes before the items inside it.
@@ -54,6 +57,7 @@ function listEntries(root, unreadable) {
     }
     ensureUnmoved(dir);
     for (const dirent of dirents) {
+      if (dirent.name.toLowerCase() === JOURNAL_FOLDER && dirent.isDirectory()) continue;
       const relative = path.join(relDir, dirent.name);
       const type = dirent.isSymbolicLink() ? 'link' : dirent.isDirectory() ? 'dir' : 'file';
       entries.push({ path: path.join(root, relative), relative, type });
@@ -79,4 +83,4 @@ function compareName(a, b) {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
-module.exports = { walk, listEntries, compareRelative };
+module.exports = { walk, listEntries, compareRelative, JOURNAL_FOLDER };

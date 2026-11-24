@@ -4,20 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { FcError } = require('./commands');
 const { grant } = require('./target');
+const journal = require('./journal');
 
-// The number of attempts to find a name by adding a number after it so that an existing record is not overwritten even if run several times in the same second
-const MAX_NAME_ATTEMPTS = 1000;
 // The version of the record layout. 1: every item has an `outcome` (pending, removed, failed) and a failed item has `error`.
 const LOG_VERSION = 1;
-// The record file name. It is also used to leave record files out of the broken-file and duplicate judgments.
+// The name of the separate record file that older versions wrote (#415 moved the record into the change journal). It is still used to leave such old files out of the broken-file and duplicate judgments.
 const REMOVAL_LOG = /^fctl-removed-\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?\.json$/i;
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');
-
-function nameStamp(now) {
-  const date = `${pad(now.getFullYear(), 4)}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  return `${date}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-}
 
 // It is a record meant to be read by a person, so it is written in local time with the time zone, not UTC.
 function localTime(now) {
@@ -42,6 +36,7 @@ function describeItem(access, item) {
   }
   if (!stat.isFile()) throw new FcError(`Cannot record it because it is not a file: ${label}`);
   if (REMOVAL_LOG.test(path.basename(real))) throw new FcError(`A removal log cannot be a removal target: ${label}`);
+  if (real.split(path.sep).some((part) => part.toLowerCase() === journal.JOURNAL_FOLDER)) throw new FcError(`The change journal cannot be a removal target: ${label}`);
   return { path: real, size: stat.size, reason: item.reason, outcome: 'pending', ...(item.details === undefined ? {} : { details: item.details }) };
 }
 
@@ -58,53 +53,25 @@ function describeItems(access, items) {
   return described;
 }
 
-// It finds a free name. If dryRun, it does not create it and returns only the path; otherwise it creates it with wx and returns the fd too.
-// It does not touch an existing item. Opening a broken junction with wx would create a folder outside the target that the junction points to, so it looks first with lstat.
-function claimName(access, stamp, dryRun) {
-  for (let attempt = 1; attempt <= MAX_NAME_ATTEMPTS; attempt += 1) {
-    const candidate = path.join(access.target, `fctl-removed-${stamp}${attempt === 1 ? '' : `-${attempt}`}.json`);
-    try {
-      if (fs.lstatSync(candidate, { throwIfNoEntry: false })) continue;
-      const file = access.write(candidate);
-      if (dryRun) return { file };
-      return { file, fd: fs.openSync(file, 'wx') };
-    } catch (err) {
-      if (err.code === 'EEXIST') continue;
-      if (err instanceof FcError) throw err;
-      throw new FcError(`Could not create the log file: ${candidate} (${err.code})`);
-    }
-  }
-  throw new FcError(`Could not choose a log file name: fctl-removed-${stamp}`);
-}
-
 // It serializes before touching any file, to tell input errors from disk errors, and to catch them in the preview too.
-function serialize(log) {
+function serialize(record) {
   try {
-    return `${JSON.stringify(log, null, 2)}\n`;
+    return JSON.stringify(record);
   } catch (err) {
     throw new FcError(`Cannot record details: ${err.message}`);
   }
 }
 
-function removePartial(file, cause) {
-  try {
-    fs.rmSync(file);
-  } catch (err) {
-    throw new FcError(`Could not finish writing the log file and could not delete it either: ${file} (${cause.code}, ${err.code})`);
-  }
-  throw new FcError(`Could not write the log file: ${file} (${cause.code})`);
-}
-
-// Before removal, it leaves the path, size, and reason of the targets as a dated JSON file in the target folder. It does not delete files.
-// Why JSON: whatever characters the name and reason contain, they can be restored as they are, and unlike CSV, Excel never runs a file name starting with = as a formula.
+// Before removal, it writes the path, size, and reason of the targets into the change journal of the current run (#415), flushed to the disk. It does not delete files.
+// Why JSON: whatever characters the name and reason contain, they can be restored as they are, and a file name starting with = is never run as a formula.
 //
 // kind: the removal kind (for example 'broken files'). items: a list of { path, reason, details? }.
 // details is a value that differs by kind, such as the resolution, bitrate, or file to keep. path is a path relative to the target or an absolute path.
-// The returned value is { path, count, items, dryRun }. items are the items written in the record, and their path is the real path.
+// The returned value is { path, count, items, dryRun }. path is the journal file, items are the items written in the record, and their path is the real path.
 // When removing, use this path instead of the input path, and since the folder can change in the meantime, check again with access.delete right before removing.
-// The path in the preview is the expected name. If the time differs, the real name also differs, so the report uses the path of the real run.
-// If there are no targets, it does not create a file and returns null.
+// If there are no targets, it writes nothing and returns null.
 // If even one target is an item that cannot be deleted, it raises an FcError and leaves nothing. It removes after coming back without an error.
+// A journal run must be open (execute opens one; runConfirmedRemoval opens its own when it is called without one).
 function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } = {}) {
   if (typeof kind !== 'string' || kind.trim() === '') throw new FcError('Specify the removal kind.');
   if (!Array.isArray(items)) throw new FcError('Removal targets must be a list.');
@@ -112,74 +79,30 @@ function writeRemovalLog(dir, kind, items, { dryRun = false, now = new Date() } 
   const access = grant(dir, ['write', 'delete']);
   if (items.length === 0) return null;
   const described = describeItems(access, items);
-  const text = serialize({ version: LOG_VERSION, kind, createdAt: localTime(now), target: access.target, count: described.length, items: described });
-  const { file, fd } = claimName(access, nameStamp(now), dryRun);
+  const record = { type: 'removal', version: LOG_VERSION, kind, createdAt: localTime(now), target: access.target, count: described.length, items: described };
+  const text = serialize(record);
   // So that the returned items do not diverge from the record, it restores them from the serialized content.
   const document = JSON.parse(text);
-  const result = { path: file, count: described.length, items: document.items, dryRun, document };
+  const result = { path: undefined, count: described.length, items: document.items, dryRun, document };
   if (dryRun) return result;
-  let failure;
+  if (!journal.current()) throw new FcError('The change journal is not open, so the removal record cannot be written. Nothing was deleted.');
   try {
-    fs.writeFileSync(fd, text);
-    // It flushes before returning so that removal does not happen before the record reaches the disk.
-    fs.fsyncSync(fd);
+    result.path = journal.writeRemoval(document);
   } catch (err) {
-    failure = err;
+    throw new FcError(`Could not write the removal record into the change journal. Nothing was deleted. (${err.message})`);
   }
-  try {
-    fs.closeSync(fd);
-  } catch (err) {
-    failure ??= err;
-  }
-  if (failure) removePartial(file, failure);
-  syncDirectory(path.dirname(file));
   return result;
 }
 
-// It flushes the folder entry of a new file so the record is not lost with the file's name after a crash. Windows cannot open a folder this way, so a failure is ignored there.
-function syncDirectory(dir) {
-  let fd;
-  try {
-    fd = fs.openSync(dir, 'r');
-    fs.fsyncSync(fd);
-  } catch {
-    // The folder cannot be flushed on this system. The record file itself was already flushed.
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // Nothing more to do.
-      }
-    }
-  }
-}
-
-// It writes the outcome of items into a record that writeRemovalLog made. updates is a Map of item index => { outcome, error? }.
-// It writes a new file and renames it over the record, so a crash leaves either the old record or the new one, never half of one.
+// It writes the outcome of items into the journal. updates is a Map of item index => { outcome, error? }.
+// It is one more line, so a crash leaves the earlier lines as they are.
 function updateRemovalLog(log, updates) {
   for (const [index, update] of updates) Object.assign(log.items[index], update);
-  const temp = `${log.path}.tmp`;
-  const text = serialize(log.document);
-  let fd;
   try {
-    fs.rmSync(temp, { force: true });
-    fd = fs.openSync(temp, 'wx');
-    fs.writeFileSync(fd, text);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = undefined;
-    fs.renameSync(temp, log.path);
+    journal.writeRemoval({ type: 'removal-outcome', updates: [...updates].map(([index, update]) => ({ index, ...update })) });
   } catch (err) {
-    try {
-      if (fd !== undefined) fs.closeSync(fd);
-      fs.rmSync(temp, { force: true });
-    } catch {
-      // The original error is the one to report.
-    }
-    throw new FcError(`Could not update the log file: ${log.path} (${err.code ?? err.message})`);
+    throw new FcError(`Could not update the removal record in the change journal: ${err.message}`);
   }
-  syncDirectory(path.dirname(log.path));
 }
 
 module.exports = { writeRemovalLog, updateRemovalLog, REMOVAL_LOG, LOG_VERSION };
