@@ -69,6 +69,8 @@ test('screenshots go to Screenshots, whatever their date', () => {
   assert.deepStrictEqual(fs.readdirSync(dir), ['Screenshots']);
   assert.ok(SCREENSHOT_NAME.test('screenshot.png'));
   assert.ok(!SCREENSHOT_NAME.test('my screenshot.png'));
+  assert.ok(!SCREENSHOT_NAME.test('Screenshots_from_trip.jpg'));
+  assert.ok(!SCREENSHOT_NAME.test('screenshot-lake.jpg'));
 });
 
 test('files that are not photos are left in place and not listed', () => {
@@ -110,4 +112,21 @@ test('--recursive takes photos from subfolders; by default only the target folde
 test('--by is refused on sort-photos', () => {
   const dir = tempDir();
   assert.throws(() => run(['sort-photos', dir, '--by=month']), /--by can be used only with/);
+});
+
+test('a HEIC photo uses the modified time and the note does not claim it has no date', () => {
+  const dir = tempDir();
+  const file = put(dir, 'IMG_0001.heic', Buffer.concat([Buffer.alloc(4), Buffer.from('ftypheic')]));
+  fs.utimesSync(file, new Date(2022, 5, 1), new Date(2022, 5, 1));
+  const out = run(['sort-photos', dir]);
+  assert.deepStrictEqual(listAll(dir), ['2022', '2022/2022-06', '2022/2022-06/IMG_0001.heic']);
+  assert.match(out, /date taken not read for this format/);
+  assert.ok(!out.includes('no date taken'));
+});
+
+test('--recursive: a screenshot in a subfolder goes to Screenshots even with an EXIF date', () => {
+  const dir = tempDir();
+  put(dir, 'trip/Screenshot_1.jpg', samples.jpeg('2021:03:04 05:06:07'));
+  run(['sort-photos', dir, '--recursive']);
+  assert.deepStrictEqual(listAll(dir), ['Screenshots', 'Screenshots/Screenshot_1.jpg', 'trip']);
 });
