@@ -44,6 +44,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl remove-low-quality <target>` | Show the list of low-quality videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
 | `fctl sort-docs <target> [--by=month]` | Move documents into folders by type (`PDF`, `Word`, `Excel`, `Slides`, `HWP`, `Text`, `Other documents`). Files that are not documents stay. `--by=month` adds a month folder inside each type folder (`PDF/2026-11`); `--recursive` and `--dry-run` work as in `sort-by` |
+| `fctl sort-photos <target>` | Move photos into `YYYY/YYYY-MM` folders by the date taken stored in the photo (the modified time if there is none, and the report says so) and screenshots into `Screenshots`. Other files stay; `--recursive` and `--dry-run` work as in `sort-by` |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -466,3 +467,14 @@ fctl du D:Videos --depth=2 --top=10
 - **`--by=month`** puts a month folder (modified time, `YYYY-MM`) inside each type folder. It is the only value `sort-docs` accepts.
 - **Month folders are added when a file first moves.** A file already inside its type folder (`PDF/a.pdf`) stays, so running `--by=month` after a type-only run does not re-file it. Sort with `--by=month` from the start if you want month folders.
 - **`--recursive` takes every document, including `README.md`, `LICENSE.txt` and `data.csv`, out of subfolders** and away from the files they belong to (project folders with a marker file are left whole). Use it on a download or inbox folder, not on a folder of working files; check with `--dry-run` first.
+
+## Sort photos (sort-photos)
+
+`fctl sort-photos <target>` moves photos into `YYYY/YYYY-MM` folders, using the same engine and safety rules as `sort-by` (never overwrites, skips links, unfinished downloads and project folders, `--dry-run`, `--recursive`).
+
+- **The date is the date taken** (EXIF `DateTimeOriginal`, or the date digitized if that is missing) read from the photo itself, because the modified time often changes when a photo is copied. Local camera time is used as written; no time zone is applied.
+- **Formats read**: JPEG, PNG (`eXIf` chunk), WebP and the TIFF family (TIFF, DNG, CR2, NEF, ARW). The format is told by the first bytes, not by the extension. **HEIC/HEIF are moved but their date is not read**: they fall back to the modified time.
+- **Without a date taken**, the modified time is used and the line in the report ends with `(no date taken, used the modified time)`. A blank EXIF date (`0000:00:00`) counts as none.
+- **Screenshots** (names starting with `Screenshot`, `Screen Shot`, `스크린샷` or `화면 캡처`) go to a top-level `Screenshots` folder, whatever their date.
+- **Photo files are** `.jpg .jpeg .png .heic .heif .tif .tiff .webp .dng .cr2 .nef .arw`. Everything else (videos, documents, GIFs) stays and is only counted as "not concerned".
+- **The layout is a default** (year, then month inside it). A photo already below its year folder stays where it is, so a second run changes nothing. The rule is in `photoFolder` in `src/sortPhotos.js`; the EXIF reader is `src/exif.js` (reads the first 256 KB of a JPEG and at most 8 MB of a TIFF, and gives up quietly on a damaged file).
