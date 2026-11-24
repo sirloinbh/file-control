@@ -27,6 +27,10 @@ const extensions = (list) => new Set(list.split(' '));
 const UNFINISHED = extensions('.crdownload .part .partial .download .opdownload');
 const TEMP = extensions('.tmp .temp');
 const INSTALLERS = extensions('.exe .msi');
+// Empty files that programs need: marker and lock files, and every dotfile (.gitkeep, .nomedia, .npmrc, ...).
+const EMPTY_OK = /^(?:\..*|__init__\.py|py\.typed|lockfile|.*\.(?:lock|pid|sock))$/i;
+// A paused download can be resumed later, so an unfinished download counts as junk only after it was left alone this long.
+const UNFINISHED_MIN_AGE = DAY_MS;
 
 const ext = (name) => path.extname(name).toLowerCase();
 // "report (1).pdf" -> "report.pdf", "backup (2).tar.gz" -> "backup.tar.gz". Only the " (N)" that browsers and Explorer add before the extension (one or two parts) counts.
@@ -101,11 +105,18 @@ function findJunk(dir, { older, now, entries: given } = {}) {
     files.set(entry.relative, { entry, stat });
     const extension = ext(name);
     let reason = null;
-    if (UNFINISHED.has(extension)) reason = 'unfinished download';
-    else if (stat.size === 0n) reason = 'empty file (0 bytes)';
-    else if (TEMP.has(extension) || name.startsWith('~$')) reason = 'temporary file';
-    else if (INSTALLERS.has(extension) && !dllFolders.has(path.dirname(entry.relative))) {
-      const age = checkedAt - lastSeenMs(stat);
+    const age = checkedAt - lastSeenMs(stat);
+    if (UNFINISHED.has(extension)) {
+      if (age >= UNFINISHED_MIN_AGE) reason = 'unfinished download';
+      else {
+        result.kept.push({ path: entry.path, reason: 'Kept because this unfinished download changed less than a day ago, so it may be resumed.' });
+        continue;
+      }
+    } else if (stat.size === 0n) {
+      if (!EMPTY_OK.test(name)) reason = 'empty file (0 bytes)';
+    } else if (TEMP.has(extension) || name.startsWith('~$')) reason = 'temporary file';
+    // Installers only directly in the target (a Downloads folder), and not next to a DLL: a program's own setup.exe, a portable app or a tool in a subfolder is not an installer to throw away.
+    else if (INSTALLERS.has(extension) && path.dirname(entry.relative) === '.' && !dllFolders.has('.')) {
       if (age >= limit) reason = `installer not touched for ${Math.floor(age / DAY_MS)} days (limit ${Math.round(limit / DAY_MS)} days)`;
     }
     if (reason !== null) {
@@ -121,7 +132,12 @@ function findJunk(dir, { older, now, entries: given } = {}) {
     if (original === null) continue;
     const originalRelative = path.join(path.dirname(relative), original);
     const twin = files.get(originalRelative);
-    if (!twin || classified.has(originalRelative) || twin.stat.size !== stat.size) continue;
+    if (!twin || classified.has(originalRelative) || twin.stat.size !== stat.size || copyOriginal(path.basename(originalRelative)) !== null) continue;
+    const twinHold = holdReason(twin.stat, checkedAt);
+    if (twinHold !== null) {
+      result.kept.push({ path: entry.path, reason: `Kept because the file it may copy (${original}) is recent: ${twinHold}` });
+      continue;
+    }
     try {
       if (!sameBytes(entry.path, twin.entry.path)) continue;
       // If either file changed while it was compared, nothing is said about it.
@@ -191,6 +207,7 @@ function checkKeeper(access, item) {
     throw new FcError(`Not deleted because the file it copies could not be found: ${item.keep}`);
   }
   if (real !== item.keep || !stat.isFile() || fileStamp(stat) !== item.keepStamp) throw new FcError(`Not deleted because the file it copies changed: ${item.keep}`);
+  if (holdReason(stat, Date.now()) !== null) throw new FcError(`Not deleted because the file it copies changed just now and may still be written: ${item.keep}`);
 }
 
 // It sends the junk to the Recycle Bin. Without confirm, or with dryRun, it only makes the list and changes nothing.
@@ -224,7 +241,8 @@ function removeJunk(dir, { confirm, dryRun = false, older, now, maxSize = MAX_RE
       onFailed: (item, reason, step) => report(`${step} Failed: ${relative(item.path)} (${reason})`),
       prepare: (access, item) => {
         checkKeeper(access, item);
-        return checkOne(access, item);
+        // The keeper goes along, so PowerShell checks it once more right before the copy is moved (a keeper rewritten in the middle of a batch).
+        return { ...checkOne(access, item), ...(item.keep === undefined ? {} : { keep: { path: item.keep, stamp: item.keepStamp } }) };
       },
     },
   );

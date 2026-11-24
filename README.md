@@ -517,11 +517,11 @@ fctl du D:Videos --depth=2 --top=10
 
 What counts as junk (the reason is printed on each line):
 
-- **Unfinished downloads**: `.crdownload`, `.part`, `.partial`, `.download`, `.opdownload`.
-- **Empty files**: 0 bytes.
+- **Unfinished downloads**: `.crdownload`, `.part`, `.partial`, `.download`, `.opdownload`, once nothing touched them for a day (a paused download can be resumed later; a newer one is shown as `Kept`).
+- **Empty files**: 0 bytes. Files programs need empty are not listed: every dotfile (`.gitkeep`, `.nomedia`, `.npmrc`), `__init__.py`, `py.typed`, `lockfile`, and `*.lock`, `*.pid`, `*.sock`.
 - **Temporary files**: `.tmp`, `.temp`, and Office lock files that start with `~$`.
-- **Copies**: `name (1).ext` (also `name (2).tar.gz` and so on) when `name.ext` is in the same folder and has exactly the same bytes (compared byte by byte, not by name or size). The original is never listed for being the original. If the original is junk by another rule, both go by their own reasons and the copy rule is not used. Right before a copy is sent, the original is checked again; if it is gone or changed, the copy stays.
-- **Installers**: `.exe` and `.msi` that were not touched for `--older` (default `30d`; also `4w`, `6m`, `0d` for any age). The age is measured from the later of the modified and creation times, so a freshly downloaded or copied installer is not old. An `.exe` in a folder that also holds a `.dll` is a program and is not listed. The 30-day default is a choice made for this tool; change it with `--older`.
+- **Copies**: `name (1).ext` (also `name (2).tar.gz` and so on) when `name.ext` is in the same folder and has exactly the same bytes (compared byte by byte, not by name or size). The original is never listed for being the original. If the original is junk by another rule, both go by their own reasons and the copy rule is not used; a copy of a copy (`a (1) (1).pdf`) is not listed; a copy is kept while its original changed in the last 5 minutes. Right before a copy is sent, the original is checked again (by this tool and again by the Recycle Bin step); if it is gone, changed or recent, the copy stays. Comparing two files reads both, so a OneDrive online-only pair is downloaded to be compared.
+- **Installers**: `.exe` and `.msi` directly in the target folder (not in subfolders, where a program's own `setup.exe` or helper lives) that were not touched for `--older` (default `30d`; also `4w`, `6m`, `0d` for any age). The age is measured from the later of the modified and creation times, so a freshly downloaded or copied installer is not old. If the target folder also holds a `.dll`, its `.exe` files are programs and are not listed. The 30-day default is a choice made for this tool; change it with `--older`.
 
 What it leaves alone:
 
