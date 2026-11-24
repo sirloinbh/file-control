@@ -18,6 +18,7 @@ const COMMANDS = [
   { name: 'rm', usage: 'rm <path...>', summary: 'send to the Recycle Bin', kind: 'basic', permanent: true },
   { name: 'unzip', usage: 'unzip <archive> [folder]', summary: 'extract (default: a folder named after the archive)', kind: 'basic', force: true },
   { name: 'zip', usage: 'zip <archive> <source...>', summary: 'compress (format set by the extension: .zip, .tar.gz, ...)', kind: 'basic', force: true },
+  { name: 'undo', usage: 'undo [--list] [--run=ID]', summary: 'show the recent runs of the change journal, or reverse the last one (or the run with --run=ID); never overwrites, and --dry-run shows the plan', kind: 'undo', undo: true },
   { name: 'flatten', usage: 'flatten <target>', summary: 'move files from subfolders directly under the target and send empty folders to the Recycle Bin (no overwriting)', kind: 'whole' },
   { name: 'product-number', usage: 'product-number <target>', summary: 'prefix video file names with the product number (no overwriting)', kind: 'whole' },
   { name: 'normalize', usage: 'normalize <target>', summary: 'put the product number in file names first, in uppercase (no overwriting)', kind: 'whole', includeLowercase: true },
@@ -52,7 +53,7 @@ const PERMANENT_COMMANDS = named('permanent');
 const FIND_FLAGS = ['larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort'];
 // Options that carry a value (--name=VALUE) and the command field that allows each one.
 const DU_FLAGS = ['depth', 'top'];
-const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
+const VALUE_FLAG_FIELDS = { 'min-height': 'lowQuality', 'min-bitrate': 'lowQuality', by: 'sortBy', run: 'undo', ...Object.fromEntries(DU_FLAGS.map((flag) => [flag, 'du'])), ...Object.fromEntries(FIND_FLAGS.map((flag) => [flag, 'find'])) };
 const VALUE_FLAGS = new Set(Object.keys(VALUE_FLAG_FIELDS));
 
 // The rules in the order they are checked. It returns the message of the first option that does not belong to the command, otherwise undefined.
@@ -70,6 +71,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
     ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
+    only('list', named('undo'), '--list can be used only with undo.'),
     only('recursive', named('sortBy'), `--recursive can be used only with ${named('sortBy').join(' and ')}.`),
   ].find((message) => message !== undefined);
 }
