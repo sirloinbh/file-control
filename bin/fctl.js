@@ -28,6 +28,8 @@ Options:
   --recursive   with sort-by, also sort files in subfolders
   --list        with undo, show the recent runs of the change journal
   --run=ID      with undo, reverse the run with this id instead of the last one
+  --depth=N     with du, how many folder levels to list (default: 1)
+  --top=N       with du, how many folders to list, largest first (default: 20)
   --            treat all following arguments as names or content, not options
   -h, --help    show help`;
 
