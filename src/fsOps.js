@@ -120,6 +120,13 @@ function refuseTakenSidecar(move) {
   }
 }
 
+// A sidecar path in the style of the video path the user typed (#428): absolute when that was absolute, otherwise relative to the working folder (when it is inside it).
+function shownLike(typed, p) {
+  if (path.isAbsolute(typed)) return p;
+  const relative = path.relative(process.cwd(), p);
+  return relative === '' || relative.startsWith('..') || path.isAbsolute(relative) ? p : relative;
+}
+
 function sidecarGroup(from, to, { enabled }) {
   if (!enabled || !isVideoPath(from)) return [];
   const moves = sidecarMoves(path.resolve(from), path.resolve(to));
@@ -147,7 +154,7 @@ function rename(target, newName, { force = false, dryRun = false, info, sidecars
   const done = [];
   for (const move of group) {
     try {
-      lines.push(perform(`Rename: ${move.from} -> ${move.to}${overwriteNote(move.to, dryRun, info)} (sidecar)`, dryRun, () => journal.rename(move.from, move.to)));
+      lines.push(perform(`Rename: ${shownLike(target, move.from)} -> ${shownLike(target, move.to)}${overwriteNote(move.to, dryRun, info)} (sidecar)`, dryRun, () => journal.rename(move.from, move.to)));
       done.push(move);
     } catch (err) {
       if (!dryRun) putBack([...done.map((m) => [m.to, m.from]), [dest, target]], err);
@@ -446,18 +453,18 @@ function move(sources, dest, { force = false, dryRun = false, permanent = false,
       for (const move of sidecarMoves(path.resolve(src), target)) {
         if (named.has(move.from.toLowerCase())) continue;
         refuseTakenSidecar(move);
-        items.push(checkMove(move.from, move.to));
+        items.push({ ...checkMove(move.from, move.to), shown: [shownLike(src, move.from), shownLike(src, move.to)] });
       }
     }
   }
   rejectBatchOverlap(items);
   const planned = new Set();
   const done = [];
-  for (const { src, target } of items) {
+  for (const { src, target, shown } of items) {
     const where = permanent ? 'it is deleted permanently' : 'the old one goes to the Recycle Bin';
     const note = dryRun ? targetNote(planned, target, force, ` (replaces the whole existing folder; ${where})`, ` (overwrites; ${where})`, info) : '';
     try {
-      done.push(perform(`Move: ${src} -> ${target}${note}`, dryRun, () => moveReplacing(src, target, { permanent })));
+      done.push(perform(`Move: ${shown?.[0] ?? src} -> ${shown?.[1] ?? target}${note}`, dryRun, () => moveReplacing(src, target, { permanent })));
     } catch (err) {
       // The earlier items have already been moved, so just raising an error would not tell what was moved.
       if (done.length === 0) throw err;
