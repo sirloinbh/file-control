@@ -220,6 +220,11 @@ function removeJunk(dir, { confirm, dryRun = false, older, now, maxSize = MAX_RE
   if (confirm === undefined || dryRun) return result;
   if (confirm !== code) return { ...result, mismatch: true, mismatchHints: mismatchHints(plan) };
   if (plan.removals.length === 0) return result;
+  return sendJunk(plan, result, onProgress);
+}
+
+// It writes the removal log and sends the planned junk to the Recycle Bin (after the confirmation was checked). clean-downloads uses it for its first step.
+function sendJunk(plan, result, onProgress) {
   const total = plan.removals.length;
   const relative = relativeTo(plan.target);
   const report = (line) => {
@@ -275,4 +280,4 @@ function formatRemoveJunk(result) {
   return lines.join('\n');
 }
 
-module.exports = { DEFAULT_OLDER, findJunk, formatJunk, planRemoval, removeJunk, formatRemoveJunk, confirmationCode, copyOriginal };
+module.exports = { DEFAULT_OLDER, findJunk, formatJunk, planRemoval, removeJunk, sendJunk, formatRemoveJunk, confirmationCode, copyOriginal, formatSize };

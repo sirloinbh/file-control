@@ -26,6 +26,8 @@ test('the help text lists every command of the table, in order, and nothing else
 test('every command of the table is known to execute (none is refused as an unknown command)', () => {
   for (const { name, kind } of COMMANDS) {
     if (kind === 'ui') continue;
+    // clean-downloads has an optional folder, so it would look at the real Downloads folder; test/cleanDownloads.test.js checks it with a temporary one.
+    if (name === 'clean-downloads') continue;
     try {
       execute([name, '--dry-run'], { readStdin: () => '' });
     } catch (err) {

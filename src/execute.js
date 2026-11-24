@@ -23,6 +23,7 @@ const { runRecipe, formatRecipe } = require('./recipe');
 const { findSameContent, formatSameContent, removeSameContent, formatRemoveSameContent } = require('./sameContent');
 const { sortBy, formatSort } = require('./sort');
 const { findJunk, formatJunk, removeJunk, formatRemoveJunk } = require('./junk');
+const { downloadsFolder, cleanDownloads, formatClean } = require('./cleanDownloads');
 const { sortDocs } = require('./sortDocs');
 const { sortPhotos } = require('./sortPhotos');
 
@@ -314,6 +315,21 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       // It does not touch files, so --dry-run gives the same result.
       const result = findFiles(args[0], Object.fromEntries([...values].filter(([name]) => FIND_FLAGS.includes(name))));
       return done(result, formatFind(result));
+    }
+    case 'clean-downloads': {
+      // The folder is optional: without one, the real Downloads folder is looked up (it is named in the first line of the report).
+      if (args.length === 0) checkWholeTarget(command, [downloadsFolder()], flags);
+      else checkWholeTarget(command, args, flags);
+      const target = args.length === 0 ? downloadsFolder() : args[0];
+      // A bare --yes would only be reported after the work was planned, so it is refused first (the preview with --dry-run may carry it).
+      if (flags.has('yes') && confirm === undefined && !dryRun) throw new fc.FcError(`Give --yes the confirmation value shown in the list: --yes=VALUE. Run ${command} without --yes to see the list and the value. Nothing was deleted or moved.`);
+      const result = cleanDownloads(target, { dryRun, confirm, older: values.get('older'), onProgress: progress });
+      const report = formatClean(result);
+      const fail = (message) => done(result, report, Object.assign(new fc.FcError(message), { output: report }));
+      const failed = result.junkResult.failed.length + (result.sorted?.failed.length ?? 0);
+      if (failed > 0) return fail(`${plural(failed, 'file')} could not be sent to the Recycle Bin or moved.`);
+      if (result.mismatch) return fail('The list differs from when the confirmation value was made, so nothing was deleted or moved. Check the new list.');
+      return done(result, report);
     }
     case 'find-junk': {
       checkWholeTarget(command, args, flags);
