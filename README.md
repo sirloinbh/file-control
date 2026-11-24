@@ -429,3 +429,5 @@ npm test
 - **Types**: `PDF` (pdf), `Word` (doc, docx, docm, dot, dotx), `Excel` (xls, xlsx, xlsm, xlsb, csv), `Slides` (ppt, pptx, pptm, pps, ppsx), `HWP` (hwp, hwpx), `Text` (txt, md), `Other documents` (rtf, odt, ods, odp, epub).
 - **Files that are not documents are left in place** and not listed; the summary line counts them as "not concerned".
 - **`--by=month`** puts a month folder (modified time, `YYYY-MM`) inside each type folder. It is the only value `sort-docs` accepts.
+- **Month folders are added when a file first moves.** A file already inside its type folder (`PDF/a.pdf`) stays, so running `--by=month` after a type-only run does not re-file it. Sort with `--by=month` from the start if you want month folders.
+- **`--recursive` takes every document, including `README.md`, `LICENSE.txt` and `data.csv`, out of subfolders** and away from the files they belong to (project folders with a marker file are left whole). Use it on a download or inbox folder, not on a folder of working files; check with `--dry-run` first.

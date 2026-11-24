@@ -93,3 +93,49 @@ test('--recursive takes documents from subfolders', () => {
   run(['sort-docs', dir, '--recursive']);
   assert.deepStrictEqual(listAll(dir), ['PDF', 'PDF/a.pdf', 'Word', 'Word/b.docx', 'sub']);
 });
+
+test('--by=month --dry-run lists the month folders and changes nothing', () => {
+  const dir = tempDir();
+  make(dir, ['a.pdf']);
+  fs.utimesSync(path.join(dir, 'a.pdf'), new Date(2025, 2, 10), new Date(2025, 2, 10));
+  const out = run(['sort-docs', dir, '--by=month', '--dry-run']);
+  assert.ok(out.includes(`[Preview] Move: a.pdf -> ${path.join('PDF', '2025-03', 'a.pdf')}`));
+  assert.deepStrictEqual(listAll(dir), ['a.pdf']);
+});
+
+test('--by=month --recursive moves nested documents, and a second run changes nothing', () => {
+  const dir = tempDir();
+  make(dir, ['sub/a.pdf', 'b.docx']);
+  fs.utimesSync(path.join(dir, 'sub', 'a.pdf'), new Date(2025, 2, 10), new Date(2025, 2, 10));
+  fs.utimesSync(path.join(dir, 'b.docx'), new Date(2026, 10, 3), new Date(2026, 10, 3));
+  run(['sort-docs', dir, '--by=month', '--recursive']);
+  assert.deepStrictEqual(listAll(dir), ['PDF', 'PDF/2025-03', 'PDF/2025-03/a.pdf', 'Word', 'Word/2026-11', 'Word/2026-11/b.docx', 'sub']);
+  const again = sortDocs(dir, { by: 'month', recursive: true });
+  assert.strictEqual(again.moved.length, 0);
+  assert.strictEqual(again.stay, 2);
+});
+
+test('a document already in its type folder stays when --by=month is used later', () => {
+  const dir = tempDir();
+  make(dir, ['PDF/a.pdf']);
+  const result = sortDocs(dir, { by: 'month', recursive: true });
+  assert.strictEqual(result.moved.length, 0);
+  assert.strictEqual(result.stay, 1);
+});
+
+test('sort-docs refuses a project folder and leaves nested project folders whole', () => {
+  const dir = tempDir();
+  make(dir, ['package.json', 'a.pdf']);
+  assert.throws(() => sortDocs(dir), /project folder/);
+  const dir2 = tempDir();
+  make(dir2, ['proj/package.json', 'proj/readme.md', 'b.pdf']);
+  const result = sortDocs(dir2, { recursive: true });
+  assert.deepStrictEqual(result.moved.map((m) => m.name), ['b.pdf']);
+  assert.ok(fs.existsSync(path.join(dir2, 'proj', 'readme.md')));
+});
+
+test('an empty --by value is refused', () => {
+  const dir = tempDir();
+  assert.throws(() => run(['sort-docs', dir, '--by=']), /only --by=month/);
+  assert.throws(() => run(['sort-docs', dir, '--by']), /Attach a value|only --by=month/);
+});

@@ -104,7 +104,7 @@ function folderBlock(target, name) {
 const MAX_PATH = 259;
 
 // rule(file) gets { name, path, relative, stat } and returns { folder } (a folder name, or 'a/b' for nested folders), { stay: reason } to leave the file where it is and report it, or { ignore: true } to leave it without a report line.
-// It does not touch files. Returns { target, moves, stay, skipped }; stay is the count of files already in the right folder.
+// It does not touch files. Returns { target, moves, stay, ignored, skipped }; stay is the count of files already in the right folder and ignored the count of files the rule does not concern.
 function planSortWith(dir, rule, { recursive = false } = {}) {
   const access = grant(dir, ['read', 'write']);
   const target = access.target;

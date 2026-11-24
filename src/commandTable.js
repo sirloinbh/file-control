@@ -64,7 +64,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
     ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
-    only('recursive', named('sortBy'), '--recursive can be used only with sort-by.'),
+    only('recursive', named('sortBy'), `--recursive can be used only with ${named('sortBy').join(' and ')}.`),
   ].find((message) => message !== undefined);
 }
 
