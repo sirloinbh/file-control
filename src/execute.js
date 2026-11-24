@@ -18,6 +18,7 @@ const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 const { findFiles, formatFind } = require('./find');
 const { folderSizes, formatDu } = require('./du');
+const { findSameContent, formatSameContent, removeSameContent, formatRemoveSameContent } = require('./sameContent');
 const { sortBy, formatSort } = require('./sort');
 const { sortDocs } = require('./sortDocs');
 
@@ -249,12 +250,14 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
     }
     case 'remove-broken':
     case 'remove-duplicates':
-    case 'remove-low-quality': {
+    case 'remove-low-quality':
+    case 'remove-same-content': {
       checkWholeTarget(command, args, flags);
       const [remover, format] = {
         'remove-broken': [removeBroken, formatRemoveBroken],
         'remove-duplicates': [removeDuplicates, formatRemoveDuplicates],
         'remove-low-quality': [removeLowQuality, formatRemoveLowQuality],
+        'remove-same-content': [removeSameContent, formatRemoveSameContent],
       }[command];
       // A bare --yes would only be reported after the remover ran, so it is refused first (the preview with --dry-run may carry it).
       if (flags.has('yes') && confirm === undefined && !dryRun) throw new fc.FcError(`Give --yes the confirmation value shown in the list: --yes=VALUE. Run ${command} without --yes to see the list and the value. Nothing was deleted.`);
@@ -286,6 +289,12 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       // It does not touch files, so --dry-run gives the same result.
       const result = findFiles(args[0], Object.fromEntries([...values].filter(([name]) => FIND_FLAGS.includes(name))));
       return done(result, formatFind(result));
+    }
+    case 'find-same-content': {
+      checkWholeTarget(command, args, flags);
+      // Found groups are enough as a report. It does not touch files, so --dry-run gives the same result.
+      const result = findSameContent(args[0], { onProgress: progress });
+      return done(result, formatSameContent(result));
     }
     case 'du': {
       checkWholeTarget(command, args, flags);
