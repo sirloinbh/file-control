@@ -21,6 +21,8 @@ Options:
   --min-bitrate=KBPS   with find-low-quality and remove-low-quality, below this bitrate is low quality (default: not checked)
   --by=kind|month  with sort-by, how to sort (kind: Videos, Images, ...; month: YYYY-MM of the modified time)
   --recursive   with sort-by, also sort files in subfolders
+  --list        with undo, show the recent runs of the change journal
+  --run=ID      with undo, reverse the run with this id instead of the last one
   --            treat all following arguments as names or content, not options
   -h, --help    show help`;
 

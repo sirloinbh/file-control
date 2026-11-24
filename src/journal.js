@@ -6,6 +6,7 @@
 // Format: JSON Lines, one JSON object per line, so a crash or a failure midway still leaves every step that already happened.
 //   {"type":"run","version":1,"runId","command","args","cwd","startedAt"}   the first line, written together with the first step
 //   {"type":"step","seq","op","time", ...}                                   one line per change
+//   {"type":"undo-step","seq"} / {"type":"undone"}                   added by `undo` (#397)
 //   {"type":"end","status":"ok"|"failed","error?","steps","endedAt"}         the last line (missing if the process was killed)
 // ops: move { from, to }, copy { from, to }, create-dir { path }, write { path, append }, create { path, source? } (made by extraction or compression),
 //      recycle { path }, delete { path } (permanent).
@@ -22,7 +23,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const JOURNAL_VERSION = 1;
-const JOURNAL_FILE = /^fctl-journal-\d{4}-\d{2}-\d{2}-\d{6}-[0-9a-f]{8}\.jsonl$/;
+const STAMPED = new Set(['move', 'copy', 'write', 'create']);
+const JOURNAL_FILE = /^fctl-journal-\d{4}-\d{2}-\d{2}-\d{6}-\d{3}-[0-9a-f]{8}\.jsonl$/;
 
 let active = null;
 
@@ -51,7 +53,7 @@ function append(run, object) {
   try {
     if (run.file === undefined) {
       fs.mkdirSync(run.dir, { recursive: true });
-      run.file = path.join(run.dir, `fctl-journal-${stamp(run.startedAt)}-${run.runId}.jsonl`);
+      run.file = path.join(run.dir, `fctl-journal-${stamp(run.startedAt)}-${pad(run.startedAt.getMilliseconds(), 3)}-${run.runId}.jsonl`);
       const header = { type: 'run', version: JOURNAL_VERSION, runId: run.runId, command: run.command, args: run.redacted ?? run.args, cwd: process.cwd(), startedAt: localTime(run.startedAt) };
       fs.appendFileSync(run.file, `${JSON.stringify(header)}\n`);
     }
@@ -92,6 +94,16 @@ function record(op, fields = {}) {
   if (!run || run.muted > 0) return;
   const step = { type: 'step', seq: run.steps + 1, op, time: localTime(new Date()) };
   for (const [key, value] of Object.entries(fields)) step[key] = typeof value === 'string' && key !== 'source' && key !== 'kind' ? path.resolve(value) : value;
+  // The size and modification time of a file the step left behind, so `undo` can tell whether it was changed after the run (#397).
+  const left = fields.to ?? fields.path;
+  if (typeof left === 'string' && STAMPED.has(op)) {
+    try {
+      const stat = fs.lstatSync(left);
+      if (stat.isFile()) step.stamp = { size: stat.size, mtimeMs: Math.floor(stat.mtimeMs) };
+    } catch {
+      // No stamp: undo then has nothing to compare and treats the item as unchanged only for folders.
+    }
+  }
   run.steps += 1;
   append(run, step);
 }
@@ -119,7 +131,7 @@ function rename(from, to, extra = {}) {
 
 // Reads a journal file back: { run, steps, end }. A missing end means the process ended without finishing (a crash or a kill).
 function readJournal(file) {
-  const result = { run: undefined, steps: [], end: undefined };
+  const result = { run: undefined, steps: [], end: undefined, reversed: new Set(), undone: false };
   for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
     if (line.trim() === '') continue;
     let entry;
@@ -132,8 +144,18 @@ function readJournal(file) {
     if (entry.type === 'run') result.run = entry;
     else if (entry.type === 'step') result.steps.push(entry);
     else if (entry.type === 'end') result.end = entry;
+    else if (entry.type === 'undo-step') result.reversed.add(entry.seq);
+    else if (entry.type === 'undone') result.undone = true;
   }
   return result;
+}
+
+// `undo` marks what it reversed in the journal itself: one line per reversed step, and a last line when the whole run is undone, so a run is never reversed twice.
+function markUndone(file, seqs, whole) {
+  const time = localTime(new Date());
+  const lines = seqs.map((seq) => JSON.stringify({ type: 'undo-step', seq, time }));
+  if (whole) lines.push(JSON.stringify({ type: 'undone', time }));
+  if (lines.length > 0) fs.appendFileSync(file, `${lines.join('\n')}\n`);
 }
 
 // The journal files, newest first.
@@ -147,4 +169,4 @@ function listJournals(dir = journalDir()) {
   return names.filter((name) => JOURNAL_FILE.test(name)).sort().reverse().map((name) => path.join(dir, name));
 }
 
-module.exports = { begin, finish, record, quiet, rename, readJournal, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION };
+module.exports = { begin, finish, record, quiet, rename, readJournal, markUndone, listJournals, journalDir, JOURNAL_FILE, JOURNAL_VERSION };

@@ -41,6 +41,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl find-low-quality <target>` | Find low-quality videos below the resolution or bitrate standard (does not touch any file) |
 | `fctl remove-low-quality <target>` | Show the list of low-quality videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
+| `fctl undo [--list] [--run=<id>]` | Show the recent runs of the change journal, or reverse the last run (or the run with that id). Moves and renames go back, created files go to the Recycle Bin, and files sent to the Recycle Bin are restored. It never overwrites, and it leaves a file alone if it changed after the run. `--dry-run` shows the plan. See [Undo](#undo-fctl-undo) below |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -421,3 +422,14 @@ npm test
 - **A file that has the name of a destination folder** (a file called `Videos`) blocks that folder: files for it stay and the report says why. A move that would make a path of 260 characters or more is skipped.
 - **It refuses a project folder** (a project marker such as `package.json` directly in the target, or a repository above or inside it), the same as `flatten`.
 - The engine in `src/sort.js` takes a rule (file to folder name), so the photo, document and Downloads commands reuse it with their own rules.
+
+## Undo (fctl undo)
+
+`fctl undo --list` shows the recent runs of the [change journal](#safety-measures) (id, time, command, number of steps, `ok`, `failed` or `interrupted`, and `(undone)`). `fctl undo` reverses the newest run that is not undone yet; `fctl undo --run=<id>` reverses the run with that id (the first characters are enough). `--dry-run` prints the plan and changes nothing.
+
+- **Opposite order.** Steps are reversed from the last to the first, so `flatten` then `undo` restores the folders first and then moves each file back.
+- **It never overwrites.** A move goes back only if the old name is free. A file is restored from the Recycle Bin only if its original path is free.
+- **It leaves changed files alone.** A file that has another size or modification time than the journal recorded, a file that is gone, or a folder that is not empty is not touched. The step is reported as `[mismatch]`, and the command ends as a failure after doing the other steps. Run it again after fixing the cause: steps already reversed are skipped.
+- **What it reverses.** `mv`, `rename`, `flatten`, `collapse`, `normalize`, `product-number`, `sort-by` (moves go back); `cp`, `write`, `zip` (the created file goes to the Recycle Bin); `mkdir` (an empty folder is removed); files sent to the Recycle Bin by `rm` and the `remove-*` commands (restored from the Recycle Bin when still there).
+- **What it cannot reverse** is reported as `[irreversible]`: a permanent delete, a file that an overwrite replaced, a folder created by `unzip` or `extract-all` (remove it yourself), and a file that was already there before `write` or `cp`.
+- **Marked as undone.** `undo` writes what it reversed into the journal file, so a run is never reversed twice. `undo` is itself a run in the journal, so `undo --run=<id of that undo>` puts things back again where possible.
