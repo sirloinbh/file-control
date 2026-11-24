@@ -133,15 +133,31 @@ ${table([{ label: 'File', width: '60%' }, { label: 'Size', width: '15%' }, { lab
 ${otherTable(relativeTo(r.target), [['Skipped', 'skipped', r.skipped]])}`;
 }
 
+// The sidecar part of the notice (#424), with the same numbers as the CLI summary: " and 2 sidecar files (1 kept)", or "" when the list has no sidecars.
+function sidecarText(r) {
+  const count = r.confirmed ? (r.removedSidecars ?? []).length : (r.sidecars ?? []).length;
+  const kept = (r.sidecarKept ?? []).length;
+  if (count === 0 && kept === 0) return '';
+  return ` and ${plural(count, 'sidecar file')}${kept > 0 ? ` (${kept} sidecar${kept === 1 ? '' : 's'} kept)` : ''}`;
+}
+
+// " 1 failed." or " 1 failed (1 video, 2 sidecar files)." when a sidecar failed.
+function failedText(r) {
+  if (r.failed.length === 0) return '';
+  const sidecars = r.failed.filter((item) => item.sidecar).length;
+  return sidecars === 0 ? ` ${r.failed.length} failed.` : ` ${r.failed.length} failed (${plural(r.failed.length - sidecars, 'video')}, ${plural(sidecars, 'sidecar file')}).`;
+}
+
 // The state notice of a removal result: the preview (list to delete), a stop on a changed list, or sent to the Recycle Bin.
 function removalState(r) {
   if (r.mismatch) {
     const why = (r.mismatchHints ?? []).length > 0 ? ` ${r.mismatchHints.length} file${r.mismatchHints.length === 1 ? ' is' : 's are'} now held back because they changed within the last 5 minutes.` : '';
     return alertBox('error', `The list differs from the one the confirmation value was made for, so nothing was deleted. Check the new list.${why}`);
   }
-  if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${plural(r.removed.length, 'file')} to the Recycle Bin.${r.failed.length > 0 ? ` ${r.failed.length} failed.` : ''}`);
+  const sidecars = sidecarText(r);
+  if (r.confirmed) return alertBox(r.failed.length > 0 ? 'warning' : 'success', `Sent ${plural(r.removed.length, 'file')} to the Recycle Bin${sidecars}.${failedText(r)}`);
   if (r.removals.length === 0) return alertBox('info', 'There is nothing to delete.');
-  return alertBox('info', `Nothing is deleted yet. Check the ${plural(r.removals.length, 'file')} below, then run to send them to the Recycle Bin.`);
+  return alertBox('info', `Nothing is deleted yet. Check the ${plural(r.removals.length, 'file')}${sidecars} below, then run to send them to the Recycle Bin.`);
 }
 
 // The description columns of one file to delete (or deleted). They differ per command.

@@ -6,7 +6,7 @@ const { grant, walk, fileStamp } = require('./target');
 const { plural } = require('./plural');
 const { findLowQuality, describeLowQuality, criteriaText } = require('./lowQuality');
 const { rejectRepository } = require('./guards');
-const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, failedCount, mismatchHints, MAX_RECYCLE_SIZE } = require('./removal');
 
 // A file that is low quality only by bitrate is not deleted. The bitrate is the file size divided by the length, so if the length is read inflated or
 // the file was partly downloaded, even a normal video comes out low. Until the check that cross-checks the length (#179) exists, it only reports them in the list.
@@ -99,7 +99,7 @@ function formatRemoveLowQuality(result) {
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`Checked ${plural(result.checked, 'video')}, Recycle Bin ${result.removed.length}${sidecarCount(result)}, failed ${result.failed.length}, ${counts}`);
+    lines.push(`Checked ${plural(result.checked, 'video')}, Recycle Bin ${result.removed.length}${sidecarCount(result)}, ${failedCount(result)}, ${counts}`);
   } else {
     lines.push(`Checked ${plural(result.checked, 'video')}, to delete ${result.removals.length}${sidecarCount(result)}, ${counts}`);
     if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with the same criteria and --yes=${result.code} to send them to the Recycle Bin.`);
