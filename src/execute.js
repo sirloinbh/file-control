@@ -28,7 +28,7 @@ const { sortPhotos } = require('./sortPhotos');
 const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top', 'list', 'run', 'no-sidecars']);
 
 function parse(argv) {
   const flags = new Set();
@@ -148,6 +148,8 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
   const { command, args, flags, unchecked, confirm, values } = parse(argv);
   const force = flags.has('force');
   const dryRun = flags.has('dry-run');
+  // rename, mv and rm take the subtitle and sidecar files of a video along unless --no-sidecars is given (#399).
+  const sidecars = !flags.has('no-sidecars');
 
   rejectUnknownOptions(command, unchecked, flags);
   if (!command || flags.has('help')) return { help: true };
@@ -183,10 +185,10 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       return done(fc.readFile(args[0]));
     case 'rename':
       need(args, 2, 'rename <path> <new-name>');
-      return done(fc.rename(args[0], args[1], { force, dryRun, info }));
+      return done(fc.rename(args[0], args[1], { force, dryRun, info, sidecars }));
     case 'mv': {
       need(args, 2, 'mv <source...> <dest>');
-      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent'), info });
+      const lines = fc.move(args.slice(0, -1), args[args.length - 1], { force, dryRun, permanent: flags.has('permanent'), info, sidecars });
       return done(lines, lines.join('\n'));
     }
     case 'cp': {
@@ -196,7 +198,7 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
     }
     case 'rm': {
       need(args, 1, 'rm <path...>');
-      const lines = fc.remove(args, { permanent: flags.has('permanent'), dryRun, permanentHint: true });
+      const lines = fc.remove(args, { permanent: flags.has('permanent'), dryRun, permanentHint: true, sidecars });
       return done(lines, lines.join('\n'));
     }
     case 'unzip':

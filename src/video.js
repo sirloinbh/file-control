@@ -4,7 +4,7 @@ const { readRange } = require('./target');
 const { halfWidth } = require('./product');
 const { formatSize } = require('./commands');
 
-// It handles only video files. It does not rename even the subtitles or notes inside an ABC-123 folder.
+// It handles only video files. The subtitles and notes of a video are not looked at by themselves; they go with their video (src/sidecar.js, #399).
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.3gp', '.mkv', '.webm', '.avi', '.wmv', '.flv', '.m2ts', '.mpg', '.mpeg']);
 // A format whose extension is the same as TypeScript source. It is seen as video only after checking the content.
 const TRANSPORT_EXTENSIONS = new Set(['.ts', '.mts']);

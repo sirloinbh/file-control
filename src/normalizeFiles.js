@@ -261,7 +261,10 @@ function formatNormalize(result) {
   const relative = (p) => path.relative(result.target, p) || '.';
   const prefix = result.dryRun ? '[Preview] ' : '';
   const lines = [];
-  for (const item of result.renamed) lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name}`);
+  for (const item of result.renamed) {
+    lines.push(`${prefix}Rename: ${relative(item.from)} -> ${item.name}`);
+    for (const move of item.sidecars ?? []) lines.push(`${prefix}  and its sidecar: ${path.basename(move.from)} -> ${path.basename(move.to)}`);
+  }
   for (const item of result.inferred) lines.push(`${prefix}Left as is because it is a lowercase word: ${relative(item.path)} -> ${item.name}`);
   for (const item of result.conflicts) lines.push(`${prefix}Name conflict: ${relative(item.path)} -> ${item.name} (${item.reason})`);
   for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
