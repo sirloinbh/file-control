@@ -17,12 +17,13 @@ const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 const { findFiles, formatFind } = require('./find');
+const { folderSizes, formatDu } = require('./du');
 const { sortBy, formatSort } = require('./sort');
 
-const { VALUE_FLAGS, FIND_FLAGS, misplacedFlagMessage } = require('./commandTable');
+const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'depth', 'top']);
 
 function parse(argv) {
   const flags = new Set();
@@ -279,6 +280,12 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       // It does not touch files, so --dry-run gives the same result.
       const result = findFiles(args[0], Object.fromEntries([...values].filter(([name]) => FIND_FLAGS.includes(name))));
       return done(result, formatFind(result));
+    }
+    case 'du': {
+      checkWholeTarget(command, args, flags);
+      // It does not touch files, so --dry-run gives the same result.
+      const result = folderSizes(args[0], Object.fromEntries([...values].filter(([name]) => DU_FLAGS.includes(name))));
+      return done(result, formatDu(result));
     }
     default:
       throw Object.assign(new fc.FcError(`Unknown command: ${command}`), { unknownCommand: true });
