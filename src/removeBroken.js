@@ -5,7 +5,7 @@ const path = require('node:path');
 const { grant, walk, fileStamp } = require('./target');
 const { findBroken } = require('./broken');
 const { rejectRepository } = require('./guards');
-const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, mismatchHints, FILE_BATCH, MAX_RECYCLE_SIZE } = require('./removal');
 
 // It chooses the files to delete among those judged broken. It does not touch files.
 // - removals: files to delete ({ path, size, reason, stamp })
@@ -89,9 +89,9 @@ function formatRemoveBroken(result) {
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, suspect ${result.suspect.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
+    lines.push(`Recycle Bin ${result.removed.length}${sidecarCount(result)}, failed ${result.failed.length}, ${counts}`);
   } else {
-    lines.push(`To delete ${result.removals.length}, ${counts}`);
+    lines.push(`To delete ${result.removals.length}${sidecarCount(result)}, ${counts}`);
     if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with --yes=${result.code} to send them to the Recycle Bin.`);
   }
   return lines.join('\n');

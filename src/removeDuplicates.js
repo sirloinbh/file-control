@@ -10,7 +10,7 @@ const { findDuplicateNames, aspectKey, aspectsMatch, groupLabel, titlesDiffer, D
 const { rejectRepository } = require('./guards');
 const { describeVideo } = require('./video');
 const { markerFinder, markerReason } = require('./downloadMarker');
-const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 
 // Groups with common names such as camera and sequence names (generic of find-duplicates, isGenericGroup) are not deleted, because even with the same name and length they can be different videos (#103, #110).
 const GENERIC_REASON = 'Kept because it is a common name such as a camera or sequence name, so videos with the same duration may be different videos.';
@@ -253,9 +253,9 @@ function formatRemoveDuplicates(result) {
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, same-duration-only groups ${result.lengthOnly}, several numbers ${result.conflicts.length}, undetermined ${result.undetermined.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`Groups ${result.sets.length}, Recycle Bin ${result.removed.length}, failed ${result.failed.length}, ${counts}`);
+    lines.push(`Groups ${result.sets.length}, Recycle Bin ${result.removed.length}${sidecarCount(result)}, failed ${result.failed.length}, ${counts}`);
   } else {
-    lines.push(`Groups ${result.sets.length}, to delete ${result.removals.length}, ${counts}`);
+    lines.push(`Groups ${result.sets.length}, to delete ${result.removals.length}${sidecarCount(result)}, ${counts}`);
     if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with --yes=${result.code} to send them to the Recycle Bin.`);
   }
   return lines.join('\n');
