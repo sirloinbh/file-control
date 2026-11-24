@@ -12,7 +12,7 @@ const { FcError, formatSize, recycleTarget } = require('./commands');
 const { grant, walk, fileStamp, compareRelative } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, rejectRepository } = require('./guards');
 const { plural } = require('./plural');
-const { planSafeRemovals, runConfirmedRemoval, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 
 const CHUNK = 1024 * 1024;
 // A progress line is passed on after this many files were hashed.
@@ -190,6 +190,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE, onProgress } = {}) 
   const safe = planSafeRemovals(candidates, access, {
     now: checkedAt,
     maxSize,
+    sidecars: true,
     sameFileId: fileIdOf,
     precheck: (item) => item.keeperProblem,
     isChanged: (item, real, stat) => fileStamp(stat) !== item.file.stamp,
@@ -219,7 +220,7 @@ function planRemoval(dir, { now, maxSize = MAX_RECYCLE_SIZE, onProgress } = {}) 
 // A value that stands for the list a person saw. It changes if any file to delete or to keep, or its content hash, changes.
 function confirmationCode(plan) {
   const items = plan.removals.map((item) => [item.path, item.stamp, item.keep, item.keepStamp, item.hash]).sort(([a], [b]) => (a < b ? -1 : 1));
-  return crypto.createHash('sha256').update(JSON.stringify(['remove-same-content', plan.target, items])).digest('hex').slice(0, 12);
+  return crypto.createHash('sha256').update(JSON.stringify(['remove-same-content', plan.target, items, ...sidecarDigest(plan)])).digest('hex').slice(0, 12);
 }
 
 // Right before deleting, it checks again that the file to keep is still there and unchanged. If it is gone or changed, the copies are not deleted.
@@ -289,6 +290,8 @@ function formatRemoveSameContent(result) {
     for (const item of result.failed.filter((entry) => entry.set === index)) lines.push(`  Failed: ${relative(item.path)} (${item.reason})`);
     for (const item of result.kept.filter((entry) => entry.set === index)) lines.push(`  Kept: ${relative(item.path)} ${item.reason}`);
   });
+  lines.push(...sidecarLines(result, relative));
+  for (const item of result.failed.filter((entry) => entry.sidecar)) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
   for (const item of result.skipped) lines.push(`Skipped: ${relative(item.path)} (${item.reason})`);
   if (result.mismatch) {
     lines.push('The list changed after the confirmation value was made, so nothing was deleted.');
