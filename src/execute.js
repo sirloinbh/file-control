@@ -20,6 +20,7 @@ const { undo, listRuns, formatRuns, formatUndo } = require('./undo');
 const { findFiles, formatFind } = require('./find');
 const { folderSizes, formatDu } = require('./du');
 const { sortBy, formatSort } = require('./sort');
+const { sortDocs } = require('./sortDocs');
 
 const { VALUE_FLAGS, FIND_FLAGS, DU_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
@@ -228,6 +229,11 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       checkWholeTarget(command, args, flags);
       const result = sortBy(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
       // Skipped files are enough as a report. It ends as a failure only when there is a file that could not be moved.
+      return failIf(result.failed.length > 0, result, formatSort(result));
+    }
+    case 'sort-docs': {
+      checkWholeTarget(command, args, flags);
+      const result = sortDocs(args[0], { by: values.get('by'), dryRun, recursive: flags.has('recursive') });
       return failIf(result.failed.length > 0, result, formatSort(result));
     }
     case 'extract-all': {
