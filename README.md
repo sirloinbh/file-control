@@ -521,7 +521,7 @@ fctl du D:Videos --depth=2 --top=10
 `fctl sort-photos <target>` moves photos into `YYYY/YYYY-MM` folders, using the same engine and safety rules as `sort-by` (never overwrites, skips links, unfinished downloads and project folders, `--dry-run`, `--recursive`).
 
 - **The date is the date taken** (EXIF `DateTimeOriginal`, or the date digitized if that is missing) read from the photo itself, because the modified time often changes when a photo is copied. Local camera time is used as written; no time zone is applied.
-- **Formats read**: JPEG, PNG (`eXIf` chunk), WebP and the TIFF family (TIFF, DNG, CR2, NEF, ARW). The format is told by the first bytes, not by the extension. **HEIC/HEIF are moved but their date is not read**: they fall back to the modified time and the report says `date taken not read for this format`.
+- **Formats read**: JPEG, PNG (`eXIf` chunk), WebP, HEIC/HEIF (the `Exif` item of the file, found through its `iinf` and `iloc` boxes; a damaged one, or one stored in a way the reader does not know, is treated as having no date) and the TIFF family (TIFF, DNG, CR2, NEF, ARW). The format is told by the first bytes, not by the extension.
 - **Without a date taken**, the modified time is used and the line in the report ends with `(no date taken, used the modified time)`. A blank EXIF date (`0000:00:00`) counts as none.
 - **Screenshots** (names starting with `Screenshot_`, `Screenshot 2026...`, `Screen Shot ...`, `스크린샷` or `화면 캡처`; a name like `Screenshots_from_trip.jpg` is not one) go to a top-level `Screenshots` folder, whatever their date.
 - **Photo files are** `.jpg .jpeg .png .heic .heif .tif .tiff .webp .dng .cr2 .nef .arw`. Everything else (videos, documents, GIFs) stays and is only counted as "not concerned".
