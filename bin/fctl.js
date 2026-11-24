@@ -15,12 +15,12 @@ Options:
   --permanent   with rm, delete permanently instead of using the Recycle Bin; with mv --force, delete the replaced item permanently
   --dry-run     print what would change without touching anything
   --remove-archives  with extract-all, send successfully extracted archives to the Recycle Bin
-  --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, remove-same-content, send to the Recycle Bin only if the list is unchanged
+  --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, remove-same-content, remove-junk, send to the Recycle Bin only if the list is unchanged
   --include-lowercase  with normalize, also treat lowercase words (abc-123) as numbers
   --min-height=PIXELS  with find-low-quality and remove-low-quality, below this short side is low quality (default: 360)
   --min-bitrate=KBPS   with find-low-quality and remove-low-quality, below this bitrate is low quality (default: not checked)
   --larger=SIZE, --smaller=SIZE  with find, only files above or below a size (500KB, 1MB, 1GB)
-  --older=AGE, --newer=AGE       with find, only files last modified before or after an age (30d, 4w, 6m)
+  --older=AGE, --newer=AGE       with find, only files last modified before or after an age (30d, 4w, 6m); with find-junk and remove-junk, --older=AGE is the age past which installers count as junk (default: 30d)
   --ext=a,b     with find, only these extensions
   --name=GLOB   with find, only file names matching a pattern (* and ?)
   --sort=size|date  with find, list the largest or newest first (default: by path)

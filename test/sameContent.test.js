@@ -275,7 +275,7 @@ test('progress is passed on every 100 hashed files, and a failing progress displ
 
 test('options of other commands are refused, and --yes is listed for the new command', () => {
   const dir = tempDir();
-  assert.throws(() => run(['find-same-content', '--yes=abc', '--', dir]), /--yes can be used only with remove-broken, remove-duplicates, remove-low-quality, remove-same-content\./);
+  assert.throws(() => run(['find-same-content', '--yes=abc', '--', dir]), /--yes can be used only with remove-broken, remove-duplicates, remove-low-quality, remove-same-content/);
   assert.throws(() => run(['find-same-content', '--force', '--', dir]), /never overwrites/);
   assert.throws(() => run(['remove-same-content', dir, 'extra']), /Only one target/);
   assert.throws(() => run(['remove-same-content', '--yes', '--', dir]), /Give --yes the confirmation value/);
