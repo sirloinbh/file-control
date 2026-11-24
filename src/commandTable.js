@@ -31,6 +31,7 @@ const COMMANDS = [
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
   { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true },
   { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true },
+  { name: 'sort-docs', usage: 'sort-docs <target> [--by=month]', summary: 'move documents into folders by type (PDF, Word, Excel, Slides, HWP, Text); other files stay (no overwriting)', kind: 'whole', sortBy: true },
   { name: 'du', usage: 'du <target> [--depth=1] [--top=20]', summary: 'show subfolder sizes and file counts, largest first, with a total (does not touch files)', kind: 'whole', du: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
@@ -67,7 +68,7 @@ function misplacedFlagMessage(command, flags) {
     basic ? only('permanent', PERMANENT_COMMANDS, `${command} does not use --permanent. --permanent can be used with ${PERMANENT_COMMANDS.join(' and ')}.`) : undefined,
     only('include-lowercase', named('includeLowercase'), '--include-lowercase can be used only with normalize.'),
     ...Object.entries(VALUE_FLAG_FIELDS).map(([flag, field]) => only(flag, named(field), `--${flag} can be used only with ${named(field).join(' and ')}.`)),
-    only('recursive', named('sortBy'), '--recursive can be used only with sort-by.'),
+    only('recursive', named('sortBy'), `--recursive can be used only with ${named('sortBy').join(' and ')}.`),
   ].find((message) => message !== undefined);
 }
 

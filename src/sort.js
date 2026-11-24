@@ -103,8 +103,8 @@ function folderBlock(target, name) {
 // Windows refuses a path of 260 characters or more in many programs, so a move that would make one is skipped.
 const MAX_PATH = 259;
 
-// rule(file) gets { name, path, relative, stat } and returns { folder } (a folder name, or 'a/b' for nested folders), or { stay: reason } to leave the file where it is.
-// It does not touch files. Returns { target, moves, stay, skipped }; stay is the count of files already in the right folder.
+// rule(file) gets { name, path, relative, stat } and returns { folder } (a folder name, or 'a/b' for nested folders), { stay: reason } to leave the file where it is and report it, or { ignore: true } to leave it without a report line.
+// It does not touch files. Returns { target, moves, stay, ignored, skipped }; stay is the count of files already in the right folder and ignored the count of files the rule does not concern.
 function planSortWith(dir, rule, { recursive = false } = {}) {
   const access = grant(dir, ['read', 'write']);
   const target = access.target;
@@ -113,6 +113,7 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
   const moves = [];
   const skipped = [];
   let stay = 0;
+  let ignored = 0;
   const taken = new Set();
   const guarded = recursive ? guardedFolders(entries) : new Map();
   const reported = new Set();
@@ -144,6 +145,11 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
       const from = access.read(entry.path);
       const stat = fs.lstatSync(from);
       const decision = rule({ name, path: entry.path, relative: entry.relative, stat });
+      // ignore: the rule does not concern this file (a photo rule and a text file). It is counted but not listed.
+      if (decision.ignore) {
+        ignored++;
+        continue;
+      }
       if (decision.stay !== undefined) {
         skipped.push({ path: entry.path, reason: decision.stay });
         continue;
@@ -177,12 +183,12 @@ function planSortWith(dir, rule, { recursive = false } = {}) {
       skipped.push({ path: entry.path, reason: reasonOf(err) });
     }
   }
-  return { target, moves, stay, skipped };
+  return { target, moves, stay, ignored, skipped };
 }
 
 // It runs a plan. A clash found at run time (a file that appeared in the meantime) is skipped, and even if one file fails the rest go on.
 function applySort(plan, { dryRun = false } = {}) {
-  const result = { target: plan.target, dryRun, moved: [], stay: plan.stay, skipped: [...plan.skipped], failed: [] };
+  const result = { target: plan.target, dryRun, moved: [], stay: plan.stay, ignored: plan.ignored ?? 0, skipped: [...plan.skipped], failed: [] };
   if (dryRun) {
     result.moved = plan.moves.map((move) => ({ ...move }));
     return result;
@@ -226,7 +232,7 @@ function formatSort(result) {
   for (const item of result.moved) lines.push(`${prefix}Move: ${relative(item.from)} -> ${relative(item.to)}`);
   for (const item of result.skipped) lines.push(`${prefix}Skipped: ${relative(item.path)} (${item.reason})`);
   for (const item of result.failed) lines.push(`Failed: ${relative(item.path)} (${item.reason})`);
-  lines.push(`${prefix}Move ${plural(result.moved.length, 'file')}, already in place ${result.stay}, skipped ${result.skipped.length}, failed ${result.failed.length}`);
+  lines.push(`${prefix}Move ${plural(result.moved.length, 'file')}, already in place ${result.stay}, skipped ${result.skipped.length}, failed ${result.failed.length}${result.ignored > 0 ? `, not concerned ${result.ignored}` : ''}`);
   return lines.join('\n');
 }
 
