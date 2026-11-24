@@ -14,6 +14,7 @@ Options:
   --force       overwrite existing files (unzip: extract over existing files)
   --permanent   with rm, delete permanently instead of using the Recycle Bin; with mv --force, delete the replaced item permanently
   --dry-run     print what would change without touching anything
+  --no-sidecars with rename, mv and rm, do not take a video's subtitle and sidecar files along
   --remove-archives  with extract-all, send successfully extracted archives to the Recycle Bin
   --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, remove-same-content, send to the Recycle Bin only if the list is unchanged
   --include-lowercase  with normalize, also treat lowercase words (abc-123) as numbers

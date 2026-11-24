@@ -497,3 +497,14 @@ fctl du D:Videos --depth=2 --top=10
 - **What it reverses.** `mv`, `rename`, `flatten`, `collapse`, `normalize`, `product-number`, `sort-by`, `sort-docs` (moves go back); `cp`, `write`, `zip` (the created file goes to the Recycle Bin); `mkdir` (an empty folder is removed); files sent to the Recycle Bin by `rm` and the `remove-*` commands (restored from the Recycle Bin when still there).
 - **What it cannot reverse** is reported as `[irreversible]`: a permanent delete, a file that an overwrite replaced, a folder created by `unzip` or `extract-all` (remove it yourself), and a file that was already there before `write` or `cp`.
 - **Marked as undone.** `undo` writes what it reversed into the journal file, so a run is never reversed twice. `undo` is itself a run in the journal, so `undo --run=<id of that undo>` puts things back again where possible.
+
+## Subtitles and sidecar files
+
+When a video is renamed, moved, or removed, the files that go with it get the same change, so players keep pairing them (#399).
+
+- **What goes along.** In the same folder, a file with the video's base name and one of: `.srt`, `.smi`, `.ass`, `.ssa`, `.vtt`, `.sub`, `.idx` (a subtitle may carry a language tag: `abc-123.ko.srt`, `abc-123.en-US.vtt`), or `.nfo`, `.jpg`, `.jpeg`, `.png`, `.webp`. Links and folders never go along. Video files are `.mp4`, `.mkv`, `.avi` and the other video extensions the other commands use.
+- **When it does not go along.** If another video in the folder has the same base name (`a.mp4` and `a.mkv` share `a.srt`), or a longer base name that owns the file (`a.en.srt` belongs to `a.en.mp4`), the file is left alone, because moving it would take it from the other video.
+- **Where.** `rename`, `mv` and `rm` (turn it off with `--no-sidecars`), `normalize` and `product-number`, and the `remove-broken`, `remove-duplicates` and `remove-low-quality` commands. `--dry-run` and the removal previews list the sidecars next to their video (`and its sidecar: a.srt -> b.srt`, `To delete: a.srt (Subtitle or sidecar file of a.mp4)`), and the confirmation value of a remove command covers them, so a new sidecar that appears after you looked changes the value.
+- **No overwriting, as a group.** A name that is taken for any sidecar stops the whole group: `rename` and `mv` refuse before anything moves, `normalize` and `product-number` report the video as skipped. If a sidecar cannot move after the video did, what moved goes back.
+- **Removal.** A sidecar is sent to the Recycle Bin only after its video was. It has to pass the same checks as the video where they apply (not changed in the last 5 minutes, not an unfinished download, a path the Recycle Bin accepts). One that fails is kept and reported as `Kept: ...`. Sidecars are in the removal log after the videos.
+- **Undo.** The moves and removals are in the change journal like any other, so `fctl undo` puts the whole group back.
