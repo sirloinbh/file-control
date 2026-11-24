@@ -503,7 +503,7 @@ fctl du D:Videos --depth=2 --top=10
 
 `fctl rename-pattern <target>` renames many files at once by rule (#398). Give one or more rules; they always run in this order on the name without its extension (the extension stays):
 
-1. `--replace=<from>/<to>`: replace every match of a regular expression. `$1` in `<to>` is a group; `<from>/<to>/i` ignores case; write a slash inside a part as `/`.
+1. `--replace=<from>/<to>`: replace every match of a regular expression. `$1` in `<to>` is a group; `<from>/<to>/i` ignores case; write a slash inside a part as a backslash and a slash (`\/`).
 2. `--case=upper` or `--case=lower`: change the case of the name.
 3. `--number=<template>`: replace the name with the template. `{n}` is the number, `{n:3}` pads it to 3 digits (`사진_{n:3}` gives `사진_001.jpg`), `{name}` is the name after rules 1 and 2, `{{` and `}}` are braces. Numbers start at 1 and follow the name order, where numbers inside names compare as numbers (`2` before `10`), separately in each folder.
 4. `--date-prefix`: put the modified date and a space in front (`2024-01-05 name.txt`), unless the name already starts with it.
