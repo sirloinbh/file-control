@@ -47,6 +47,8 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl remove-low-quality <target>` | Show the list of low-quality videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl sort-by <target> --by=kind\|month` | Move the files directly in the target into folders by kind (`Videos`, `Images`, `Documents`, `Archives`, `Audio`, `Installers`, `Other`) or by modified month (`2026-11`). Never overwrites; `--recursive` also sorts files in subfolders; `--dry-run` shows the plan |
 | `fctl sort-docs <target> [--by=month]` | Move documents into folders by type (`PDF`, `Word`, `Excel`, `Slides`, `HWP`, `Text`, `Other documents`). Files that are not documents stay. `--by=month` adds a month folder inside each type folder (`PDF/2026-11`); `--recursive` and `--dry-run` work as in `sort-by` |
+
+| `fctl undo [--list] [--run=<id>]` | Show the recent runs of the change journal, or reverse the last run (or the run with that id). Moves and renames go back, created files go to the Recycle Bin, and files sent to the Recycle Bin are restored. It never overwrites, and it leaves a file alone if it changed after the run. `--dry-run` shows the plan. See [Undo](#undo-fctl-undo) below |
 | `fctl ui [--port=<number>] [--no-open]` | Start the local web screen (127.0.0.1, default port 8109). See [Screen](#screen-fctl-ui) below |
 
 Options
@@ -509,3 +511,14 @@ fctl du D:Videos --depth=2 --top=10
 - **`--by=month`** puts a month folder (modified time, `YYYY-MM`) inside each type folder. It is the only value `sort-docs` accepts.
 - **Month folders are added when a file first moves.** A file already inside its type folder (`PDF/a.pdf`) stays, so running `--by=month` after a type-only run does not re-file it. Sort with `--by=month` from the start if you want month folders.
 - **`--recursive` takes every document, including `README.md`, `LICENSE.txt` and `data.csv`, out of subfolders** and away from the files they belong to (project folders with a marker file are left whole). Use it on a download or inbox folder, not on a folder of working files; check with `--dry-run` first.
+
+## Undo (fctl undo)
+
+`fctl undo --list` shows the recent runs of the [change journal](#safety-measures) (id, time, command, number of steps, `ok`, `failed` or `interrupted`, and `(undone)`). `fctl undo` reverses the newest run that is not undone yet; `fctl undo --run=<id>` reverses the run with that id (the first characters are enough). `--dry-run` prints the plan and changes nothing.
+
+- **Opposite order.** Steps are reversed from the last to the first, so `flatten` then `undo` restores the folders first and then moves each file back.
+- **It never overwrites.** A move goes back only if the old name is free. A file is restored from the Recycle Bin only if its original path is free.
+- **It leaves changed files alone.** A file that has another size or modification time than the journal recorded, a file that is gone, or a folder that is not empty is not touched. The step is reported as `[mismatch]`, and the command ends as a failure after doing the other steps. Run it again after fixing the cause: steps already reversed are skipped.
+- **What it reverses.** `mv`, `rename`, `flatten`, `collapse`, `normalize`, `product-number`, `sort-by`, `sort-docs` (moves go back); `cp`, `write`, `zip` (the created file goes to the Recycle Bin); `mkdir` (an empty folder is removed); files sent to the Recycle Bin by `rm` and the `remove-*` commands (restored from the Recycle Bin when still there).
+- **What it cannot reverse** is reported as `[irreversible]`: a permanent delete, a file that an overwrite replaced, a folder created by `unzip` or `extract-all` (remove it yourself), and a file that was already there before `write` or `cp`.
+- **Marked as undone.** `undo` writes what it reversed into the journal file, so a run is never reversed twice. `undo` is itself a run in the journal, so `undo --run=<id of that undo>` puts things back again where possible.

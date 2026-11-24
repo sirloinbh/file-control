@@ -202,6 +202,51 @@ function scriptStartFailure(err, checks, notSent) {
   return undefined;
 }
 
+// It puts an item back where it was deleted from, by its original path. Of several items deleted from the same place with the same name, the latest comes back.
+// It never overwrites: the caller checks that the original path is free, and 'undelete' on a taken name is refused by the shell here too (the result is then 'failed').
+// Prints one word: ok, notfound, or failed.
+const RESTORE_SCRIPT = String.raw`if (-not [Environment]::UserInteractive) { exit 75 }
+$t = $env:FC_RESTORE
+$dir = [IO.Path]::GetDirectoryName($t).TrimEnd('\')
+$leaf = [IO.Path]::GetFileName($t)
+$bin = (New-Object -ComObject Shell.Application).NameSpace(10)
+$best = $null; $bestWhen = $null
+foreach ($i in $bin.Items()) {
+  if (([string]$i.ExtendedProperty('System.Recycle.DeletedFrom')).TrimEnd('\') -ne $dir) { continue }
+  $ext = [IO.Path]::GetExtension([string]$i.Path)
+  $name = [string]$i.Name
+  if ($ext -ne '' -and -not $name.EndsWith($ext, [StringComparison]::OrdinalIgnoreCase)) { $name = $name + $ext }
+  if ($name -ne $leaf) { continue }
+  $when = $i.ExtendedProperty('System.Recycle.DateDeleted')
+  if ($best -eq $null -or $when -gt $bestWhen) { $best = $i; $bestWhen = $when }
+}
+if ($best -eq $null) { 'notfound'; exit 0 }
+if (Test-Path -LiteralPath $t) { 'failed'; exit 0 }
+$best.InvokeVerb('undelete')
+if (Test-Path -LiteralPath $t) { 'ok' } else { 'failed' }`;
+
+// Restores one item from the Recycle Bin to its original path. It returns { status: 'ok' | 'notfound' | 'failed' }.
+function restoreFromRecycleBin(target, { script = RESTORE_SCRIPT } = {}) {
+  const full = path.resolve(target);
+  if (!config.isWindows) throw new FcError('Restoring from the Recycle Bin works only on Windows.');
+  let output;
+  try {
+    output = childProcess.execFileSync(config.powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, FC_RESTORE: full },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60 * 1000,
+    });
+  } catch (err) {
+    if (err.status === 75) throw new FcError('Cannot restore from the Recycle Bin outside an interactive session.');
+    throw new FcError(`Could not restore from the Recycle Bin: ${full} (${err.code ?? `PowerShell exit code ${err.status}`})`);
+  }
+  const status = String(output).trim().split(/\r?\n/).pop();
+  const answer = status === 'ok' || status === 'notfound' ? status : 'failed';
+  if (answer === 'ok') journal.record('restore', { path: full });
+  return { status: answer };
+}
+
 const RECYCLE_FOLDERS_SCRIPT = String.raw`${PS_START}try { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; using Microsoft.Win32.SafeHandles;
 public static class FcFinalPath {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
@@ -735,5 +780,6 @@ module.exports = {
   recycleFiles,
   recycleTarget,
   remove,
+  restoreFromRecycleBin,
   sizeUpTo,
 };
