@@ -29,6 +29,51 @@ function tiff(date, { big = false, tag = 0x9003 } = {}) {
   return buf;
 }
 
+// ISO box helpers and a HEIC sample (#420): ftyp, a meta box with iinf (an image item and an Exif item) and iloc, then the item bytes. Options: ilocVersion 0|1|2, largeSizes (64-bit
+// offset and length fields, 64-bit box size), prefix (put "Exif\0\0" before the TIFF header), exifFirst (the Exif item has id 1), noExif (no Exif item at all).
+function box(type, ...parts) {
+  const body = Buffer.concat(parts);
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(body.length + 8, 0);
+  head.write(type, 4, 'latin1');
+  return Buffer.concat([head, body]);
+}
+
+const u16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16BE(v); return b; };
+const u32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v); return b; };
+const u64 = (v) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(v)); return b; };
+
+function heic(date, { ilocVersion = 0, largeSizes = false, prefix = false, exifFirst = false, noExif = false, tag } = {}) {
+  const tiffBytes = tiff(date, { tag });
+  const lead = prefix ? Buffer.from('Exif\0\0', 'latin1') : Buffer.alloc(0);
+  const item = Buffer.concat([u32(lead.length), lead, tiffBytes]);
+  const infe = (id, type) => box('infe', Buffer.from([2, 0, 0, 0]), u16(id), u16(0), Buffer.from(type, 'latin1'), Buffer.from('\0'));
+  const imageId = exifFirst ? 2 : 1;
+  const exifId = exifFirst ? 1 : 2;
+  const items = noExif ? [infe(imageId, 'hvc1')] : [infe(imageId, 'hvc1'), infe(exifId, 'Exif')];
+  const iinf = box('iinf', Buffer.from([0, 0, 0, 0]), u16(items.length), ...items);
+  const size = largeSizes ? 8 : 4;
+  const num = (v) => (largeSizes ? u64(v) : u32(v));
+  const ftyp = box('ftyp', Buffer.from('heic', 'latin1'), u32(0), Buffer.from('mif1heic', 'latin1'));
+  const iloc = (dataOffset) => {
+    const entries = [];
+    const entry = (id, offset, length) => Buffer.concat([
+      ilocVersion < 2 ? u16(id) : u32(id),
+      ilocVersion > 0 ? u16(0) : Buffer.alloc(0),
+      u16(0),
+      u16(1),
+      num(offset),
+      num(length),
+    ]);
+    entries.push(entry(imageId, dataOffset + item.length, 4));
+    if (!noExif) entries.push(entry(exifId, dataOffset, item.length));
+    return box('iloc', Buffer.from([ilocVersion, 0, 0, 0]), Buffer.from([(size << 4) | size, 0]), ilocVersion < 2 ? u16(entries.length) : u32(entries.length), ...entries);
+  };
+  const metaOf = (dataOffset) => box('meta', Buffer.from([0, 0, 0, 0]), iinf, iloc(dataOffset));
+  const dataOffset = ftyp.length + metaOf(0).length + 8;
+  return Buffer.concat([ftyp, metaOf(dataOffset), box('mdat', item, Buffer.from('DATA'))]);
+}
+
 function jpeg(date, options) {
   const body = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff(date, options)]);
   const app1 = Buffer.alloc(4);
@@ -67,4 +112,4 @@ function webp(date) {
   return Buffer.concat([riff, chunk]);
 }
 
-module.exports = { tiff, jpeg, plainJpeg, png, webp };
+module.exports = { tiff, jpeg, plainJpeg, png, webp, heic, box };

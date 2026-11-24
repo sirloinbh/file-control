@@ -283,3 +283,52 @@ test('options of other commands are refused, and --yes is listed for the new com
   assert.match(run(['--help']), /^ {2}find-same-content <target>/m);
   assert.match(run(['--help']), /^ {2}remove-same-content <target>/m);
 });
+
+test('the subtitle and thumbnail of an extra video copy are listed, covered by the value, and go to the Recycle Bin after it (#416)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.mp4': 'VIDEO', 'sub/b.mp4': 'VIDEO', 'sub/b.srt': 'subtitle', 'sub/b.jpg': 'thumb', 'a.srt': 'keeper subtitle' });
+  const preview = removeSameContent(dir);
+  const text = formatRemoveSameContent(preview);
+  assert.match(text, /To delete: sub[\\/]b\.srt \(Subtitle or sidecar file of b\.mp4\)/);
+  assert.match(text, /To delete: sub[\\/]b\.jpg \(Subtitle or sidecar file of b\.mp4\)/);
+  assert.doesNotMatch(text, /a\.srt/, 'the sidecar of the file to keep is not touched');
+  assert.deepStrictEqual(recycled, []);
+  // A sidecar that appears after the preview makes the value stale and nothing is deleted.
+  make(dir, { 'sub/b.ass': 'late subtitle' });
+  const stale = removeSameContent(dir, { confirm: preview.code });
+  assert.strictEqual(stale.mismatch, true);
+  assert.deepStrictEqual(recycled, []);
+  fs.rmSync(path.join(dir, 'sub', 'b.ass'));
+  const result = removeSameContent(dir, { confirm: preview.code });
+  assert.strictEqual(result.confirmed, true);
+  const sent = recycled.map((p) => rel(dir, p));
+  assert.strictEqual(sent[0], 'sub/b.mp4', 'the video goes first');
+  assert.deepStrictEqual([...sent].sort(), ['sub/b.jpg', 'sub/b.mp4', 'sub/b.srt']);
+  assert.ok(fs.existsSync(path.join(dir, 'a.mp4')) && fs.existsSync(path.join(dir, 'a.srt')));
+  assert.match(formatRemoveSameContent(result), /Move to the Recycle Bin: sub[\\/]b\.srt/);
+  const log = JSON.parse(fs.readFileSync(result.log, 'utf8'));
+  assert.deepStrictEqual(log.items.map((item) => rel(dir, item.path)).slice(0, 1), ['sub/b.mp4']);
+  assert.ok(log.items.some((item) => /b\.srt$/.test(item.path)));
+});
+
+test('a file that is not a video has no sidecars removed with it (#416)', () => {
+  const dir = tempDir();
+  make(dir, { 'a.bin': 'DATA', 'sub/b.bin': 'DATA', 'sub/b.srt': 'subtitle' });
+  const result = removeSameContent(dir, { confirm: removeSameContent(dir).code });
+  assert.deepStrictEqual(recycled.map((p) => rel(dir, p)), ['sub/b.bin']);
+  assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.srt')));
+  assert.strictEqual(result.removed.length, 1);
+});
+
+test('a sidecar that is the file to keep of another group is not taken along with its video (#416)', () => {
+  const dir = tempDir();
+  make(dir, { 'k.mp4': 'VIDEO', 'sub/b.mp4': 'VIDEO', 'sub/b.jpg': 'IMAGE', 'zzz/yyy/c.jpg': 'IMAGE' });
+  const preview = removeSameContent(dir);
+  const text = formatRemoveSameContent(preview);
+  assert.match(text, /Kept: sub[\\/]b\.jpg \(Kept because it is part of a group of files with the same content/);
+  assert.doesNotMatch(text, /To delete: sub[\\/]b\.jpg/);
+  const result = removeSameContent(dir, { confirm: preview.code });
+  assert.deepStrictEqual(recycled.map((p) => rel(dir, p)).sort(), ['sub/b.mp4', 'zzz/yyy/c.jpg']);
+  assert.ok(fs.existsSync(path.join(dir, 'sub', 'b.jpg')), 'one copy of the image is still there');
+  assert.strictEqual(result.removed.length, 2);
+});
