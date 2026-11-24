@@ -15,7 +15,7 @@ Options:
   --permanent   with rm, delete permanently instead of using the Recycle Bin; with mv --force, delete the replaced item permanently
   --dry-run     print what would change without touching anything
   --remove-archives  with extract-all, send successfully extracted archives to the Recycle Bin
-  --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, send to the Recycle Bin only if the list is unchanged
+  --yes=VALUE   with remove-broken, remove-duplicates, remove-low-quality, remove-same-content, send to the Recycle Bin only if the list is unchanged
   --include-lowercase  with normalize, also treat lowercase words (abc-123) as numbers
   --min-height=PIXELS  with find-low-quality and remove-low-quality, below this short side is low quality (default: 360)
   --min-bitrate=KBPS   with find-low-quality and remove-low-quality, below this bitrate is low quality (default: not checked)

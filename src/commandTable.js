@@ -31,6 +31,8 @@ const COMMANDS = [
   { name: 'remove-low-quality', usage: 'remove-low-quality <target>', summary: 'show low-quality videos to delete and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true, lowQuality: true },
   { name: 'find', usage: 'find <target> [--larger=SIZE] [--ext=a,b]', summary: 'list files by size, age, extension and name, with a total (does not touch files)', kind: 'whole', find: true },
   { name: 'sort-by', usage: 'sort-by <target> --by=kind|month', summary: 'move the files directly in the target into folders by kind (Videos, Images, ...) or by modified month (no overwriting; --recursive for subfolders too)', kind: 'whole', sortBy: true },
+  { name: 'find-same-content', usage: 'find-same-content <target>', summary: 'group files of any type with exactly the same content (size, then SHA-256; does not touch files)', kind: 'whole' },
+  { name: 'remove-same-content', usage: 'remove-same-content <target>', summary: 'show extra copies of identical files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
   { name: 'du', usage: 'du <target> [--depth=1] [--top=20]', summary: 'show subfolder sizes and file counts, largest first, with a total (does not touch files)', kind: 'whole', du: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
@@ -59,7 +61,7 @@ function misplacedFlagMessage(command, flags) {
   const basic = BASIC_COMMANDS.has(command);
   return [
     only('remove-archives', named('removeArchives'), '--remove-archives can be used only with extract-all.'),
-    only('yes', named('yes'), '--yes can be used only with remove-broken, remove-duplicates, and remove-low-quality.'),
+    only('yes', named('yes'), `--yes can be used only with ${named('yes').join(', ')}.`),
     // mv --permanent only decides what happens to the item that --force replaces, so without --force it does nothing.
     basic && command === 'mv' && flags.has('permanent') && !flags.has('force')
       ? 'mv --permanent only applies with --force (it deletes the replaced item permanently instead of sending it to the Recycle Bin).' : undefined,

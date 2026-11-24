@@ -34,6 +34,8 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl extract-all <target>` | Extract each archive into its own new folder |
 | `fctl find-broken <target>` | Find broken files (does not touch any file) |
 | `fctl remove-broken <target>` | Show the list of broken files and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl find-same-content <target>` | Group files of any type with exactly the same content (size first, then SHA-256; does not touch any file) |
+| `fctl remove-same-content <target>` | Show the extra copies of identical files to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl du <target> [--depth=N] [--top=N]` | Show each subfolder's total size and file count, largest first, with a total (does not touch any file) |
 | `fctl find <target> [--larger=SIZE] [--smaller=SIZE] [--older=AGE] [--newer=AGE] [--ext=a,b] [--name=GLOB] [--sort=size|date]` | List files that match every condition, with size, date and a total (does not touch any file) |
 | `fctl find-duplicates <target>` | Group videos that have the same name or product number, or the same length (does not touch any file) |
@@ -387,6 +389,22 @@ fctl du D:Videos --depth=2 --top=10
   - A copy that is another name of the same file (a hard link) as the file to keep: deleting it does not reduce space, and deleting it changes the change time of the file to keep, so the next copy of the same group fails with "the file to keep changed". It reports it as "another name of the same file" and does not delete it.
   - A copy that is the same file as another copy to be deleted this time: it deletes only one at a time (the same as `remove-broken`). The remaining names are deleted when you run again after 5 minutes.
   - Besides that: it does not handle repositories. It keeps a copy that changed within 5 minutes, a copy that would be deleted permanently by the Recycle Bin setting (remove immediately, over the Recycle Bin maximum size, 1GB or more if the setting cannot be read), and a copy on a volume that is not a fixed disk (#81, #100). It deletes only in an interactive session. The exit code is also the same. It does not delete on a volume whose file system is FAT, FAT32, or exFAT or could not be determined (#120, #184).
+
+## Find and remove files with the same content
+
+`fctl find-same-content <target>` groups files of any type (photos, documents, archives, videos, ...) whose bytes are exactly the same (#394). `find-duplicates` only compares videos by name and length; this compares the content itself. It does not touch files, so `--dry-run` gives the same result.
+
+- **How it compares.** Files are grouped by size first, and only files that share a size with another file are hashed with SHA-256, read in chunks (a large file is never loaded whole). Two files are in one group only when the hashes are equal. Empty files are not compared. A file that changes while it is read is skipped.
+- **Which copy is kept.** In each group the file to keep is the one with the shortest path (relative to the target), then the oldest modification time, then the first by name. The list shows the file to keep and the rule: `File to keep: a.bin [shortest path]`.
+- **Progress.** It prints "Hashing N files that share a size with another file..." and then "Hashed N of M files so far..." every 100 files.
+- **Skipped places.** A target inside or containing a repository is refused, like the other remove commands. Files inside a Windows system folder, a program folder (`node_modules` and so on) and leftovers of an earlier job are not compared and are listed as skipped.
+
+`fctl remove-same-content <target>` keeps the file to keep of each group and sends the other copies to the Recycle Bin, using the same safe flow as `remove-duplicates`:
+
+- Run it without `--yes` to see the list and a confirmation value. Run it again with `--yes=<value>` to delete. If anything in the list changed in between, nothing is deleted and the new list is shown. `--dry-run` never deletes.
+- A removal log is written before anything is deleted, and it records the file to keep and the SHA-256 of each copy and what happened to it.
+- Right before each batch it checks again that the file to keep is unchanged, and the Recycle Bin move checks each copy again.
+- The shared keep rules apply: a copy that changed within the last 5 minutes (or has a future time), a copy that is another name (hard link) of the file to keep, a path that cannot be sent to the Recycle Bin, a volume that is not a fixed disk or has no change time, and a file the Recycle Bin settings would delete permanently stay where they are, with the reason in the list. A group whose file to keep changed after the search deletes nothing.
 
 ## Find low-quality videos
 
