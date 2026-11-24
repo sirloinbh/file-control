@@ -7,7 +7,7 @@
     "fctl": "bin/fctl.js"
   },
   "scripts": {
-    "test": "node --require ./test/noRealRecycle.js --test \"test/**/*.test.js\""
+    "test": "node --require ./test/repoTemp.js --require ./test/noRealRecycle.js --test \"test/**/*.test.js\""
   },
   "engines": {
     "node": ">=22"

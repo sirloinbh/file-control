@@ -87,8 +87,12 @@ const isWindows = process.platform === 'win32';
 let fakeHome = null;
 test.mock.method(os, 'homedir', () => fakeHome ?? path.join(path.parse(os.tmpdir()).root, 'fc-no-such-home'));
 
-function tempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-flatten-'));
+// 8.3 short names exist only on volumes that make them (NTFS, not a ReFS Dev Drive). The short-name tests use the system temp
+// folder even when npm test moved the run's temp folder next to the repo (test/repoTemp.js).
+const SHORT_NAME_TEMP = process.env.FC_SYSTEM_TEMP || os.tmpdir();
+
+function tempDir(base = os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(base, 'fc-flatten-'));
   test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return fs.realpathSync.native(dir);
 }
@@ -197,7 +201,7 @@ function assertSafeMoves(plan) {
 }
 
 test('planFlatten은 기존 파일의 8.3 짧은 이름과 겹치는 이름을 피한다', { skip: !isWindows }, (t) => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   make(dir, ['longfilename.txt', 'longfoldername/x.txt']);
   if (!fs.existsSync(path.join(dir, 'LONGFI~1.TXT'))) return t.skip('이 볼륨은 8.3 이름이 꺼져 있다');
   make(dir, ['sub/LONGFI~1.TXT', 'sub/LONGFO~1']);
@@ -648,7 +652,7 @@ test('flatten은 폴더명으로 고른 이름으로 옮기고 확장자를 유�
 });
 
 test('flatten은 계획끼리의 8.3 짧은 이름 겹침을 실행 때 잡아 덮어쓰지 않는다', { skip: !isWindows }, (t) => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   make(dir, ['probe-long-file-name.txt']);
   const hasShortNames = fs.existsSync(path.join(dir, 'PROBE-~1.TXT'));
   fs.rmSync(path.join(dir, 'probe-long-file-name.txt'));
@@ -669,7 +673,7 @@ test('flatten은 계획끼리의 8.3 짧은 이름 겹침을 실행 때 잡아 �
 });
 
 test('flatten은 하드링크를 못 만드는 드라이브에서도 8.3 짧은 이름 겹침을 실행 때 잡아 덮어쓰지 않는다', { skip: !isWindows }, (t) => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   make(dir, ['probe-long-file-name.txt']);
   const hasShortNames = fs.existsSync(path.join(dir, 'PROBE-~1.TXT'));
   fs.rmSync(path.join(dir, 'probe-long-file-name.txt'));

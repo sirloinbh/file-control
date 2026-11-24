@@ -13,8 +13,12 @@ const fc = require('../src/commands');
 
 const isWindows = process.platform === 'win32';
 
-function tempDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-test-'));
+// 8.3 short names exist only on volumes that make them (NTFS, not a ReFS Dev Drive). The short-name tests use the system temp
+// folder even when npm test moved the run's temp folder next to the repo (test/repoTemp.js).
+const SHORT_NAME_TEMP = process.env.FC_SYSTEM_TEMP || os.tmpdir();
+
+function tempDir(base = os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(base, 'fc-test-'));
   test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -1154,7 +1158,7 @@ test('zip은 같은 폴더에 8.3 짧은 이름으로 겹칠 수 있는 이름�
 });
 
 test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 있는 다른 원본을 함께 묶지 않는다 (#159)', { skip: !isWindows }, (t) => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('p', 'longername.txt'), 'P');
   fc.writeFile(p('q', 'longername.txt'), 'Q');
@@ -1178,7 +1182,7 @@ test('zip은 원본을 8.3 짧은 이름으로 주면 그 이름과 겹칠 수 �
 
 // unzip does not extract if a ~N name in the archive would overwrite an existing file through a short name or overlap with another item (#188).
 test('unzip은 압축 안의 8.3 짧은 이름이 풀 폴더의 기존 항목을 가리키면 풀지 않는다 (#188)', { skip: !isWindows }, (t) => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   const p = (...parts) => path.join(dir, ...parts);
   fc.writeFile(p('src', 'LONGER~1.TXT'), 'new');
   fc.writeFile(p('src', 'LONGDI~1', 'x.txt'), 'x');
@@ -1203,7 +1207,7 @@ test('unzip은 압축 안의 8.3 짧은 이름이 풀 폴더의 기존 항목을
 });
 
 test('unzip은 압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이 함께 있으면 풀지 않는다 (#188)', { skip: !isWindows }, () => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   const p = (...parts) => path.join(dir, ...parts);
   // zip does not make such archives (#159), so it is bundled directly with tar.exe.
   fc.writeFile(p('src', 'deep', 'LONGER~1.TXT'), '1');
@@ -1217,7 +1221,7 @@ test('unzip은 압축 안에 8.3 짧은 이름으로 겹칠 수 있는 항목이
 });
 
 test('rejectExtractShortNameClash 어림: 깨진 글자는 무엇이든 될 수 있다고 보고, 겹칠 수 없는 이름은 통과한다 (#188)', () => {
-  const dir = tempDir();
+  const dir = tempDir(SHORT_NAME_TEMP);
   assert.throws(() => fc.rejectExtractShortNameClash(['ABC~1.TXT', '???.txt'], path.join(dir, 'none')), /could collide through 8\.3 short names/);
   assert.throws(() => fc.rejectExtractShortNameClash(['a/LONGER~1.TXT', 'a/longername.txt'], path.join(dir, 'none')), /a\/LONGER~1\.TXT/);
   // Windows is case-insensitive, so a/ and A/ are the same folder (first review).
