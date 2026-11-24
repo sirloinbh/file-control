@@ -61,23 +61,69 @@ function pickRun(id, dir) {
   return latest;
 }
 
-// Whether `p` is still what the step left: a file with the same size and modification time (when the step recorded them), or any folder.
-function unchanged(step, p) {
+// What undo sees on disk. A real run looks at the disk, because each step really happened before the next is looked at.
+// A preview (--dry-run) changes nothing, so it keeps an overlay of what the earlier steps of the plan would have done (paths that would exist again, paths that would be gone),
+// and looks through it. Without it, the plan of a run that needs its folders back first (flatten) would report mismatches that the real run does not have.
+function makeView(dryRun) {
+  const added = new Set();
+  const gone = new Set();
+  const restored = [];
+  const real = (p) => Boolean(fs.lstatSync(p, { throwIfNoEntry: false }));
+  const isUnder = (dir, p) => p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+  return {
+    dryRun,
+    added,
+    exists: (p) => (dryRun ? added.has(p) || (!gone.has(p) && real(p)) : real(p)),
+    // The folder a path goes into. In a preview, a folder that a planned restore brings back (with what was inside it) counts as there.
+    parentExists(p) {
+      const dir = path.dirname(p);
+      return this.exists(dir) || (dryRun && restored.some((r) => dir === r || isUnder(r, dir)));
+    },
+    isEmptyFolder(p) {
+      if (!dryRun) return fs.lstatSync(p).isDirectory() && fs.readdirSync(p).length === 0;
+      if (added.has(p)) return true;
+      const children = fs.lstatSync(p).isDirectory() ? fs.readdirSync(p).map((name) => path.join(p, name)).filter((c) => !gone.has(c)) : [p];
+      return children.length === 0 && ![...added].some((a) => path.dirname(a) === p);
+    },
+    // Records in the overlay what a step of the plan would do.
+    plan(step) {
+      if (!dryRun) return;
+      const drop = (p) => (added.has(p) ? added.delete(p) : gone.add(p));
+      if (step.op === 'move') {
+        drop(step.to);
+        added.add(step.from);
+        gone.delete(step.from);
+      } else if (step.op === 'recycle') {
+        added.add(step.path);
+        restored.push(step.path);
+      } else if (['copy', 'write', 'create', 'create-dir'].includes(step.op)) drop(step.to ?? step.path);
+    },
+  };
+}
+
+// Whether `p` is still what the step left: a file with the same size, modification time and file ID (when the step recorded them), or any folder.
+function unchanged(step, p, view) {
+  // Something the plan itself puts there is not on disk yet.
+  if (view.dryRun && view.added.has(p)) return null;
   let stat;
   try {
-    stat = fs.lstatSync(p);
+    stat = fs.lstatSync(p, { bigint: true });
   } catch {
     return 'it is gone';
   }
-  if (step.stamp === undefined) return null;
+  const stamp = step.stamp;
+  if (stamp === undefined) return null;
   if (!stat.isFile()) return 'it is no longer a file';
-  if (stat.size !== step.stamp.size || Math.floor(stat.mtimeMs) !== step.stamp.mtimeMs) return 'it was changed after the run';
+  if (Number(stat.size) !== stamp.size || Math.floor(Number(stat.mtimeNs / 1000000n)) !== stamp.mtimeMs) return 'it was changed after the run';
+  if (stamp.ino !== undefined && stat.ino !== 0n && String(stat.ino) !== stamp.ino) return 'it was replaced by another file after the run';
   return null;
 }
 
-function sameItem(a, b) {
-  const one = fs.lstatSync(a, { bigint: true, throwIfNoEntry: false });
-  const two = fs.lstatSync(b, { bigint: true, throwIfNoEntry: false });
+// A rename that only changed the case: the old spelling is the same item, so it goes back by a plain rename.
+function caseOnly(from, to) {
+  if (from.toLowerCase() !== to.toLowerCase()) return false;
+  const one = fs.lstatSync(from, { bigint: true, throwIfNoEntry: false });
+  const two = fs.lstatSync(to, { bigint: true, throwIfNoEntry: false });
   return Boolean(one && two) && one.ino !== 0n && one.ino === two.ino && one.dev === two.dev;
 }
 
@@ -85,27 +131,23 @@ const done = (message) => ({ status: 'done', message });
 const mismatch = (message) => ({ status: 'mismatch', message });
 const irreversible = (message) => ({ status: 'irreversible', message });
 
-// The reverse of one step. With dryRun it only says what it would do (and still finds the mismatches that can be seen without acting).
-function reverse(step, dryRun) {
+// The reverse of one step. In a preview it only says what it would do, through the overlay of the earlier planned steps.
+function reverse(step, view) {
   const act = (verb, fn) => {
-    if (!dryRun) fn();
+    if (!view.dryRun) fn();
     return done(verb);
   };
   switch (step.op) {
     case 'move': {
-      const why = unchanged(step, step.to);
+      const why = unchanged(step, step.to, view);
       if (why) return mismatch(`${step.to}: ${why}, so it was not moved back to ${step.from}`);
-      if (sameItem(step.from, step.to)) {
-        // A rename that only changed the case: the old spelling is the same item, so it goes back by a plain rename.
-        return act(`Move back: ${step.to} -> ${step.from}`, () => journal.rename(step.to, step.from));
-      }
-      if (exists(step.from)) return mismatch(`${step.from} exists again, so ${step.to} was not moved back (undo never overwrites)`);
-      if (!exists(path.dirname(step.from))) return mismatch(`The folder ${path.dirname(step.from)} no longer exists, so ${step.to} was not moved back`);
+      if (!view.dryRun && caseOnly(step.from, step.to)) return act(`Move back: ${step.to} -> ${step.from}`, () => journal.rename(step.to, step.from));
+      if (view.exists(step.from)) return mismatch(`${step.from} exists again, so ${step.to} was not moved back (undo never overwrites)`);
+      if (!view.parentExists(step.from)) return mismatch(`The folder ${path.dirname(step.from)} no longer exists, so ${step.to} was not moved back`);
       const note = step.replaced ? ' (the file it replaced earlier is not restored)' : '';
-      const result = act(`Move back: ${step.to} -> ${step.from}${note}`, () => {
+      return act(`Move back: ${step.to} -> ${step.from}${note}`, () => {
         if (!moveWithoutOverwrite(step.to, step.from)) throw new FcError(`${step.from} exists again, so ${step.to} was not moved back`);
       });
-      return step.replaced ? { ...result, replaced: true } : result;
     }
     case 'copy':
     case 'write':
@@ -113,19 +155,19 @@ function reverse(step, dryRun) {
       const target = step.to ?? step.path;
       if (step.existed) return irreversible(`${target} was there before the run and changed, so the earlier content cannot be restored`);
       if (step.stamp === undefined) return irreversible(`${target} is a folder made by ${step.op}; remove it yourself if you do not want it`);
-      const why = unchanged(step, target);
+      const why = unchanged(step, target, view);
       if (why) return mismatch(`${target}: ${why}, so it was not removed`);
       return act(`Send to the Recycle Bin: ${target}`, () => remove([target], { checkVolume: false }));
     }
     case 'create-dir': {
-      if (!exists(step.path)) return mismatch(`${step.path}: it is gone`);
-      if (!fs.lstatSync(step.path).isDirectory() || fs.readdirSync(step.path).length > 0) return mismatch(`${step.path} is not an empty folder now, so it was not removed`);
+      if (!view.exists(step.path)) return mismatch(`${step.path}: it is gone`);
+      if (!view.isEmptyFolder(step.path)) return mismatch(`${step.path} is not an empty folder now, so it was not removed`);
       return act(`Remove the empty folder: ${step.path}`, () => fs.rmdirSync(step.path));
     }
     case 'recycle': {
-      if (exists(step.path)) return mismatch(`${step.path} exists again, so nothing was restored from the Recycle Bin (undo never overwrites)`);
-      if (!exists(path.dirname(step.path))) return mismatch(`The folder ${path.dirname(step.path)} no longer exists, so ${step.path} was not restored`);
-      if (dryRun) return done(`Restore from the Recycle Bin: ${step.path}`);
+      if (view.exists(step.path)) return mismatch(`${step.path} exists again, so nothing was restored from the Recycle Bin (undo never overwrites)`);
+      if (!view.parentExists(step.path)) return mismatch(`The folder ${path.dirname(step.path)} no longer exists, so ${step.path} was not restored`);
+      if (view.dryRun) return done(`Restore from the Recycle Bin: ${step.path}`);
       const { status } = restoreFromRecycleBin(step.path);
       if (status === 'ok') return done(`Restore from the Recycle Bin: ${step.path}`);
       return mismatch(`${step.path} is not in the Recycle Bin any more (emptied or restored by hand), so it could not be restored`);
@@ -141,12 +183,13 @@ function reverse(step, dryRun) {
 
 // It reverses one run. Returns { run, dryRun, steps: [{ seq, op, status, message }], undone }.
 // status: done, mismatch (state changed, not touched), irreversible (cannot be reversed), skipped (already reversed by an earlier undo).
+// Each reversed step is written into the journal right away, so a crash in the middle keeps what was done.
 function undo({ id, dryRun = false, dir = journal.journalDir() } = {}) {
   const run = pickRun(id, dir);
   const read = journal.readJournal(run.file);
   if (read.undone) throw new FcError(`The run ${run.id} was already undone.`);
+  const view = makeView(dryRun);
   const results = [];
-  const finished = [];
   for (const step of [...read.steps].reverse()) {
     if (read.reversed.has(step.seq)) {
       results.push({ seq: step.seq, op: step.op, status: 'skipped', message: `Step ${step.seq} was already reversed` });
@@ -154,15 +197,17 @@ function undo({ id, dryRun = false, dir = journal.journalDir() } = {}) {
     }
     let outcome;
     try {
-      outcome = reverse(step, dryRun);
+      outcome = reverse(step, view);
     } catch (err) {
       outcome = mismatch(err instanceof FcError ? err.message : `Could not reverse step ${step.seq}: ${err.code ?? err.message}`);
     }
     results.push({ seq: step.seq, op: step.op, ...outcome });
-    if (!dryRun && (outcome.status === 'done' || outcome.status === 'irreversible')) finished.push(step.seq);
+    if (outcome.status === 'mismatch') continue;
+    if (dryRun) view.plan(step);
+    else journal.markUndone(run.file, [step.seq], false);
   }
   const clean = results.every((r) => r.status !== 'mismatch');
-  if (!dryRun) journal.markUndone(run.file, finished, clean);
+  if (!dryRun && clean) journal.markUndone(run.file, [], true);
   return { run, dryRun, steps: results, undone: !dryRun && clean };
 }
 

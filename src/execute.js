@@ -17,12 +17,13 @@ const { removeDuplicates, formatRemoveDuplicates } = require('./removeDuplicates
 const { findLowQuality, formatLowQuality } = require('./lowQuality');
 const { removeLowQuality, formatRemoveLowQuality } = require('./removeLowQuality');
 const { undo, listRuns, formatRuns, formatUndo } = require('./undo');
+const { findFiles, formatFind } = require('./find');
 const { sortBy, formatSort } = require('./sort');
 
-const { VALUE_FLAGS, misplacedFlagMessage } = require('./commandTable');
+const { VALUE_FLAGS, FIND_FLAGS, misplacedFlagMessage } = require('./commandTable');
 const journal = require('./journal');
 
-const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'list', 'run']);
+const KNOWN_FLAGS = new Set(['force', 'permanent', 'dry-run', 'help', 'remove-archives', 'include-lowercase', 'yes', 'min-height', 'min-bitrate', 'by', 'recursive', 'larger', 'smaller', 'older', 'newer', 'ext', 'name', 'sort', 'list', 'run']);
 
 function parse(argv) {
   const flags = new Set();
@@ -285,6 +286,12 @@ function executeCommand(argv, { progress, readStdin = defaultReadStdin }) {
       // Found files are enough as a report. It does not touch files, so --dry-run gives the same result.
       const result = findLowQuality(args[0], { minHeight: values.get('min-height'), minBitrate: values.get('min-bitrate') });
       return done(result, formatLowQuality(result));
+    }
+    case 'find': {
+      checkWholeTarget(command, args, flags);
+      // It does not touch files, so --dry-run gives the same result.
+      const result = findFiles(args[0], Object.fromEntries([...values].filter(([name]) => FIND_FLAGS.includes(name))));
+      return done(result, formatFind(result));
     }
     default:
       throw Object.assign(new fc.FcError(`Unknown command: ${command}`), { unknownCommand: true });

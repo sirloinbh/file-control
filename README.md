@@ -34,6 +34,7 @@ You can also run it without installing, with `node bin/fctl.js <command>`.
 | `fctl extract-all <target>` | Extract each archive into its own new folder |
 | `fctl find-broken <target>` | Find broken files (does not touch any file) |
 | `fctl remove-broken <target>` | Show the list of broken files and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
+| `fctl find <target> [--larger=SIZE] [--smaller=SIZE] [--older=AGE] [--newer=AGE] [--ext=a,b] [--name=GLOB] [--sort=size|date]` | List files that match every condition, with size, date and a total (does not touch any file) |
 | `fctl find-duplicates <target>` | Group videos that have the same name or product number, or the same length (does not touch any file) |
 | `fctl remove-duplicates <target>` | Show the list of duplicate videos to delete and a confirmation value. With `--yes=<confirmation value>`, it writes a record and sends them to the Recycle Bin |
 | `fctl collapse <target>` | Collapse stretches where each folder holds only one folder |
@@ -188,6 +189,7 @@ fctl ui --port=8200      # start on another port (0 means a free port)
 - Archives (`/archive`, #258): `zip`, `unzip` and `extract-all` go through the same preview -> run flow. Every path field (the zip archive and sources, the unzip archive and folder, the extract-all folder) must be a full path, and a protected place (C:\Windows, Program Files, the hidden settings folders of the user folder) is refused before any job starts. The real path is checked too, so a junction, a symbolic link (also one whose target does not exist yet) or a short name such as `C:\PROGRA~1` cannot lead there, and a path whose real path cannot be checked is refused (#290). The basic file screens use the same check.
 - Folder cleanup screens (`/organize`, #257): flatten, collapse, normalize (with the lowercase option) and product-number each have a form for the target folder, then a preview table, then a run that is allowed only for the preview that was shown (if the folder changed, a new preview is shown and nothing runs). The result tables list failed and skipped items first and mark the part of a name that was added or changed. Flatten sends emptied folders to the Recycle Bin, as the CLI does.
 - Find and delete (`/cleanup`, #259): `find-broken`, `find-duplicates` and `find-low-quality` are forms that only list files (no Run button). `remove-broken`, `remove-duplicates` and `remove-low-quality` show a preview of what would be deleted, and the Run button ("Send to the Recycle Bin") sends it to the Recycle Bin; the confirmation value is added by the job from a fresh preview, so you never type it. If the folder changed after the preview, nothing is deleted and a new preview is shown. The result shows the removal log file location. `remove-low-quality` and `find-low-quality` take an optional minimum short side (pixels) and minimum bitrate (kbps).
+- Search (`/cleanup/find`, #393): a form for `find` with the target folder and the conditions (larger, smaller, older, newer, extensions, name pattern, sort). Blank conditions are ignored. The result shows the matching files with size and last changed time, and the total size. It changes nothing.
 - The screen code is in `src/ui/`; each screen area is one module in `src/ui/screens/`.
 
 ## Using it with Claude Code
@@ -248,6 +250,22 @@ npm test
 - **If an inner stretch fails, the stretch above that contains it is not collapsed either.**
 - **It does not collapse a stretch that holds a hidden folder** (#85). When it collapses, the bottom folder is moved to the top name, so the folder attributes and ACL (permissions) become those of the bottom folder. If the top is hidden the hiding is lifted, if the bottom is hidden the top name becomes hidden and looks gone, and if a middle one is hidden the inside is exposed, so if any folder of the stretch is hidden it skips with a reason. It reads the attributes with PowerShell in one go (only when there is a stretch to collapse, enumerating only the parents of the stretch folders, about 0.5 second), and if it cannot read them it collapses nothing and reports an error. The system attribute follows the bottom folder along with the folder icon (`desktop.ini`), so it is not blocked. In this case, if `desktop.ini` has a display name (`LocalizedResourceName`), Explorer shows that display name instead of the top name. It does not recognize folders with a different ACL, and the bottom folder's ACL remains (not tested). On other operating systems it does not look at attributes.
 - **There is no undo.**
+
+## Find files by condition
+
+`fctl find <target>` lists the files under the target that match every condition you give (#393). It does not touch any file, so `--dry-run` gives the same result.
+
+```
+fctl find D:Videos --larger=1GB --older=180d --ext=mp4,mkv --sort=size
+```
+
+- **`--larger=SIZE` / `--smaller=SIZE`**: more or less than a size, written as `500` (bytes), `500KB`, `1.5MB`, `1GB` or `1TB`. Units are 1024-based, like the sizes fctl prints. The bounds are exclusive.
+- **`--older=AGE` / `--newer=AGE`**: last modified more than, or within, an age written as `30d` (days), `4w` (weeks) or `6m` (months of 30 days). Use both to ask for a range (`--older=1w --newer=1y`).
+- **`--ext=a,b`**: only these extensions, with or without the dot, ignoring case.
+- **`--name=GLOB`**: only file names that match the pattern (`*` any run of characters, `?` one character, case ignored), such as `--name=*.part`. It matches the file name, not the folders above it.
+- **`--sort=size|date`**: the largest or the newest first. Without it, files are in path order.
+- The report is one line per file (size, last modified time, path relative to the target) and a last line with the number of matches, the number of files checked, and the total size. Links are not listed and not followed, and a folder that cannot be read is reported as skipped.
+- The target follows the same rules as the other whole-target commands: a protected path or a network path is refused, and only one target is accepted. A bad value (`--larger=big`, `--sort=name`) or conditions that cannot match together (`--larger` not below `--smaller`, `--older` not below `--newer`) are refused before anything is read.
 
 ## Find broken files
 

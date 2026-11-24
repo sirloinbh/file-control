@@ -7,6 +7,7 @@
 //   {"type":"run","version":1,"runId","command","args","cwd","startedAt"}   the first line, written together with the first step
 //   {"type":"step","seq","op","time", ...}                                   one line per change
 //   {"type":"undo-step","seq"} / {"type":"undone"}                   added by `undo` (#397)
+//   (ops written by undo itself: restore { path } for an item put back from the Recycle Bin)
 //   {"type":"end","status":"ok"|"failed","error?","steps","endedAt"}         the last line (missing if the process was killed)
 // ops: move { from, to }, copy { from, to }, create-dir { path }, write { path, append }, create { path, source? } (made by extraction or compression),
 //      recycle { path }, delete { path } (permanent).
@@ -98,8 +99,9 @@ function record(op, fields = {}) {
   const left = fields.to ?? fields.path;
   if (typeof left === 'string' && STAMPED.has(op)) {
     try {
-      const stat = fs.lstatSync(left);
-      if (stat.isFile()) step.stamp = { size: stat.size, mtimeMs: Math.floor(stat.mtimeMs) };
+      const stat = fs.lstatSync(left, { bigint: true });
+      // ino is the file ID, so a different file saved under the same name is not taken for this one (0 means the file system gives no ID).
+      if (stat.isFile()) step.stamp = { size: Number(stat.size), mtimeMs: Math.floor(Number(stat.mtimeNs / 1000000n)), ...(stat.ino === 0n ? {} : { ino: String(stat.ino) }) };
     } catch {
       // No stamp: undo then has nothing to compare and treats the item as unchanged only for folders.
     }

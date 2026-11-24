@@ -222,3 +222,41 @@ test('undo refuses a path argument, --force and --permanent, and --list belongs 
   assert.throws(() => run('ls', dir, '--list'), /--list can be used only with undo/);
   assert.throws(() => run('undo', '--run=zzzz'), /No run with the id zzzz/);
 });
+
+test('--dry-run of flatten and mkdir x/y plans the whole run without mismatches, and the real run then does it', () => {
+  const dir = setup();
+  make(dir, ['top.txt', 'one/a.txt', 'one/two/b.txt']);
+  const before = tree(dir);
+  run('flatten', dir);
+  const flattened = tree(dir);
+  const preview = run('undo', '--dry-run');
+  assert.doesNotMatch(preview.report, /\[mismatch\]/);
+  assert.strictEqual(preview.failure, undefined);
+  assert.deepStrictEqual(tree(dir), flattened, 'the preview changed nothing');
+  const real = run('undo');
+  assert.deepStrictEqual(tree(dir), before);
+  const count = (text) => Number(/(\d+) (?:would be )?reversed/.exec(text)[1]);
+  assert.strictEqual(count(preview.report), count(real.report));
+
+  run('mkdir', path.join(dir, 'x', 'y'));
+  const planned = run('undo', '--dry-run');
+  assert.doesNotMatch(planned.report, /\[mismatch\]/);
+  assert.strictEqual(planned.failure, undefined);
+  assert.match(planned.report, /2 would be reversed/);
+  run('undo');
+  assert.deepStrictEqual(tree(dir), before);
+});
+
+test('a file replaced by another file of the same size and time is not removed by undo', () => {
+  const dir = setup();
+  make(dir, ['a.txt']);
+  run('cp', path.join(dir, 'a.txt'), path.join(dir, 'c.txt'));
+  const { mtimeMs } = fs.statSync(path.join(dir, 'c.txt'));
+  // Replace the copy by a new file (a new file ID) with the same size and modification time.
+  fs.rmSync(path.join(dir, 'c.txt'));
+  fs.writeFileSync(path.join(dir, 'c.txt'), 'X'.repeat('a.txt'.length));
+  fs.utimesSync(path.join(dir, 'c.txt'), new Date(mtimeMs), new Date(mtimeMs));
+  const outcome = run('undo');
+  assert.match(outcome.report, /\[mismatch\].*(replaced by another file|changed after the run)/);
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'c.txt'), 'utf8'), 'XXXXX');
+});

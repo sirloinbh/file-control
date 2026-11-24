@@ -214,7 +214,9 @@ $best = $null; $bestWhen = $null
 foreach ($i in $bin.Items()) {
   if (([string]$i.ExtendedProperty('System.Recycle.DeletedFrom')).TrimEnd('\') -ne $dir) { continue }
   $ext = [IO.Path]::GetExtension([string]$i.Path)
-  if ([string]$i.Name -ne $leaf -and ([string]$i.Name + $ext) -ne $leaf) { continue }
+  $name = [string]$i.Name
+  if ($ext -ne '' -and -not $name.EndsWith($ext, [StringComparison]::OrdinalIgnoreCase)) { $name = $name + $ext }
+  if ($name -ne $leaf) { continue }
   $when = $i.ExtendedProperty('System.Recycle.DateDeleted')
   if ($best -eq $null -or $when -gt $bestWhen) { $best = $i; $bestWhen = $when }
 }
