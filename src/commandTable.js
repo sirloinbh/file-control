@@ -36,6 +36,7 @@ const COMMANDS = [
   { name: 'sort-photos', usage: 'sort-photos <target>', summary: 'move photos into YYYY/YYYY-MM folders by the date taken (modified time if none) and screenshots into Screenshots (no overwriting)', kind: 'whole', recursive: true },
   { name: 'find-same-content', usage: 'find-same-content <target>', summary: 'group files of any type with exactly the same content (size, then SHA-256; does not touch files)', kind: 'whole' },
   { name: 'remove-same-content', usage: 'remove-same-content <target>', summary: 'show extra copies of identical files and a confirmation value (with --yes=VALUE, log them and send to the Recycle Bin)', kind: 'whole', yes: true },
+  { name: 'run', usage: 'run <recipe.json> <target>', summary: 'run a saved list of commands on a target, stopping at the first failure (remove steps only preview)', kind: 'whole' },
   { name: 'du', usage: 'du <target> [--depth=1] [--top=20]', summary: 'show subfolder sizes and file counts, largest first, with a total (does not touch files)', kind: 'whole', du: true },
   { name: 'ui', usage: 'ui [--port=NUMBER] [--no-open]', summary: 'start the local web UI (127.0.0.1, default port 8109, stop with Ctrl+C)', kind: 'ui' },
 ];
