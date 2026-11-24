@@ -183,6 +183,12 @@ function sidecarCount(result) {
   return `, sidecars ${count}${kept > 0 ? `, sidecars kept ${kept}` : ''}`;
 }
 
+// The failed part of a summary line (#424): "failed V" counts the videos, and ", sidecars failed S" is added only when a sidecar failed, so the line is unchanged without sidecar failures.
+function failedCount(result) {
+  const sidecars = result.failed.filter((item) => item.sidecar).length;
+  return `failed ${result.failed.length - sidecars}${sidecars > 0 ? `, sidecars failed ${sidecars}` : ''}`;
+}
+
 // The report lines for the sidecars of a removal command: the ones to delete (or deleted) and the ones kept.
 function sidecarLines(result, relative) {
   const lines = [];
@@ -392,4 +398,4 @@ function mismatchHints(plan) {
   return plan.recent.map((file) => ({ path: file, reason: 'Held back now because it changed within the last 5 minutes (or has a future time), so it may have been in the list you saw.' }));
 }
 
-module.exports = { sidecarDigest, sidecarLines, sidecarCount, mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };
+module.exports = { sidecarDigest, sidecarLines, sidecarCount, failedCount, mismatchHints, planSafeRemovals, runConfirmedRemoval, holdReason, checkOne, recycleInBatches, recycleFailure, reasonOf, longPathReason, fileIdOf, RECENT_MS, MAX_RECYCLE_SIZE, FILE_BATCH };

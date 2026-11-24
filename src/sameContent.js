@@ -12,7 +12,7 @@ const { FcError, formatSize, recycleTarget } = require('./commands');
 const { grant, walk, fileStamp, compareRelative } = require('./target');
 const { LEFTOVER, SYSTEM_FOLDER, PROGRAM_FOLDER, rejectRepository } = require('./guards');
 const { plural } = require('./plural');
-const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
+const { planSafeRemovals, runConfirmedRemoval, sidecarDigest, sidecarLines, sidecarCount, failedCount, mismatchHints, holdReason, checkOne, reasonOf, fileIdOf, MAX_RECYCLE_SIZE } = require('./removal');
 
 const CHUNK = 1024 * 1024;
 // A progress line is passed on after this many files were hashed.
@@ -310,7 +310,7 @@ function formatRemoveSameContent(result) {
   if (result.log) lines.push(`Removal log: ${result.log}`);
   const counts = `kept ${result.kept.length}, skipped ${result.skipped.length}`;
   if (result.confirmed) {
-    lines.push(`Groups ${result.sets.length}, Recycle Bin ${result.removed.length}${sidecarCount(result)}, failed ${result.failed.length}, ${counts}`);
+    lines.push(`Groups ${result.sets.length}, Recycle Bin ${result.removed.length}${sidecarCount(result)}, ${failedCount(result)}, ${counts}`);
   } else {
     lines.push(`Groups ${result.sets.length}, to delete ${result.removals.length}${sidecarCount(result)}, ${counts}`);
     if (result.removals.length > 0) lines.push(`Nothing has been deleted yet. After checking the list, run again ${result.dryRun ? 'without --dry-run and ' : ''}with --yes=${result.code} to send them to the Recycle Bin.`);

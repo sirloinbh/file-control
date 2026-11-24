@@ -52,6 +52,8 @@ const { resultPage, jobRoutes } = require('../src/ui/jobPages');
 const { flowRoutes } = require('../src/ui/flowPages');
 const { createJobs } = require('../src/ui/jobs');
 const cleanup = require('../src/ui/screens/cleanup');
+const { formatRemoveBroken } = require('../src/removeBroken');
+const { failedCount } = require('../src/removal');
 const { startUi } = require('./uiClient');
 
 const OLD = new Date(realNow() - HOUR);
@@ -321,4 +323,30 @@ test('HTTP: remove-duplicates and remove-low-quality previews of a folder with n
 test('a network or device path is refused as a cleanup target (#329)', () => {
   if (process.platform !== 'win32') return;
   for (const target of ['\\\\server\\share\\x', '\\\\.\\C:\\x']) assert.throws(() => spec('remove-broken').toArgv({ target }), FcError, target);
+});
+
+// ---- sidecar counts (#424) ----
+
+test('remove-broken: the web screen shows the same sidecar counts as the CLI summary (#424)', () => {
+  const dir = tempDir();
+  make(dir, { 'bad.mp4': BROKEN, 'bad.srt': 'subtitle', 'bad.jpg': 'thumb', 'good.txt': 'fine text' });
+  const argv = spec('remove-broken').toArgv({ target: dir });
+  const preview = runJob(argv, { mode: 'preview' });
+  assert.match(preview.body, /Check the 1 file and 2 sidecar files below/);
+  const done = runJob(argv, { mode: 'run', expect: preview.outcome.fingerprint });
+  assert.match(done.body, /Sent 1 file to the Recycle Bin and 2 sidecar files\./);
+  const cli = formatRemoveBroken(done.outcome.result).split('\n').find((line) => line.startsWith('Recycle Bin'));
+  assert.match(cli, /^Recycle Bin 1, sidecars 2, failed 0, /);
+});
+
+test('a run where only a sidecar fails is reported as a sidecar failure on the web screen and in the CLI summary (#424)', () => {
+  const result = {
+    target: 'D:\v', confirmed: true, mismatch: false, removals: [{ path: 'D:\v\a.mp4' }], removed: [{ path: 'D:\v\a.mp4' }],
+    removedSidecars: [], sidecars: [{ path: 'D:\v\a.srt' }], sidecarKept: [],
+    failed: [{ path: 'D:\v\a.srt', reason: 'locked', sidecar: true }], kept: [], undetermined: [], skipped: [], suspect: [], conflicts: [], criteria: null, log: null, code: 'x', counts: {},
+  };
+  const body = String(cleanup.views['remove-broken']({ command: 'remove-broken', result }));
+  assert.match(body, /Sent 1 file to the Recycle Bin\. 1 failed \(0 videos, 1 sidecar file\)\./);
+  assert.strictEqual(failedCount(result), 'failed 0, sidecars failed 1');
+  assert.strictEqual(failedCount({ failed: [{ path: 'a.mp4', reason: 'x' }] }), 'failed 1');
 });
