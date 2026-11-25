@@ -1,5 +1,5 @@
 {
-  "centralSha": "be1f487692e9227d2b7b9dfdfea6fb308ca37be2",
+  "centralSha": "5d39bb5f76faba4bae321596224d2e6e98c0aaba",
   "profile": "utility",
   "project": null,
   "files": {
@@ -30,12 +30,12 @@
     },
     ".claude/skills/std-backlog/SKILL.md": {
       "mode": "full",
-      "sha256": "63535252af86e608e0c4de21ec9f14dbbc4d1133d438c43594829c046816ad46",
+      "sha256": "45ef839744ec4a1779da4c0b93137f34a0dbde11249f599529ff8d2f2b8785f5",
       "source": "templates/common/skills/std-backlog/SKILL.md"
     },
     ".claude/skills/std-code-review/SKILL.md": {
       "mode": "full",
-      "sha256": "618268c6357b19b80b1066664e1db03971dbb1ba896be5935fb906e26201d6f1",
+      "sha256": "1eac908e169abc985ac720f98069222895806860899447fec35234bd56157765",
       "source": "templates/common/skills/std-code-review/SKILL.md"
     },
     ".claude/skills/std-communication/SKILL.md": {
@@ -155,12 +155,12 @@
     },
     "skills/std-backlog/SKILL.md": {
       "mode": "full",
-      "sha256": "63535252af86e608e0c4de21ec9f14dbbc4d1133d438c43594829c046816ad46",
+      "sha256": "45ef839744ec4a1779da4c0b93137f34a0dbde11249f599529ff8d2f2b8785f5",
       "source": "templates/common/skills/std-backlog/SKILL.md"
     },
     "skills/std-code-review/SKILL.md": {
       "mode": "full",
-      "sha256": "618268c6357b19b80b1066664e1db03971dbb1ba896be5935fb906e26201d6f1",
+      "sha256": "1eac908e169abc985ac720f98069222895806860899447fec35234bd56157765",
       "source": "templates/common/skills/std-code-review/SKILL.md"
     },
     "skills/std-communication/SKILL.md": {
