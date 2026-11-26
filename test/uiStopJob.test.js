@@ -15,7 +15,7 @@ const FAKE_WORKER = path.join(__dirname, 'fakeUiWorker.js');
 // Tests that expect a real worker to end as stopped wait longer than the 5 s default (#436).
 // In a loaded full run, taskkill and close can take over 5 s, and stop() would then give up and settle the job as error.
 // The give-up path itself is tested with a short stopWaitMs below (#330).
-const STOP_WAIT_MS = 60000;
+const TEST_STOP_WAIT_MS = 60000;
 
 function tempDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-uistop-'));
@@ -39,7 +39,7 @@ async function serve(t, jobs) {
 
 test('stops a running job, clears the running state, and the next job can start', async (t) => {
   const dir = tempDir();
-  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: STOP_WAIT_MS });
+  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: TEST_STOP_WAIT_MS });
   const { get, post } = await serve(t, jobs);
   const job = jobs.start(['wait', path.join(dir, 'never')]);
 
@@ -97,7 +97,7 @@ test('stopping a finished or unknown job is handled', async (t) => {
 
 test('a double stop is harmless', async (t) => {
   const dir = tempDir();
-  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: STOP_WAIT_MS });
+  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: TEST_STOP_WAIT_MS });
   const { post } = await serve(t, jobs);
   const job = jobs.start(['wait', path.join(dir, 'never')]);
   const [first, second] = await Promise.all([post('/job/stop', { id: job.id }), post('/job/stop', { id: job.id })]);
@@ -179,7 +179,7 @@ test('a process that ignores the kill is given up after the wait, and the UI can
 
 test('stopAll stops the running job and does nothing when there is none (#330)', async () => {
   const dir = tempDir();
-  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: STOP_WAIT_MS });
+  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: TEST_STOP_WAIT_MS });
   await jobs.stopAll();
   const job = jobs.start(['wait', path.join(dir, 'never')]);
   await jobs.stopAll();
@@ -190,7 +190,7 @@ test('stopAll stops the running job and does nothing when there is none (#330)',
 test('SIGINT in runUi stops the running job before it reports the server stopped (#330)', async () => {
   const { runUi } = require('../src/ui/server');
   const dir = tempDir();
-  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: STOP_WAIT_MS });
+  const jobs = createJobs({ workerPath: FAKE_WORKER, stopWaitMs: TEST_STOP_WAIT_MS });
   const routes = new Map([...jobRoutes(jobs)]);
   routes.jobs = jobs;
   const lines = [];
@@ -199,7 +199,7 @@ test('SIGINT in runUi stops the running job before it reports the server stopped
   const job = jobs.start(['wait', path.join(dir, 'never')]);
   const handler = process.listeners('SIGINT').find((fn) => !before.includes(fn));
   handler();
-  const until = Date.now() + 10000;
+  const until = Date.now() + TEST_STOP_WAIT_MS + 10000;
   while (!lines.includes('UI server stopped.') && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(lines.includes('UI server stopped.'));
   assert.strictEqual(job.status, 'stopped');
