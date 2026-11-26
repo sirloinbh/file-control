@@ -19,3 +19,4 @@ coverage/
 .lighthouseci/
 *.tsbuildinfo
 # --- project ---
+.fctl-journal/
