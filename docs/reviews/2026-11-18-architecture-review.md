@@ -1,6 +1,8 @@
 # Architecture review (2026-11-18)
 
-> Status (2026-11-26): this is a dated snapshot, kept as written. D1, D2, and D3 were done after the review (`src/removal.js`, `src/guards.js`, `src/safeMove.js`, and `src/fsOps.js` / `src/recycle.js` / `src/archive.js`), so the line references below point to code that has since moved. D6 was still open.
+> Status (2026-11-26): this is a dated snapshot, kept as written. D1, D2, and D3 were done after the review (`src/removal.js`, `src/guards.js`, `src/safeMove.js`, and `src/fsOps.js` / `src/recycle.js` / `src/archive.js`), so the line references below point to code that has since moved. D6 was done in #439 (PR #441).
+>
+> Correction: "Cross-repo patterns" below says this repo does not receive the central sync from project-standards. That is wrong. `.standards/manifest.json` lists the files synced from project-standards (for example `.gitignore` in section mode, where only the part above `# --- project ---` is central), and the CI Standards check (`.standards/check.mjs`) fails when they drift.
 
 Scope: a macro-level review of structure, dependencies, framework fit, unnecessary code, duplication, refactoring, and efficiency. It is not a line-level bug review.
 Reviewed commit: the latest `origin/main` on 2026-11-18.
