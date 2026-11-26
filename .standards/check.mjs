@@ -315,6 +315,53 @@ export function checkMinFontSize(sources) {
   return [`frontend/src: text under ${MIN_FONT_PX}px (docs/design-tokens.md). ${found.length} found: ${shown}${found.length > 5 ? ' and more' : ''}`];
 }
 
+const HANGUL = /[\uAC00-\uD7A3]/;
+const SCREEN_TEXT_FILE = /\.(tsx|ts|jsx|js|html)$/;
+const NOT_SCREEN_TEXT = /\.(test|spec|stories)\.[jt]sx?$|(^|\/)(test|tests|__tests__|__mocks__|fixtures|e2e)\//;
+
+/** The lines of a source file with comments removed, so only code, strings and JSX text are left. */
+function codeLines(text) {
+  let inBlock = false;
+  return text.split(/\r?\n/).map((raw) => {
+    let line = '';
+    for (let i = 0; i < raw.length; i += 1) {
+      if (inBlock) {
+        const end = raw.indexOf('*/', i);
+        if (end < 0) break;
+        inBlock = false;
+        i = end + 1;
+      } else if (raw.startsWith('/*', i)) inBlock = true, i += 1;
+      else if (raw.startsWith('//', i) && raw[i - 1] !== ':') break;
+      else line += raw[i];
+    }
+    return line;
+  });
+}
+
+/**
+ * Korean (Hangul) in a frontend source outside comments, which is screen text (#1129, user requirement 2026-11-26: no Korean
+ * on any screen). Tests, fixtures and e2e files stay allowed because they hold user-data samples. Code that must recognize
+ * Korean input (a CSV header, a label parser) says so with `korean-ok: <reason>` on the line or the line above, or
+ * `korean-ok-file: <reason>` anywhere in the file. Returns `file:line` entries.
+ */
+export function koreanScreenTextFindings(file, text) {
+  if (!SCREEN_TEXT_FILE.test(file) || NOT_SCREEN_TEXT.test(file) || text.includes('korean-ok-file')) return [];
+  const raw = text.split(/\r?\n/);
+  return codeLines(text).flatMap((line, i) => {
+    if (!HANGUL.test(line)) return [];
+    // A line is allowed when it, or the line above, says why it must stay Korean (it recognizes Korean input).
+    return raw[i].includes('korean-ok') || (i > 0 && raw[i - 1].includes('korean-ok')) ? [] : [`${file}:${i + 1}`];
+  });
+}
+
+/** One message for all Korean screen text in the frontend sources. A problem, not a warning (#1129). */
+export function checkKoreanScreenText(sources) {
+  const found = sources.flatMap(({ file, text }) => koreanScreenTextFindings(file, text));
+  if (!found.length) return [];
+  const shown = found.slice(0, 5).join(', ');
+  return [`frontend/src: Korean screen text. Screens are English only. ${found.length} found: ${shown}${found.length > 5 ? ' and more' : ''}`];
+}
+
 function frontendFiles(root) {
   const dir = path.join(root, 'frontend/src');
   if (!fs.existsSync(dir)) return [];
@@ -398,6 +445,7 @@ export function runCheck(root) {
   warnings.push(...checkFileNames(frontend));
   // A warning first: apps fix the offenders found in their sync PR, then it can become a problem (#1127).
   warnings.push(...checkMinFontSize(frontend.map((file) => ({ file, text: /\.(tsx|ts|css)$/.test(file) ? read(file) ?? '' : '' }))));
+  for (const message of checkKoreanScreenText(frontend.map((file) => ({ file, text: SCREEN_TEXT_FILE.test(file) ? read(file) ?? '' : '' })))) problems.push({ group: 'screen text', path: 'frontend/src', message });
   const compose = read('compose.yaml');
   if (compose !== null && (manifest.files['frontend/Dockerfile'] || manifest.files['backend/Dockerfile'])) {
     for (const message of checkComposeSecrets(compose)) problems.push({ group: 'build secret', path: 'compose.yaml', message });
