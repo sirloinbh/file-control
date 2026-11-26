@@ -285,6 +285,36 @@ export function checkFileNames(files) {
   return [`frontend/src: file names use lowercase and hyphens (docs/conventions/code.md). ${bad.length} found: ${shown}${bad.length > 5 ? ' and more' : ''}`];
 }
 
+/** Text under 12px in a frontend source: `text-[10px]`, `fontSize: 11`, `fontSize="10"`, `font-size: 0.7rem` (#1127). */
+export const MIN_FONT_PX = 12;
+export function smallTextFindings(file, text) {
+  const found = [];
+  const px = (value, unit) => (unit === 'rem' || unit === 'em' ? Number(value) * 16 : Number(value));
+  const patterns = [
+    /\btext-\[(\d*\.?\d+)(px|rem|em)\]/g,
+    /\bfont-size:\s*(\d*\.?\d+)(px|rem|em)\b/g,
+    /\bfontSize\s*[:=]\s*\{?\s*['"]?(\d*\.?\d+)(px|rem|em)?['"]?/g,
+  ];
+  text.split(/\r?\n/).forEach((line, i) => {
+    for (const pattern of patterns) {
+      for (const m of line.matchAll(pattern)) {
+        if (px(m[1], m[2]) < MIN_FONT_PX) found.push(`${file}:${i + 1} ${m[0]}`);
+      }
+    }
+  });
+  return found;
+}
+
+/** One message for all small text in the frontend sources; the 12px floor is in docs/design-tokens.md (#1127). */
+export function checkMinFontSize(sources) {
+  const found = sources
+    .filter(({ file }) => /\.(tsx|ts|css)$/.test(file) && !/\.(test|spec)\.tsx?$/.test(file))
+    .flatMap(({ file, text }) => smallTextFindings(file, text));
+  if (!found.length) return [];
+  const shown = found.slice(0, 5).join(', ');
+  return [`frontend/src: text under ${MIN_FONT_PX}px (docs/design-tokens.md). ${found.length} found: ${shown}${found.length > 5 ? ' and more' : ''}`];
+}
+
 function frontendFiles(root) {
   const dir = path.join(root, 'frontend/src');
   if (!fs.existsSync(dir)) return [];
@@ -364,7 +394,10 @@ export function runCheck(root) {
   warnings.push(...checkApi(backend));
   warnings.push(...checkAdoption(backend, manifest.files));
   warnings.push(...checkZodArrays(backend));
-  warnings.push(...checkFileNames(frontendFiles(root)));
+  const frontend = frontendFiles(root);
+  warnings.push(...checkFileNames(frontend));
+  // A warning first: apps fix the offenders found in their sync PR, then it can become a problem (#1127).
+  warnings.push(...checkMinFontSize(frontend.map((file) => ({ file, text: /\.(tsx|ts|css)$/.test(file) ? read(file) ?? '' : '' }))));
   const compose = read('compose.yaml');
   if (compose !== null && (manifest.files['frontend/Dockerfile'] || manifest.files['backend/Dockerfile'])) {
     for (const message of checkComposeSecrets(compose)) problems.push({ group: 'build secret', path: 'compose.yaml', message });
