@@ -443,8 +443,8 @@ export function runCheck(root) {
   warnings.push(...checkZodArrays(backend));
   const frontend = frontendFiles(root);
   warnings.push(...checkFileNames(frontend));
-  // A warning first: apps fix the offenders found in their sync PR, then it can become a problem (#1127).
-  warnings.push(...checkMinFontSize(frontend.map((file) => ({ file, text: /\.(tsx|ts|css)$/.test(file) ? read(file) ?? '' : '' }))));
+  // A warning at first (#1127); a problem since every app was clean on 2026-11-27 (#1135).
+  for (const message of checkMinFontSize(frontend.map((file) => ({ file, text: /\.(tsx|ts|css)$/.test(file) ? read(file) ?? '' : '' })))) problems.push({ group: 'text size', path: 'frontend/src', message });
   for (const message of checkKoreanScreenText(frontend.map((file) => ({ file, text: SCREEN_TEXT_FILE.test(file) ? read(file) ?? '' : '' })))) problems.push({ group: 'screen text', path: 'frontend/src', message });
   const compose = read('compose.yaml');
   if (compose !== null && (manifest.files['frontend/Dockerfile'] || manifest.files['backend/Dockerfile'])) {
