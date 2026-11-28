@@ -13,7 +13,7 @@ Skills used together:
 
 - [std-backlog](../std-backlog/SKILL.md): splitting issues, priority and characteristic labels, choosing the next task
 - [std-git-writing](../std-git-writing/SKILL.md): how to write issues, branches, commits, and PRs, plus templates
-- [std-testing](../std-testing/SKILL.md): writing and running tests (app repos)
+- `std-testing` (delivered to app repos only, so not linked): writing and running tests (app repos)
 
 ## Decisions: proceed with the default
 
