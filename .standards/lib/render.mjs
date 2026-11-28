@@ -89,7 +89,11 @@ export function addHeader(text, file, source) {
   const lines = text.split('\n');
   const at = leadingLines(file, lines);
   // Keep a blank line between Markdown frontmatter and the header comment.
-  const insert = at > 0 && path.posix.extname(file) === '.md' ? ['', header] : [header];
+  const isMarkdown = path.posix.extname(file) === '.md';
+  const insert = at > 0 && isMarkdown ? ['', header] : [header];
+  // The apps run `prettier --check` on the delivered UI kit (not on the other managed files), and Prettier wants a blank
+  // line between a leading comment and the first Markdown block (#1219).
+  if (isMarkdown && source.startsWith('templates/ui/') && lines[at]?.trim()) insert.push('');
   lines.splice(at, 0, ...insert);
   return lines.join('\n');
 }
