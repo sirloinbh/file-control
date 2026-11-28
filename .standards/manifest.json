@@ -1,5 +1,5 @@
 {
-  "centralSha": "b500b78bee0bd165122707bf7ff7bcf51d5a927e",
+  "centralSha": "1101f7ef6a6a67d161f4d6df1c1699baf45cc299",
   "profile": "utility",
   "project": null,
   "files": {
@@ -141,7 +141,7 @@
     ".standards/lib/screen-checks.mjs": {
       "mode": "full",
       "sha256": "639113659cf5e550865edc6aa3320848a3438b6821640d77c3e117a5aa8de985",
-      "source": "scripts/lib/screen-checks.mjs"
+      "source": "design-system/delivery/standards/screen-checks.mjs"
     },
     ".standards/secret-scan.mjs": {
       "mode": "full",
